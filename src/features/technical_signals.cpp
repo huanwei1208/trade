@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <format>
+#include <fmt/format.h>
 #include <numeric>
 
 namespace trade {
@@ -18,7 +18,7 @@ namespace {
 static std::string bar_date_str(const Bar& bar) {
     auto dp = std::chrono::floor<std::chrono::days>(bar.date);
     auto ymd = std::chrono::year_month_day{dp};
-    return std::format("{:04d}-{:02d}-{:02d}",
+    return fmt::format("{:04d}-{:02d}-{:02d}",
         static_cast<int>(ymd.year()),
         static_cast<unsigned>(ymd.month()),
         static_cast<unsigned>(ymd.day()));

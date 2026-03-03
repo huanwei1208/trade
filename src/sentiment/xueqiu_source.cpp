@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <sstream>
 #include <thread>
 
 namespace trade {

@@ -39,7 +39,7 @@
     },
     {
       "name": "linux",
-      "displayName": "Linux GCC-13 (system packages)",
+      "displayName": "Linux GCC (system packages)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
@@ -48,8 +48,8 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "BUILD_TESTING": "ON",
         "BUILD_PYTHON_BINDINGS": "OFF",
-        "CMAKE_C_COMPILER": "gcc-13",
-        "CMAKE_CXX_COMPILER": "g++-13"
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
       }
     },
     {
@@ -67,6 +67,33 @@
       "displayName": "Linux with Python bindings",
       "cacheVariables": {
         "BUILD_PYTHON_BINDINGS": "ON"
+      }
+    },
+    {
+      "name": "linux-clang",
+      "displayName": "Linux Clang-13 + libc++",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON",
+        "BUILD_PYTHON_BINDINGS": "OFF",
+        "CMAKE_C_COMPILER": "clang-13",
+        "CMAKE_CXX_COMPILER": "clang++-13",
+        "CMAKE_CXX_FLAGS": "-stdlib=libc++",
+        "CMAKE_EXE_LINKER_FLAGS": "-stdlib=libc++ -lc++abi",
+        "CMAKE_SHARED_LINKER_FLAGS": "-stdlib=libc++ -lc++abi"
+      }
+    },
+    {
+      "name": "linux-clang-debug",
+      "inherits": "linux-clang",
+      "displayName": "Linux Clang-13 Debug",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     }
   ],
@@ -86,6 +113,14 @@
     {
       "name": "linux-debug",
       "configurePreset": "linux-debug"
+    },
+    {
+      "name": "linux-clang",
+      "configurePreset": "linux-clang"
+    },
+    {
+      "name": "linux-clang-debug",
+      "configurePreset": "linux-clang-debug"
     }
   ],
   "testPresets": [
@@ -99,6 +134,13 @@
     {
       "name": "linux",
       "configurePreset": "linux",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-clang",
+      "configurePreset": "linux-clang",
       "output": {
         "outputOnFailure": true
       }

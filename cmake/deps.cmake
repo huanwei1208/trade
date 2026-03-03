@@ -113,6 +113,16 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/lightgbm/CMakeLists.txt")
         endif()
     endforeach()
     set(HAVE_LIGHTGBM ON)
+    # LightGBM uses add_subdirectory() and does not set INTERFACE_INCLUDE_DIRECTORIES
+    # on its targets, so consumers outside the subdirectory don't get the headers.
+    foreach(_lgbm_inc_tgt IN ITEMS _lightgbm lightgbm_static lightgbm)
+        if(TARGET ${_lgbm_inc_tgt})
+            target_include_directories(${_lgbm_inc_tgt} INTERFACE
+                $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/vendor/lightgbm/include>
+            )
+            break()
+        endif()
+    endforeach()
     message(STATUS "LightGBM: vendor submodule")
 else()
     # Fallback: CMake config → manual find_library
@@ -251,7 +261,12 @@ else()
 endif()
 
 # ── CURL ─────────────────────────────────────────────────────────────────────
-if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/curl/CMakeLists.txt")
+# vendor/curl ≥ 8.x requires OpenSSL 3.0.0+. Fall back to the system libcurl
+# when the system only provides OpenSSL 1.x (e.g. Debian Buster).
+find_package(OpenSSL QUIET)  # already done below, but we need the version here
+if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/curl/CMakeLists.txt"
+   AND OPENSSL_FOUND
+   AND NOT OPENSSL_VERSION VERSION_LESS "3.0.0")
     set(BUILD_CURL_EXE       OFF CACHE BOOL "" FORCE)
     set(BUILD_TESTING        OFF CACHE BOOL "" FORCE)
     # SSL/TLS: use the system OpenSSL (the one system-only dep we keep).
@@ -284,7 +299,11 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/curl/CMakeLists.txt")
     message(STATUS "CURL: vendor submodule")
 else()
     find_package(CURL REQUIRED)
-    message(STATUS "CURL: system package")
+    if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/curl/CMakeLists.txt" AND OPENSSL_FOUND)
+        message(STATUS "CURL: system package (vendor curl requires OpenSSL 3+, found ${OPENSSL_VERSION})")
+    else()
+        message(STATUS "CURL: system package")
+    endif()
 endif()
 
 # ── Arrow & Parquet ──────────────────────────────────────────────────────────
@@ -317,6 +336,21 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/arrow/cpp/CMakeLists.txt")
     endif()
     if(TARGET parquet_shared AND NOT TARGET Parquet::parquet_shared)
         add_library(Parquet::parquet_shared ALIAS parquet_shared)
+    endif()
+    # Arrow uses include_directories() (directory-scoped) instead of
+    # target_include_directories(INTERFACE), so its headers are NOT propagated
+    # to consumers outside the Arrow subdirectory.  Fix this explicitly.
+    if(TARGET arrow_shared)
+        target_include_directories(arrow_shared INTERFACE
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/vendor/arrow/cpp/src>
+            $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/vendor/arrow/cpp/src>
+        )
+    endif()
+    if(TARGET parquet_shared)
+        target_include_directories(parquet_shared INTERFACE
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/vendor/arrow/cpp/src>
+            $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/vendor/arrow/cpp/src>
+        )
     endif()
 else()
     find_package(Arrow   REQUIRED)

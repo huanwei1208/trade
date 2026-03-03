@@ -42,10 +42,12 @@ target_link_libraries(trade_deps INTERFACE
     CURL::libcurl
     re2::re2
     OpenSSL::Crypto
-    duckdb_static
-    duckdb_generated_extension_loader
-    parquet_extension
-    core_functions_extension
+    # DuckDB has a circular symbol dependency between duckdb_static and the
+    # extension loader / extension libs: duckdb_static references LoadAllExtensions
+    # which is defined in duckdb_generated_extension_loader, yet CMake places the
+    # extension libs before duckdb_static in link order.  Use --start-group /
+    # --end-group (RESCAN) so GNU ld makes multiple passes until all refs resolve.
+    $<LINK_GROUP:RESCAN,duckdb_static,duckdb_generated_extension_loader,parquet_extension,core_functions_extension,jemalloc_extension>
 )
 target_include_directories(trade_deps INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/duckdb/src/include
