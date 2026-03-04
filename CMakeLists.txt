@@ -130,6 +130,14 @@ target_link_libraries(trade_cli PRIVATE trade_core)
 target_compile_definitions(trade_cli PRIVATE
     TRADE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
+if(UNIX)
+    find_library(READLINE_LIB readline)
+    if(READLINE_LIB)
+        target_link_libraries(trade_cli PRIVATE ${READLINE_LIB})
+        target_compile_definitions(trade_cli PRIVATE TRADE_HAS_READLINE=1)
+    endif()
+endif()
+
 # Symlinks in build dir
 file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/config
      ${CMAKE_BINARY_DIR}/config SYMBOLIC)
