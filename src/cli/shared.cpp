@@ -165,6 +165,16 @@ std::string build_values_view_sql(const std::string& view_name,
 
 std::vector<SqlViewDef> discover_sql_views(const Config& config) {
     std::vector<SqlViewDef> views;
+    const auto data_root = std::filesystem::path(config.data.data_root);
+
+    if (has_local_parquet(data_root)) {
+        views.push_back(SqlViewDef{
+            .dataset_id = "all_data",
+            .view_name  = "all_data",
+            .glob_path  = (data_root / "**/*.parquet").string(),
+        });
+    }
+
     auto kline_dir = std::filesystem::path(config.data.data_root) / "kline";
     if (has_local_parquet(kline_dir)) {
         views.push_back(SqlViewDef{

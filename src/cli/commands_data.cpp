@@ -2,6 +2,7 @@
 
 #include "trade/cli/shared.h"
 #include "trade/common/time_utils.h"
+#include "trade/storage/duck_store.h"
 #include "trade/storage/google_drive_sync.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
@@ -17,6 +18,78 @@
 #include <spdlog/spdlog.h>
 
 namespace trade::cli {
+namespace {
+
+bool executable_exists(const std::string& path) {
+    if (path.empty()) return false;
+    std::error_code ec;
+    return std::filesystem::exists(path, ec) && std::filesystem::is_regular_file(path, ec);
+}
+
+std::string shell_quote(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "'\\''";
+        else out.push_back(c);
+    }
+    out += "'";
+    return out;
+}
+
+std::string find_duckdb_cli() {
+    if (const char* env_duckdb = std::getenv("TRADE_DUCKDB_BIN")) {
+        if (executable_exists(env_duckdb)) return env_duckdb;
+    }
+    if (std::system("which duckdb > /dev/null 2>&1") == 0) {
+        return "duckdb";
+    }
+#ifdef TRADE_SOURCE_DIR
+    const std::string root = TRADE_SOURCE_DIR;
+    const std::vector<std::string> candidates = {
+        root + "/build/linux/vendor/duckdb/duckdb",
+        root + "/build/default/vendor/duckdb/duckdb",
+        root + "/build/debug/vendor/duckdb/duckdb",
+        root + "/vendor/duckdb/build/release/duckdb",
+    };
+    for (const auto& c : candidates) {
+        if (executable_exists(c)) return c;
+    }
+#endif
+    return "";
+}
+
+int run_embedded_sql_shell(const std::string& init_sql) {
+    std::cout << "DuckDB CLI not found, using embedded SQL shell.\n"
+              << "Type SQL and press Enter, type .exit to quit.\n\n";
+    try {
+        trade::DuckStore db;
+        if (!init_sql.empty()) db.execute(init_sql);
+
+        std::string line;
+        while (true) {
+            std::cout << "duckdb> " << std::flush;
+            if (!std::getline(std::cin, line)) break;
+            if (line == ".exit" || line == ".quit" || line == "exit" || line == "quit") break;
+            if (line.empty()) continue;
+
+            auto rows = db.query(line);
+            std::cout << "rows: " << rows.size() << "\n";
+            for (const auto& row : rows) {
+                for (size_t i = 0; i < row.size(); ++i) {
+                    if (i > 0) std::cout << "\t";
+                    std::cout << row[i];
+                }
+                std::cout << "\n";
+            }
+        }
+        return 0;
+    } catch (const std::exception& e) {
+        spdlog::error("Embedded SQL shell failed: {}", e.what());
+        return 1;
+    }
+}
+
+} // namespace
 
 int cmd_verify(const CliArgs& args, const trade::Config& config) {
     bool ok_local = false;
@@ -77,23 +150,24 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
     std::cout << "[Meta] instruments=" << mh.instrument_count
               << " -> " << (ok_meta ? "OK" : "FAIL") << "\n";
 
-    // 4) SQL check
-    if (std::system("which duckdb > /dev/null 2>&1") != 0) {
-        std::cout << "[SQL] duckdb not found -> FAIL\n";
-        ok_sql = false;
-    } else {
-        auto views = discover_sql_views(config);
-        if (!views.empty()) {
+    // 4) SQL check (embedded DuckDB, no external CLI dependency)
+    auto views = discover_sql_views(config);
+    if (!views.empty()) {
+        try {
+            trade::DuckStore db;
             std::string init_sql = build_sql_init(views) + build_metadata_views_sql(config);
-            std::string sql = init_sql + "SELECT count(*) FROM " + views.front().view_name + ";";
-            std::string cmd = "duckdb -batch -init /dev/null -cmd \"" + sql + "\" :memory: > /dev/null 2>&1";
-            ok_sql = (std::system(cmd.c_str()) == 0);
+            db.execute(init_sql);
+            auto rows = db.query("SELECT count(*) FROM " + views.front().view_name + ";");
+            ok_sql = !rows.empty();
             std::cout << "[SQL] view=" << views.front().view_name
                       << " -> " << (ok_sql ? "OK" : "FAIL") << "\n";
-        } else {
+        } catch (const std::exception& e) {
             ok_sql = false;
-            std::cout << "[SQL] no dataset views found -> FAIL\n";
+            std::cout << "[SQL] embedded duckdb query failed: " << e.what() << " -> FAIL\n";
         }
+    } else {
+        ok_sql = false;
+        std::cout << "[SQL] no dataset views found -> FAIL\n";
     }
 
     bool pass = ok_local && ok_cloud && ok_meta && ok_sql;
@@ -174,11 +248,7 @@ int cmd_info(const CliArgs& args, const trade::Config& config) {
 // sql — launch DuckDB CLI with data directory pre-configured
 // ============================================================================
 int cmd_sql(const CliArgs& args, const trade::Config& config) {
-    // Check if duckdb is available
-    if (std::system("which duckdb > /dev/null 2>&1") != 0) {
-        spdlog::error("duckdb not found. Install with: brew install duckdb");
-        return 1;
-    }
+    const std::string duckdb_cli = find_duckdb_cli();
 
     const bool cloud_mode = config.storage.enabled &&
         config.storage.backend == "google_drive";
@@ -246,6 +316,9 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     if (has_dataset("kline") || has_dataset("daily")) {
         std::cout << "  SELECT * FROM kline WHERE symbol='600000.SH' ORDER BY date;\n"
                   << "  SELECT symbol, count(*) FROM kline GROUP BY symbol;\n";
+    }
+    if (has_dataset("all_data")) {
+        std::cout << "  SELECT * FROM all_data LIMIT 20;\n";
     } else if (!views.empty()) {
         std::cout << "  SELECT * FROM " << views.front().view_name << " LIMIT 20;\n";
     } else {
@@ -263,8 +336,12 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
                   << std::endl;
     }
 
+    if (duckdb_cli.empty()) {
+        return run_embedded_sql_shell(init_sql);
+    }
+
     // Launch duckdb with init commands
-    std::string cmd = "duckdb -init /dev/null -cmd \"" + init_sql + "\"";
+    std::string cmd = shell_quote(duckdb_cli) + " -init /dev/null -cmd \"" + init_sql + "\"";
     return std::system(cmd.c_str());
 }
 
