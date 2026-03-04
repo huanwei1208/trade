@@ -317,6 +317,18 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         std::cout << "  SELECT * FROM kline WHERE symbol='600000.SH' ORDER BY date;\n"
                   << "  SELECT symbol, count(*) FROM kline GROUP BY symbol;\n";
     }
+    if (has_dataset("sentiment_bronze")) {
+        std::cout << "  SELECT date, source, title FROM sentiment_bronze ORDER BY date DESC LIMIT 20;\n"
+                  << "  SELECT date, source, count(*) AS articles FROM sentiment_bronze GROUP BY date, source ORDER BY date DESC;\n";
+    }
+    if (has_dataset("sentiment_silver")) {
+        std::cout << "  SELECT * FROM sentiment_silver ORDER BY date DESC LIMIT 20;\n"
+                  << "  SELECT date, symbol, sentiment_score FROM sentiment_silver WHERE symbol='600000.SH' ORDER BY date;\n";
+    }
+    if (has_dataset("sentiment_gold")) {
+        std::cout << "  SELECT * FROM sentiment_gold ORDER BY date DESC LIMIT 20;\n"
+                  << "  SELECT date, symbol, sentiment_score FROM sentiment_gold ORDER BY date DESC, sentiment_score DESC;\n";
+    }
     if (has_dataset("all_data")) {
         std::cout << "  SELECT * FROM all_data LIMIT 20;\n";
     } else if (!views.empty()) {

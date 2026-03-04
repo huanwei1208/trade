@@ -189,6 +189,35 @@ std::vector<SqlViewDef> discover_sql_views(const Config& config) {
             .glob_path  = (kline_dir / "**/*.parquet").string(),
         });
     }
+
+    // Sentiment layers: bronze (raw articles), silver (scored), gold (factors)
+    auto sentiment_bronze_dir = data_root / "raw" / "sentiment";
+    if (has_local_parquet(sentiment_bronze_dir)) {
+        views.push_back(SqlViewDef{
+            .dataset_id = "sentiment_bronze",
+            .view_name  = "sentiment_bronze",
+            .glob_path  = (sentiment_bronze_dir / "**/*.parquet").string(),
+        });
+    }
+
+    auto sentiment_silver_dir = data_root / "sentiment" / "silver";
+    if (has_local_parquet(sentiment_silver_dir)) {
+        views.push_back(SqlViewDef{
+            .dataset_id = "sentiment_silver",
+            .view_name  = "sentiment_silver",
+            .glob_path  = (sentiment_silver_dir / "**/*.parquet").string(),
+        });
+    }
+
+    auto sentiment_gold_dir = data_root / "sentiment" / "gold";
+    if (has_local_parquet(sentiment_gold_dir)) {
+        views.push_back(SqlViewDef{
+            .dataset_id = "sentiment_gold",
+            .view_name  = "sentiment_gold",
+            .glob_path  = (sentiment_gold_dir / "**/*.parquet").string(),
+        });
+    }
+
     return views;
 }
 
