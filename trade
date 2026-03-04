@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+print_help() {
+  cat <<'EOF'
+Unified entrypoint for the trade project
+
+Usage:
+  ./trade doctor
+  ./trade setup-python
+  ./trade configure [preset]
+  ./trade build [preset]
+  ./trade cli <command> [args...]
+  ./trade ui [streamlit args...]
+  ./trade test [preset]
+
+Default preset:
+  linux
+EOF
+}
+
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Missing command: $1"
+    exit 1
+  fi
+}
+
+default_preset() {
+  echo "${1:-linux}"
+}
+
+compiler_major() {
+  local cxx="${CXX:-g++}"
+  if ! command -v "$cxx" >/dev/null 2>&1; then
+    echo "0"
+    return
+  fi
+  "$cxx" -dumpversion 2>/dev/null | awk -F. '{print $1}'
+}
+
+cmd_doctor() {
+  echo "Project root: $ROOT_DIR"
+  echo "Tools:"
+  for x in cmake ninja g++ gcc uv; do
+    if command -v "$x" >/dev/null 2>&1; then
+      echo "  - $x: $(command -v "$x")"
+    else
+      echo "  - $x: MISSING"
+    fi
+  done
+  local gmaj
+  gmaj="$(compiler_major)"
+  if [ "$gmaj" -lt 10 ]; then
+    echo "Compiler check: FAIL (GCC/G++ >= 10 required, current major=$gmaj)"
+    echo "Hint: install gcc-13 g++-13 and set CC/CXX accordingly."
+  else
+    echo "Compiler check: OK (major=$gmaj)"
+  fi
+}
+
+cmd_setup_python() {
+  require_cmd uv
+  cd "$ROOT_DIR"
+  uv sync
+}
+
+cmd_configure() {
+  local preset
+  preset="$(default_preset "${1:-}")"
+  require_cmd cmake
+  cd "$ROOT_DIR"
+  cmake --preset "$preset"
+}
+
+cmd_build() {
+  local preset
+  preset="$(default_preset "${1:-}")"
+  require_cmd cmake
+  cd "$ROOT_DIR"
+  cmake --build --preset "$preset" -j"$(nproc)"
+}
+
+cmd_cli() {
+  if [ $# -lt 1 ]; then
+    echo "Usage: ./trade cli <command> [args...]"
+    exit 1
+  fi
+  local bin="$ROOT_DIR/build/linux-clang/bin/trade_cli"
+  if [ ! -x "$bin" ]; then
+    echo "trade_cli not found: $bin"
+    echo "Run: ./trade configure linux && ./trade build linux"
+    exit 1
+  fi
+  "$bin" "$@"
+}
+
+cmd_ui() {
+  require_cmd uv
+  cd "$ROOT_DIR"
+  uv run streamlit run python/app/ui.py "$@"
+}
+
+cmd_test() {
+  local preset
+  preset="$(default_preset "${1:-}")"
+  require_cmd ctest
+  cd "$ROOT_DIR"
+  ctest --preset "$preset"
+}
+
+main() {
+  local sub="${1:-help}"
+  shift || true
+  case "$sub" in
+    doctor) cmd_doctor "$@" ;;
+    setup-python) cmd_setup_python "$@" ;;
+    configure) cmd_configure "$@" ;;
+    build) cmd_build "$@" ;;
+    cli) cmd_cli "$@" ;;
+    ui) cmd_ui "$@" ;;
+    test) cmd_test "$@" ;;
+    help|-h|--help) print_help ;;
+    *)
+      echo "Unknown command: $sub"
+      print_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

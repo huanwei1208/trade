@@ -1,0 +1,62 @@
+services:
+  rsshub:
+    image: diygod/rsshub:chromium-bundled
+    container_name: trade-rsshub
+    restart: unless-stopped
+    depends_on:
+      - redis
+    ports:
+      - "127.0.0.1:${RSSHUB_PORT:-1200}:1200"
+    environment:
+      NODE_ENV: production
+      PORT: ${RSSHUB_PORT:-1200}
+      CACHE_TYPE: redis
+      REDIS_URL: redis://redis:6379/
+      CACHE_EXPIRE: ${RSSHUB_CACHE_EXPIRE:-600}
+      ALLOW_ORIGIN: ${RSSHUB_ALLOW_ORIGIN:-http://127.0.0.1:1200}
+    mem_limit: ${RSSHUB_MEM_LIMIT:-1024m}
+    cpus: ${RSSHUB_CPUS:-1.0}
+    shm_size: ${RSSHUB_SHM_SIZE:-256m}
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    logging:
+      driver: json-file
+      options:
+        max-size: ${RSSHUB_LOG_MAX_SIZE:-50m}
+        max-file: ${RSSHUB_LOG_MAX_FILE:-3}
+    networks:
+      - rsshub_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: trade-rsshub-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --save 60 1000
+      --maxmemory ${REDIS_MAX_MEMORY:-256mb}
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - rsshub_redis_data:/data
+    mem_limit: ${REDIS_MEM_LIMIT:-512m}
+    cpus: ${REDIS_CPUS:-0.5}
+    logging:
+      driver: json-file
+      options:
+        max-size: ${RSSHUB_LOG_MAX_SIZE:-50m}
+        max-file: ${RSSHUB_LOG_MAX_FILE:-3}
+    networks:
+      - rsshub_net
+
+networks:
+  rsshub_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+
+volumes:
+  rsshub_redis_data:
