@@ -21,6 +21,9 @@ sentiment:
   jin10_max_items_per_request: 100
   rss_feeds:
     - name: "CLS"
-      url: "https://rsshub.app/cls/telegraph"
+      url: "http://127.0.0.1:1200/cls/telegraph"
     - name: "Sina"
-      url: "https://rsshub.app/sina/finance"
+      url: "http://127.0.0.1:1200/sina/finance"
+  # For self-hosted RSSHub, use local base URL such as:
+  # http://127.0.0.1:1200/cls/telegraph
+  # http://127.0.0.1:1200/sina/finance

@@ -150,7 +150,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # update-all
     p_update_all = sub.add_parser("update-all", help="Incremental update for all symbols")
-    p_update_all.add_argument("--start", default="2020-01-01",
+    p_update_all.add_argument("--start", default="2025-01-01",
                               help="Fallback start for symbols without watermark")
     p_update_all.add_argument("--delay-ms", type=int, default=200,
                               help="Delay in ms between requests (default: 200)")

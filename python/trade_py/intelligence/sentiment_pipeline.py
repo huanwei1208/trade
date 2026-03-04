@@ -123,7 +123,7 @@ def write_bronze(articles, data_root: Path, source: str) -> dict[date, int]:
 
 def analyze_bronze_day(data_root: Path, article_date: date,
                         sources: list[str], claude_client) -> pd.DataFrame:
-    """Read Bronze Parquet for a date, call Claude, return Silver DataFrame.
+    """Read Bronze Parquet for a date, call LLM client, return Silver DataFrame.
 
     Args:
         data_root: Root data directory
@@ -153,7 +153,7 @@ def analyze_bronze_day(data_root: Path, article_date: date,
         logger.info("No Bronze articles for %s", article_date)
         return pd.DataFrame()
 
-    logger.info("Analyzing %d articles for %s via Claude", len(rows), article_date)
+    logger.info("Analyzing %d articles for %s via %s", len(rows), article_date, getattr(claude_client, "provider", "llm"))
     articles = [{"title": r["title"], "text": r["text"]} for r in rows]
     results = claude_client.analyze_batch(articles, progress=True)
 
@@ -315,7 +315,11 @@ def run(target_date: Optional[date] = None,
         sources: Optional[list[str]] = None,
         rss_feeds: Optional[list[dict]] = None,
         api_key: Optional[str] = None,
-        dry_run: bool = False) -> dict:
+        llm_provider: str = "anthropic",
+        llm_model: Optional[str] = None,
+        ollama_base_url: Optional[str] = None,
+        dry_run: bool = False,
+        fetch: bool = True) -> dict:
     """Run the full sentiment pipeline for a given date.
 
     Args:
@@ -324,7 +328,11 @@ def run(target_date: Optional[date] = None,
         sources: Source names to process (default: ['rss'])
         rss_feeds: RSS feed configs (default: DEFAULT_FEEDS)
         api_key: Anthropic API key (default: ANTHROPIC_API_KEY env var)
+        llm_provider: "anthropic" or "ollama"
+        llm_model: model name override
+        ollama_base_url: local ollama endpoint
         dry_run: If True, fetch articles but skip Claude API
+        fetch: If False, skip RSS fetch and only process existing Bronze data
 
     Returns:
         Stats dict with article counts and file paths
@@ -337,23 +345,57 @@ def run(target_date: Optional[date] = None,
     root = Path(data_root)
     stats: dict = {"date": target_date.isoformat(), "sources": {}}
 
-    # 1. Fetch news (Bronze)
-    from trade_py.intelligence.rss_fetcher import fetch_all, DEFAULT_FEEDS
-    feeds = rss_feeds or DEFAULT_FEEDS
-    articles = fetch_all(feeds=feeds, since=target_date)
-    articles = [a for a in articles if a.date == target_date]
+    # 1. Fetch news (Bronze) or read existing Bronze
+    rss_diagnostics = []
+    articles = []
+    bronze_rows = 0
+    bronze_by_date = {}
+    if fetch:
+        from trade_py.intelligence.rss_fetcher import fetch_all, DEFAULT_FEEDS
+        feeds = rss_feeds or DEFAULT_FEEDS
+        articles, rss_diagnostics = fetch_all(
+            feeds=feeds,
+            since=target_date,
+            return_diagnostics=True,
+        )
+        articles = [a for a in articles if a.date == target_date]
+        bronze_counts = write_bronze(articles, root, "rss")
+        bronze_rows = len(articles)
+        bronze_by_date = {str(k): v for k, v in bronze_counts.items()}
+    else:
+        path = _bronze_path(root, "rss", target_date)
+        if path.exists():
+            bronze_rows = len(pd.read_parquet(path))
+            bronze_by_date = {target_date.isoformat(): bronze_rows} if bronze_rows else {}
 
-    bronze_counts = write_bronze(articles, root, "rss")
-    stats["sources"]["rss"] = {"articles_fetched": len(articles), "by_date": {str(k): v for k, v in bronze_counts.items()}}
+    stats["rss_fetch"] = rss_diagnostics
+    stats["sources"]["rss"] = {"articles_fetched": bronze_rows, "by_date": bronze_by_date}
 
-    if dry_run or not articles:
-        stats["mode"] = "dry_run" if dry_run else "no_articles"
+    if dry_run:
+        stats["mode"] = "dry_run"
+        return stats
+
+    if bronze_rows == 0:
+        failed_sources = [
+            d for d in rss_diagnostics
+            if d.get("error") or ((d.get("http_status") or 0) >= 400)
+        ]
+        if failed_sources:
+            stats["mode"] = "fetch_failed"
+            stats["fetch_errors"] = failed_sources
+        else:
+            stats["mode"] = "no_articles"
         return stats
 
     # 2. Analyze via Claude (Silver)
     from trade_py.intelligence.claude_client import ClaudeClient
     try:
-        client = ClaudeClient(api_key=api_key)
+        client = ClaudeClient(
+            api_key=api_key,
+            provider=llm_provider,
+            model=llm_model,
+            ollama_base_url=ollama_base_url,
+        )
         silver_df = analyze_bronze_day(root, target_date, sources, client)
         write_silver(silver_df, root, target_date)
         stats["silver_rows"] = len(silver_df)
