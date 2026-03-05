@@ -159,7 +159,7 @@ python -m scripts.run_sentiment sources
 | **Phase 2** | DataSource protocol + DuckDB state + Silver incremental cache | Done |
 | **Phase 3** | New sources (财联社, etc.) as plugins | Done |
 | **Phase 4** | Richer Silver LLM fields | Done |
-| **Phase 5** | Compute layer upgrade (window_scorer / morning_brief use Gold) | After Phase 4 |
+| **Phase 5** | Compute layer upgrade (window_scorer / morning_brief use Gold) | Done |
 
 ---
 

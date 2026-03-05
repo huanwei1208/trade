@@ -105,22 +105,93 @@ def _load_recent_decisions(data_root: str, lookback_days: int = 5) -> list[dict]
 
 
 def _load_latest_headlines(data_root: str, n: int = 5) -> list[str]:
-    """Load the most recent news headlines from gold sentiment tier."""
-    gold_dir = Path(data_root) / "sentiment" / "gold"
-    if not gold_dir.exists():
+    """Load the most recent news headlines from Silver Parquet (most recent date)."""
+    silver_dir = Path(data_root) / "sentiment" / "silver"
+    if not silver_dir.exists():
         return []
-    files = sorted(gold_dir.glob("*.json"), reverse=True)[:1]
-    headlines = []
-    for f in files:
+    # Find the most recent silver parquet file
+    parquet_files = sorted(silver_dir.rglob("*.parquet"), reverse=True)
+    if not parquet_files:
+        return []
+    try:
+        df = pd.read_parquet(parquet_files[0])
+        if "title" not in df.columns:
+            return []
+        # Sort by published_at if available; deduplicate titles
+        if "published_at" in df.columns:
+            df = df.sort_values("published_at", ascending=False)
+        seen: set[str] = set()
+        headlines = []
+        for title in df["title"].dropna():
+            t = str(title).strip()
+            if t and t not in seen:
+                seen.add(t)
+                headlines.append(t)
+            if len(headlines) >= n:
+                break
+        return headlines
+    except Exception:
+        return []
+
+
+def _load_sentiment_context(data_root: str, date_str: str) -> dict:
+    """Load Silver data for today: policy signals, negative shocks, market alerts.
+
+    Returns dict with:
+      policy_signals: list of (title, event_chain, time_sensitivity) for policy articles
+      neg_shock_symbols: list of (symbol, neg_shock) sorted by severity
+      market_scope_counts: {individual, sector, market} article counts
+    """
+    import datetime
+    silver_dir = Path(data_root) / "sentiment" / "silver"
+    if not silver_dir.exists():
+        return {}
+
+    target = datetime.date.fromisoformat(date_str)
+    silver_path = (
+        silver_dir / f"{target.year:04d}" / f"{target.month:02d}"
+        / f"{date_str}.parquet"
+    )
+    if not silver_path.exists():
+        return {}
+
+    try:
+        df = pd.read_parquet(silver_path)
+    except Exception:
+        return {}
+
+    result: dict = {}
+
+    # Policy signals
+    if "policy_signal" in df.columns:
+        policy_df = df[df["policy_signal"] == True][  # noqa: E712
+            ["title", "event_chain", "time_sensitivity"]
+        ].drop_duplicates(subset=["title"]).head(5)
+        result["policy_signals"] = policy_df.to_dict("records")
+
+    # Negative shock symbols (from Gold if available, else approximate from Silver)
+    gold_path = (
+        Path(data_root) / "sentiment" / "gold"
+        / f"{target.year:04d}" / f"{target.month:02d}" / f"{date_str}.parquet"
+    )
+    if gold_path.exists():
         try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            items = data.get("headlines", data.get("items", []))
-            for item in items[:n]:
-                title = item.get("title", str(item))
-                headlines.append(title)
+            gold_df = pd.read_parquet(gold_path)
+            if "neg_shock" in gold_df.columns:
+                shocks = (
+                    gold_df[gold_df["symbol"] != "_MARKET_"]
+                    .nlargest(5, "neg_shock")[["symbol", "neg_shock", "net_sentiment"]]
+                )
+                result["neg_shock_symbols"] = shocks.to_dict("records")
         except Exception:
             pass
-    return headlines
+
+    # Market scope breakdown
+    if "market_impact_scope" in df.columns:
+        counts = df["market_impact_scope"].value_counts().to_dict()
+        result["market_scope_counts"] = counts
+
+    return result
 
 
 def _generate_intelligence_digest(headlines: list[str], api_key: str | None) -> str:
@@ -171,6 +242,7 @@ def build_brief_markdown(
     signals: list[dict],
     decisions: list[dict],
     digest: str,
+    sentiment_ctx: dict | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# 今日作战简报 {date_str}")
@@ -213,21 +285,64 @@ def build_brief_markdown(
     lines.append(f"> {rec_reason}")
     lines.append("")
 
-    # Focus symbols (top 3 by window_score)
+    # Focus symbols (top 3 by window_score) — now includes sentiment column
     lines.append("## 重点关注（自选池 Top 3）")
     lines.append("")
     top3 = sorted(signals, key=lambda x: x.get("window_score") or 0, reverse=True)[:3]
     if top3:
-        lines.append("| 股票 | 窗口质量 | 信号 |")
-        lines.append("|------|----------|------|")
+        lines.append("| 股票 | 窗口质量 | 净情绪 | 信号 |")
+        lines.append("|------|----------|--------|------|")
         for s in top3:
-            sym = s.get("symbol", "—")
-            ws  = s.get("window_score", "—")
-            trend = s.get("large_order_trend", "—") or "—"
-            lines.append(f"| {sym} | {ws}/100 | {trend} |")
+            sym       = s.get("symbol", "—")
+            ws        = s.get("window_score", "—")
+            net_sent  = s.get("net_sentiment")
+            sent_str  = f"{net_sent:+.2f}" if net_sent is not None else "—"
+            trend     = s.get("large_order_trend", "—") or "—"
+            lines.append(f"| {sym} | {ws}/100 | {sent_str} | {trend} |")
     else:
         lines.append("*自选池为空或尚未评分 — 请先运行 `run_window_score.py`*")
     lines.append("")
+
+    # Sentiment alerts (policy signals + negative shocks from Phase 4 Gold/Silver)
+    ctx = sentiment_ctx or {}
+    policy_signals = ctx.get("policy_signals", [])
+    neg_shocks = ctx.get("neg_shock_symbols", [])
+    scope_counts = ctx.get("market_scope_counts", {})
+
+    if policy_signals or neg_shocks:
+        lines.append("## 情绪预警")
+        lines.append("")
+        if policy_signals:
+            lines.append("**政策/监管信号：**")
+            lines.append("")
+            for p in policy_signals[:3]:
+                title = str(p.get("title", ""))[:50]
+                chain = p.get("event_chain", "") or ""
+                sens  = p.get("time_sensitivity", "") or ""
+                tag   = f" `{chain}`" if chain else ""
+                sens_tag = f" · {sens}" if sens else ""
+                lines.append(f"- {title}{tag}{sens_tag}")
+            lines.append("")
+        if neg_shocks:
+            lines.append("**负面冲击（个股）：**")
+            lines.append("")
+            lines.append("| 股票 | 负面冲击 | 净情绪 |")
+            lines.append("|------|----------|--------|")
+            for ns in neg_shocks:
+                sym  = ns.get("symbol", "—")
+                shock = float(ns.get("neg_shock", 0))
+                net   = float(ns.get("net_sentiment", 0))
+                lines.append(f"| {sym} | {shock:+.3f} | {net:+.2f} |")
+            lines.append("")
+        if scope_counts:
+            total = sum(scope_counts.values())
+            market_pct = scope_counts.get("market", 0) / total * 100 if total else 0
+            if market_pct >= 30:
+                lines.append(
+                    f"> 今日 **{market_pct:.0f}%** 的新闻影响范围为全市场，"
+                    f"请注意系统性风险。"
+                )
+                lines.append("")
 
     # Retrospective
     lines.append("## 昨日预测回溯")
@@ -278,9 +393,11 @@ def generate(
     decisions = _load_recent_decisions(data_root)
     headlines = _load_latest_headlines(data_root)
     digest = _generate_intelligence_digest(headlines, api_key)
+    sentiment_ctx = _load_sentiment_context(data_root, date_str)
 
     # Build markdown
-    md = build_brief_markdown(date_str, ca, env_score, signals, decisions, digest)
+    md = build_brief_markdown(date_str, ca, env_score, signals, decisions, digest,
+                              sentiment_ctx=sentiment_ctx)
 
     # Save
     out_dir = Path(data_root) / "briefs"

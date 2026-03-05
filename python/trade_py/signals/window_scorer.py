@@ -6,10 +6,11 @@ Computes a 0-100 score for each symbol indicating how "clean" the current
 price action window is for making a decision.
 
 Score components (all 0-100 then weighted sum):
-    A. Turnover/volume: is volume drying up (potential breakout setup)?  25 pts
-    B. Large-order net flow: institutional accumulation signal?           25 pts
-    C. Technical position: RSI, MA position, MACD momentum?              25 pts
-    D. Price behaviour: gap_up, distance from 52-week high/low?          25 pts
+    A. Turnover/volume: is volume drying up (potential breakout setup)?  20 pts
+    B. Large-order net flow: institutional accumulation signal?           20 pts
+    C. Technical position: RSI, MA position, MACD momentum?              20 pts
+    D. Price behaviour: gap_up, distance from 52-week high/low?          20 pts
+    E. Sentiment: net_sentiment / neg_shock / sent_velocity from Gold?   20 pts
 
 The score is stored in signal_cache via SettingsDB.
 """
@@ -153,12 +154,73 @@ def _score_price_behaviour(df: pd.DataFrame) -> float:
     return dist_score
 
 
+# ── Sentiment component (Gold tier) ────────────────────────────────────────────
+
+def _score_sentiment(symbol: str, data_root: str,
+                     date_str: str | None = None) -> float:
+    """Score [0-100] from Gold sentiment tier for a symbol.
+
+    Uses net_sentiment, neg_shock, sent_velocity from the most recent
+    Gold Parquet file available.
+
+    Returns 50 (neutral) when no Gold data exists.
+    """
+    import datetime
+    gold_dir = Path(data_root) / "sentiment" / "gold"
+    if not gold_dir.exists():
+        return 50.0
+
+    # Find the most recent gold parquet on or before date_str
+    target_date = (
+        datetime.date.fromisoformat(date_str) if date_str
+        else datetime.date.today()
+    )
+    # Scan last 5 calendar days for a file
+    gold_path = None
+    for delta in range(5):
+        d = target_date - datetime.timedelta(days=delta)
+        p = gold_dir / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.isoformat()}.parquet"
+        if p.exists():
+            gold_path = p
+            break
+    if gold_path is None:
+        return 50.0
+
+    try:
+        df = pd.read_parquet(gold_path)
+        # Try symbol-level row first, fall back to _MARKET_
+        row = df[df["symbol"] == symbol]
+        if row.empty:
+            row = df[df["symbol"] == "_MARKET_"]
+        if row.empty:
+            return 50.0
+        row = row.iloc[0]
+
+        net_sent   = float(row.get("net_sentiment",  0.0))  # [-1, 1]
+        neg_shock  = float(row.get("neg_shock",      0.0))  # negative = bad
+        sent_vel   = float(row.get("sent_velocity",  0.0))  # positive = improving
+
+        # net_sentiment: scale [-1,1] → [0,100]
+        base = 50.0 + net_sent * 40.0
+
+        # Negative shock penalty: each 0.1 of neg_shock subtracts ~10 pts
+        base -= neg_shock * 100.0
+
+        # Velocity bonus/penalty: rising sentiment is a positive signal
+        base += sent_vel * 20.0
+
+        return max(0.0, min(100.0, base))
+    except Exception:
+        return 50.0
+
+
 # ── Master scorer ──────────────────────────────────────────────────────────────
 
 def compute_window_score(
     symbol: str,
     kline_df: pd.DataFrame,
     data_root: str = _DEFAULT_DATA_ROOT,
+    date_str: str | None = None,
 ) -> int:
     """Compute composite window score [0-100] for a symbol.
 
@@ -167,6 +229,7 @@ def compute_window_score(
         kline_df:  DataFrame with columns: date, open, high, low, close, volume,
                    amount, turnover_rate, prev_close, vwap. Sorted by date.
         data_root: Path to the data root directory.
+        date_str:  Date for sentiment lookup (default: today).
 
     Returns:
         Integer score 0-100.
@@ -174,18 +237,15 @@ def compute_window_score(
     if kline_df is None or kline_df.empty or len(kline_df) < 5:
         return 0
 
-    w_vol  = 0.25
-    w_flow = 0.25
-    w_tech = 0.25
-    w_price = 0.25
+    w = 0.20  # equal weight across 5 components
 
     s_vol   = _score_volume(kline_df)
     s_flow  = _score_large_order(symbol, data_root)
     s_tech  = _score_technical(kline_df)
     s_price = _score_price_behaviour(kline_df)
+    s_sent  = _score_sentiment(symbol, data_root, date_str)
 
-    composite = (w_vol * s_vol + w_flow * s_flow +
-                 w_tech * s_tech + w_price * s_price)
+    composite = w * (s_vol + s_flow + s_tech + s_price + s_sent)
     return max(0, min(100, round(composite)))
 
 
@@ -228,11 +288,35 @@ def score_watchlist(
         else:
             df = pd.DataFrame()
 
-        score = compute_window_score(symbol, df, data_root)
+        score = compute_window_score(symbol, df, data_root, date_str)
         scores[symbol] = score
-        logger.info("%s  window_score=%d", symbol, score)
 
-        # Cache in DB
-        db.signal_cache_upsert(date_str, symbol, window_score=score)
+        # Also pull net_sentiment from Gold for caching alongside the score
+        gold_dir = Path(data_root) / "sentiment" / "gold"
+        net_sentiment_val = None
+        if gold_dir.exists():
+            import datetime as _dt
+            target_d = _dt.date.fromisoformat(date_str) if date_str else _dt.date.today()
+            for delta in range(5):
+                gp = (gold_dir / f"{(target_d - _dt.timedelta(days=delta)).year:04d}"
+                      / f"{(target_d - _dt.timedelta(days=delta)).month:02d}"
+                      / f"{(target_d - _dt.timedelta(days=delta)).isoformat()}.parquet")
+                if gp.exists():
+                    try:
+                        gdf = pd.read_parquet(gp)
+                        row_sym = gdf[gdf["symbol"] == symbol]
+                        if not row_sym.empty and "net_sentiment" in gdf.columns:
+                            net_sentiment_val = float(row_sym.iloc[0]["net_sentiment"])
+                    except Exception:
+                        pass
+                    break
+
+        logger.info("%s  window_score=%d  net_sentiment=%s",
+                    symbol, score, net_sentiment_val)
+
+        cache_fields: dict = {"window_score": score}
+        if net_sentiment_val is not None:
+            cache_fields["net_sentiment"] = net_sentiment_val
+        db.signal_cache_upsert(date_str, symbol, **cache_fields)
 
     return scores

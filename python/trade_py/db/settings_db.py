@@ -71,6 +71,7 @@ class SettingsDB:
                 window_score       INTEGER,
                 smart_money_signal INTEGER,
                 large_order_trend  TEXT,
+                net_sentiment      REAL,
                 updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (date, symbol)
             );
@@ -86,7 +87,19 @@ class SettingsDB:
             );
         """)
         self._conn.commit()
+        self._migrate()
         self._seed_defaults()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after initial schema creation."""
+        cur = self._conn.cursor()
+        existing = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(signal_cache)").fetchall()
+        }
+        if "net_sentiment" not in existing:
+            cur.execute("ALTER TABLE signal_cache ADD COLUMN net_sentiment REAL")
+            self._conn.commit()
 
     def _seed_defaults(self) -> None:
         cur = self._conn.cursor()
