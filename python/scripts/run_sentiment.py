@@ -158,7 +158,9 @@ def _build_parser() -> tuple[argparse.Namespace, dict, bool]:
         default=str(resolve_repo_path(d("data_root", "data"))),
         help="Data directory",
     )
-    parser.add_argument("--source", default=d("source", "rss"), help="Data source (rss)")
+    parser.add_argument("--source", default=d("source", "rss"),
+                        choices=["rss", "cls"],
+                        help="Data source: rss (default) or cls (财联社)")
     parser.add_argument(
         "--rss-feeds",
         default=d("rss_feeds", "auto"),
@@ -285,41 +287,46 @@ def _resolve_dates(args, fetch_mode_explicit: bool) -> list[date] | int:
     return dates
 
 
-def _prefetch_rss(args, selected_feeds: list[dict], dates: list[date],
-                  db) -> list[dict]:
-    """Ingest RSS + GDELT into Bronze via new DataSource pipeline.
+def _prefetch_sources(args, selected_feeds: list[dict] | None, dates: list[date],
+                      db) -> list[dict]:
+    """Ingest primary source + optional GDELT backfill into Bronze.
 
-    Returns list of per-feed fetch diagnostics (for reporting).
+    Supports source=rss and source=cls. Returns diagnostics list.
     """
-    from trade_py.data.news.rss_source import RssSource
     from trade_py.data.pipeline.ingest import ingest
 
     data_root = Path(args.data_root)
 
-    # Compute fetch window
+    # Compute fetch window from DuckDB coverage or lookback floor
+    source_key = args.source
     if args.fetch_mode == "full":
         since_date = dates[0]
     else:
-        # Incremental: use latest coverage date from DB, fall back to lookback floor
-        latest = db.latest_date("rss")
+        latest = db.latest_date(source_key)
         lookback = args.rss_incremental_lookback_days
         floor = date.today() - timedelta(days=max(2, lookback))
-        if latest is not None:
-            since_date = max(latest - timedelta(days=lookback), floor)
-        else:
-            since_date = floor
+        since_date = max(latest - timedelta(days=lookback), floor) if latest else floor
 
     since_dt = datetime(since_date.year, since_date.month, since_date.day, tzinfo=CST)
     until_dt = datetime(dates[-1].year, dates[-1].month, dates[-1].day,
                         23, 59, 59, tzinfo=CST)
 
-    rss_source = RssSource(feeds=selected_feeds)
+    # Build primary source
+    if args.source == "rss":
+        from trade_py.data.news.rss_source import RssSource
+        primary_source = RssSource(feeds=selected_feeds or [])
+    elif args.source == "cls":
+        from trade_py.data.news.cls_source import ClsSource
+        primary_source = ClsSource()
+    else:
+        raise ValueError(f"Unknown source: {args.source}")
+
     diagnostics: list[dict] = []
-    rss_summary = ingest(rss_source, since_dt, until_dt, data_root, db,
-                         diagnostics_out=diagnostics)
+    primary_summary = ingest(primary_source, since_dt, until_dt, data_root, db,
+                             diagnostics_out=diagnostics)
 
     backfill_summary = None
-    if args.fetch_mode == "full" and args.enable_backfill:
+    if args.source == "rss" and args.fetch_mode == "full" and args.enable_backfill:
         from trade_py.data.news.gdelt_source import GdeltSource
         gdelt = GdeltSource(
             selection=args.backfill_channels,
@@ -331,14 +338,15 @@ def _prefetch_rss(args, selected_feeds: list[dict], dates: list[date],
         backfill_summary = {"ingest": gdelt_summary, "diagnostics": gdelt_diag}
 
     print(
-        "RSS prefetch:",
+        "Source prefetch:",
         json.dumps(
             {
+                "source": args.source,
                 "mode": args.fetch_mode,
                 "prefetch_since": since_date.isoformat(),
-                "articles": rss_summary.get("records_fetched", 0),
-                "new": rss_summary.get("records_new", 0),
-                "by_date": rss_summary.get("by_date", {}),
+                "articles": primary_summary.get("records_fetched", 0),
+                "new": primary_summary.get("records_new", 0),
+                "by_date": primary_summary.get("by_date", {}),
                 "diagnostics": diagnostics,
                 "backfill": backfill_summary,
                 "coverage": db.coverage_report(),
@@ -466,6 +474,12 @@ def main() -> int:
         except RuntimeError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 3
+    elif args.source == "cls":
+        from trade_py.data.news.cls_source import ClsSource
+        hc = ClsSource().health_check()
+        if not hc.get("healthy"):
+            print(f"ERROR: CLS source unhealthy: {hc.get('error', 'unknown')}", file=sys.stderr)
+            return 3
     if args.llm_provider == "ollama" and not args.dry_run:
         try:
             ensure_ollama_running(ollama_base_url)
@@ -536,14 +550,16 @@ def main() -> int:
     from trade_py.db.pipeline_db import PipelineDb
 
     with PipelineDb(Path(args.data_root)) as db:
-        use_rss_prefetch = args.source == "rss" and not args.no_rss_prefetch
-        if use_rss_prefetch and args.fetch_mode != "none":
-            _prefetch_rss(args, selected_feeds or [], dates, db)
-        elif args.source == "rss" and args.fetch_mode == "none":
-            print("RSS prefetch: skipped (fetch_mode=none, local bronze only)")
+        use_prefetch = not args.no_rss_prefetch
+        if use_prefetch and args.fetch_mode != "none":
+            _prefetch_sources(args, selected_feeds, dates, db)
+        elif args.fetch_mode == "none":
+            print("Source prefetch: skipped (fetch_mode=none, local bronze only)")
 
-        if args.source == "rss" and len(dates) > 1 and not args.all_range_dates:
-            local_dates = _list_local_bronze_dates(args.data_root, "rss", dates[0], dates[-1])
+        if len(dates) > 1 and not args.all_range_dates:
+            local_dates = _list_local_bronze_dates(
+                args.data_root, args.source, dates[0], dates[-1]
+            )
             missing = len(dates) - len(local_dates)
             print(
                 "Local bronze coverage:",
@@ -562,7 +578,7 @@ def main() -> int:
                 print("No local Bronze data in requested range; nothing to process.")
                 return 0
 
-        return _run_pipeline_loop(args, dates, selected_feeds, use_rss_prefetch,
+        return _run_pipeline_loop(args, dates, selected_feeds, use_prefetch,
                                   ollama_base_url, db)
 
 

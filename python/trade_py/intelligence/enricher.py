@@ -152,6 +152,11 @@ def build_silver_rows(
                 "summary": result.summary,
                 "confidence": result.confidence,
                 "published_at": row["published_at"],
+                # Phase 4 — richer signal fields
+                "policy_signal": result.policy_signal,
+                "market_impact_scope": result.market_impact_scope,
+                "time_sensitivity": result.time_sensitivity,
+                "event_chain": result.event_chain,
             })
         newly_enriched.append(row["content_hash"])
 

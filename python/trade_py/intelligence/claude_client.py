@@ -35,7 +35,11 @@ USER_TEMPLATE = """分析以下A股市场新闻：
   "affected_sectors": <受影响行业列表，如["半导体","新能源"]>,
   "key_entities": <关键实体，公司/人物/政策名称列表>,
   "summary": <30字以内中文摘要>,
-  "confidence": <float 0.0到1.0，分析置信度>
+  "confidence": <float 0.0到1.0，分析置信度>,
+  "policy_signal": <true|false，是否含监管/政策信号>,
+  "market_impact_scope": <"individual"|"sector"|"market"，影响范围：个股/行业/全市场>,
+  "time_sensitivity": <"immediate"|"short_term"|"medium_long"，时效性：即时/短期/中长期>,
+  "event_chain": <与此事件相关的历史事件类型，如"rate_cut_cycle"|"trade_war"|"regulatory_crackdown"|""，无关联时留空>
 }}"""
 
 
@@ -49,6 +53,11 @@ class SentimentResult:
     key_entities: list = None
     summary: str = ""
     confidence: float = 0.5
+    # Phase 4 — richer signal fields
+    policy_signal: bool = False
+    market_impact_scope: str = "individual"   # individual|sector|market
+    time_sensitivity: str = "short_term"      # immediate|short_term|medium_long
+    event_chain: str = ""
     # metadata
     model: str = ""
     input_tokens: int = 0
@@ -148,6 +157,12 @@ class ClaudeClient:
             ) from e
 
     def _parse_result(self, data: dict, model: str, input_tokens: int = 0, output_tokens: int = 0) -> SentimentResult:
+        scope = str(data.get("market_impact_scope", "individual"))
+        if scope not in {"individual", "sector", "market"}:
+            scope = "individual"
+        sensitivity = str(data.get("time_sensitivity", "short_term"))
+        if sensitivity not in {"immediate", "short_term", "medium_long"}:
+            sensitivity = "short_term"
         return SentimentResult(
             sentiment_score=float(data.get("sentiment_score", 0.0)),
             sentiment_label=str(data.get("sentiment_label", "neutral")),
@@ -157,6 +172,10 @@ class ClaudeClient:
             key_entities=list(data.get("key_entities", [])),
             summary=str(data.get("summary", "")),
             confidence=float(data.get("confidence", 0.5)),
+            policy_signal=bool(data.get("policy_signal", False)),
+            market_impact_scope=scope,
+            time_sensitivity=sensitivity,
+            event_chain=str(data.get("event_chain", "")),
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
