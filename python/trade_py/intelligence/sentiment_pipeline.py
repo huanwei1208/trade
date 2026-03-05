@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 from collections import defaultdict
 from datetime import date, datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +34,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ASHARE_PATTERN = re.compile(r"\b([036]\d{5})\b")
+_COMPANY_SUFFIXES = (
+    "股份有限公司",
+    "集团股份有限公司",
+    "有限责任公司",
+    "集团有限公司",
+    "有限公司",
+    "股份",
+    "集团",
+)
 
 
 def extract_symbols_from_text(text: str) -> list[str]:
@@ -48,6 +59,57 @@ def extract_symbols_from_text(text: str) -> list[str]:
         elif code.startswith("0") or code.startswith("3"):
             result.append(f"{code}.SZ")
     return result
+
+
+def _normalize_for_name_match(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).upper()
+
+
+@lru_cache(maxsize=8)
+def _load_company_symbol_pairs(db_path: str) -> tuple[tuple[str, str], ...]:
+    """Load (normalized company name, symbol) pairs from instruments DB."""
+    path = Path(db_path)
+    if not path.exists():
+        return ()
+    try:
+        conn = sqlite3.connect(str(path))
+        rows = conn.execute(
+            "SELECT symbol, name FROM instruments WHERE status = 1 AND name IS NOT NULL AND name != ''"
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return ()
+
+    pairs: set[tuple[str, str]] = set()
+    for symbol, name in rows:
+        n = _normalize_for_name_match(name)
+        if len(n) >= 3:
+            pairs.add((n, symbol))
+        for suffix in _COMPANY_SUFFIXES:
+            if n.endswith(suffix):
+                alias = n[: -len(suffix)]
+                if len(alias) >= 3:
+                    pairs.add((alias, symbol))
+    # Longest names first to reduce short-name false matches.
+    ordered = sorted(pairs, key=lambda x: len(x[0]), reverse=True)
+    return tuple(ordered)
+
+
+def extract_symbols_from_company_names(text: str,
+                                       name_symbol_pairs: tuple[tuple[str, str], ...],
+                                       max_hits: int = 8) -> list[str]:
+    normalized = _normalize_for_name_match(text)
+    if not normalized or not name_symbol_pairs:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for cname, symbol in name_symbol_pairs:
+        if cname in normalized and symbol not in seen:
+            out.append(symbol)
+            seen.add(symbol)
+            if len(out) >= max_hits:
+                break
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -156,16 +218,19 @@ def analyze_bronze_day(data_root: Path, article_date: date,
     logger.info("Analyzing %d articles for %s via %s", len(rows), article_date, getattr(claude_client, "provider", "llm"))
     articles = [{"title": r["title"], "text": r["text"]} for r in rows]
     results = claude_client.analyze_batch(articles, progress=True)
+    company_pairs = _load_company_symbol_pairs(str(data_root / ".metadata" / "trade.db"))
 
     silver_rows = []
     for row, result in zip(rows, results):
         # Extract symbols mentioned in title + text
         combined_text = row["title"] + " " + row["text"]
         symbols = extract_symbols_from_text(combined_text)
+        symbols.extend(extract_symbols_from_company_names(combined_text, company_pairs))
 
         # Also try to get symbols from key_entities (fallback)
         entities_text = " ".join(result.key_entities)
         symbols.extend(extract_symbols_from_text(entities_text))
+        symbols.extend(extract_symbols_from_company_names(entities_text, company_pairs))
         symbols = list(set(symbols)) or ["_MARKET_"]  # fallback: market-level
 
         for sym in symbols:
@@ -253,9 +318,13 @@ def compute_gold_factors(data_root: Path, target_date: date,
         return pd.DataFrame()
 
     # Compute per-symbol factors for target_date
+    symbols = list(target_df["symbol"].unique())
+    only_market_level = bool(symbols) and all(s == "_MARKET_" for s in symbols)
+
     gold_rows = []
-    for symbol in target_df["symbol"].unique():
-        if symbol == "_MARKET_":
+    for symbol in symbols:
+        # Keep market-level aggregate only when no symbol-level rows exist.
+        if symbol == "_MARKET_" and not only_market_level:
             continue
 
         sym_today = target_df[target_df["symbol"] == symbol]

@@ -35,6 +35,7 @@ if str(_PY_ROOT) not in sys.path:
 
 from trade_py.data.kline_fetcher import KlineFetcher
 from trade_py.db.instruments_db import InstrumentsDB
+from config_context import default_data_root
 
 logging.basicConfig(
     level=logging.INFO,
@@ -126,7 +127,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="A-share data collector using akshare (replaces trade_cli collect)",
     )
     parser.add_argument(
-        "--data-root", default="data",
+        "--data-root", default=str(default_data_root()),
         help="Project data root directory (default: data)",
     )
 

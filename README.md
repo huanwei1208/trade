@@ -67,6 +67,6 @@ export CXX=/usr/bin/g++-13
 ```bash
 cd deployment/rsshub
 docker compose up -d
-cd ../../python
+cd ../..
 uv run python -m scripts.run_sentiment --date 2026-03-04 --dry-run --rsshub-base-url http://127.0.0.1:1200
 ```

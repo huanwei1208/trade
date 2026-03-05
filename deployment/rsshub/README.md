@@ -47,7 +47,7 @@ docker compose logs -f redis
 Run sentiment with local RSSHub:
 
 ```bash
-cd python
+cd ../..
 uv run python -m scripts.run_sentiment --date 2026-03-04 --dry-run --rsshub-base-url http://127.0.0.1:1200
 ```
 
@@ -55,7 +55,7 @@ Or set env once for current shell:
 
 ```bash
 export TRADE_RSSHUB_BASE_URL=http://127.0.0.1:1200
-cd python
+cd ../..
 uv run python -m scripts.run_sentiment --date 2026-03-04 --dry-run
 ```
 

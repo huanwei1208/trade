@@ -7,10 +7,12 @@ Uses feedparser for parsing. No API key required for public RSS feeds.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, date, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 
 CST = timezone(timedelta(hours=8))  # China Standard Time
@@ -42,20 +44,94 @@ def _normalize_base_url(url: str) -> str:
     return url.rstrip("/")
 
 
-def build_default_feeds(base_url: Optional[str] = None) -> list[dict]:
-    """Build default RSS feeds from RSSHub base URL.
+def _feed_index_path() -> Path:
+    override = os.environ.get("TRADE_RSS_FEED_INDEX_PATH")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parents[3] / "config" / "rss_feed_index.json"
 
-    `base_url` defaults to env `TRADE_RSSHUB_BASE_URL`, and falls back to
-    `http://127.0.0.1:1200`.
-    """
+
+def load_feed_index() -> list[dict]:
+    """Load RSS feed catalog metadata from config file."""
+    path = _feed_index_path()
+    if not path.exists():
+        logger.warning("RSS feed index not found: %s", path)
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    feeds = payload.get("feeds", []) if isinstance(payload, dict) else payload
+    return [f for f in feeds if isinstance(f, dict) and f.get("name")]
+
+
+def _feed_score(meta: dict) -> float:
+    weights = {
+        "officialness": 0.30,
+        "authority": 0.25,
+        "quality": 0.20,
+        "coverage": 0.15,
+        "value": 0.10,
+    }
+    total = 0.0
+    for key, w in weights.items():
+        v = float(meta.get(key, 0.0))
+        total += max(0.0, min(5.0, v)) * w
+    return round(total / 5.0 * 100.0, 1)
+
+
+def build_feed_catalog(base_url: Optional[str] = None,
+                       include_inactive: bool = True) -> list[dict]:
+    """Build feed catalog with computed URLs and metadata scores."""
     base = _normalize_base_url(
         base_url or os.environ.get("TRADE_RSSHUB_BASE_URL", "http://127.0.0.1:1200")
     )
+    catalog = []
+    for feed in load_feed_index():
+        status = str(feed.get("status", "active"))
+        if not include_inactive and status not in {"active", "trial"}:
+            continue
+        path = str(feed.get("path") or feed.get("url") or "").strip()
+        if not path:
+            continue
+        if path.startswith("http://") or path.startswith("https://"):
+            url = path
+        else:
+            path = path if path.startswith("/") else f"/{path}"
+            url = f"{base}{path}"
+        meta = dict(feed)
+        meta["url"] = url
+        meta["score"] = _feed_score(feed)
+        catalog.append(meta)
+    return catalog
+
+
+def build_default_feeds(base_url: Optional[str] = None) -> list[dict]:
+    """Build default, enabled feeds for production runs."""
     return [
-        {"name": "CLS", "url": f"{base}/cls/telegraph"},
-        {"name": "WSJ", "url": f"{base}/wallstreetcn/news/articles"},
-        {"name": "Gelonghui", "url": f"{base}/gelonghui/live"},
+        {"name": f["name"], "url": f["url"], "meta": f}
+        for f in build_feed_catalog(base_url=base_url, include_inactive=False)
+        if bool(f.get("enabled_default", False))
     ]
+
+
+def resolve_feeds(selection: str = "auto", base_url: Optional[str] = None) -> tuple[list[dict], list[dict]]:
+    """Resolve selected feeds from `selection` and return (feeds, catalog)."""
+    catalog = build_feed_catalog(base_url=base_url, include_inactive=True)
+    by_name = {f["name"].lower(): f for f in catalog}
+    if selection.strip().lower() in {"", "auto"}:
+        feeds = [
+            {"name": f["name"], "url": f["url"], "meta": f}
+            for f in catalog
+            if bool(f.get("enabled_default", False)) and str(f.get("status", "active")) in {"active", "trial"}
+        ]
+    else:
+        req = [x.strip() for x in selection.split(",") if x.strip()]
+        missing = [x for x in req if x.lower() not in by_name]
+        if missing:
+            raise ValueError(
+                f"unknown rss feeds {missing}; available={[f['name'] for f in catalog]}"
+            )
+        feeds = [{"name": by_name[x.lower()]["name"], "url": by_name[x.lower()]["url"], "meta": by_name[x.lower()]}
+                 for x in req]
+    return feeds, catalog
 
 
 # Default RSS feeds (public, no auth required)
@@ -158,8 +234,10 @@ def fetch_feed(feed_url: str, source_name: str,
         ))
 
     logger.info("Fetched %d articles from %s", len(articles), source_name)
-    if not articles and (status_code is not None or fetch_status["error"]):
-        logger.error(
+    if not articles:
+        has_failure = bool(fetch_status["error"]) or ((status_code or 0) >= 400)
+        log_fn = logger.error if has_failure else logger.info
+        log_fn(
             "No articles from %s (status=%s, error=%s, url=%s)",
             source_name,
             status_code,
@@ -195,6 +273,8 @@ def fetch_all(feeds: Optional[list[dict]] = None,
             since=since,
             include_status=True,
         )
+        if "meta" in feed_cfg:
+            status["meta"] = feed_cfg["meta"]
         all_articles.extend(articles)
         diagnostics.append(status)
 

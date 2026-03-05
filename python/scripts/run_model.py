@@ -27,6 +27,7 @@ from datetime import date
 # Ensure the python/ package is importable when running from project root
 _here = Path(__file__).resolve().parent
 sys.path.insert(0, str(_here.parent))
+from config_context import default_data_root
 
 logging.basicConfig(
     level=logging.INFO,
@@ -238,7 +239,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Event propagation prediction model CLI")
-    parser.add_argument("--data", default="data",
+    parser.add_argument("--data", default=str(default_data_root()),
                         help="Root data directory (default: data)")
 
     sub = parser.add_subparsers(dest="command", required=True)

@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from config_context import default_data_root
 from trade_py.data.cross_asset_fetcher import fetch_all, fetch_btc, fetch_fx_cnh, fetch_gold
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -24,7 +25,7 @@ def main() -> None:
     parser.add_argument("asset", nargs="?", default="all",
                         choices=["all", "gold", "fx", "btc"],
                         help="Which asset to fetch (default: all)")
-    parser.add_argument("--data-root", default="data", help="Data root directory")
+    parser.add_argument("--data-root", default=str(default_data_root()), help="Data root directory")
     args = parser.parse_args()
 
     fn_map = {

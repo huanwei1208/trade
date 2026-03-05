@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import schedule
+from config_context import default_data_root
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,7 +39,7 @@ logger = logging.getLogger("scheduler")
 # Beijing timezone (UTC+8)
 _CST = timezone(timedelta(hours=8))
 
-_DATA_ROOT = "data"  # overridden by --data-root argument
+_DATA_ROOT = str(default_data_root())  # overridden by --data-root argument
 
 
 def _job(name: str):
@@ -130,7 +131,7 @@ def run_all_once() -> None:
 def main() -> None:
     global _DATA_ROOT
     parser = argparse.ArgumentParser(description="Trade daily scheduler")
-    parser.add_argument("--data-root", default="data", help="Data root directory")
+    parser.add_argument("--data-root", default=str(default_data_root()), help="Data root directory")
     parser.add_argument("--dry-run", action="store_true", help="Run all jobs once immediately and exit")
     args = parser.parse_args()
     _DATA_ROOT = args.data_root

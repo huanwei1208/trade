@@ -12,12 +12,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from config_context import default_data_root
 from trade_py.analysis.knowledge_graph import SectorGraph, SW, SW_NAMES_ZH
 
 
 def main():
     parser = argparse.ArgumentParser(description="Build sector knowledge graph")
-    parser.add_argument("--output", default="data/knowledge_graph/sector_graph.json")
+    parser.add_argument(
+        "--output",
+        default=str(default_data_root() / "knowledge_graph" / "sector_graph.json"),
+    )
     args = parser.parse_args()
 
     graph = SectorGraph()

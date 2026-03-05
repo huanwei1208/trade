@@ -9,6 +9,7 @@ It supports `includes` and merges module files in order.
 - `config/modules/provider_eastmoney.yaml`: provider connectivity
 - `config/modules/storage_baidu.yaml`: local/cloud storage policy + Baidu credentials + TTL retention
 - `config/modules/sentiment.yaml`: sentiment pipeline defaults + RSS/Xueqiu/Jin10 source config
+- `config/rss_feed_index.json`: RSS source index (category, authority/quality/value scores, status, default enable flags)
 
 ## Usage
 

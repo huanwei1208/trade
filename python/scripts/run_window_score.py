@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from config_context import default_data_root
 from trade_py.signals.window_scorer import score_watchlist
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -21,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Window quality scorer")
-    parser.add_argument("--data-root", default="data", help="Data root directory")
+    parser.add_argument("--data-root", default=str(default_data_root()), help="Data root directory")
     parser.add_argument("--date", default=None, help="Score date (YYYY-MM-DD, default: today)")
     args = parser.parse_args()
 

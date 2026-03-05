@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "updated_at": "2026-03-05",
+  "feeds": [
+    {
+      "name": "CLS",
+      "path": "/cls/telegraph",
+      "category": "newswire",
+      "region": "CN",
+      "officialness": 4.0,
+      "authority": 4.5,
+      "quality": 4.0,
+      "coverage": 4.0,
+      "value": 4.5,
+      "status": "active",
+      "enabled_default": true,
+      "notes": "主流财经快讯，时效高，适合盘中信号"
+    },
+    {
+      "name": "WSJ",
+      "path": "/wallstreetcn/news/articles",
+      "category": "macro",
+      "region": "CN",
+      "officialness": 3.5,
+      "authority": 4.0,
+      "quality": 4.0,
+      "coverage": 3.5,
+      "value": 4.0,
+      "status": "trial",
+      "enabled_default": true,
+      "notes": "宏观新闻价值较高，稳定性需持续观测"
+    },
+    {
+      "name": "Gelonghui",
+      "path": "/gelonghui/live",
+      "category": "market",
+      "region": "CN/HK",
+      "officialness": 3.0,
+      "authority": 3.5,
+      "quality": 3.5,
+      "coverage": 4.0,
+      "value": 3.5,
+      "status": "trial",
+      "enabled_default": true,
+      "notes": "覆盖广，观点类较多，建议与高权威源交叉验证"
+    },
+    {
+      "name": "Sina",
+      "path": "/sina/finance/rollnews",
+      "category": "portal",
+      "region": "CN",
+      "officialness": 3.0,
+      "authority": 3.0,
+      "quality": 3.0,
+      "coverage": 3.5,
+      "value": 2.5,
+      "status": "trial",
+      "enabled_default": true,
+      "notes": "旧路由 /sina/finance 已失效（NotFoundError）；已切换到 rollnews"
+    },
+    {
+      "name": "EastMoney",
+      "path": "/eastmoney/report/macresearch",
+      "category": "portal",
+      "region": "CN",
+      "officialness": 3.0,
+      "authority": 3.0,
+      "quality": 3.0,
+      "coverage": 3.5,
+      "value": 3.0,
+      "status": "trial",
+      "enabled_default": true,
+      "notes": "旧路由 /eastmoney/news 已失效（NotFoundError）；切换到 report/macresearch"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "channels": [
+    {
+      "name": "GDELT_CN_MARKET",
+      "type": "gdelt",
+      "status": "active",
+      "enabled_default": true,
+      "priority": 90,
+      "officialness": 3.0,
+      "authority": 3.5,
+      "quality": 3.5,
+      "coverage": 4.5,
+      "value": 4.0,
+      "query": "(A股 OR 上证 OR 深证 OR 中国股市 OR Chinese stock market OR CSI300)",
+      "languages": ["Chinese", "English"]
+    },
+    {
+      "name": "GDELT_CN_MACRO",
+      "type": "gdelt",
+      "status": "trial",
+      "enabled_default": true,
+      "priority": 84,
+      "officialness": 3.0,
+      "authority": 3.5,
+      "quality": 3.0,
+      "coverage": 4.0,
+      "value": 4.0,
+      "query": "(中国 货币政策 OR 中国 宏观 OR PBOC OR China macro OR China monetary policy)",
+      "languages": ["Chinese", "English"]
+    }
+  ]
+}

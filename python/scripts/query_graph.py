@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from config_context import default_data_root
 from trade_py.analysis.knowledge_graph import SectorGraph
 
 
@@ -40,7 +41,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--event", help="Event type to propagate")
     parser.add_argument("--hop", type=int, default=2)
-    parser.add_argument("--graph", default="data/knowledge_graph/sector_graph.json")
+    parser.add_argument(
+        "--graph",
+        default=str(default_data_root() / "knowledge_graph" / "sector_graph.json"),
+    )
     parser.add_argument("--list-events", action="store_true")
     parser.add_argument("--build", action="store_true", help="Build and save graph first")
     args = parser.parse_args()
