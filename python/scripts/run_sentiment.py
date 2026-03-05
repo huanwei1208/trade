@@ -35,21 +35,22 @@ def parse_date(s: str) -> date:
 _DATE_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.parquet$")
 
 
-def _list_local_bronze_dates(data_root: str, source: str,
+def _list_local_bronze_dates(data_root: str, sources: list[str],
                               start: date, end: date) -> list[date]:
-    base = Path(data_root) / "raw" / "sentiment" / source
-    if not base.exists():
-        return []
-    dates = []
-    for p in base.rglob("*.parquet"):
-        if not _DATE_FILE_RE.match(p.name):
+    dates: list[date] = []
+    for source in sources:
+        base = Path(data_root) / "raw" / "sentiment" / source
+        if not base.exists():
             continue
-        try:
-            d = parse_date(p.stem)
-        except ValueError:
-            continue
-        if start <= d <= end:
-            dates.append(d)
+        for p in base.rglob("*.parquet"):
+            if not _DATE_FILE_RE.match(p.name):
+                continue
+            try:
+                d = parse_date(p.stem)
+            except ValueError:
+                continue
+            if start <= d <= end:
+                dates.append(d)
     return sorted(set(dates))
 
 
@@ -364,10 +365,13 @@ def _run_pipeline_loop(
     use_rss_prefetch: bool,
     ollama_base_url: str,
     db,
+    enrich_sources: list[str] | None = None,
 ) -> int:
     """Run Silver enrichment + Gold aggregation for each date. Returns exit code."""
     from trade_py.data.pipeline.enrich import enrich
     from trade_py.data.pipeline.aggregate import aggregate
+
+    sources = enrich_sources or [args.source]
 
     if not args.dry_run:
         from trade_py.intelligence.claude_client import ClaudeClient
@@ -394,17 +398,20 @@ def _run_pipeline_loop(
             enrich_stats = enrich(
                 data_root=Path(args.data_root),
                 article_date=target_date,
-                sources=[args.source],
+                sources=sources,
                 client=client,
                 db=db,
                 dry_run=False,
             )
         else:
-            # dry-run: just count bronze rows
+            # dry-run: just count bronze rows across all sources
             from trade_py.data.pipeline.enrich import _bronze_path
             import pandas as pd
-            bronze_path = _bronze_path(Path(args.data_root), args.source, target_date)
-            bronze_rows = len(pd.read_parquet(bronze_path)) if bronze_path.exists() else 0
+            bronze_rows = sum(
+                len(pd.read_parquet(p)) if (p := _bronze_path(
+                    Path(args.data_root), src, target_date)).exists() else 0
+                for src in sources
+            )
             enrich_stats = {"bronze_rows": bronze_rows, "skipped": 0,
                             "analysed": 0, "silver_rows": 0, "mode": "dry_run"}
 
@@ -549,6 +556,14 @@ def main() -> int:
 
     from trade_py.db.pipeline_db import PipelineDb
 
+    # Determine which sources will contribute Bronze data for the enrich step
+    backfill_enabled = (
+        args.source == "rss"
+        and args.fetch_mode == "full"
+        and getattr(args, "enable_backfill", True)
+    )
+    enrich_sources = [args.source, "gdelt"] if backfill_enabled else [args.source]
+
     with PipelineDb(Path(args.data_root)) as db:
         use_prefetch = not args.no_rss_prefetch
         if use_prefetch and args.fetch_mode != "none":
@@ -558,7 +573,7 @@ def main() -> int:
 
         if len(dates) > 1 and not args.all_range_dates:
             local_dates = _list_local_bronze_dates(
-                args.data_root, args.source, dates[0], dates[-1]
+                args.data_root, enrich_sources, dates[0], dates[-1]
             )
             missing = len(dates) - len(local_dates)
             print(
@@ -568,6 +583,7 @@ def main() -> int:
                         "requested_days": len(dates),
                         "available_days": len(local_dates),
                         "missing_days": missing,
+                        "sources": enrich_sources,
                         "mode": "process_existing_only",
                     },
                     ensure_ascii=False,
@@ -579,7 +595,7 @@ def main() -> int:
                 return 0
 
         return _run_pipeline_loop(args, dates, selected_feeds, use_prefetch,
-                                  ollama_base_url, db)
+                                  ollama_base_url, db, enrich_sources=enrich_sources)
 
 
 if __name__ == "__main__":
