@@ -77,7 +77,8 @@ _GDELT_RETRY_DELAYS = (5, 15, 30)   # seconds between retries on 429
 
 
 def _fetch_gdelt_channel(channel: _Channel, since: date, until: date,
-                         max_records: int) -> tuple[list[RawRecord], dict]:
+                         max_records: int,
+                         progress_cb=None) -> tuple[list[RawRecord], dict]:
     start = f"{since:%Y%m%d}000000"
     end = f"{until:%Y%m%d}235959"
     query = quote_plus(channel.query)
@@ -90,6 +91,9 @@ def _fetch_gdelt_channel(channel: _Channel, since: date, until: date,
     diag = {"channel": channel.name, "type": channel.kind, "url": url,
             "error": "", "fetched": 0}
 
+    if progress_cb:
+        progress_cb(f"[gdelt] {channel.name}: fetching {since}~{until}…")
+
     payload = None
     for attempt, delay in enumerate((*_GDELT_RETRY_DELAYS, None), start=1):
         try:
@@ -98,18 +102,27 @@ def _fetch_gdelt_channel(channel: _Channel, since: date, until: date,
             break
         except HTTPError as exc:
             if exc.code == 429 and delay is not None:
-                logger.warning("GDELT 429 on %s (attempt %d), retrying in %ds",
-                               channel.name, attempt, delay)
+                msg = (f"[gdelt] {channel.name}: 429 rate-limited — "
+                       f"waiting {delay}s (attempt {attempt}/{len(_GDELT_RETRY_DELAYS)+1})")
+                logger.warning(msg)
+                if progress_cb:
+                    progress_cb(msg)
                 time.sleep(delay)
                 continue
             diag["error"] = f"HTTPError: {exc}"
+            if progress_cb:
+                progress_cb(f"[gdelt] {channel.name}: ERROR {exc}")
             return [], diag
         except Exception as exc:
             diag["error"] = f"{type(exc).__name__}: {exc}"
+            if progress_cb:
+                progress_cb(f"[gdelt] {channel.name}: ERROR {exc}")
             return [], diag
 
     if payload is None:
         diag["error"] = "429 Too Many Requests after retries"
+        if progress_cb:
+            progress_cb(f"[gdelt] {channel.name}: gave up after retries")
         return [], diag
 
     arts = payload.get("articles", []) if isinstance(payload, dict) else []
@@ -162,15 +175,20 @@ class GdeltSource:
         self._selection = selection
         self._max_records = max_records_per_channel
 
-    def fetch(self, since: datetime, until: datetime) -> list[RawRecord]:
-        records, _diag = self.fetch_with_diagnostics(since, until)
+    def fetch(self, since: datetime, until: datetime,
+              known_hashes: set[str] | None = None,
+              progress_cb=None) -> list[RawRecord]:
+        records, _diag = self.fetch_with_diagnostics(since, until,
+                                                      known_hashes=known_hashes,
+                                                      progress_cb=progress_cb)
         return records
 
-    def fetch_with_diagnostics(self, since: datetime,
-                               until: datetime) -> tuple[list[RawRecord], dict]:
+    def fetch_with_diagnostics(self, since: datetime, until: datetime,
+                               known_hashes: set[str] | None = None,
+                               progress_cb=None) -> tuple[list[RawRecord], dict]:
         channels = _load_channels(self._selection)
         if not channels:
-            return [], {"channels": [], "ranking": [], "diagnostics": [], "total_articles": 0}
+            return [], {"channels": [], "diagnostics": [], "total_articles": 0}
 
         # Rank channels by meta quality score + priority
         ranking = sorted(
@@ -186,12 +204,20 @@ class GdeltSource:
 
         for i, ch in enumerate(ranking):
             if i > 0:
+                if progress_cb:
+                    progress_cb(f"[gdelt] waiting 3s before next channel…")
                 time.sleep(3)   # avoid consecutive requests triggering 429
             if ch.kind == "gdelt":
                 arts, diag = _fetch_gdelt_channel(
                     ch, since=since_date, until=until_date,
                     max_records=self._max_records,
+                    progress_cb=progress_cb,
                 )
+                if progress_cb:
+                    n_skip = sum(1 for r in arts
+                                 if known_hashes and r.content_hash in known_hashes)
+                    progress_cb(f"[gdelt] {ch.name}: {len(arts)} articles"
+                                + (f", {n_skip} already in bronze" if n_skip else ""))
             else:
                 diag = {"channel": ch.name, "type": ch.kind,
                         "error": f"unsupported: {ch.kind}", "fetched": 0}

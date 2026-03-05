@@ -115,7 +115,9 @@ class ClsSource:
         """
         self._max_pages = max_pages
 
-    def fetch(self, since: datetime, until: datetime) -> list[RawRecord]:
+    def fetch(self, since: datetime, until: datetime,
+              known_hashes: set[str] | None = None,
+              progress_cb=None) -> list[RawRecord]:
         since_utc = since.astimezone(timezone.utc)
         until_utc = until.astimezone(timezone.utc)
 
@@ -124,6 +126,8 @@ class ClsSource:
         last_time = 0        # API cursor: 0 = latest page
 
         for page in range(self._max_pages):
+            if progress_cb:
+                progress_cb(f"[cls] page {page + 1}: {len(records)} articles so far…")
             url = _make_url(last_time)
             req = Request(url, headers=_HEADERS)
             try:
@@ -131,6 +135,8 @@ class ClsSource:
                     payload = json.loads(resp.read().decode("utf-8"))
             except (HTTPError, URLError, json.JSONDecodeError) as exc:
                 logger.error("CLS fetch error (page %d): %s", page, exc)
+                if progress_cb:
+                    progress_cb(f"[cls] page {page + 1}: ERROR {exc}")
                 break
 
             items = (
@@ -162,11 +168,18 @@ class ClsSource:
                     continue
                 if r.published_at < since_utc:
                     # Older than requested window — stop pagination
-                    logger.debug(
-                        "CLS: reached since boundary at %s (page %d)",
-                        r.published_at, page,
-                    )
                     records.sort(key=lambda x: x.published_at, reverse=True)
+                    if progress_cb:
+                        progress_cb(f"[cls] reached since boundary — "
+                                    f"{len(records)} articles in {page + 1} pages")
+                    return records
+
+                # Early stop: if this hash is already in bronze, all older ones will be too
+                if known_hashes and r.content_hash in known_hashes:
+                    records.sort(key=lambda x: x.published_at, reverse=True)
+                    if progress_cb:
+                        progress_cb(f"[cls] hit known article on page {page + 1} — "
+                                    f"stopping early with {len(records)} new articles")
                     return records
 
                 records.append(r)
@@ -176,6 +189,8 @@ class ClsSource:
             last_time = page_oldest
 
         records.sort(key=lambda x: x.published_at, reverse=True)
+        if progress_cb:
+            progress_cb(f"[cls] done: {len(records)} articles across {page + 1} pages")
         logger.info("CLS: fetched %d articles across %d pages", len(records), page + 1)
         return records
 

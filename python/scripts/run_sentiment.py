@@ -322,9 +322,12 @@ def _prefetch_sources(args, selected_feeds: list[dict] | None, dates: list[date]
     else:
         raise ValueError(f"Unknown source: {args.source}")
 
+    def _pcb(msg: str) -> None:
+        print(msg, flush=True)
+
     diagnostics: list[dict] = []
     primary_summary = ingest(primary_source, since_dt, until_dt, data_root, db,
-                             diagnostics_out=diagnostics)
+                             diagnostics_out=diagnostics, progress_cb=_pcb)
 
     backfill_summary = None
     if args.source == "rss" and args.fetch_mode == "full" and args.enable_backfill:
@@ -335,7 +338,7 @@ def _prefetch_sources(args, selected_feeds: list[dict] | None, dates: list[date]
         )
         gdelt_diag: list[dict] = []
         gdelt_summary = ingest(gdelt, since_dt, until_dt, data_root, db,
-                               diagnostics_out=gdelt_diag)
+                               diagnostics_out=gdelt_diag, progress_cb=_pcb)
         backfill_summary = {"ingest": gdelt_summary, "diagnostics": gdelt_diag}
 
     print(
@@ -525,8 +528,29 @@ def _cmd_inspect(argv: list[str]) -> int:
                   file=sys.stderr)
             return 1
 
-        print(f"Fetching {args.source} for {args.date} …")
-        records = source_obj.fetch(since_dt, until_dt)
+        # Load existing bronze hashes for early-stop in CLS
+        import pandas as _pd_pre
+        _bronze_pre = (data_root / "raw" / "sentiment" / args.source
+                       / f"{target.year:04d}" / f"{target.month:02d}"
+                       / f"{target.year:04d}-{target.month:02d}-{target.day:02d}.parquet")
+        _known: set[str] = set()
+        if _bronze_pre.exists():
+            _existing = _pd_pre.read_parquet(_bronze_pre, columns=["content_hash"])
+            _known = set(_existing["content_hash"].dropna().tolist())
+            print(f"{len(_known)} articles already in bronze")
+
+        def _pcb(msg: str) -> None:
+            print(msg, flush=True)
+
+        import inspect as _insp
+        _fetch_params = set(_insp.signature(source_obj.fetch).parameters)
+        _extra: dict = {}
+        if "known_hashes" in _fetch_params:
+            _extra["known_hashes"] = _known
+        if "progress_cb" in _fetch_params:
+            _extra["progress_cb"] = _pcb
+
+        records = source_obj.fetch(since_dt, until_dt, **_extra)
         print(f"Fetched: {len(records)} articles")
 
         if records:

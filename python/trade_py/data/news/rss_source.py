@@ -193,52 +193,49 @@ class RssSource:
         """
         self._feeds = feeds
 
-    def fetch(self, since: datetime, until: datetime) -> list[RawRecord]:
-        since_date = since.astimezone(CST).date()
-        all_records: list[RawRecord] = []
-        seen: set[str] = set()
+    def fetch(self, since: datetime, until: datetime,
+              known_hashes: set[str] | None = None,
+              progress_cb=None) -> list[RawRecord]:
+        records, _diag = self.fetch_with_diagnostics(since, until,
+                                                      known_hashes=known_hashes,
+                                                      progress_cb=progress_cb)
+        return records
 
-        for feed_cfg in self._feeds:
-            records, _status = _fetch_feed(
-                feed_url=feed_cfg["url"],
-                source_name=feed_cfg["name"],
-                since=since_date,
-            )
-            for r in records:
-                pub_date = r.published_at.astimezone(CST).date()
-                if pub_date > until.astimezone(CST).date():
-                    continue
-                if r.content_hash not in seen:
-                    seen.add(r.content_hash)
-                    all_records.append(r)
-
-        all_records.sort(key=lambda r: r.published_at, reverse=True)
-        return all_records
-
-    def fetch_with_diagnostics(self, since: datetime,
-                               until: datetime) -> tuple[list[RawRecord], list[dict]]:
+    def fetch_with_diagnostics(self, since: datetime, until: datetime,
+                               known_hashes: set[str] | None = None,
+                               progress_cb=None) -> tuple[list[RawRecord], list[dict]]:
         """Like fetch() but also returns per-feed diagnostics."""
         since_date = since.astimezone(CST).date()
         until_date = until.astimezone(CST).date()
         all_records: list[RawRecord] = []
         diagnostics: list[dict] = []
         seen: set[str] = set()
+        n_feeds = len(self._feeds)
 
-        for feed_cfg in self._feeds:
+        for i, feed_cfg in enumerate(self._feeds, 1):
+            name = feed_cfg["name"]
+            if progress_cb:
+                progress_cb(f"[rss] {name} ({i}/{n_feeds}) fetching…")
             records, status = _fetch_feed(
                 feed_url=feed_cfg["url"],
-                source_name=feed_cfg["name"],
+                source_name=name,
                 since=since_date,
             )
             if "meta" in feed_cfg:
                 status["meta"] = feed_cfg["meta"]
             diagnostics.append(status)
+            n_new = 0
             for r in records:
                 if r.published_at.astimezone(CST).date() > until_date:
                     continue
                 if r.content_hash not in seen:
                     seen.add(r.content_hash)
                     all_records.append(r)
+                    n_new += 1
+            if progress_cb:
+                n_skip = len(records) - n_new
+                skip_txt = f", {n_skip} already in bronze" if n_skip else ""
+                progress_cb(f"[rss] {name}: {n_new} new{skip_txt}")
 
         all_records.sort(key=lambda r: r.published_at, reverse=True)
         return all_records, diagnostics
