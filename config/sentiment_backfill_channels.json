@@ -1,19 +1,6 @@
 {
+  "_comment": "GDELT v2 Doc API channels for historical English-language backfill. Rate-limited public API — keep channel count minimal. Disable noisy channels via enabled_default:false or status:disabled.",
   "channels": [
-    {
-      "name": "GDELT_CN_MARKET",
-      "type": "gdelt",
-      "status": "active",
-      "enabled_default": true,
-      "priority": 90,
-      "officialness": 3.0,
-      "authority": 3.5,
-      "quality": 3.5,
-      "coverage": 4.5,
-      "value": 4.0,
-      "query": "(\"China stock market\" OR \"Shanghai composite\" OR \"Shenzhen stock\" OR \"CSI 300\" OR \"A-shares\" OR \"MSCI China\")",
-      "languages": ["English"]
-    },
     {
       "name": "GDELT_CN_MACRO",
       "type": "gdelt",
@@ -23,22 +10,39 @@
       "officialness": 3.0,
       "authority": 3.5,
       "quality": 3.0,
-      "coverage": 4.0,
-      "value": 4.0,
+      "coverage": 3.5,
+      "value": 3.0,
+      "_note": "Best SNR of the three — PBOC/GDP/trade queries are precise enough",
       "query": "(PBOC OR \"People's Bank of China\" OR \"China monetary policy\" OR \"China economy\" OR \"China GDP\" OR \"China trade\")",
+      "languages": ["English"]
+    },
+    {
+      "name": "GDELT_CN_MARKET",
+      "type": "gdelt",
+      "status": "disabled",
+      "enabled_default": false,
+      "priority": 90,
+      "officialness": 3.0,
+      "authority": 3.5,
+      "quality": 2.0,
+      "coverage": 3.0,
+      "value": 2.0,
+      "_note": "Disabled: broad market keywords match too many off-topic articles",
+      "query": "(\"China stock market\" OR \"Shanghai composite\" OR \"Shenzhen stock\" OR \"CSI 300\" OR \"A-shares\" OR \"MSCI China\")",
       "languages": ["English"]
     },
     {
       "name": "GDELT_CN_POLICY",
       "type": "gdelt",
-      "status": "active",
-      "enabled_default": true,
+      "status": "disabled",
+      "enabled_default": false,
       "priority": 85,
       "officialness": 4.0,
       "authority": 4.0,
-      "quality": 3.5,
-      "coverage": 3.5,
-      "value": 4.5,
+      "quality": 1.5,
+      "coverage": 2.5,
+      "value": 1.5,
+      "_note": "Disabled: 'yuan/renminbi' pulls Pakistan forex and unrelated currency articles",
       "query": "(\"China securities regulator\" OR CSRC OR \"China financial regulation\" OR \"Chinese yuan\" OR \"renminbi\" OR \"China stimulus\")",
       "languages": ["English"]
     }
