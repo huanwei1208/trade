@@ -11,22 +11,36 @@
       "quality": 3.5,
       "coverage": 4.5,
       "value": 4.0,
-      "query": "(A股 OR 上证 OR 深证 OR 中国股市 OR Chinese stock market OR CSI300)",
-      "languages": ["Chinese", "English"]
+      "query": "(\"China stock market\" OR \"Shanghai composite\" OR \"Shenzhen stock\" OR \"CSI 300\" OR \"A-shares\" OR \"MSCI China\")",
+      "languages": ["English"]
     },
     {
       "name": "GDELT_CN_MACRO",
       "type": "gdelt",
-      "status": "trial",
+      "status": "active",
       "enabled_default": true,
-      "priority": 84,
+      "priority": 80,
       "officialness": 3.0,
       "authority": 3.5,
       "quality": 3.0,
       "coverage": 4.0,
       "value": 4.0,
-      "query": "(中国 货币政策 OR 中国 宏观 OR PBOC OR China macro OR China monetary policy)",
-      "languages": ["Chinese", "English"]
+      "query": "(PBOC OR \"People's Bank of China\" OR \"China monetary policy\" OR \"China economy\" OR \"China GDP\" OR \"China trade\")",
+      "languages": ["English"]
+    },
+    {
+      "name": "GDELT_CN_POLICY",
+      "type": "gdelt",
+      "status": "active",
+      "enabled_default": true,
+      "priority": 85,
+      "officialness": 4.0,
+      "authority": 4.0,
+      "quality": 3.5,
+      "coverage": 3.5,
+      "value": 4.5,
+      "query": "(\"China securities regulator\" OR CSRC OR \"China financial regulation\" OR \"Chinese yuan\" OR \"renminbi\" OR \"China stimulus\")",
+      "languages": ["English"]
     }
   ]
 }

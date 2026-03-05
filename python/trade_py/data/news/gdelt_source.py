@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Literal, Optional
+import time
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
 
@@ -71,6 +73,9 @@ def _parse_gdelt_dt(raw: str) -> datetime:
     return dt.replace(tzinfo=timezone.utc)
 
 
+_GDELT_RETRY_DELAYS = (5, 15, 30)   # seconds between retries on 429
+
+
 def _fetch_gdelt_channel(channel: _Channel, since: date, until: date,
                          max_records: int) -> tuple[list[RawRecord], dict]:
     start = f"{since:%Y%m%d}000000"
@@ -84,11 +89,27 @@ def _fetch_gdelt_channel(channel: _Channel, since: date, until: date,
     req = Request(url, headers={"User-Agent": "trade-bot/1.0"})
     diag = {"channel": channel.name, "type": channel.kind, "url": url,
             "error": "", "fetched": 0}
-    try:
-        with urlopen(req, timeout=30) as resp:
-            payload = json.loads((resp.read() or b"{}").decode("utf-8"))
-    except Exception as exc:
-        diag["error"] = f"{type(exc).__name__}: {exc}"
+
+    payload = None
+    for attempt, delay in enumerate((*_GDELT_RETRY_DELAYS, None), start=1):
+        try:
+            with urlopen(req, timeout=30) as resp:
+                payload = json.loads((resp.read() or b"{}").decode("utf-8"))
+            break
+        except HTTPError as exc:
+            if exc.code == 429 and delay is not None:
+                logger.warning("GDELT 429 on %s (attempt %d), retrying in %ds",
+                               channel.name, attempt, delay)
+                time.sleep(delay)
+                continue
+            diag["error"] = f"HTTPError: {exc}"
+            return [], diag
+        except Exception as exc:
+            diag["error"] = f"{type(exc).__name__}: {exc}"
+            return [], diag
+
+    if payload is None:
+        diag["error"] = "429 Too Many Requests after retries"
         return [], diag
 
     arts = payload.get("articles", []) if isinstance(payload, dict) else []
@@ -163,7 +184,9 @@ class GdeltSource:
         all_records: list[RawRecord] = []
         diagnostics: list[dict] = []
 
-        for ch in ranking:
+        for i, ch in enumerate(ranking):
+            if i > 0:
+                time.sleep(3)   # avoid consecutive requests triggering 429
             if ch.kind == "gdelt":
                 arts, diag = _fetch_gdelt_channel(
                     ch, since=since_date, until=until_date,
