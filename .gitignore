@@ -22,8 +22,8 @@ dist/
 *.so
 *.dylib
 
-# Data (generated, too large for git)
-data/
+# Data (generated, too large for git) — root-level only, not python/trade_py/data/
+/data/
 
 # Notebooks checkpoints
 .ipynb_checkpoints/

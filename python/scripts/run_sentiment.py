@@ -15,7 +15,7 @@ import os
 import re
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
@@ -23,6 +23,8 @@ from urllib.request import Request, urlopen
 from config_context import resolve_repo_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+CST = timezone(timedelta(hours=8))
 
 
 def parse_date(s: str) -> date:
@@ -33,28 +35,8 @@ def parse_date(s: str) -> date:
 _DATE_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.parquet$")
 
 
-def _rss_watermark_path(data_root: str) -> Path:
-    return Path(data_root) / ".metadata" / "rss_feed_watermarks.json"
-
-
-def _load_rss_watermarks(data_root: str) -> dict:
-    path = _rss_watermark_path(data_root)
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _save_rss_watermarks(data_root: str, wm: dict) -> None:
-    path = _rss_watermark_path(data_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(wm, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _list_local_bronze_dates(data_root: str, source: str, start: date, end: date) -> list[date]:
+def _list_local_bronze_dates(data_root: str, source: str,
+                              start: date, end: date) -> list[date]:
     base = Path(data_root) / "raw" / "sentiment" / source
     if not base.exists():
         return []
@@ -69,28 +51,6 @@ def _list_local_bronze_dates(data_root: str, source: str, start: date, end: date
         if start <= d <= end:
             dates.append(d)
     return sorted(set(dates))
-
-
-def _compute_incremental_since(
-    selected_feeds: list[dict],
-    watermarks: dict,
-    lookback_days: int,
-) -> date:
-    today = date.today()
-    recent_floor = today - timedelta(days=max(2, lookback_days))
-    candidates = []
-    for f in selected_feeds:
-        v = watermarks.get(str(f["name"]))
-        if not v:
-            continue
-        try:
-            d = parse_date(str(v))
-        except ValueError:
-            continue
-        candidates.append(d - timedelta(days=lookback_days))
-    if not candidates:
-        return recent_floor
-    return max(min(candidates), recent_floor)
 
 
 def _load_cli_defaults(path: str) -> dict:
@@ -129,10 +89,8 @@ def ensure_rsshub_running(
             )
         except RuntimeError as e:
             last_error = e
-
         if i < retries:
             time.sleep(retry_delay)
-
     raise last_error  # type: ignore[misc]
 
 
@@ -164,7 +122,12 @@ def ensure_ollama_running(base_url: str, timeout: float = 3.0) -> None:
         ) from e
 
 
-def main() -> int:
+# ---------------------------------------------------------------------------
+# main() split into 4 focused functions
+# ---------------------------------------------------------------------------
+
+def _build_parser() -> tuple[argparse.Namespace, dict, bool]:
+    """Parse CLI arguments. Returns (args, cli_defaults, fetch_mode_explicit)."""
     raw_argv = sys.argv[1:]
     fetch_mode_explicit = any(
         a == "--fetch-mode" or a.startswith("--fetch-mode=") for a in raw_argv
@@ -175,11 +138,8 @@ def main() -> int:
         default="config/sentiment_cli_defaults.json",
         help="Path to CLI defaults json",
     )
-    pre_parser.add_argument(
-        "--no-defaults",
-        action="store_true",
-        help="Ignore defaults file",
-    )
+    pre_parser.add_argument("--no-defaults", action="store_true",
+                            help="Ignore defaults file")
     pre_args, _ = pre_parser.parse_known_args()
     cli_defaults = {} if pre_args.no_defaults else _load_cli_defaults(pre_args.defaults_file)
 
@@ -202,7 +162,7 @@ def main() -> int:
     parser.add_argument(
         "--rss-feeds",
         default=d("rss_feeds", "auto"),
-        help="RSS feed names (comma-separated) or 'auto' (default)",
+        help="RSS feed names (comma-separated) or 'auto'",
     )
     parser.add_argument(
         "--show-rss-feed-index",
@@ -215,7 +175,8 @@ def main() -> int:
         default=d("rsshub_base_url", None),
         help="Override RSSHub base URL (e.g. http://127.0.0.1:1200)",
     )
-    parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=d("dry_run", False),
+    parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction,
+                        default=d("dry_run", False),
                         help="Fetch articles but skip Claude API")
     parser.add_argument("--api-key", default=d("api_key", None),
                         help="Anthropic API key (default: ANTHROPIC_API_KEY env)")
@@ -225,7 +186,8 @@ def main() -> int:
         choices=["anthropic", "ollama"],
         help="LLM provider for sentiment analysis",
     )
-    parser.add_argument("--llm-model", default=d("llm_model", None), help="LLM model name override")
+    parser.add_argument("--llm-model", default=d("llm_model", None),
+                        help="LLM model name override")
     parser.add_argument(
         "--ollama-base-url",
         default=d("ollama_base_url", None),
@@ -253,13 +215,13 @@ def main() -> int:
         "--all-range-dates",
         action=argparse.BooleanOptionalAction,
         default=d("all_range_dates", False),
-        help="Process all requested range dates (default only local-existing Bronze dates)",
+        help="Process all requested range dates (default: only local Bronze dates)",
     )
     parser.add_argument(
         "--enable-backfill",
         action=argparse.BooleanOptionalAction,
         default=d("enable_backfill", True),
-        help="Enable historical backfill channels in full mode",
+        help="Enable GDELT backfill channels in full mode",
     )
     parser.add_argument(
         "--backfill-channels",
@@ -285,12 +247,14 @@ def main() -> int:
         help="RSSHub probe retries on failure (default: 2)",
     )
     args = parser.parse_args()
+    return args, cli_defaults, fetch_mode_explicit
 
-    # Determine date range
+
+def _resolve_dates(args, fetch_mode_explicit: bool) -> list[date] | int:
+    """Compute the list of dates to process. Returns list[date] or int exit code on error."""
     if args.date and (args.start or args.end):
         print("ERROR: --date cannot be used with --start/--end", file=sys.stderr)
         return 1
-
     if args.end and not args.start:
         print("ERROR: --end requires --start", file=sys.stderr)
         return 1
@@ -307,21 +271,184 @@ def main() -> int:
             )
             return 1
         dates = []
-        d = start
-        while d <= end:
-            dates.append(d)
-            d += timedelta(days=1)
+        cur = start
+        while cur <= end:
+            dates.append(cur)
+            cur += timedelta(days=1)
     else:
         dates = [date.today()]
 
-    # If user requested a historical range but didn't explicitly set fetch mode,
-    # prefer full backfill instead of incremental mode from defaults file.
+    # Historical range without explicit fetch-mode → prefer full backfill
     if args.start and not args.date and not fetch_mode_explicit and args.fetch_mode == "incremental":
         args.fetch_mode = "full"
 
-    # Ensure we can import from project root
+    return dates
+
+
+def _prefetch_rss(args, selected_feeds: list[dict], dates: list[date],
+                  db) -> list[dict]:
+    """Ingest RSS + GDELT into Bronze via new DataSource pipeline.
+
+    Returns list of per-feed fetch diagnostics (for reporting).
+    """
+    from trade_py.data.news.rss_source import RssSource
+    from trade_py.data.pipeline.ingest import ingest
+
+    data_root = Path(args.data_root)
+
+    # Compute fetch window
+    if args.fetch_mode == "full":
+        since_date = dates[0]
+    else:
+        # Incremental: use latest coverage date from DB, fall back to lookback floor
+        latest = db.latest_date("rss")
+        lookback = args.rss_incremental_lookback_days
+        floor = date.today() - timedelta(days=max(2, lookback))
+        if latest is not None:
+            since_date = max(latest - timedelta(days=lookback), floor)
+        else:
+            since_date = floor
+
+    since_dt = datetime(since_date.year, since_date.month, since_date.day, tzinfo=CST)
+    until_dt = datetime(dates[-1].year, dates[-1].month, dates[-1].day,
+                        23, 59, 59, tzinfo=CST)
+
+    rss_source = RssSource(feeds=selected_feeds)
+    diagnostics: list[dict] = []
+    rss_summary = ingest(rss_source, since_dt, until_dt, data_root, db,
+                         diagnostics_out=diagnostics)
+
+    backfill_summary = None
+    if args.fetch_mode == "full" and args.enable_backfill:
+        from trade_py.data.news.gdelt_source import GdeltSource
+        gdelt = GdeltSource(
+            selection=args.backfill_channels,
+            max_records_per_channel=args.backfill_max_records_per_channel,
+        )
+        gdelt_diag: list[dict] = []
+        gdelt_summary = ingest(gdelt, since_dt, until_dt, data_root, db,
+                               diagnostics_out=gdelt_diag)
+        backfill_summary = {"ingest": gdelt_summary, "diagnostics": gdelt_diag}
+
+    print(
+        "RSS prefetch:",
+        json.dumps(
+            {
+                "mode": args.fetch_mode,
+                "prefetch_since": since_date.isoformat(),
+                "articles": rss_summary.get("records_fetched", 0),
+                "new": rss_summary.get("records_new", 0),
+                "by_date": rss_summary.get("by_date", {}),
+                "diagnostics": diagnostics,
+                "backfill": backfill_summary,
+                "coverage": db.coverage_report(),
+            },
+            ensure_ascii=False,
+        ),
+    )
+    return diagnostics
+
+
+def _run_pipeline_loop(
+    args,
+    dates: list[date],
+    selected_feeds: list[dict] | None,
+    use_rss_prefetch: bool,
+    ollama_base_url: str,
+    db,
+) -> int:
+    """Run Silver enrichment + Gold aggregation for each date. Returns exit code."""
+    from trade_py.data.pipeline.enrich import enrich
+    from trade_py.data.pipeline.aggregate import aggregate
+
+    if not args.dry_run:
+        from trade_py.intelligence.claude_client import ClaudeClient
+        try:
+            client = ClaudeClient(
+                api_key=args.api_key,
+                provider=args.llm_provider,
+                model=args.llm_model,
+                ollama_base_url=ollama_base_url,
+            )
+        except (ValueError, ImportError) as e:
+            print(f"ERROR: Cannot initialise LLM client: {e}", file=sys.stderr)
+            return 4
+    else:
+        client = None
+
+    skipped_empty_days = 0
+    has_fetch_failure = False
+
+    for target_date in dates:
+        # Silver enrichment
+        enrich_stats: dict = {}
+        if not args.dry_run and client is not None:
+            enrich_stats = enrich(
+                data_root=Path(args.data_root),
+                article_date=target_date,
+                sources=[args.source],
+                client=client,
+                db=db,
+                dry_run=False,
+            )
+        else:
+            # dry-run: just count bronze rows
+            from trade_py.data.pipeline.enrich import _bronze_path
+            import pandas as pd
+            bronze_path = _bronze_path(Path(args.data_root), args.source, target_date)
+            bronze_rows = len(pd.read_parquet(bronze_path)) if bronze_path.exists() else 0
+            enrich_stats = {"bronze_rows": bronze_rows, "skipped": 0,
+                            "analysed": 0, "silver_rows": 0, "mode": "dry_run"}
+
+        bronze_rows = enrich_stats.get("bronze_rows", 0)
+        if bronze_rows <= 0:
+            skipped_empty_days += 1
+            continue
+
+        # Gold aggregation
+        gold_stats: dict = {}
+        if not args.dry_run:
+            gold_stats = aggregate(Path(args.data_root), target_date)
+
+        stats = {
+            "date": target_date.isoformat(),
+            "enrich": enrich_stats,
+            "gold": gold_stats,
+            "api_cost_usd": getattr(client, "estimated_cost", 0.0) if client else 0.0,
+            "token_usage": getattr(client, "token_usage", {}) if client else {},
+        }
+        print(f"\n=== {target_date} ===")
+        print(json.dumps(stats, indent=2, ensure_ascii=False))
+
+    if skipped_empty_days > 0:
+        print(
+            "Daily summary:",
+            json.dumps(
+                {
+                    "empty_days_skipped": skipped_empty_days,
+                    "non_empty_days": len(dates) - skipped_empty_days,
+                    "total_days": len(dates),
+                    "enrichment_cache": db.enrichment_stats(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    return 2 if has_fetch_failure else 0
+
+
+def main() -> int:
+    args, _cli_defaults, fetch_mode_explicit = _build_parser()
+
+    dates_or_code = _resolve_dates(args, fetch_mode_explicit)
+    if isinstance(dates_or_code, int):
+        return dates_or_code
+    dates: list[date] = dates_or_code
+
+    # Ensure project root is on sys.path
     project_root = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(project_root / "python"))
+
     rsshub_base_url = (args.rsshub_base_url or os.environ.get("TRADE_RSSHUB_BASE_URL") or
                        "http://127.0.0.1:1200").rstrip("/")
     os.environ["TRADE_RSSHUB_BASE_URL"] = rsshub_base_url
@@ -348,23 +475,23 @@ def main() -> int:
 
     print(
         "Run config:",
-            json.dumps(
-                {
-                    "llm_provider": args.llm_provider,
-                    "llm_model": args.llm_model,
-                    "date_count": len(dates),
-                    "start": dates[0].isoformat(),
-                    "end": dates[-1].isoformat(),
-                    "fetch_mode": args.fetch_mode,
-                    "fetch_mode_explicit": fetch_mode_explicit,
-                    "all_range_dates": bool(args.all_range_dates),
-                    "enable_backfill": bool(args.enable_backfill),
-                },
-                ensure_ascii=False,
-            ),
-        )
+        json.dumps(
+            {
+                "llm_provider": args.llm_provider,
+                "llm_model": args.llm_model,
+                "date_count": len(dates),
+                "start": dates[0].isoformat(),
+                "end": dates[-1].isoformat(),
+                "fetch_mode": args.fetch_mode,
+                "fetch_mode_explicit": fetch_mode_explicit,
+                "all_range_dates": bool(args.all_range_dates),
+                "enable_backfill": bool(args.enable_backfill),
+            },
+            ensure_ascii=False,
+        ),
+    )
 
-    from trade_py.intelligence.rss_fetcher import resolve_feeds
+    from trade_py.data.news.rss_source import resolve_feeds
 
     selected_feeds = None
     if args.source == "rss":
@@ -406,166 +533,37 @@ def main() -> int:
             ),
         )
 
-    # Fetch once, then process from local Bronze cache.
-    # This avoids one-RSS-request-per-day scans for range analysis.
-    use_rss_prefetch = args.source == "rss" and not args.no_rss_prefetch
-    if use_rss_prefetch and args.fetch_mode != "none":
-        from trade_py.intelligence.sentiment_pipeline import write_bronze
-        from trade_py.intelligence.rss_fetcher import fetch_all
+    from trade_py.db.pipeline_db import PipelineDb
 
-        feed_watermarks = _load_rss_watermarks(args.data_root)
-        if args.fetch_mode == "full":
-            prefetch_since = dates[0]
-        else:
-            prefetch_since = _compute_incremental_since(
-                selected_feeds=selected_feeds or [],
-                watermarks=feed_watermarks,
-                lookback_days=args.rss_incremental_lookback_days,
-            )
+    with PipelineDb(Path(args.data_root)) as db:
+        use_rss_prefetch = args.source == "rss" and not args.no_rss_prefetch
+        if use_rss_prefetch and args.fetch_mode != "none":
+            _prefetch_rss(args, selected_feeds or [], dates, db)
+        elif args.source == "rss" and args.fetch_mode == "none":
+            print("RSS prefetch: skipped (fetch_mode=none, local bronze only)")
 
-        prefetched_articles, prefetch_diag = fetch_all(
-            feeds=selected_feeds,
-            since=prefetch_since,
-            return_diagnostics=True,
-        )
-        backfill_summary = None
-        if args.fetch_mode == "full" and args.enable_backfill:
-            from trade_py.intelligence.backfill_fetcher import fetch_backfill
-            backfill_articles, backfill_summary = fetch_backfill(
-                data_root=Path(args.data_root),
-                since=dates[0],
-                until=dates[-1],
-                selection=args.backfill_channels,
-                max_records_per_channel=args.backfill_max_records_per_channel,
-            )
-            prefetched_articles.extend(backfill_articles)
-
-            # Cross-source dedupe by content hash
-            uniq = []
-            seen_hash = set()
-            for a in sorted(prefetched_articles, key=lambda x: x.published_at, reverse=True):
-                if a.content_hash in seen_hash:
-                    continue
-                seen_hash.add(a.content_hash)
-                uniq.append(a)
-            prefetched_articles = uniq
-
-        bronze_counts = write_bronze(prefetched_articles, Path(args.data_root), "rss")
-        latest_by_source: dict[str, date] = {}
-        for a in prefetched_articles:
-            prev = latest_by_source.get(a.source)
-            if prev is None or a.date > prev:
-                latest_by_source[a.source] = a.date
-        if latest_by_source:
-            for name, d in latest_by_source.items():
-                feed_watermarks[name] = d.isoformat()
-            _save_rss_watermarks(args.data_root, feed_watermarks)
-
-        if prefetched_articles:
-            available_dates = sorted({a.date for a in prefetched_articles})
+        if args.source == "rss" and len(dates) > 1 and not args.all_range_dates:
+            local_dates = _list_local_bronze_dates(args.data_root, "rss", dates[0], dates[-1])
+            missing = len(dates) - len(local_dates)
             print(
-                "RSS prefetch coverage:",
+                "Local bronze coverage:",
                 json.dumps(
                     {
-                        "mode": args.fetch_mode,
-                        "prefetch_since": prefetch_since.isoformat(),
-                        "requested_start": dates[0].isoformat(),
-                        "requested_end": dates[-1].isoformat(),
-                        "fetched_start": available_dates[0].isoformat(),
-                        "fetched_end": available_dates[-1].isoformat(),
                         "requested_days": len(dates),
-                        "fetched_days": len(available_dates),
+                        "available_days": len(local_dates),
+                        "missing_days": missing,
+                        "mode": "process_existing_only",
                     },
                     ensure_ascii=False,
                 ),
             )
-        print(
-            "RSS prefetch:",
-            json.dumps(
-                {
-                    "mode": args.fetch_mode,
-                    "prefetch_since": prefetch_since.isoformat(),
-                    "articles": len(prefetched_articles),
-                    "by_date": {str(k): v for k, v in bronze_counts.items()},
-                    "diagnostics": prefetch_diag,
-                    "watermarks": _load_rss_watermarks(args.data_root),
-                    "backfill": backfill_summary,
-                },
-                ensure_ascii=False,
-            ),
-        )
-    elif args.source == "rss" and args.fetch_mode == "none":
-        print("RSS prefetch: skipped (fetch_mode=none, local bronze only)")
+            dates = local_dates
+            if not dates:
+                print("No local Bronze data in requested range; nothing to process.")
+                return 0
 
-    if args.source == "rss" and len(dates) > 1 and not args.all_range_dates:
-        local_dates = _list_local_bronze_dates(args.data_root, "rss", dates[0], dates[-1])
-        missing = len(dates) - len(local_dates)
-        print(
-            "Local bronze coverage:",
-            json.dumps(
-                {
-                    "requested_days": len(dates),
-                    "available_days": len(local_dates),
-                    "missing_days": missing,
-                    "mode": "process_existing_only",
-                },
-                ensure_ascii=False,
-            ),
-        )
-        dates = local_dates
-        if not dates:
-            print("No local Bronze data in requested range; nothing to process.")
-            return 0
-
-    total_stats = []
-    has_fetch_failure = False
-    skipped_empty_days = 0
-    from trade_py.intelligence.sentiment_pipeline import run
-    for target_date in dates:
-        fetch_in_run = (
-            args.source == "rss" and args.no_rss_prefetch and args.fetch_mode != "none"
-        )
-        stats = run(
-            target_date=target_date,
-            data_root=args.data_root,
-            sources=[args.source],
-            api_key=args.api_key,
-            llm_provider=args.llm_provider,
-            llm_model=args.llm_model,
-            ollama_base_url=ollama_base_url,
-            dry_run=args.dry_run,
-            fetch=fetch_in_run if args.source == "rss" else not use_rss_prefetch,
-            rss_feeds=selected_feeds,
-        )
-        total_stats.append(stats)
-        day_articles = int(stats.get("sources", {}).get("rss", {}).get("articles_fetched", 0))
-        if day_articles <= 0:
-            skipped_empty_days += 1
-        else:
-            print(f"\n=== {target_date} ===")
-            print(json.dumps(stats, indent=2, ensure_ascii=False))
-        if stats.get("mode") == "fetch_failed":
-            has_fetch_failure = True
-            print(
-                "ERROR: RSS fetch failed (HTTP>=400 or parser error). "
-                "Check rss_fetch/fetch_errors in the output.",
-                file=sys.stderr,
-            )
-
-    if skipped_empty_days > 0:
-        print(
-            "Daily summary:",
-            json.dumps(
-                {
-                    "empty_days_skipped": skipped_empty_days,
-                    "non_empty_days": len(dates) - skipped_empty_days,
-                    "total_days": len(dates),
-                },
-                ensure_ascii=False,
-            ),
-        )
-
-    return 2 if has_fetch_failure else 0
+        return _run_pipeline_loop(args, dates, selected_feeds, use_rss_prefetch,
+                                  ollama_base_url, db)
 
 
 if __name__ == "__main__":
