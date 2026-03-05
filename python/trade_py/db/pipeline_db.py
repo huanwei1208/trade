@@ -26,7 +26,6 @@ class PipelineDb:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        self._con.executemany("CREATE TABLE IF NOT EXISTS __dummy__ (x INT)", [])
         stmts = [
             """CREATE TABLE IF NOT EXISTS ingest_runs (
                 run_id           TEXT PRIMARY KEY,
