@@ -452,7 +452,111 @@ def _run_pipeline_loop(
     return 2 if has_fetch_failure else 0
 
 
+def _cmd_inspect(argv: list[str]) -> int:
+    """inspect <source> <date> [--feed FEED] [--show-text] [--silver]
+
+    Print articles in Bronze (and optionally Silver) for a given source + date.
+
+    Examples:
+        inspect rss 2026-03-05
+        inspect rss 2026-03-05 --feed WSJ
+        inspect gdelt 2026-01-15 --show-text
+        inspect rss 2026-03-04 --silver
+    """
+    import argparse
+    import textwrap
+
+    p = argparse.ArgumentParser(prog="run_sentiment inspect")
+    p.add_argument("source", help="Bronze source id: rss, gdelt, cls, …")
+    p.add_argument("date",   help="Date to inspect (YYYY-MM-DD)")
+    p.add_argument("--feed",      default=None,
+                   help="Filter by feed/channel name inside the source (case-insensitive)")
+    p.add_argument("--show-text", action="store_true",
+                   help="Print article body (truncated to 200 chars)")
+    p.add_argument("--silver",    action="store_true",
+                   help="Also show Silver enrichment rows for this date")
+    p.add_argument("--data-root", default=None,
+                   help="Data root directory (default: auto-detect)")
+    args = p.parse_args(argv)
+
+    project_root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(project_root / "python"))
+    from config_context import resolve_repo_path
+
+    data_root = Path(args.data_root) if args.data_root else resolve_repo_path("data")
+
+    try:
+        target = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"ERROR: invalid date '{args.date}' — use YYYY-MM-DD", file=sys.stderr)
+        return 1
+
+    y, m, day = target.year, target.month, target.day
+    bronze_path = (data_root / "raw" / "sentiment" / args.source
+                   / f"{y:04d}" / f"{m:02d}" / f"{y:04d}-{m:02d}-{day:02d}.parquet")
+
+    import pandas as pd
+
+    if not bronze_path.exists():
+        print(f"No Bronze data: {bronze_path}")
+        return 0
+
+    df = pd.read_parquet(bronze_path)
+
+    if args.feed:
+        mask = df["source"].str.lower() == args.feed.lower()
+        df = df[mask]
+        if df.empty:
+            feeds = sorted(pd.read_parquet(bronze_path)["source"].unique())
+            print(f"No articles for feed '{args.feed}'. Available feeds: {feeds}")
+            return 0
+
+    # Summary header
+    feed_counts = df["source"].value_counts().to_dict()
+    print(f"\n{'─'*60}")
+    print(f"  Bronze  source={args.source}  date={args.date}")
+    print(f"  Total articles : {len(df)}")
+    print(f"  Feeds          : {json.dumps(feed_counts, ensure_ascii=False)}")
+    print(f"{'─'*60}")
+
+    for i, row in df.iterrows():
+        pub = str(row.get("published_at", ""))[:19]
+        src = str(row.get("source", ""))
+        title = str(row.get("title", ""))
+        url   = str(row.get("url",   ""))
+        print(f"\n[{i+1}] [{src}] {pub}")
+        print(f"  {title}")
+        if url:
+            print(f"  {url}")
+        if args.show_text:
+            text = str(row.get("text", ""))
+            print(f"  {textwrap.shorten(text, 200)}")
+
+    if args.silver:
+        silver_path = (data_root / "sentiment" / "silver"
+                       / f"{y:04d}" / f"{m:02d}" / f"{y:04d}-{m:02d}-{day:02d}.parquet")
+        print(f"\n{'─'*60}")
+        if not silver_path.exists():
+            print(f"  No Silver data for {args.date}")
+        else:
+            sdf = pd.read_parquet(silver_path)
+            if args.feed:
+                sdf = sdf[sdf["source"].str.lower() == args.feed.lower()]
+            print(f"  Silver  date={args.date}  rows={len(sdf)}")
+            print(f"{'─'*60}")
+            cols = [c for c in ["symbol", "source", "sentiment", "score",
+                                 "policy_signal", "market_impact_scope",
+                                 "time_sensitivity", "title"]
+                    if c in sdf.columns]
+            print(sdf[cols].to_string(index=False, max_colwidth=60))
+
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "inspect":
+        return _cmd_inspect(sys.argv[2:])
+
     args, _cli_defaults, fetch_mode_explicit = _build_parser()
 
     dates_or_code = _resolve_dates(args, fetch_mode_explicit)
