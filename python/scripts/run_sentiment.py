@@ -453,24 +453,32 @@ def _run_pipeline_loop(
 
 
 def _cmd_inspect(argv: list[str]) -> int:
-    """inspect <source> <date> [--feed FEED] [--show-text] [--silver]
+    """inspect <source> <date> [--feed FEED] [--fetch] [--show-text] [--silver]
 
     Print articles in Bronze (and optionally Silver) for a given source + date.
+    Use --fetch to download fresh data before displaying.
 
     Examples:
         inspect rss 2026-03-05
         inspect rss 2026-03-05 --feed WSJ
-        inspect gdelt 2026-01-15 --show-text
+        inspect rss 2026-03-05 --fetch                 # re-download then show
+        inspect gdelt 2026-01-15 --fetch --show-text
         inspect rss 2026-03-04 --silver
     """
     import argparse
     import textwrap
 
     p = argparse.ArgumentParser(prog="run_sentiment inspect")
-    p.add_argument("source", help="Bronze source id: rss, gdelt, cls, …")
+    p.add_argument("source", help="Bronze source id: rss, gdelt, cls")
     p.add_argument("date",   help="Date to inspect (YYYY-MM-DD)")
     p.add_argument("--feed",      default=None,
                    help="Filter by feed/channel name inside the source (case-insensitive)")
+    p.add_argument("--fetch",     action="store_true",
+                   help="Download fresh data from the source before displaying")
+    p.add_argument("--rss-feeds", default="auto",
+                   help="RSS feed selection for --fetch (default: auto)")
+    p.add_argument("--rsshub-base-url", default=None,
+                   help="RSSHub base URL for --fetch with rss source")
     p.add_argument("--show-text", action="store_true",
                    help="Print article body (truncated to 200 chars)")
     p.add_argument("--silver",    action="store_true",
@@ -491,14 +499,68 @@ def _cmd_inspect(argv: list[str]) -> int:
         print(f"ERROR: invalid date '{args.date}' — use YYYY-MM-DD", file=sys.stderr)
         return 1
 
+    # ── Fetch step ──────────────────────────────────────────────────────────
+    if args.fetch:
+        import pandas as _pd_fetch
+
+        since_dt = datetime(target.year, target.month, target.day, 0, 0, 0, tzinfo=CST)
+        until_dt = datetime(target.year, target.month, target.day, 23, 59, 59, tzinfo=CST)
+
+        if args.source == "rss":
+            rsshub_url = (args.rsshub_base_url
+                          or os.environ.get("TRADE_RSSHUB_BASE_URL")
+                          or "http://127.0.0.1:1200").rstrip("/")
+            os.environ["TRADE_RSSHUB_BASE_URL"] = rsshub_url
+            from trade_py.data.news.rss_source import RssSource, resolve_feeds
+            selected_feeds, _ = resolve_feeds(args.rss_feeds, rsshub_url)
+            source_obj = RssSource(feeds=selected_feeds)
+        elif args.source == "gdelt":
+            from trade_py.data.news.gdelt_source import GdeltSource
+            source_obj = GdeltSource()
+        elif args.source == "cls":
+            from trade_py.data.news.cls_source import ClsSource
+            source_obj = ClsSource()
+        else:
+            print(f"ERROR: unknown source '{args.source}' — choose rss, gdelt, cls",
+                  file=sys.stderr)
+            return 1
+
+        print(f"Fetching {args.source} for {args.date} …")
+        records = source_obj.fetch(since_dt, until_dt)
+        print(f"Fetched: {len(records)} articles")
+
+        if records:
+            # Write directly to bronze parquet (no DB lock needed)
+            y2, m2, d2 = target.year, target.month, target.day
+            dest = (data_root / "raw" / "sentiment" / args.source
+                    / f"{y2:04d}" / f"{m2:02d}" / f"{y2:04d}-{m2:02d}-{d2:02d}.parquet")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            new_df = _pd_fetch.DataFrame([
+                {"source": r.source_id, "url": r.url, "title": r.title,
+                 "text": r.text, "published_at": r.published_at.isoformat(),
+                 "content_hash": r.content_hash}
+                for r in records
+            ])
+            if dest.exists():
+                existing = _pd_fetch.read_parquet(dest)
+                combined = _pd_fetch.concat([existing, new_df], ignore_index=True)
+                combined = combined.drop_duplicates(subset=["content_hash"], keep="last")
+            else:
+                combined = new_df
+            combined.to_parquet(dest, index=False)
+            print(f"Saved {len(combined)} articles → {dest}")
+
+    # ── Display step ─────────────────────────────────────────────────────────
+    import pandas as pd
+
     y, m, day = target.year, target.month, target.day
     bronze_path = (data_root / "raw" / "sentiment" / args.source
                    / f"{y:04d}" / f"{m:02d}" / f"{y:04d}-{m:02d}-{day:02d}.parquet")
 
-    import pandas as pd
-
     if not bronze_path.exists():
         print(f"No Bronze data: {bronze_path}")
+        if not args.fetch:
+            print("Tip: add --fetch to download first")
         return 0
 
     df = pd.read_parquet(bronze_path)
