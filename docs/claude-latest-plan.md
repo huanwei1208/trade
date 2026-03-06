@@ -193,9 +193,10 @@ trade/
 - [x] README.md 修正：`python/app/ui.py` → `trade_py/ui/ui.py`；`scripts.run_sentiment` → `trade_py.cli.main data sentiment`。
 - [x] `./trade` shell 脚本：`ui` 子命令的 streamlit 入口改为 `trade_py/ui/ui.py`，移除过时 PYTHONPATH。
 - [x] notebooks/04_model_training.ipynb：所有导入路径已更新为新目录结构。
-- [ ] notebooks/02_sentiment.ipynb：检查是否有需要更新的 CLI 调用示例。
+- [x] notebooks/02_sentiment.ipynb：移除过时的 `python/` sys.path 操作。
 
 ### 验证 & 测试
-- [ ] 清理旧构建产物：`build/linux/` 缓存目录。
-- [ ] `uv run pytest` 全量验证 Python 层无断链。
+- [x] `build/linux/` 已在 `.gitignore` 中，不需要额外清理。
+- [x] `pyproject.toml` 补充 `[tool.setuptools.packages.find]`（只打包 trade_py）与 `[tool.pytest.ini_options]`（testpaths=tests）。
+- [x] `uv run pytest` 全量验证通过：12/12 smoke tests（imports、config、utils、meta、data/market、news、intelligence/clients、report、signals、CLI）。
 - [x] `uv run python -m trade_py.cli.main --help` 所有子命令冒烟测试通过。
