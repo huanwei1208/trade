@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 from pathlib import Path
 
@@ -34,6 +35,44 @@ def _upsert_parquet(path: Path, new_df: pd.DataFrame,
     combined.to_parquet(path, index=False)
 
 
+def _compute_signal_strength(sym_df: pd.DataFrame) -> float:
+    """Compute Gold row credibility score (0~1).
+
+    Combines article volume, source diversity, directional consensus,
+    and mean LLM confidence into a single quality score.
+    """
+    n = len(sym_df)
+    if n == 0:
+        return 0.0
+
+    # 1. Volume score: 5+ articles → full score (log scale)
+    vol_score = min(1.0, math.log1p(n) / math.log1p(5))
+
+    # 2. Source diversity: 2+ distinct sources → full score
+    n_sources = sym_df["source"].nunique() if "source" in sym_df.columns else 1
+    diversity_score = min(1.0, n_sources / 2.0)
+
+    # 3. Directional consensus: what fraction share the majority label
+    labels = sym_df["sentiment_label"].values
+    pos = (labels == "positive").sum()
+    neg = (labels == "negative").sum()
+    total = len(labels)
+    majority = max(int(pos), int(neg), int(total - pos - neg))
+    consensus_score = majority / total if total > 0 else 0.5
+
+    # 4. Mean LLM confidence (minor corrective term)
+    conf_mean = (float(sym_df["confidence"].mean())
+                 if "confidence" in sym_df.columns else 0.5)
+
+    strength = (
+        vol_score      * 0.40
+        + diversity_score * 0.25
+        + consensus_score * 0.25
+        + conf_mean       * 0.10
+    )
+    return round(strength, 4)
+
+
 def aggregate(data_root: Path, target_date: date,
               lookback_days: int = 5) -> dict:
     """Compute Gold sentiment factors from Silver layer and write to Parquet.
@@ -57,7 +96,8 @@ def aggregate(data_root: Path, target_date: date,
         con = duckdb.connect()
         target_df = con.execute(f"""
             SELECT symbol, date, sentiment_score, sentiment_label,
-                   event_magnitude, confidence
+                   event_magnitude, confidence,
+                   COALESCE(source, 'unknown') AS source
             FROM read_parquet('{silver_glob}', union_by_name=true)
             WHERE date = '{target_date.isoformat()}'
         """).df()
@@ -119,6 +159,7 @@ def aggregate(data_root: Path, target_date: date,
             "article_count": total,
             "event_magnitude": float(sym_today["event_magnitude"].max()),
             "confidence": float(sym_today["confidence"].mean()),
+            "signal_strength": _compute_signal_strength(sym_today),
         })
 
     if gold_rows:

@@ -125,6 +125,7 @@ class RssSource:
             for r in records:
                 if r.published_at.astimezone(CST).date() > until_date:
                     continue
+                r = self._post_process_record(r)
                 if r.content_hash not in seen:
                     seen.add(r.content_hash)
                     all_records.append(r)
@@ -136,6 +137,10 @@ class RssSource:
 
         all_records.sort(key=lambda r: r.published_at, reverse=True)
         return all_records, diagnostics
+
+    def _post_process_record(self, record: RawRecord) -> RawRecord:
+        """Override in subclasses for provider-specific record customization."""
+        return record
 
     def health_check(self) -> dict:
         import os

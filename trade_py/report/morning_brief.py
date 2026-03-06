@@ -5,7 +5,8 @@ from __future__ import annotations
 Reads:
     - signal_cache from settings DB (watchlist window scores)
     - data/cross_asset/ (gold, BTC, USD/CNH latest values)
-    - data/sentiment/gold/*.json (latest news headlines)
+    - data/sentiment/silver/*.parquet (latest news headlines)
+    - data/sentiment/gold/*.parquet (neg_shock per symbol)
     - data/journal/decisions.parquet (yesterday's prediction retrospective)
 
 Writes:
@@ -80,8 +81,6 @@ def _cross_asset_env_score(ca: dict) -> float:
 def _load_watchlist_signals(data_root: str, date_str: str) -> list[dict]:
     """Load today's signal cache from DB sorted by window_score desc."""
     try:
-        import sys
-        sys.path.insert(0, str(Path(data_root).parent / "python"))
         from trade_py.db.settings_db import SettingsDB
         db = SettingsDB(data_root)
         return db.signal_cache_get(date_str)

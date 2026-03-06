@@ -330,6 +330,35 @@ def _run_pipeline_loop(args, dates: list[date],
 
 
 # ---------------------------------------------------------------------------
+# Status subcommand — Feed Quality Scores
+# ---------------------------------------------------------------------------
+
+def _cmd_status(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="trade data sentiment status")
+    p.add_argument("--data-root", default=str(default_data_root()))
+    p.add_argument("--lookback", type=int, default=30, help="Lookback window in days")
+    args = p.parse_args(argv)
+
+    from trade_py.intelligence.feed_scorer import score_all_sources
+    scores = score_all_sources(Path(args.data_root))
+
+    if not scores:
+        print("No Bronze data found. Run `trade data sentiment` first.")
+        return 0
+
+    print(f"\nFeed Quality Scores (last {args.lookback}d):")
+    for s in sorted(scores, key=lambda x: -x.composite):
+        print(
+            f"  {s.feed_name:<10} "
+            f"coverage={s.coverage_30d:.2f}  "
+            f"uniqueness={s.uniqueness:.2f}  "
+            f"signal_density={s.signal_density:.2f}  "
+            f"composite={s.composite:.2f}"
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Inspect subcommand
 # ---------------------------------------------------------------------------
 
@@ -468,12 +497,225 @@ def _cmd_inspect(argv: list[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Sample subcommand — random spot-check of Silver articles
+# ---------------------------------------------------------------------------
+
+def _cmd_sample(argv: list[str]) -> int:
+    import textwrap
+    import pandas as pd
+
+    p = argparse.ArgumentParser(prog="trade data sentiment sample")
+    p.add_argument("--date", default=None, help="Date to sample (YYYY-MM-DD, default: today)")
+    p.add_argument("--label", default=None,
+                   choices=["positive", "negative", "neutral"],
+                   help="Filter by sentiment label")
+    p.add_argument("--source", default=None, help="Filter by source (e.g. rss, cls)")
+    p.add_argument("--symbol", default=None, help="Filter by stock symbol")
+    p.add_argument("-n", type=int, default=20, help="Number of articles to show")
+    p.add_argument("--data-root", default=str(default_data_root()))
+    p.add_argument("--seed", type=int, default=42, help="Random seed for sampling")
+    args = p.parse_args(argv)
+
+    target = date.fromisoformat(args.date) if args.date else date.today()
+    data_root = Path(args.data_root)
+    y, m, d = target.year, target.month, target.day
+    silver_path = (data_root / "sentiment" / "silver"
+                   / f"{y:04d}" / f"{m:02d}" / f"{y:04d}-{m:02d}-{d:02d}.parquet")
+
+    if not silver_path.exists():
+        print(f"No Silver data for {target.isoformat()} at {silver_path}")
+        print("Tip: run `trade data sentiment --date {date}` first")
+        return 1
+
+    df = pd.read_parquet(silver_path)
+    if args.label:
+        df = df[df["sentiment_label"] == args.label]
+    if args.source:
+        df = df[df["source"].str.lower() == args.source.lower()]
+    if args.symbol:
+        df = df[df["symbol"] == args.symbol]
+
+    if df.empty:
+        print("No articles match the given filters.")
+        return 0
+
+    sample = df.sample(min(args.n, len(df)), random_state=args.seed)
+
+    print(f"\n{'─'*65}")
+    print(f"  Silver sample  date={target.isoformat()}  "
+          f"label={args.label or 'all'}  n={len(sample)}/{len(df)}")
+    print(f"{'─'*65}")
+
+    label_dist = df["sentiment_label"].value_counts().to_dict()
+    print(f"  Label distribution: {label_dist}")
+    print(f"{'─'*65}\n")
+
+    for i, (_, row) in enumerate(sample.iterrows(), 1):
+        label = row.get("sentiment_label", "?")
+        conf  = row.get("confidence", float("nan"))
+        sym   = row.get("symbol", "?")
+        src   = row.get("source", "?")
+        pub   = str(row.get("published_at", ""))[:19]
+        hash_ = str(row.get("content_hash", ""))[:8]
+        title = str(row.get("title", ""))
+        print(f"[{i:02d}] [{label.upper():8s} conf={conf:.2f}] {sym}  src={src}  {pub}  #{hash_}")
+        print(f"      {textwrap.shorten(title, 80)}")
+        print()
+
+    print(f"\nTo correct a label, create data/.corrections/{target.isoformat()}.json")
+    print("Then run: trade data sentiment apply-corrections --date", target.isoformat())
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Apply-corrections subcommand — write human labels back to Silver + re-Gold
+# ---------------------------------------------------------------------------
+
+def _cmd_apply_corrections(argv: list[str]) -> int:
+    import json as _json
+    import pandas as pd
+    from datetime import datetime as _dt
+
+    p = argparse.ArgumentParser(prog="trade data sentiment apply-corrections")
+    p.add_argument("--date", required=True, help="Date to apply corrections (YYYY-MM-DD)")
+    p.add_argument("--data-root", default=str(default_data_root()))
+    p.add_argument("--dry-run", action="store_true", help="Show what would change without saving")
+    args = p.parse_args(argv)
+
+    target = date.fromisoformat(args.date)
+    data_root = Path(args.data_root)
+    y, m, d = target.year, target.month, target.day
+
+    corrections_path = data_root / ".corrections" / f"{target.isoformat()}.json"
+    if not corrections_path.exists():
+        print(f"No corrections file: {corrections_path}")
+        print("Create it with entries like:")
+        print('  [{"content_hash": "a3f9c2d1", "corrected_label": "neutral", "note": "..."}]')
+        return 1
+
+    with open(corrections_path) as f:
+        corrections: list[dict] = _json.load(f)
+    if not corrections:
+        print("Corrections file is empty, nothing to apply.")
+        return 0
+
+    silver_path = (data_root / "sentiment" / "silver"
+                   / f"{y:04d}" / f"{m:02d}" / f"{y:04d}-{m:02d}-{d:02d}.parquet")
+    if not silver_path.exists():
+        print(f"No Silver data at {silver_path}")
+        return 1
+
+    df = pd.read_parquet(silver_path)
+    applied = 0
+    training_rows: list[dict] = []
+
+    now_iso = _dt.now(tz=timezone.utc).isoformat()
+    for corr in corrections:
+        hash_ = corr.get("content_hash", "")
+        new_label = corr.get("corrected_label", "")
+        if not hash_ or new_label not in ("positive", "negative", "neutral"):
+            print(f"  SKIP invalid correction: {corr}")
+            continue
+
+        mask = df["content_hash"].str.startswith(hash_)
+        if not mask.any():
+            print(f"  SKIP hash not found in Silver: {hash_}")
+            continue
+
+        orig = df.loc[mask, "sentiment_label"].iloc[0]
+        if orig == new_label:
+            print(f"  SKIP {hash_}: label already '{new_label}'")
+            continue
+
+        if args.dry_run:
+            print(f"  DRY  {hash_}: '{orig}' → '{new_label}'  note={corr.get('note','')}")
+        else:
+            df.loc[mask, "sentiment_label"] = new_label
+            # Also update sentiment_score to match label direction
+            score_map = {"positive": 0.8, "neutral": 0.0, "negative": -0.8}
+            df.loc[mask, "sentiment_score"] = score_map[new_label]
+            print(f"  OK   {hash_}: '{orig}' → '{new_label}'")
+
+        applied += 1
+        training_rows.append({
+            "content_hash": hash_,
+            "date": target.isoformat(),
+            "original_label": orig,
+            "corrected_label": new_label,
+            "note": corr.get("note", ""),
+            "corrected_by": corr.get("corrected_by", "human"),
+            "corrected_at": corr.get("corrected_at", now_iso),
+        })
+
+    print(f"\nApplied {applied}/{len(corrections)} corrections"
+          + (" (DRY RUN)" if args.dry_run else ""))
+
+    if args.dry_run or applied == 0:
+        return 0
+
+    # Write updated Silver parquet
+    df.to_parquet(silver_path, index=False)
+    print(f"Silver updated: {silver_path}")
+
+    # Append to training corpus
+    training_dir = data_root / "training"
+    training_dir.mkdir(parents=True, exist_ok=True)
+    training_file = training_dir / "human_labels.parquet"
+    new_train_df = pd.DataFrame(training_rows)
+    if training_file.exists():
+        existing = pd.read_parquet(training_file)
+        combined = pd.concat([existing, new_train_df], ignore_index=True)
+        combined = combined.drop_duplicates(subset=["content_hash", "corrected_at"], keep="last")
+    else:
+        combined = new_train_df
+    combined.to_parquet(training_file, index=False)
+    print(f"Training corpus: {len(combined)} total corrections at {training_file}")
+
+    # Re-aggregate Gold for the corrected date
+    print(f"\nRe-aggregating Gold for {target.isoformat()} ...")
+    from trade_py.data.pipeline.aggregate import aggregate
+    gold_stats = aggregate(data_root, target)
+    print(f"Gold re-aggregated: {gold_stats}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Main entry point for `trade data sentiment`
 # ---------------------------------------------------------------------------
 
+def _print_sentiment_help() -> None:
+    print("""\
+Usage: trade data sentiment [subcommand] [args...]
+
+子命令:
+  (无子命令)           运行完整情绪流水线 (fetch → LLM → Gold)
+  status               显示各 Feed 的质量评分
+  inspect <src> <date> 查看指定日期的 Bronze/Silver 文章
+  sample               随机抽样 Silver 文章（人工核查）
+  apply-corrections    将 .corrections/ 中的校正写回 Silver + 重算 Gold
+
+示例:
+  trade data sentiment --date 2026-03-05 --llm-provider ollama
+  trade data sentiment --fetch-mode none --start 2026-01-01 --end 2026-03-05
+  trade data sentiment status
+  trade data sentiment inspect rss 2026-03-05 --silver
+  trade data sentiment sample --date 2026-03-05 --label negative -n 20
+  trade data sentiment apply-corrections --date 2026-03-05\
+""")
+
+
 def main(argv: list[str]) -> int:
-    if argv and argv[0] == "inspect":
+    if not argv or argv[0] in ("-h", "--help"):
+        _print_sentiment_help()
+        return 0
+    if argv[0] == "status":
+        return _cmd_status(argv[1:])
+    if argv[0] == "inspect":
         return _cmd_inspect(argv[1:])
+    if argv[0] == "sample":
+        return _cmd_sample(argv[1:])
+    if argv[0] == "apply-corrections":
+        return _cmd_apply_corrections(argv[1:])
 
     args, fetch_mode_explicit = _build_parser(argv)
 

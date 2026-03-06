@@ -4,26 +4,21 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 print_help() {
-  cat <<'EOF'
-Unified entrypoint for the trade project
-
-Usage:
-  ./trade doctor
-  ./trade setup-python
-  ./trade configure [preset]
-  ./trade build [preset]
-  ./trade cli <command> [args...]
-  ./trade data <args...>
-  ./trade model <args...>
-  ./trade report <args...>
-  ./trade account <args...>
-  ./trade py <domain> [args...]
-  ./trade ui [streamlit args...]
-  ./trade test [preset]
-
-Default preset:
-  linux-clang
-EOF
+  require_cmd uv
+  cd "$ROOT_DIR"
+  uv run python -m trade_py.cli.main --help
+  echo ""
+  echo "快捷命令 (bash 层):"
+  echo "  ./trade sentiment [args]   →  trade data sentiment [args]"
+  echo "  ./trade brief [args]       →  trade report brief [args]"
+  echo "  ./trade schedule [args]    →  trade report schedule [args]"
+  echo ""
+  echo "开发命令:"
+  echo "  ./trade doctor             检查 cmake/gcc/uv 环境"
+  echo "  ./trade setup-python       uv sync"
+  echo "  ./trade configure [preset] CMake configure (default: linux-clang)"
+  echo "  ./trade build [preset]     CMake build"
+  echo "  ./trade test [preset]      ctest"
 }
 
 require_cmd() {
@@ -154,11 +149,14 @@ cmd_py() {
 }
 
 cmd_trade_py_domain() {
-  local domain="$1"
-  shift || true
+  local domain="$1"; shift || true
   require_cmd uv
   cd "$ROOT_DIR"
-  uv run python -m trade_py.cli.main "$domain" "$@"
+  if [ $# -eq 0 ]; then
+    uv run python -m trade_py.cli.main "$domain" --help
+  else
+    uv run python -m trade_py.cli.main "$domain" "$@"
+  fi
 }
 
 cmd_test() {
@@ -182,13 +180,16 @@ main() {
     model) cmd_trade_py_domain model "$@" ;;
     report) cmd_trade_py_domain report "$@" ;;
     account) cmd_trade_py_domain account "$@" ;;
+    sentiment) cmd_trade_py_domain data sentiment "$@" ;;
+    brief)     cmd_trade_py_domain report brief "$@" ;;
+    schedule)  cmd_trade_py_domain report schedule "$@" ;;
     py) cmd_py "$@" ;;
     ui) cmd_ui "$@" ;;
     test) cmd_test "$@" ;;
     help|-h|--help) print_help ;;
     *)
-      echo "Unknown command: $sub"
-      print_help
+      echo "错误：未知命令 '$sub'"
+      echo "运行 './trade help' 查看可用命令"
       exit 1
       ;;
   esac

@@ -196,6 +196,11 @@ def _score_sentiment(symbol: str, data_root: str,
             return 50.0
         row = row.iloc[0]
 
+        # signal_strength < 0.3 → data too sparse; fall back to neutral
+        signal_strength = float(row.get("signal_strength", 1.0))
+        if signal_strength < 0.3:
+            return 50.0
+
         net_sent   = float(row.get("net_sentiment",  0.0))  # [-1, 1]
         neg_shock  = float(row.get("neg_shock",      0.0))  # negative = bad
         sent_vel   = float(row.get("sent_velocity",  0.0))  # positive = improving
@@ -209,7 +214,13 @@ def _score_sentiment(symbol: str, data_root: str,
         # Velocity bonus/penalty: rising sentiment is a positive signal
         base += sent_vel * 20.0
 
-        return max(0.0, min(100.0, base))
+        scored = max(0.0, min(100.0, base))
+
+        # Blend toward neutral (50) proportionally to low signal_strength
+        # strength=1.0 → full score; strength=0.3 → 50% blended toward 50
+        blend_weight = (signal_strength - 0.3) / 0.7  # 0→1 in [0.3, 1.0]
+        blend_weight = max(0.0, min(1.0, blend_weight))
+        return 50.0 + blend_weight * (scored - 50.0)
     except Exception:
         return 50.0
 

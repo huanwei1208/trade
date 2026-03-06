@@ -58,6 +58,9 @@ def _register_defaults() -> None:
     from trade_py.data.news.gdelt.source import GdeltSource
     register("gdelt", lambda **kw: GdeltSource(**kw))
 
+    from trade_py.data.news.cls_source import ClsSource
+    register("cls", lambda **kw: ClsSource(**kw))
+
 
 try:
     _register_defaults()

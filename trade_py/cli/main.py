@@ -1,25 +1,48 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
+import textwrap
 
-from trade_py.cli import account, data, model, report
+
+def _setup_logging(verbose: bool = False) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="trade")
-    parser.add_argument("domain", choices=["data", "model", "report", "account"])
+    from trade_py.cli import data, model, report, account
+
+    domains = [("data", data), ("model", model), ("report", report), ("account", account)]
+    domain_lines = "\n".join(
+        f"  {name:<10}  {mod.make_parser().description}"
+        for name, mod in domains
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="trade",
+        description="A-share 交易智能平台",
+        epilog=(
+            f"可用域:\n{domain_lines}\n\n"
+            "用 `trade <域> --help` 查看各域详细用法。"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="DEBUG 级日志")
+    parser.add_argument("domain", choices=[n for n, _ in domains], metavar="domain",
+                        help="{" + ",".join(n for n, _ in domains) + "}")
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 
-    if args.domain == "data":
-        return data.main(args.args)
-    if args.domain == "model":
-        return model.main(args.args)
-    if args.domain == "report":
-        return report.main(args.args)
-    if args.domain == "account":
-        return account.main(args.args)
-    return 1
+    _setup_logging(args.verbose)
+
+    dispatch = {"data": data, "model": model, "report": report, "account": account}
+    return dispatch[args.domain].main(args.args)
 
 
 if __name__ == "__main__":

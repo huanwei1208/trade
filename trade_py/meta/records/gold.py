@@ -22,3 +22,4 @@ class GoldRecord:
     top_sectors: list = field(default_factory=list)
     policy_signal_count: int = 0
     sources: list = field(default_factory=list)
+    signal_strength: float = 0.0  # 0~1 credibility score (volume × diversity × consensus × confidence)

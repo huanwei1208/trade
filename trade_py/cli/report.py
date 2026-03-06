@@ -9,23 +9,59 @@ from trade_py.report.morning_brief import generate
 from trade_py.report import scheduler as report_scheduler
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = argv or []
-    parser = argparse.ArgumentParser(prog="trade report")
+def make_parser() -> argparse.ArgumentParser:
+    from trade_py.cli import epilog_from_subparsers
+
+    parser = argparse.ArgumentParser(
+        prog="trade report",
+        description="报告与调度 — 晨报/知识图谱/定时任务",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_brief = sub.add_parser("brief", help="Generate morning brief")
+    p_brief = sub.add_parser(
+        "brief",
+        description="生成晨报",
+        epilog=(
+            "trade report brief\n"
+            "trade report brief --date 2026-03-05"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p_brief.add_argument("--data-root", default=str(default_data_root()))
     p_brief.add_argument("--date", default=None, help="Brief date (YYYY-MM-DD)")
 
-    p_schedule = sub.add_parser("schedule", help="Run daily scheduler")
+    p_schedule = sub.add_parser(
+        "schedule",
+        description="启动日常调度器（阻塞运行）",
+        epilog=(
+            "trade report schedule\n"
+            "trade report schedule --dry-run"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p_schedule.add_argument("--data-root", default=str(default_data_root()))
     p_schedule.add_argument("--dry-run", action="store_true")
 
-    p_graph = sub.add_parser("graph", help="Build knowledge graph")
+    p_graph = sub.add_parser(
+        "graph",
+        description="构建行业知识图谱",
+        epilog=(
+            "trade report graph\n"
+            "trade report graph --output /tmp/graph.json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p_graph.add_argument("--output", default=None)
 
-    args = parser.parse_args(argv)
+    parser.epilog = epilog_from_subparsers(parser)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = argv or []
+    args = make_parser().parse_args(argv)
+
     if args.command == "brief":
         path = generate(args.data_root, args.date)
         print(f"\nMorning brief saved to: {path}")

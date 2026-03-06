@@ -123,8 +123,11 @@ class SettingsDB:
 
     def set(self, key: str, value: Any) -> None:
         self._conn.execute(
-            "UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
-            (str(value), key),
+            "INSERT INTO settings (key, value, value_type, category, updated_at) "
+            "VALUES (?, ?, 'string', 'general', CURRENT_TIMESTAMP) "
+            "ON CONFLICT(key) DO UPDATE SET "
+            "value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+            (key, str(value)),
         )
         self._conn.commit()
 
@@ -148,6 +151,17 @@ class SettingsDB:
         ).fetchall()
         return [r["category"] for r in rows]
 
+    # ── Instrument lookup (instruments table lives in the same DB) ────────────
+
+    def instrument_lookup(self, symbol: str) -> dict | None:
+        """Return {'name', 'market_name'} for a symbol, or None if not in instruments."""
+        row = self._conn.execute(
+            "SELECT name, market_name FROM instruments WHERE symbol = ?", (symbol,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {"name": row["name"] or "", "market_name": row["market_name"] or ""}
+
     # ── Watchlist ─────────────────────────────────────────────────────────────
 
     def watchlist_add(self, symbol: str, note: str = "") -> None:
@@ -169,6 +183,24 @@ class SettingsDB:
             "SELECT symbol FROM watchlist WHERE active = 1 ORDER BY added_at"
         ).fetchall()
         return [r["symbol"] for r in rows]
+
+    def watchlist_get_with_names(self) -> list[dict]:
+        """Return watchlist rows with instrument name joined from instruments table."""
+        rows = self._conn.execute(
+            """
+            SELECT w.symbol,
+                   COALESCE(i.name, '')        AS name,
+                   COALESCE(i.market_name, '') AS market_name
+            FROM watchlist w
+            LEFT JOIN instruments i ON w.symbol = i.symbol
+            WHERE w.active = 1
+            ORDER BY w.added_at
+            """
+        ).fetchall()
+        return [
+            {"symbol": r["symbol"], "name": r["name"], "market_name": r["market_name"]}
+            for r in rows
+        ]
 
     # ── Signal cache ──────────────────────────────────────────────────────────
 

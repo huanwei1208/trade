@@ -136,6 +136,43 @@ def _cmd_predict(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sentiment_ic(args: argparse.Namespace) -> int:
+    import json
+    from trade_py.analysis.sentiment_ic import compute_ic, format_ic_report
+
+    result = compute_ic(
+        data_root=args.data_root,
+        lookback=args.lookback,
+        forward_days=args.forward_days,
+        by_source=args.by_source,
+    )
+    print(format_ic_report(result))
+    if args.json:
+        print("\nRaw JSON:")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if "error" not in result or result.get("valid_days", 0) >= 1 else 1
+
+
+def _cmd_nlp_train(args: argparse.Namespace) -> int:
+    from trade_py.intelligence.nlp_train import finetune_sentiment
+    try:
+        finetune_sentiment(
+            base_model=args.base_model,
+            train_data=args.train_data,
+            output_onnx=args.output,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lookback_days=args.lookback,
+        )
+        return 0
+    except ImportError as e:
+        logger.error("NLP dependencies missing (install trade-py[nlp]): %s", e)
+        return 1
+    except Exception as e:
+        logger.error("NLP training failed: %s", e)
+        return 1
+
+
 def _cmd_model_report(args: argparse.Namespace) -> int:
     from trade_py.analysis.feature_builder import FeatureBuilder
     from trade_py.analysis.model_trainer import PropagationModel
@@ -154,28 +191,90 @@ def _cmd_model_report(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = argv or []
-    parser = argparse.ArgumentParser(prog="trade model")
+def make_parser() -> argparse.ArgumentParser:
+    from trade_py.cli import epilog_from_subparsers
+
+    parser = argparse.ArgumentParser(
+        prog="trade model",
+        description="模型与信号分析 — 窗口得分/情绪IC/预测/训练",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_score = sub.add_parser("score", help="Compute watchlist window scores")
+    p_score = sub.add_parser(
+        "score",
+        description="计算自选股窗口得分",
+        epilog="trade model score\ntrade model score --date 2026-03-05",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p_score.add_argument("--data-root", default=str(default_data_root()))
     p_score.add_argument("--date", default=None)
 
-    p_bf = sub.add_parser("build-features", help="Build feature Parquet from kline + events")
+    p_ic = sub.add_parser(
+        "sentiment-ic",
+        description="情绪 IC 检验（信号质量评估）",
+        epilog=(
+            "trade model sentiment-ic --lookback 60\n"
+            "trade model sentiment-ic --by-source\n"
+            "trade model sentiment-ic --lookback 90 --forward-days 10 --json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_ic.add_argument("--data-root", default=str(default_data_root()))
+    p_ic.add_argument("--lookback", type=int, default=60, help="Lookback window in calendar days")
+    p_ic.add_argument("--forward-days", type=int, default=5, help="Forward return horizon in trading days")
+    p_ic.add_argument("--by-source", action="store_true", help="Break down IC by data source")
+    p_ic.add_argument("--json", action="store_true", help="Also print raw JSON output")
+
+    p_bf = sub.add_parser(
+        "build-features",
+        description="从 K线+事件构建 feature Parquet",
+        epilog="trade model build-features",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p_bf.add_argument("--data-root", default=str(default_data_root()))
 
-    p_bl = sub.add_parser("build-labels", help="Build label Parquet from forward returns")
+    p_bl = sub.add_parser(
+        "build-labels",
+        description="从前向收益构建 label Parquet",
+        epilog="trade model build-labels",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p_bl.add_argument("--data-root", default=str(default_data_root()))
 
-    p_tr = sub.add_parser("train", help="Train LightGBM propagation models")
+    p_tr = sub.add_parser(
+        "train",
+        description="训练 LightGBM 传导模型",
+        epilog="trade model train\ntrade model train --cv 10",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p_tr.add_argument("--data-root", default=str(default_data_root()))
     p_tr.add_argument("--cv", type=int, default=5)
 
-    for name, hlp in [("predict", "Predict for a symbol+event pair"),
-                      ("report",  "Generate decision report")]:
-        p = sub.add_parser(name, help=hlp)
+    p_nlp = sub.add_parser(
+        "nlp-train",
+        description="微调情绪 NLP 模型并导出 ONNX (FinBERT)",
+        epilog=(
+            "trade model nlp-train\n"
+            "trade model nlp-train --epochs 5 --batch-size 32"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_nlp.add_argument("--base-model", default="yiyanghkust/finbert-tone-chinese")
+    p_nlp.add_argument("--train-data", default=str(default_data_root() / "raw" / "sentiment"))
+    p_nlp.add_argument("--output", default=str(default_data_root() / "models" / "sentiment" / "finbert_zh.onnx"))
+    p_nlp.add_argument("--epochs", type=int, default=3)
+    p_nlp.add_argument("--batch-size", type=int, default=16)
+    p_nlp.add_argument("--lookback", type=int, default=30)
+
+    for name, desc, example in [
+        ("predict", "预测股票对事件的反应",
+         "trade model predict --symbol 600000.SH --event-type policy_easing --magnitude 0.8"),
+        ("report",  "生成决策报告 (Markdown)",
+         "trade model report --symbol 600000.SH --event-type policy_easing --magnitude 0.8"),
+    ]:
+        p = sub.add_parser(name, description=desc, epilog=example,
+                           formatter_class=argparse.RawDescriptionHelpFormatter)
         p.add_argument("--data-root",  default=str(default_data_root()))
         p.add_argument("--event-type", required=True)
         p.add_argument("--symbol",     required=True)
@@ -183,7 +282,13 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--magnitude",  type=float, default=0.7)
         p.add_argument("--actor-type", default="unknown")
 
-    args = parser.parse_args(argv)
+    parser.epilog = epilog_from_subparsers(parser)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = argv or []
+    args = make_parser().parse_args(argv)
 
     if args.command == "score":
         scores = score_watchlist(args.data_root, args.date)
@@ -195,6 +300,12 @@ def main(argv: list[str] | None = None) -> int:
         for sym, sc in sorted(scores.items(), key=lambda x: -x[1]):
             print(f"  {sym:<15} {sc:3d}")
         return 0
+
+    if args.command == "sentiment-ic":
+        return _cmd_sentiment_ic(args)
+
+    if args.command == "nlp-train":
+        return _cmd_nlp_train(args)
 
     return {
         "build-features": _cmd_build_features,

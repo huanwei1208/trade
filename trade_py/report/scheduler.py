@@ -29,6 +29,12 @@ def _job(name: str):
 
 
 def _build_jobs(data_root: str):
+    @_job("sentiment_pipeline")
+    def job_sentiment_pipeline() -> None:
+        from trade_py.cli._sentiment import main as sentiment_main
+        # Skip RSS download (already fetched during the day); only run LLM+Gold
+        sentiment_main(["--fetch-mode", "incremental", "--data-root", data_root])
+
     @_job("cross_asset_fetch")
     def job_cross_asset() -> None:
         from trade_py.data.market.cross_asset import fetch_all
@@ -71,17 +77,27 @@ def _build_jobs(data_root: str):
         path = generate(data_root)
         logger.info("Morning brief: %s", path)
 
-    return [job_cross_asset, job_kline, job_fund_flow, job_window_score, job_morning_brief]
+    return [job_sentiment_pipeline, job_cross_asset, job_kline,
+            job_fund_flow, job_window_score, job_morning_brief]
 
 
 def register_jobs(data_root: str) -> None:
-    job_cross_asset, job_kline, job_fund_flow, job_window_score, job_morning_brief = _build_jobs(data_root)
-    schedule.every().day.at("02:00").do(job_cross_asset)
-    schedule.every().day.at("09:05").do(job_kline)
-    schedule.every().day.at("09:05").do(job_fund_flow)
-    schedule.every().day.at("09:10").do(job_window_score)
-    schedule.every().day.at("09:15").do(job_morning_brief)
+    (job_sentiment_pipeline, job_cross_asset, job_kline,
+     job_fund_flow, job_window_score, job_morning_brief) = _build_jobs(data_root)
+
+    # Overnight: LLM sentiment processing (runs while markets are closed)
+    schedule.every().day.at("22:00").do(job_sentiment_pipeline)
+
+    # Pre-market: data ready well before 09:30 open
+    schedule.every().day.at("07:00").do(job_cross_asset)
+    schedule.every().day.at("07:00").do(job_kline)
+    schedule.every().day.at("07:30").do(job_fund_flow)
+    schedule.every().day.at("07:35").do(job_window_score)
+    schedule.every().day.at("07:45").do(job_morning_brief)
+
+    # Post-market: refresh with intraday fund-flow + rescore
     schedule.every().day.at("15:15").do(job_fund_flow)
+    schedule.every().day.at("15:30").do(job_window_score)
 
     logger.info("Registered %d scheduled jobs", len(schedule.jobs))
 
