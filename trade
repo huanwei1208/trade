@@ -113,7 +113,7 @@ cmd_cli() {
 cmd_ui() {
   require_cmd uv
   cd "$ROOT_DIR"
-  uv run streamlit run python/app/ui.py "$@"
+  uv run streamlit run trade_py/ui/ui.py "$@"
 }
 
 cmd_py() {
@@ -123,9 +123,7 @@ cmd_py() {
   fi
   require_cmd uv
   cd "$ROOT_DIR"
-  PYTHONPATH="$ROOT_DIR/python${PYTHONPATH:+:$PYTHONPATH}" \
-    uv run python -m trade_py.cli.main "$@"
-  # Note: python/ remains on PYTHONPATH for scripts/ and app/ access
+  uv run python -m trade_py.cli.main "$@"
 }
 
 cmd_test() {

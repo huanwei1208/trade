@@ -31,12 +31,12 @@ def _job(name: str):
 def _build_jobs(data_root: str):
     @_job("cross_asset_fetch")
     def job_cross_asset() -> None:
-        from trade_py.data.cross_asset_fetcher import fetch_all
+        from trade_py.data.market.cross_asset import fetch_all
         fetch_all(data_root)
 
     @_job("kline_update")
     def job_kline() -> None:
-        from trade_py.data.kline_fetcher import KlineFetcher
+        from trade_py.data.market.kline import KlineFetcher
         from trade_py.db.instruments_db import InstrumentsDB
 
         db = InstrumentsDB(data_root)
@@ -48,7 +48,7 @@ def _build_jobs(data_root: str):
 
     @_job("fund_flow_update")
     def job_fund_flow() -> None:
-        from trade_py.data.fund_flow_fetcher import FundFlowFetcher
+        from trade_py.data.market.fund_flow import FundFlowFetcher
         from trade_py.db.instruments_db import InstrumentsDB
         from trade_py.db.settings_db import SettingsDB
 
@@ -67,7 +67,7 @@ def _build_jobs(data_root: str):
 
     @_job("morning_brief")
     def job_morning_brief() -> None:
-        from trade_py.journal.morning_brief import generate
+        from trade_py.report.morning_brief import generate
         path = generate(data_root)
         logger.info("Morning brief: %s", path)
 

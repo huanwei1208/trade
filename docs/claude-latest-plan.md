@@ -170,7 +170,6 @@ trade/
 - [x] `data sentiment` 从 `_legacy` 迁出（当前为 CLI 定向调用 `scripts.run_sentiment`）。
 - [x] `report schedule/graph` 从 `_legacy` 迁出到 `trade_py.cli.report` 原生实现。
 - [x] `data sentiment` 进一步原生化：新增 `trade_py/cli/_sentiment.py` 完整原生实现，`python/scripts/run_sentiment.py` 已删除。
-- [ ] `trade_py/data/news/` 深度拆分：将 `rss/base.py` 与 `gdelt/source.py` 内逻辑继续下沉到具体 provider 模块（目前已完成目录拆分与兼容层）。
 - [x] `model run` 迁出 `_legacy`：`cli/model.py` 已原生实现 build-features/build-labels/train/predict/report，`scripts/run_model.py` 已删除。
 - [x] 补齐 `trade_py/meta/market/{kline,fund_flow,signal}.py`。
 - [x] 补齐 `trade_py/meta/schema/bronze.py`。
@@ -178,4 +177,24 @@ trade/
 - [x] `python/trade_py` 物理迁移到仓库根 `trade_py/`，`config/context.py` parents 层级修正，`pyproject.toml` 加入 `[project.scripts]` 入口。
 - [x] 全量删除 `python/` 目录（scripts + trade_py + app），`python/app/` 迁移到 `trade_py/ui/`，更新所有 `app.*` 导入为 `trade_py.ui.*`。
 - [x] 删除 `trade_py/cli/_legacy.py`（所有命令已原生化，无残留调用）。
-- [ ] 清理旧构建产物：`build/linux/`、`trade_py/__pycache__/`。
+
+### 配置层清理
+- [x] `config/context.py` 移除 `_PYTHON_ROOT` / `python_root` 字段（python/ 目录已删除）。
+- [x] 删除三个兼容导入 shim：`data/news/rss_source.py`、`data/news/gdelt_source.py`、`intelligence/_utils.py`。
+
+### 目录结构收敛
+- [x] `journal/` 目录并入 `report/`：`morning_brief.py`、`decision_journal.py`、`report_generator.py` 移入 `report/`，`journal/` 已删除，全部导入已更新。
+- [x] `data/market/` 落地：四个 fetcher 移入 `data/market/{kline,fund_flow,cross_asset}/` 及 `data/market/fundamental.py`，旧文件已删除，相关导入已更新。
+- [x] `intelligence/clients/` 落地：`claude_client.py` 拆分为 `clients/{base,anthropic,ollama}.py`，旧文件已删除，`_sentiment.py` 改用 `create_client()` 工厂。
+- [x] `data/news/rss/` 深度拆分：catalog 辅助函数提取到 `rss/catalog.py`，`base.py` 只保留 `RssSource` + `_fetch_feed`。
+- [ ] `data/registry.py`：实现数据源注册表，按 source_id 查找 DataSource 实例。
+
+### 文档与工具
+- [x] README.md 修正：`python/app/ui.py` → `trade_py/ui/ui.py`；`scripts.run_sentiment` → `trade_py.cli.main data sentiment`。
+- [x] `./trade` shell 脚本：`ui` 子命令的 streamlit 入口改为 `trade_py/ui/ui.py`，移除过时 PYTHONPATH。
+- [ ] notebooks 修正：`02_sentiment.ipynb`、`04_model_training.ipynb` 更新 import 路径（`scripts.run_*` → `trade_py.cli.*`）。
+
+### 验证 & 测试
+- [ ] 清理旧构建产物：`build/linux/` 缓存目录。
+- [ ] `uv run pytest` 全量验证 Python 层无断链。
+- [x] `uv run python -m trade_py.cli.main --help` 所有子命令冒烟测试通过。

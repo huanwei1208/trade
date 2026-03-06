@@ -692,7 +692,7 @@ class FeatureBuilder:
         """Load fundamental features (Group E) from local Parquet cache."""
         defaults: dict[str, float] = {col: 0.0 for col in GROUP_E_COLS}
         try:
-            from trade_py.data.fundamental_fetcher import (
+            from trade_py.data.market.fundamental import (
                 FundamentalFetcher, compute_fundamental_features,
             )
             fetcher = FundamentalFetcher(str(self._root))
@@ -760,7 +760,7 @@ class FeatureBuilder:
         """Load large-order fund flow ratio from local Parquet cache (Group D ext)."""
         defaults = {"large_order_net_ratio": 0.0}
         try:
-            from trade_py.data.fund_flow_fetcher import FundFlowFetcher
+            from trade_py.data.market.fund_flow import FundFlowFetcher
             fetcher = FundFlowFetcher(str(self._root))
             df = fetcher.load(symbol)
             if df.empty:

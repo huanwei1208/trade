@@ -4,8 +4,8 @@ import argparse
 import logging
 
 from trade_py.config import default_data_root
-from trade_py.data.cross_asset_fetcher import fetch_all, fetch_btc, fetch_fx_cnh, fetch_gold
-from trade_py.data.kline_fetcher import KlineFetcher
+from trade_py.data.market.cross_asset import fetch_all, fetch_btc, fetch_fx_cnh, fetch_gold
+from trade_py.data.market.kline import KlineFetcher
 from trade_py.db.instruments_db import InstrumentsDB
 
 logger = logging.getLogger(__name__)

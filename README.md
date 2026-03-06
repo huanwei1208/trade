@@ -53,7 +53,7 @@ export CXX=/usr/bin/clang++-13
 ```
 
 默认会启动 Streamlit：
-- 入口文件：`python/app/ui.py`
+- 入口文件：`trade_py/ui/ui.py`
 
 ## 5. 运行测试
 
@@ -69,5 +69,5 @@ export CXX=/usr/bin/clang++-13
 cd deployment/rsshub
 docker compose up -d
 cd ../..
-uv run python -m scripts.run_sentiment --date 2026-03-04 --dry-run --rsshub-base-url http://127.0.0.1:1200
+uv run python -m trade_py.cli.main data sentiment --date 2026-03-04 --dry-run --rsshub-base-url http://127.0.0.1:1200
 ```

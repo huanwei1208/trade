@@ -139,7 +139,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
 def _cmd_model_report(args: argparse.Namespace) -> int:
     from trade_py.analysis.feature_builder import FeatureBuilder
     from trade_py.analysis.model_trainer import PropagationModel
-    from trade_py.journal.report_generator import ReportGenerator
+    from trade_py.report.report_generator import ReportGenerator
 
     sector = args.sector or "SW_Unknown"
     event = _make_event(args)

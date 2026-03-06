@@ -100,9 +100,7 @@ def _render_new_decision_form() -> None:
 def _save_decision(symbol: str, direction: str, narrative: str, emotion: str) -> None:
     action_map = {"买入": "buy", "卖出": "sell", "观望": "hold"}
     try:
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-        from trade_py.journal.decision_journal import DecisionJournal
+        from trade_py.report.decision_journal import DecisionJournal
         journal = DecisionJournal(str(_data_root()))
         journal.log(
             symbol=symbol,

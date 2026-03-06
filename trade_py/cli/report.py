@@ -5,7 +5,7 @@ from pathlib import Path
 
 from trade_py.config import default_data_root
 from trade_py.intelligence.graph.builder import build_sector_graph
-from trade_py.journal.morning_brief import generate
+from trade_py.report.morning_brief import generate
 from trade_py.report import scheduler as report_scheduler
 
 

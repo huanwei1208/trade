@@ -271,13 +271,13 @@ def _run_pipeline_loop(args, dates: list[date],
     sources = enrich_sources or [args.source]
 
     if not args.dry_run:
-        from trade_py.intelligence.claude_client import ClaudeClient
+        from trade_py.intelligence.clients import create_client
         try:
-            client = ClaudeClient(
-                api_key=args.api_key,
+            client = create_client(
                 provider=args.llm_provider,
-                model=args.llm_model,
-                ollama_base_url=ollama_base_url,
+                api_key=args.api_key if args.llm_provider == "anthropic" else None,
+                model=args.llm_model or None,
+                **({"base_url": ollama_base_url} if args.llm_provider == "ollama" else {}),
             )
         except (ValueError, ImportError) as e:
             print(f"ERROR: Cannot init LLM client: {e}")
