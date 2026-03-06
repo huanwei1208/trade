@@ -3,7 +3,7 @@
 ## Entry files
 
 - `config/config.yaml`: C++ engine runtime config.
-- `config/defaults.json`: Python CLI defaults (global), including sentiment defaults.
+- `config/defaults.json`: Python CLI defaults (global), including sentiment and kline defaults.
 
 ## Feed catalog
 
@@ -16,6 +16,7 @@
 - `config/modules/security.yaml`
 - `config/modules/storage.yaml`
 - `config/modules/sentiment.yaml`
+- `config/modules/market_data.yaml`
 
 ## Compatibility notes
 

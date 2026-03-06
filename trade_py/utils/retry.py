@@ -29,7 +29,11 @@ def retry(
                 except on as exc:
                     if delay is None:
                         raise
-                    msg = f"[retry] {fn.__name__} attempt {attempt} failed: {exc} — retrying in {delay}s"
+                    exc_name = type(exc).__name__
+                    msg = (
+                        f"[retry] {fn.__name__} attempt={attempt} "
+                        f"error_type={exc_name} error={exc!r} retry_in={delay}s"
+                    )
                     logger.warning(msg)
                     if progress_cb:
                         progress_cb(msg)

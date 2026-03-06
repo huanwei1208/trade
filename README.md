@@ -40,7 +40,7 @@ export CXX=/usr/bin/clang++-13
 示例：
 
 ```bash
-./trade py data collector collect --symbol 600000.SH --start 2024-01-01 --end 2024-01-31
+./trade py data kline sync --mode range --symbols 600000.SH --start 2024-01-01 --end 2024-01-31
 ./trade py data sentiment --start 2026-01-01 --dry-run
 ./trade cli report --symbol 600000.SH
 ```

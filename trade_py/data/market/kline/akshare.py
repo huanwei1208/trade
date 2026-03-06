@@ -31,6 +31,7 @@ from typing import Optional
 import pandas as pd
 
 from trade_py.db.instruments_db import InstrumentsDB
+from trade_py.utils.retry import retry
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,22 @@ _COLUMN_ORDER = [
     "symbol", "date", "open", "high", "low", "close",
     "volume", "amount", "turnover_rate", "prev_close", "vwap",
 ]
+
+_FETCH_RETRY_DELAYS_SEC = (1.0, 3.0, 8.0)
+
+
+def _classify_fetch_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    name = type(exc).__name__.lower()
+    if "timeout" in text or "timedout" in text or "timeout" in name:
+        return "timeout"
+    if "remote end closed connection" in text or "connection aborted" in text:
+        return "upstream_disconnect"
+    if "name or service not known" in text or "temporary failure in name resolution" in text:
+        return "dns_failure"
+    if "refused" in text:
+        return "connection_refused"
+    return "unknown"
 
 
 def _to_akshare_code(symbol: str) -> str:
@@ -85,6 +102,17 @@ class KlineFetcher:
         self._kline_root.mkdir(parents=True, exist_ok=True)
         self._db = InstrumentsDB(data_root)
 
+    @staticmethod
+    @retry(delays=_FETCH_RETRY_DELAYS_SEC, on=(Exception,))
+    def _fetch_raw_hist(ak, code: str, start_ymd: str, end_ymd: str, adjust: str):
+        return ak.stock_zh_a_hist(
+            symbol=code,
+            period="daily",
+            start_date=start_ymd,
+            end_date=end_ymd,
+            adjust=adjust,
+        )
+
     # ── Fetch ──────────────────────────────────────────────────────────────
 
     def fetch(
@@ -111,17 +139,22 @@ class KlineFetcher:
         code = _to_akshare_code(symbol)
         end_str = end or date.today().isoformat()
 
-        # akshare expects dates without hyphens for some APIs; use YYYY-MM-DD format
+        # akshare expects dates without hyphens for some APIs; use YYYYMMDD.
+        start_ymd = start.replace("-", "")
+        end_ymd = end_str.replace("-", "")
         try:
-            raw = ak.stock_zh_a_hist(
-                symbol=code,
-                period="daily",
-                start_date=start.replace("-", ""),
-                end_date=end_str.replace("-", ""),
-                adjust=adjust,
-            )
+            raw = self._fetch_raw_hist(ak, code, start_ymd, end_ymd, adjust)
         except Exception as exc:
-            logger.warning("akshare fetch failed for %s [%s, %s]: %s", symbol, start, end_str, exc)
+            error_kind = _classify_fetch_error(exc)
+            logger.warning(
+                (
+                    "akshare fetch failed "
+                    "symbol=%s code=%s start=%s end=%s adjust=%s "
+                    "kind=%s error_type=%s error=%r"
+                ),
+                symbol, code, start, end_str, adjust,
+                error_kind, type(exc).__name__, exc,
+            )
             return pd.DataFrame()
 
         if raw is None or raw.empty:
