@@ -13,6 +13,10 @@ Usage:
   ./trade configure [preset]
   ./trade build [preset]
   ./trade cli <command> [args...]
+  ./trade data <args...>
+  ./trade model <args...>
+  ./trade report <args...>
+  ./trade account <args...>
   ./trade py <domain> [args...]
   ./trade ui [streamlit args...]
   ./trade test [preset]
@@ -107,7 +111,30 @@ cmd_cli() {
     echo "Run: ./trade configure linux-clang && ./trade build linux-clang"
     exit 1
   fi
-  "$bin" "$@"
+
+  local build_root
+  build_root="$(cd "$(dirname "$bin")/.." && pwd)"
+  local lib_candidates=(
+    "$build_root/vendor/arrow/cpp/release"
+    "$build_root/engine/vendor/arrow/cpp/release"
+    "$ROOT_DIR/engine/vendor/lightgbm"
+  )
+  local extra_ld=""
+  local d
+  for d in "${lib_candidates[@]}"; do
+    if [ -d "$d" ]; then
+      if [ -n "$extra_ld" ]; then
+        extra_ld="${extra_ld}:$d"
+      else
+        extra_ld="$d"
+      fi
+    fi
+  done
+  if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    LD_LIBRARY_PATH="${extra_ld}:${LD_LIBRARY_PATH}" "$bin" "$@"
+  else
+    LD_LIBRARY_PATH="${extra_ld}" "$bin" "$@"
+  fi
 }
 
 cmd_ui() {
@@ -124,6 +151,14 @@ cmd_py() {
   require_cmd uv
   cd "$ROOT_DIR"
   uv run python -m trade_py.cli.main "$@"
+}
+
+cmd_trade_py_domain() {
+  local domain="$1"
+  shift || true
+  require_cmd uv
+  cd "$ROOT_DIR"
+  uv run python -m trade_py.cli.main "$domain" "$@"
 }
 
 cmd_test() {
@@ -143,6 +178,10 @@ main() {
     configure) cmd_configure "$@" ;;
     build) cmd_build "$@" ;;
     cli) cmd_cli "$@" ;;
+    data) cmd_trade_py_domain data "$@" ;;
+    model) cmd_trade_py_domain model "$@" ;;
+    report) cmd_trade_py_domain report "$@" ;;
+    account) cmd_trade_py_domain account "$@" ;;
     py) cmd_py "$@" ;;
     ui) cmd_ui "$@" ;;
     test) cmd_test "$@" ;;

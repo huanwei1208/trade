@@ -18,6 +18,10 @@ class AnthropicClient(BaseLLMClient):
 
     MODEL = "claude-haiku-4-5-20251001"
 
+    @classmethod
+    def factory_fields(cls) -> set[str]:
+        return {"api_key", "model"}
+
     def __init__(self, api_key: Optional[str] = None,
                  model: Optional[str] = None) -> None:
         super().__init__()

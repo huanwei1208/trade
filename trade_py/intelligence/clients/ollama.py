@@ -19,6 +19,10 @@ class OllamaClient(BaseLLMClient):
 
     MODEL = "qwen2.5:7b-instruct"
 
+    @classmethod
+    def factory_fields(cls) -> set[str]:
+        return {"model", "base_url"}
+
     def __init__(self, model: Optional[str] = None,
                  base_url: Optional[str] = None) -> None:
         super().__init__()

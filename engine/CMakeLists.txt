@@ -123,6 +123,24 @@ target_link_libraries(trade_cli PRIVATE trade_core)
 target_compile_definitions(trade_cli PRIVATE
     TRADE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 
+if(UNIX AND NOT APPLE)
+    # Ensure local third-party shared libs are discoverable when running
+    # build/linux-clang/bin/trade_cli directly.
+    set(_trade_cli_rpath
+        "$ORIGIN"
+        "$ORIGIN/../lib"
+        "$ORIGIN/../engine/vendor/arrow/cpp/release"
+        "$ORIGIN/../vendor/arrow/cpp/release"
+        "${PROJECT_SOURCE_DIR}/engine/vendor/lightgbm"
+        "${PROJECT_SOURCE_DIR}/vendor/lightgbm"
+    )
+    set_target_properties(trade_cli PROPERTIES
+        BUILD_RPATH "${_trade_cli_rpath}"
+        INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib;$ORIGIN/../engine/vendor/arrow/cpp/release;$ORIGIN/../vendor/arrow/cpp/release;${PROJECT_SOURCE_DIR}/engine/vendor/lightgbm;${PROJECT_SOURCE_DIR}/vendor/lightgbm"
+        BUILD_RPATH_USE_ORIGIN ON
+    )
+endif()
+
 if(UNIX)
     find_library(READLINE_LIB readline)
     if(READLINE_LIB)

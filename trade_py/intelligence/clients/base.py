@@ -107,6 +107,18 @@ class BaseLLMClient:
     def __init__(self) -> None:
         self._last_call = 0.0
 
+    @classmethod
+    def factory_fields(cls) -> set[str]:
+        """Factory-visible kwargs accepted by this concrete client."""
+        return set()
+
+    @classmethod
+    def from_factory_kwargs(cls, **kwargs):
+        """Construct client from filtered factory kwargs."""
+        fields = cls.factory_fields()
+        payload = {k: v for k, v in kwargs.items() if k in fields and v is not None}
+        return cls(**payload)
+
     def _call_llm(self, prompt: str) -> tuple[str, int, int]:
         """Call the underlying LLM. Returns (raw_text, input_tokens, output_tokens)."""
         raise NotImplementedError

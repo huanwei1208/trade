@@ -18,8 +18,11 @@ __all__ = [
 
 def create_client(provider: str = "anthropic", **kwargs):
     """Factory: returns AnthropicClient or OllamaClient based on provider."""
-    if provider == "anthropic":
-        return AnthropicClient(**kwargs)
-    if provider == "ollama":
-        return OllamaClient(**kwargs)
+    registry = {
+        "anthropic": AnthropicClient,
+        "ollama": OllamaClient,
+    }
+    client_cls = registry.get(provider)
+    if client_cls is not None:
+        return client_cls.from_factory_kwargs(**kwargs)
     raise ValueError(f"Unknown provider: {provider!r}. Use 'anthropic' or 'ollama'.")
