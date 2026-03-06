@@ -13,11 +13,12 @@ Usage:
   ./trade configure [preset]
   ./trade build [preset]
   ./trade cli <command> [args...]
+  ./trade py <domain> [args...]
   ./trade ui [streamlit args...]
   ./trade test [preset]
 
 Default preset:
-  linux
+  linux-clang
 EOF
 }
 
@@ -29,7 +30,7 @@ require_cmd() {
 }
 
 default_preset() {
-  echo "${1:-linux}"
+  echo "${1:-linux-clang}"
 }
 
 compiler_major() {
@@ -88,10 +89,22 @@ cmd_cli() {
     echo "Usage: ./trade cli <command> [args...]"
     exit 1
   fi
-  local bin="$ROOT_DIR/build/linux-clang/bin/trade_cli"
-  if [ ! -x "$bin" ]; then
-    echo "trade_cli not found: $bin"
-    echo "Run: ./trade configure linux && ./trade build linux"
+  local candidates=(
+    "$ROOT_DIR/build/linux-clang/bin/trade_cli"
+    "$ROOT_DIR/build/linux/bin/trade_cli"
+    "$ROOT_DIR/build/default/bin/trade_cli"
+  )
+  local bin=""
+  for c in "${candidates[@]}"; do
+    if [ -x "$c" ]; then
+      bin="$c"
+      break
+    fi
+  done
+  if [ -z "$bin" ]; then
+    echo "trade_cli not found in build presets:"
+    printf '  - %s\n' "${candidates[@]}"
+    echo "Run: ./trade configure linux-clang && ./trade build linux-clang"
     exit 1
   fi
   "$bin" "$@"
@@ -101,6 +114,18 @@ cmd_ui() {
   require_cmd uv
   cd "$ROOT_DIR"
   uv run streamlit run python/app/ui.py "$@"
+}
+
+cmd_py() {
+  if [ $# -lt 1 ]; then
+    echo "Usage: ./trade py <domain> [args...]"
+    exit 1
+  fi
+  require_cmd uv
+  cd "$ROOT_DIR"
+  PYTHONPATH="$ROOT_DIR/python${PYTHONPATH:+:$PYTHONPATH}" \
+    uv run python -m trade_py.cli.main "$@"
+  # Note: python/ remains on PYTHONPATH for scripts/ and app/ access
 }
 
 cmd_test() {
@@ -120,6 +145,7 @@ main() {
     configure) cmd_configure "$@" ;;
     build) cmd_build "$@" ;;
     cli) cmd_cli "$@" ;;
+    py) cmd_py "$@" ;;
     ui) cmd_ui "$@" ;;
     test) cmd_test "$@" ;;
     help|-h|--help) print_help ;;

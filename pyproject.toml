@@ -42,7 +42,10 @@ nlp = [
     "onnxruntime",
 ]
 
+[project.scripts]
+trade-py = "trade_py.cli.main:main"
+
 [tool.uv]
-package = false
+package = true
 
 [tool.uv.sources]

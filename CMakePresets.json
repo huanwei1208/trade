@@ -38,38 +38,6 @@
       }
     },
     {
-      "name": "linux",
-      "displayName": "Linux GCC (system packages)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_STANDARD": "20",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "BUILD_TESTING": "ON",
-        "BUILD_PYTHON_BINDINGS": "OFF",
-        "CMAKE_C_COMPILER": "gcc",
-        "CMAKE_CXX_COMPILER": "g++"
-      }
-    },
-    {
-      "name": "linux-debug",
-      "inherits": "linux",
-      "displayName": "Linux Debug",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "linux-python",
-      "inherits": "linux",
-      "displayName": "Linux with Python bindings",
-      "cacheVariables": {
-        "BUILD_PYTHON_BINDINGS": "ON"
-      }
-    },
-    {
       "name": "linux-clang",
       "displayName": "Linux Clang-13 + libc++",
       "generator": "Ninja",
@@ -107,14 +75,6 @@
       "configurePreset": "debug"
     },
     {
-      "name": "linux",
-      "configurePreset": "linux"
-    },
-    {
-      "name": "linux-debug",
-      "configurePreset": "linux-debug"
-    },
-    {
       "name": "linux-clang",
       "configurePreset": "linux-clang"
     },
@@ -127,13 +87,6 @@
     {
       "name": "default",
       "configurePreset": "default",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "linux",
-      "configurePreset": "linux",
       "output": {
         "outputOnFailure": true
       }

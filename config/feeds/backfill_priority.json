@@ -1,0 +1,15 @@
+{
+  "weights": {
+    "officialness": 0.30,
+    "authority": 0.25,
+    "quality": 0.20,
+    "coverage": 0.15,
+    "value": 0.10
+  },
+  "source_bonus": {
+    "rss": 0.10,
+    "gdelt": 0.00,
+    "cls": 0.15
+  },
+  "notes": "Higher weighted score means higher backfill priority."
+}

@@ -1,42 +1,42 @@
-[submodule "vendor/duckdb"]
-	path = vendor/duckdb
+[submodule "engine/vendor/duckdb"]
+	path = engine/vendor/duckdb
 	url = https://github.com/duckdb/duckdb.git
-[submodule "vendor/lightgbm"]
-	path = vendor/lightgbm
+[submodule "engine/vendor/lightgbm"]
+	path = engine/vendor/lightgbm
 	url = https://github.com/microsoft/LightGBM.git
-[submodule "vendor/spdlog"]
-	path = vendor/spdlog
+[submodule "engine/vendor/spdlog"]
+	path = engine/vendor/spdlog
 	url = https://github.com/gabime/spdlog.git
-[submodule "vendor/fmt"]
-	path = vendor/fmt
+[submodule "engine/vendor/fmt"]
+	path = engine/vendor/fmt
 	url = https://github.com/fmtlib/fmt.git
-[submodule "vendor/nlohmann_json"]
-	path = vendor/nlohmann_json
+[submodule "engine/vendor/nlohmann_json"]
+	path = engine/vendor/nlohmann_json
 	url = https://github.com/nlohmann/json.git
-[submodule "vendor/yaml-cpp"]
-	path = vendor/yaml-cpp
+[submodule "engine/vendor/yaml-cpp"]
+	path = engine/vendor/yaml-cpp
 	url = https://github.com/jbeder/yaml-cpp.git
-[submodule "vendor/pugixml"]
-	path = vendor/pugixml
+[submodule "engine/vendor/pugixml"]
+	path = engine/vendor/pugixml
 	url = https://github.com/zeux/pugixml.git
-[submodule "vendor/cpp-httplib"]
-	path = vendor/cpp-httplib
+[submodule "engine/vendor/cpp-httplib"]
+	path = engine/vendor/cpp-httplib
 	url = https://github.com/yhirose/cpp-httplib.git
-[submodule "vendor/googletest"]
-	path = vendor/googletest
+[submodule "engine/vendor/googletest"]
+	path = engine/vendor/googletest
 	url = https://github.com/google/googletest.git
-[submodule "vendor/eigen"]
-	path = vendor/eigen
+[submodule "engine/vendor/eigen"]
+	path = engine/vendor/eigen
 	url = https://gitlab.com/libeigen/eigen.git
-[submodule "vendor/abseil-cpp"]
-	path = vendor/abseil-cpp
+[submodule "engine/vendor/abseil-cpp"]
+	path = engine/vendor/abseil-cpp
 	url = https://github.com/abseil/abseil-cpp.git
-[submodule "vendor/re2"]
-	path = vendor/re2
+[submodule "engine/vendor/re2"]
+	path = engine/vendor/re2
 	url = https://github.com/google/re2.git
-[submodule "vendor/curl"]
-	path = vendor/curl
+[submodule "engine/vendor/curl"]
+	path = engine/vendor/curl
 	url = https://github.com/curl/curl.git
-[submodule "vendor/arrow"]
-	path = vendor/arrow
+[submodule "engine/vendor/arrow"]
+	path = engine/vendor/arrow
 	url = https://github.com/apache/arrow.git

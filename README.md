@@ -9,22 +9,22 @@
 ```
 
 要求：
-- `g++`/`gcc` >= 10（建议 13）
+- `clang-13`/`clang++-13`
 - `cmake`、`ninja`
 - `uv`（用于 Python UI）
 
 ## 2. 构建 C++ CLI
 
 ```bash
-./trade configure linux
-./trade build linux
+./trade configure linux-clang
+./trade build linux-clang
 ```
 
-如果你安装了 GCC 13，建议先设置：
+如果你安装了多个 clang 版本，建议先设置：
 
 ```bash
-export CC=/usr/bin/gcc-13
-export CXX=/usr/bin/g++-13
+export CC=/usr/bin/clang-13
+export CXX=/usr/bin/clang++-13
 ```
 
 然后再执行 configure/build。
@@ -40,7 +40,8 @@ export CXX=/usr/bin/g++-13
 示例：
 
 ```bash
-./trade cli collect --action raw --symbol 600000.SH --start 2024-01-01 --end 2024-01-31
+./trade py data collector collect --symbol 600000.SH --start 2024-01-01 --end 2024-01-31
+./trade py data sentiment --start 2026-01-01 --dry-run
 ./trade cli report --symbol 600000.SH
 ```
 
@@ -57,7 +58,7 @@ export CXX=/usr/bin/g++-13
 ## 5. 运行测试
 
 ```bash
-./trade test linux
+./trade test linux-clang
 ```
 
 ## 6. 情绪新闻源（RSSHub）
