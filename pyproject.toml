@@ -45,6 +45,13 @@ nlp = [
 [project.scripts]
 trade-py = "trade_py.cli.main:main"
 
+[tool.setuptools.packages.find]
+include = ["trade_py*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["engine", ".venv", "build", "dist", "notebooks", "config", "deployment"]
+
 [tool.uv]
 package = true
 

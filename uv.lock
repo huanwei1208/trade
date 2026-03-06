@@ -4559,7 +4559,7 @@ wheels = [
 [[package]]
 name = "trade-py"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "akshare" },
     { name = "anthropic" },
