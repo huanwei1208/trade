@@ -187,12 +187,13 @@ trade/
 - [x] `data/market/` 落地：四个 fetcher 移入 `data/market/{kline,fund_flow,cross_asset}/` 及 `data/market/fundamental.py`，旧文件已删除，相关导入已更新。
 - [x] `intelligence/clients/` 落地：`claude_client.py` 拆分为 `clients/{base,anthropic,ollama}.py`，旧文件已删除，`_sentiment.py` 改用 `create_client()` 工厂。
 - [x] `data/news/rss/` 深度拆分：catalog 辅助函数提取到 `rss/catalog.py`，`base.py` 只保留 `RssSource` + `_fetch_feed`。
-- [ ] `data/registry.py`：实现数据源注册表，按 source_id 查找 DataSource 实例。
+- [x] `data/registry.py`：实现数据源注册表，`register/get/list_sources`，默认注册 rss/gdelt。
 
 ### 文档与工具
 - [x] README.md 修正：`python/app/ui.py` → `trade_py/ui/ui.py`；`scripts.run_sentiment` → `trade_py.cli.main data sentiment`。
 - [x] `./trade` shell 脚本：`ui` 子命令的 streamlit 入口改为 `trade_py/ui/ui.py`，移除过时 PYTHONPATH。
-- [ ] notebooks 修正：`02_sentiment.ipynb`、`04_model_training.ipynb` 更新 import 路径（`scripts.run_*` → `trade_py.cli.*`）。
+- [x] notebooks/04_model_training.ipynb：所有导入路径已更新为新目录结构。
+- [ ] notebooks/02_sentiment.ipynb：检查是否有需要更新的 CLI 调用示例。
 
 ### 验证 & 测试
 - [ ] 清理旧构建产物：`build/linux/` 缓存目录。
