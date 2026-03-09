@@ -11,25 +11,21 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from trade_py.data.access import DataGateway
+
 
 def _data_root() -> Path:
     return Path(__file__).parent.parent.parent.parent / "data"
 
 
 def _load_kline(symbol: str) -> pd.DataFrame | None:
-    """Load all kline parquet files for the given symbol."""
-    kline_dir = _data_root() / "kline"
-    if not kline_dir.exists():
+    """Load kline through DataGateway with auto gap refill."""
+    gateway = DataGateway(str(_data_root()))
+    df, report = gateway.get_kline(symbol, lookback_bars=1200)
+    if report.action != "hit_local" or report.degraded:
+        st.caption(f"数据回补: {gateway.format_report(report)}")
+    if df is None or df.empty:
         return None
-    frames = []
-    sym_file = symbol.replace(".", "_") + ".parquet"
-    for month_dir in sorted(kline_dir.iterdir()):
-        p = month_dir / sym_file
-        if p.exists():
-            frames.append(pd.read_parquet(p))
-    if not frames:
-        return None
-    df = pd.concat(frames, ignore_index=True)
     df["date"] = pd.to_datetime(df["date"])
     return df.sort_values("date")
 

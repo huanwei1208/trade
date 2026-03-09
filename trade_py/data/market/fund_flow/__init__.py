@@ -1,3 +1,3 @@
-from trade_py.data.market.fund_flow.akshare import FundFlowFetcher
+from trade_py.data.market.fund_flow.tushare import FundFlowFetcher
 
 __all__ = ["FundFlowFetcher"]

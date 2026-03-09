@@ -27,6 +27,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from trade_py.data.access import DataGateway
+
 logger = logging.getLogger(__name__)
 
 # ── Feature column definitions ────────────────────────────────────────────────
@@ -428,6 +430,7 @@ class FeatureBuilder:
         self._kline_cache: dict[str, pd.DataFrame] = {}
         self._sector_rank_cache: Optional[pd.DataFrame] = None
         self._event_db: Optional[object] = None  # lazy EventDatabase
+        self._gateway = DataGateway(self._root)
 
     # ── Kline loading ─────────────────────────────────────────────────────────
 
@@ -458,7 +461,12 @@ class FeatureBuilder:
             logger.warning("FeatureBuilder: kline load failed for %s: %s", symbol, exc)
             return None
         if df.empty:
-            return None
+            gf, report = self._gateway.get_kline(symbol, lookback_bars=lookback_bars, end_date=end_date)
+            if report.action != "hit_local" or report.degraded:
+                logger.warning("FeatureBuilder kline report: %s", self._gateway.format_report(report))
+            if gf is None or gf.empty:
+                return None
+            df = gf
         # Re-sort ascending after DESC LIMIT for proper time-series computation
         df = df.sort_values("date").reset_index(drop=True)
         self._kline_cache[cache_key] = df
@@ -473,6 +481,9 @@ class FeatureBuilder:
         gold_glob = str(self._root / "sentiment" / "gold" / "**" / "*.parquet")
         from_date = (target_date - timedelta(days=lookback_days)).isoformat()
         defaults = {"sentiment_score": 0.0, "news_volume": 0, "event_magnitude": 0.0}
+        ensure_report = self._gateway.ensure_sentiment_gold_date(target_date)
+        if ensure_report.action != "hit_local" or ensure_report.degraded:
+            logger.warning("FeatureBuilder sentiment report: %s", self._gateway.format_report(ensure_report))
         try:
             con = duckdb.connect()
             df = con.execute(f"""
@@ -510,6 +521,9 @@ class FeatureBuilder:
         gold_glob = str(self._root / "sentiment" / "gold" / "**" / "*.parquet")
         defaults = {"news_silence_signal": 0.0, "sentiment_entropy": 0.5}
         from_date = (target_date - timedelta(days=35)).isoformat()
+        ensure_report = self._gateway.ensure_sentiment_gold_date(target_date)
+        if ensure_report.action != "hit_local" or ensure_report.degraded:
+            logger.warning("FeatureBuilder sentiment quality report: %s", self._gateway.format_report(ensure_report))
         try:
             con = duckdb.connect()
             df = con.execute(f"""
@@ -624,6 +638,19 @@ class FeatureBuilder:
             ma20_prev = closes[-21:-1].mean() if len(closes) > 20 else ma20
             defaults["market_trend_20d"] = float((ma20 - ma20_prev) / max(ma20_prev, 1e-10))
 
+        # Northbound 5-day net flow (亿元)
+        nb_path = self._root / "northbound" / "daily.parquet"
+        if nb_path.exists():
+            try:
+                import pandas as _pd
+                nb_df = _pd.read_parquet(nb_path)
+                nb_df["date"] = _pd.to_datetime(nb_df["date"])
+                nb_df = nb_df[nb_df["date"] <= _pd.Timestamp(target_date)]
+                if not nb_df.empty and "net_5d" in nb_df.columns:
+                    defaults["northbound_5d_net"] = float(nb_df.sort_values("date").iloc[-1]["net_5d"])
+            except Exception:
+                pass
+
         return defaults
 
     # ── Narrative density (Phase 6-B) ─────────────────────────────────────────
@@ -737,8 +764,9 @@ class FeatureBuilder:
         vol   = tail["volume"].to_numpy(dtype=float)
 
         ranges = high - low
+        safe_ranges = np.where(ranges > 1e-8, ranges, 1.0)
         mfm = np.where(ranges > 1e-8,
-                       (2.0 * close - high - low) / ranges,
+                       (2.0 * close - high - low) / safe_ranges,
                        0.0)
         mfv_sum = float(np.dot(mfm, vol))
         vol_sum = float(vol.sum())
@@ -760,9 +788,9 @@ class FeatureBuilder:
         """Load large-order fund flow ratio from local Parquet cache (Group D ext)."""
         defaults = {"large_order_net_ratio": 0.0}
         try:
-            from trade_py.data.market.fund_flow import FundFlowFetcher
-            fetcher = FundFlowFetcher(str(self._root))
-            df = fetcher.load(symbol)
+            df, report = self._gateway.get_fund_flow(symbol, as_of=target_date)
+            if report.action != "hit_local" or report.degraded:
+                logger.warning("FeatureBuilder fund_flow report: %s", self._gateway.format_report(report))
             if df.empty:
                 return defaults
             # Find the row closest to target_date

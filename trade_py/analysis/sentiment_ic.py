@@ -144,17 +144,24 @@ def compute_ic(
     ic_series: list[float] = []
     date_series: list[date] = []
     skipped = 0
+    skip_reasons = {
+        "missing_net_sentiment": 0,
+        "missing_forward_window": 0,
+        "too_few_pairs": 0,
+    }
 
     for d in trading_dates:
         day_gold = gold_df[gold_df["date"] == d].set_index("symbol")
         if "net_sentiment" not in day_gold.columns:
             skipped += 1
+            skip_reasons["missing_net_sentiment"] += 1
             continue
         sentiment_s = day_gold["net_sentiment"].dropna()
 
         # Filter out suspended stocks (no close on this date)
         if d not in fwd_pivot.index:
             skipped += 1
+            skip_reasons["missing_forward_window"] += 1
             continue
 
         fwd_row = fwd_pivot.loc[d]
@@ -167,16 +174,29 @@ def compute_ic(
         ic = _spearman_ic(sentiment_s, fwd_row)
         if ic is None:
             skipped += 1
+            if fwd_row.notna().sum() == 0:
+                skip_reasons["missing_forward_window"] += 1
+            else:
+                skip_reasons["too_few_pairs"] += 1
             continue
 
         ic_series.append(ic)
         date_series.append(d)
 
     if len(ic_series) < _MIN_VALID_DAYS:
+        latest_gold_date = max(trading_dates) if trading_dates else None
+        fwd_ready_dates = [d for d in fwd_pivot.index if fwd_pivot.loc[d].notna().sum() > 0]
+        latest_fwd_ready_date = max(fwd_ready_dates) if fwd_ready_dates else None
         return {
             "valid_days": len(ic_series),
             "skipped_days": skipped,
             "error": f"Insufficient data: need {_MIN_VALID_DAYS}+ valid days, got {len(ic_series)}",
+            "diagnostics": {
+                "gold_days": len(trading_dates),
+                "latest_gold_date": latest_gold_date.isoformat() if latest_gold_date else None,
+                "latest_fwd_ready_date": latest_fwd_ready_date.isoformat() if latest_fwd_ready_date else None,
+                "skip_reasons": skip_reasons,
+            },
         }
 
     ic_arr = np.array(ic_series)
@@ -280,7 +300,24 @@ def _compute_by_source_ic(
 def format_ic_report(result: dict) -> str:
     """Format IC result dict as a human-readable report string."""
     if "error" in result and result.get("valid_days", 0) == 0:
-        return f"IC Analysis: {result['error']}"
+        lines = [f"IC Analysis: {result['error']}"]
+        diag = result.get("diagnostics", {})
+        if isinstance(diag, dict) and diag:
+            lines.append(
+                "  diagnostics: "
+                f"gold_days={diag.get('gold_days', '?')}, "
+                f"latest_gold_date={diag.get('latest_gold_date', '?')}, "
+                f"latest_fwd_ready_date={diag.get('latest_fwd_ready_date', '?')}"
+            )
+            reasons = diag.get("skip_reasons", {})
+            if isinstance(reasons, dict):
+                lines.append(
+                    "  skip_reasons: "
+                    f"missing_forward_window={reasons.get('missing_forward_window', 0)}, "
+                    f"too_few_pairs={reasons.get('too_few_pairs', 0)}, "
+                    f"missing_net_sentiment={reasons.get('missing_net_sentiment', 0)}"
+                )
+        return "\n".join(lines)
 
     lines = [
         f"\n情绪IC分析 (lookback={result.get('lookback_days','?')}d, "

@@ -17,8 +17,11 @@ The score is stored in signal_cache via SettingsDB.
 
 import logging
 import sys
+import datetime
 from pathlib import Path
 import pandas as pd
+
+from trade_py.data.access import DataGateway
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +48,13 @@ def _score_volume(df: pd.DataFrame) -> float:
     else:              return 20.0  # volume expansion, chasing not ideal
 
 
-def _score_large_order(symbol: str, data_root: str) -> float:
-    """Read fund_flow parquet and score based on large-order net flow trend."""
-    ff_path = Path(data_root) / "fund_flow" / f"{symbol.replace('.', '_')}.parquet"
-    if not ff_path.exists():
-        return 50.0  # neutral when no data
+def _score_large_order(symbol: str, gateway: DataGateway,
+                       target_date: datetime.date) -> float:
+    """Read fund_flow data and score based on large-order net flow trend."""
     try:
-        df = pd.read_parquet(ff_path)
+        df, report = gateway.get_fund_flow(symbol, as_of=target_date)
+        if report.action != "hit_local" or report.degraded:
+            logger.warning("window_scorer fund_flow report: %s", gateway.format_report(report))
         if df.empty or "large_order_net_ratio" not in df.columns:
             return 50.0
         df = df.sort_values("date").tail(5)
@@ -157,6 +160,7 @@ def _score_price_behaviour(df: pd.DataFrame) -> float:
 # ── Sentiment component (Gold tier) ────────────────────────────────────────────
 
 def _score_sentiment(symbol: str, data_root: str,
+                     gateway: DataGateway,
                      date_str: str | None = None) -> float:
     """Score [0-100] from Gold sentiment tier for a symbol.
 
@@ -175,6 +179,10 @@ def _score_sentiment(symbol: str, data_root: str,
         datetime.date.fromisoformat(date_str) if date_str
         else datetime.date.today()
     )
+    # Missing Gold is treated as an anomaly: attempt refill once per read.
+    ensure_report = gateway.ensure_sentiment_gold_date(target_date)
+    if ensure_report.action != "hit_local" or ensure_report.degraded:
+        logger.warning("window_scorer sentiment report: %s", gateway.format_report(ensure_report))
     # Scan last 5 calendar days for a file
     gold_path = None
     for delta in range(5):
@@ -230,6 +238,7 @@ def _score_sentiment(symbol: str, data_root: str,
 def compute_window_score(
     symbol: str,
     kline_df: pd.DataFrame,
+    gateway: DataGateway,
     data_root: str = _DEFAULT_DATA_ROOT,
     date_str: str | None = None,
 ) -> int:
@@ -251,10 +260,11 @@ def compute_window_score(
     w = 0.20  # equal weight across 5 components
 
     s_vol   = _score_volume(kline_df)
-    s_flow  = _score_large_order(symbol, data_root)
+    target_date = datetime.date.fromisoformat(date_str) if date_str else datetime.date.today()
+    s_flow  = _score_large_order(symbol, gateway, target_date)
     s_tech  = _score_technical(kline_df)
     s_price = _score_price_behaviour(kline_df)
-    s_sent  = _score_sentiment(symbol, data_root, date_str)
+    s_sent  = _score_sentiment(symbol, data_root, gateway, date_str)
 
     composite = w * (s_vol + s_flow + s_tech + s_price + s_sent)
     return max(0, min(100, round(composite)))
@@ -268,50 +278,35 @@ def score_watchlist(
 
     Returns a dict mapping symbol → score.
     """
-    import datetime
-
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
     from trade_py.db.settings_db import SettingsDB
 
     db = SettingsDB(data_root)
+    gateway = DataGateway(data_root)
     symbols = db.watchlist_get()
     if not symbols:
         logger.info("Watchlist is empty, nothing to score")
         return {}
 
     date_str = date_str or datetime.date.today().isoformat()
-    kline_dir = Path(data_root) / "kline"
+    target_d = datetime.date.fromisoformat(date_str)
 
     scores: dict[str, int] = {}
     for symbol in symbols:
-        sym_file = symbol.replace(".", "_") + ".parquet"
-        frames = []
-        if kline_dir.exists():
-            for month_dir in sorted(kline_dir.iterdir()):
-                p = month_dir / sym_file
-                if p.exists():
-                    frames.append(pd.read_parquet(p))
+        df, k_report = gateway.get_kline(symbol, lookback_bars=260, end_date=target_d)
+        if k_report.action != "hit_local" or k_report.degraded:
+            logger.warning("window_scorer kline report: %s", gateway.format_report(k_report))
 
-        if frames:
-            df = pd.concat(frames, ignore_index=True)
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.sort_values("date").tail(260)
-        else:
-            df = pd.DataFrame()
-
-        score = compute_window_score(symbol, df, data_root, date_str)
+        score = compute_window_score(symbol, df, gateway, data_root, date_str)
         scores[symbol] = score
 
         # Also pull net_sentiment from Gold for caching alongside the score
         gold_dir = Path(data_root) / "sentiment" / "gold"
         net_sentiment_val = None
         if gold_dir.exists():
-            import datetime as _dt
-            target_d = _dt.date.fromisoformat(date_str) if date_str else _dt.date.today()
             for delta in range(5):
-                gp = (gold_dir / f"{(target_d - _dt.timedelta(days=delta)).year:04d}"
-                      / f"{(target_d - _dt.timedelta(days=delta)).month:02d}"
-                      / f"{(target_d - _dt.timedelta(days=delta)).isoformat()}.parquet")
+                d = target_d - datetime.timedelta(days=delta)
+                gp = (gold_dir / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.isoformat()}.parquet")
                 if gp.exists():
                     try:
                         gdf = pd.read_parquet(gp)

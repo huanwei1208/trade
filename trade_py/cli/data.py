@@ -9,6 +9,8 @@ from trade_py.data.market.kline import KlineSyncOptions, KlineSyncService
 
 logger = logging.getLogger(__name__)
 
+_DATA_ROOT_ARG = str(default_data_root())
+
 
 def make_parser() -> argparse.ArgumentParser:
     from trade_py.cli import epilog_from_subparsers
@@ -56,10 +58,10 @@ def make_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--data-root", default=str(default_data_root()))
     p_sync.add_argument("--mode", choices=["incremental", "range", "full"], default=d("mode", "incremental"))
     p_sync.add_argument("--symbols", default=None, help="Comma-separated symbols. Empty means all instruments.")
-    p_sync.add_argument("--start", default=d("start", "2020-01-01"))
+    p_sync.add_argument("--start", default=d("start", "2026-01-01"))
     p_sync.add_argument("--end", default=None)
     p_sync.add_argument("--adjust", choices=["hfq", "qfq", "none"], default=d("adjust", "hfq"))
-    p_sync.add_argument("--provider", choices=["auto", "akshare", "baostock"], default=d("provider", "auto"))
+    p_sync.add_argument("--provider", choices=["auto", "tushare", "akshare", "baostock"], default=d("provider", "auto"))
     p_sync.add_argument("--delay-ms", type=int, default=int(d("delay_ms", 300)))
     p_sync.add_argument("--fail-fast", action="store_true")
 
@@ -82,6 +84,84 @@ def make_parser() -> argparse.ArgumentParser:
     )
     p_cross.add_argument("asset", nargs="?", choices=["all", "gold", "fx", "btc"], default="all")
     p_cross.add_argument("--data-root", default=str(default_data_root()))
+
+    # --- Tushare-backed data commands ---
+
+    p_fund = sub.add_parser(
+        "fundamental",
+        description="财务数据同步 (Tushare fina_indicator)",
+        epilog=(
+            "trade data fundamental sync --symbols 600000.SH,000001.SZ\n"
+            "trade data fundamental sync --start 2020-01-01"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    fund_sub = p_fund.add_subparsers(dest="fund_cmd", required=True)
+    p_fund_sync = fund_sub.add_parser("sync", description="同步财务数据")
+    p_fund_sync.add_argument("--data-root", default=str(default_data_root()))
+    p_fund_sync.add_argument("--symbols", default=None, help="逗号分隔的股票代码，空=全部自选股")
+    p_fund_sync.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD")
+
+    p_ff = sub.add_parser(
+        "fund-flow",
+        description="资金流向同步 (Tushare moneyflow)",
+        epilog=(
+            "trade data fund-flow sync --symbols 600000.SH\n"
+            "trade data fund-flow sync --start 2025-01-01"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ff_sub = p_ff.add_subparsers(dest="ff_cmd", required=True)
+    p_ff_sync = ff_sub.add_parser("sync", description="同步资金流向数据")
+    p_ff_sync.add_argument("--data-root", default=str(default_data_root()))
+    p_ff_sync.add_argument("--symbols", default=None)
+    p_ff_sync.add_argument("--start", default=None)
+    p_ff_sync.add_argument("--end", default=None)
+
+    p_nb = sub.add_parser(
+        "northbound",
+        description="北向资金同步 (Tushare moneyflow_hsgt)",
+        epilog="trade data northbound sync --start 2025-01-01",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    nb_sub = p_nb.add_subparsers(dest="nb_cmd", required=True)
+    p_nb_sync = nb_sub.add_parser("sync", description="同步北向资金数据")
+    p_nb_sync.add_argument("--data-root", default=str(default_data_root()))
+    p_nb_sync.add_argument("--start", default=None)
+    p_nb_sync.add_argument("--end", default=None)
+
+    p_idx = sub.add_parser(
+        "index",
+        description="指数日线同步 (Tushare index_daily)",
+        epilog=(
+            "trade data index sync\n"
+            "trade data index sync --codes 000001.SH,000300.SH --start 2020-01-01"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    idx_sub = p_idx.add_subparsers(dest="idx_cmd", required=True)
+    p_idx_sync = idx_sub.add_parser("sync", description="同步指数行情")
+    p_idx_sync.add_argument("--data-root", default=str(default_data_root()))
+    p_idx_sync.add_argument("--codes", default=None, help="逗号分隔指数代码，空=默认4个")
+    p_idx_sync.add_argument("--start", default=None)
+
+    p_idx_sector = idx_sub.add_parser("sync-sector", description="同步申万31个一级行业指数")
+    p_idx_sector.add_argument("--data-root", default=str(default_data_root()))
+    p_idx_sector.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD，空=近3年")
+
+    p_idx_members = idx_sub.add_parser("refresh-members", description="刷新股票→申万板块成分映射")
+    p_idx_members.add_argument("--data-root", default=str(default_data_root()))
+
+    p_macro = sub.add_parser(
+        "macro",
+        description="宏观经济数据同步 (Tushare cn_gdp/cpi/ppi/pmi)",
+        epilog="trade data macro sync",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    macro_sub = p_macro.add_subparsers(dest="macro_cmd", required=True)
+    p_macro_sync = macro_sub.add_parser("sync", description="同步宏观数据")
+    p_macro_sync.add_argument("--data-root", default=str(default_data_root()))
+    p_macro_sync.add_argument("--dataset", default=None, help="gdp/cpi/ppi/pmi，空=全部")
 
     parser.epilog = epilog_from_subparsers(parser)
     return parser
@@ -150,5 +230,71 @@ def main(argv: list[str] | None = None) -> int:
         }
         fn_map[args.asset]()
         return 0
+
+    if args.command == "fundamental":
+        from trade_py.data.market.fundamental.tushare import FundamentalFetcher
+        from trade_py.db.instruments_db import InstrumentsDB
+        fetcher = FundamentalFetcher(args.data_root)
+        if args.fund_cmd == "sync":
+            if args.symbols:
+                symbols = [s.strip() for s in str(args.symbols).split(",") if s.strip()]
+            else:
+                db = InstrumentsDB(args.data_root)
+                symbols = db.get_all_symbols()
+            logger.info("Syncing fundamental data for %d symbols", len(symbols))
+            fetcher.fetch_batch(symbols, start_date=args.start)
+            return 0
+
+    if args.command == "fund-flow":
+        from trade_py.data.market.fund_flow.tushare import FundFlowFetcher
+        from trade_py.db.instruments_db import InstrumentsDB
+        fetcher = FundFlowFetcher(args.data_root)
+        if args.ff_cmd == "sync":
+            if args.symbols:
+                symbols = [s.strip() for s in str(args.symbols).split(",") if s.strip()]
+            else:
+                db = InstrumentsDB(args.data_root)
+                symbols = db.get_all_symbols()
+            logger.info("Syncing fund-flow data for %d symbols", len(symbols))
+            fetcher.fetch_batch(symbols, start_date=args.start)
+            return 0
+
+    if args.command == "northbound":
+        from trade_py.data.market.northbound.tushare import NorthboundFetcher
+        fetcher = NorthboundFetcher(args.data_root)
+        if args.nb_cmd == "sync":
+            fetcher.fetch_and_save(start_date=args.start, end_date=args.end)
+            logger.info("Northbound sync complete")
+            return 0
+
+    if args.command == "index":
+        from trade_py.data.market.index.tushare import IndexFetcher
+        fetcher = IndexFetcher(args.data_root)
+        if args.idx_cmd == "sync":
+            codes = None
+            if args.codes:
+                codes = [c.strip() for c in str(args.codes).split(",") if c.strip()]
+            fetcher.fetch_all(indices=codes, start_date=args.start)
+            logger.info("Index sync complete")
+            return 0
+        if args.idx_cmd == "sync-sector":
+            fetcher.fetch_sector_all(start_date=args.start)
+            logger.info("Sector index sync complete")
+            return 0
+        if args.idx_cmd == "refresh-members":
+            updated = fetcher.refresh_sector_members()
+            logger.info("Sector members refreshed: %d instruments updated", len(updated))
+            return 0
+
+    if args.command == "macro":
+        from trade_py.data.market.macro.tushare import MacroFetcher
+        fetcher = MacroFetcher(args.data_root)
+        if args.macro_cmd == "sync":
+            if args.dataset:
+                fetcher.fetch_and_save(args.dataset)
+            else:
+                fetcher.fetch_all()
+            logger.info("Macro sync complete")
+            return 0
 
     return 1

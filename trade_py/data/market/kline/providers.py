@@ -201,12 +201,23 @@ class ProviderChain:
         )
 
 
-def build_provider_chain(provider: str) -> ProviderChain:
+def build_provider_chain(provider: str, data_root: str = "data") -> ProviderChain:
     provider = (provider or "auto").lower()
     if provider == "akshare":
         return ProviderChain([AkshareKlineProvider()])
     if provider == "baostock":
         return ProviderChain([BaostockKlineProvider()])
-    # auto
-    return ProviderChain([AkshareKlineProvider(), BaostockKlineProvider()])
+    if provider == "tushare":
+        from trade_py.data.market.kline.tushare import TushareKlineProvider
+        return ProviderChain([TushareKlineProvider(data_root)])
+    # auto: try Tushare first (primary), then akshare, then baostock
+    try:
+        from trade_py.data.market.kline.tushare import TushareKlineProvider
+        return ProviderChain([
+            TushareKlineProvider(data_root),
+            AkshareKlineProvider(),
+            BaostockKlineProvider(),
+        ])
+    except Exception:
+        return ProviderChain([AkshareKlineProvider(), BaostockKlineProvider()])
 

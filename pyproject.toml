@@ -12,6 +12,7 @@ dependencies = [
     "pandas>=2.0",
     "duckdb>=1.0",
     "pyarrow>=14.0",
+    "tushare>=1.2",
     "akshare>=1.12",
     "baostock>=0.8",
     "streamlit>=1.35",
@@ -20,6 +21,8 @@ dependencies = [
     "nbformat>=4.2.0",
     "pandas-stubs~=2.3.3",
     "networkx>=3.4.2",
+    "lightgbm>=4.6.0",
+    "scikit-learn>=1.7.2",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +30,7 @@ dev = [
     "pytest",
     "ipython",
     "jupyter",
+    "notebook",
 ]
 ml = [
     "lightgbm>=4.0",

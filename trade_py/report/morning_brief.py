@@ -23,6 +23,8 @@ from datetime import date, timedelta
 from pathlib import Path
 import pandas as pd
 
+from trade_py.data.access import DataGateway
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DATA_ROOT = "data"
@@ -33,19 +35,21 @@ _DEFAULT_DATA_ROOT = "data"
 def _load_cross_asset(data_root: str) -> dict[str, dict]:
     """Return latest price + pct change for gold, BTC, USD/CNH."""
     result: dict[str, dict[str, float]] = {}
+    gateway = DataGateway(data_root)
     assets = {
         "gold":   ("黄金 (Au99.99, CNY/g)", "close"),
         "btc":    ("BTC/USD", "close"),
         "fx_cnh": ("USD/CNH", "close"),
     }
-    ca_dir = Path(data_root) / "cross_asset"
     for key, (label, col) in assets.items():
-        p = ca_dir / f"{key}.parquet"
-        if not p.exists():
-            result[key] = {"label": label, "value": None, "pct": None}
-            continue
         try:
-            df = pd.read_parquet(p).sort_values("date")
+            df, report = gateway.get_cross_asset(key)
+            if report.action != "hit_local" or report.degraded:
+                logger.warning("morning_brief cross_asset report: %s", gateway.format_report(report))
+            if df.empty:
+                result[key] = {"label": label, "value": None, "pct": None}
+                continue
+            df = df.sort_values("date")
             if len(df) < 2:
                 result[key] = {"label": label, "value": df.iloc[-1][col], "pct": None}
                 continue
@@ -173,6 +177,11 @@ def _load_sentiment_context(data_root: str, date_str: str) -> dict:
         Path(data_root) / "sentiment" / "gold"
         / f"{target.year:04d}" / f"{target.month:02d}" / f"{date_str}.parquet"
     )
+    gateway = DataGateway(data_root)
+    if not gold_path.exists():
+        report = gateway.ensure_sentiment_gold_date(target)
+        if report.action != "hit_local" or report.degraded:
+            logger.warning("morning_brief sentiment report: %s", gateway.format_report(report))
     if gold_path.exists():
         try:
             gold_df = pd.read_parquet(gold_path)

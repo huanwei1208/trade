@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from trade_py.data.access import DataGateway
+
 logger = logging.getLogger(__name__)
 
 _CROSS_ASSET_DIR = "cross_asset"
@@ -60,19 +62,20 @@ class CrossAssetSignal:
 
     def __init__(self, data_root: str | Path = "data") -> None:
         self._dir = Path(data_root) / _CROSS_ASSET_DIR
+        self._gateway = DataGateway(data_root)
 
     def _load(self, name: str) -> pd.DataFrame:
-        """Load a parquet file; return empty DataFrame on failure."""
-        p = self._dir / f"{name}.parquet"
-        if not p.exists():
-            logger.debug("cross_asset parquet not found: %s", p)
-            return pd.DataFrame()
+        """Load a parquet file via DataGateway; return empty DataFrame on failure."""
         try:
-            df = pd.read_parquet(p)
+            df, report = self._gateway.get_cross_asset(name)
+            if report.action != "hit_local" or report.degraded:
+                logger.warning("cross_asset report: %s", self._gateway.format_report(report))
+            if df.empty:
+                return pd.DataFrame()
             df["date"] = pd.to_datetime(df["date"])
             return df.sort_values("date").reset_index(drop=True)
         except Exception as exc:
-            logger.warning("Failed to load %s: %s", p, exc)
+            logger.warning("Failed to load cross_asset[%s]: %s", name, exc)
             return pd.DataFrame()
 
     def compute(self, as_of: str | None = None) -> dict:

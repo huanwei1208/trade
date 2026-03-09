@@ -10,7 +10,20 @@ logger = logging.getLogger(__name__)
 
 # Locate trade_cli relative to project root
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-_TRADE_CLI = _PROJECT_ROOT / "build" / "default" / "bin" / "trade_cli"
+
+
+def _find_trade_cli() -> Path:
+    for p in [
+        _PROJECT_ROOT / "build" / "linux-clang" / "bin" / "trade_cli",
+        _PROJECT_ROOT / "build" / "default"     / "bin" / "trade_cli",
+        _PROJECT_ROOT / "build" / "release"     / "bin" / "trade_cli",
+    ]:
+        if p.exists():
+            return p
+    return _PROJECT_ROOT / "build" / "linux-clang" / "bin" / "trade_cli"
+
+
+_TRADE_CLI = _find_trade_cli()
 _CONFIG_PATH = str(_PROJECT_ROOT / "config")
 
 

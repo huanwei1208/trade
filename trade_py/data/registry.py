@@ -55,11 +55,8 @@ def _register_defaults() -> None:
     from trade_py.data.news.rss.base import RssSource
     register("rss", lambda feeds=None, **_: RssSource(feeds or []))
 
-    from trade_py.data.news.gdelt.source import GdeltSource
-    register("gdelt", lambda **kw: GdeltSource(**kw))
-
-    from trade_py.data.news.cls_source import ClsSource
-    register("cls", lambda **kw: ClsSource(**kw))
+    from trade_py.data.news.tushare import TushareNewsSource
+    register("tushare_news", lambda **kw: TushareNewsSource(**kw))
 
 
 try:

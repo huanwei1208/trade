@@ -142,7 +142,7 @@ class KlineSyncService:
             logger.warning("No symbols available. Run: trade data kline instruments")
             return SyncSummary(0, 0, 0, 0, 0, {})
 
-        chain = build_provider_chain(opts.provider)
+        chain = build_provider_chain(opts.provider, data_root=str(self._data_root))
         results: dict[str, SymbolSyncResult] = {}
         succeeded = 0
         failed = 0

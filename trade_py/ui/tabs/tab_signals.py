@@ -11,6 +11,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from trade_py.data.access import DataGateway
+
 
 _MARKET_OPEN = datetime.time(9, 30)
 _MARKET_CLOSE = datetime.time(15, 0)
@@ -166,7 +168,7 @@ def _render_macro_headlines() -> None:
 
 def _render_cross_asset() -> None:
     """Show cross-asset data from data/cross_asset/ parquets."""
-    cross_dir = _data_root() / "cross_asset"
+    gateway = DataGateway(str(_data_root()))
     assets = {
         "黄金": "gold.parquet",
         "BTC": "btc.parquet",
@@ -175,12 +177,14 @@ def _render_cross_asset() -> None:
 
     cols = st.columns(len(assets))
     for (name, fname), col in zip(assets.items(), cols):
-        path = cross_dir / fname
+        dataset = fname.replace(".parquet", "")
         with col:
-            if path.exists():
-                try:
-                    import pandas as pd
-                    df = pd.read_parquet(path)
+            try:
+                import pandas as pd
+                df, report = gateway.get_cross_asset(dataset)
+                if report.action != "hit_local" or report.degraded:
+                    st.caption(f"{name} 回补: {gateway.format_report(report)}")
+                if not df.empty:
                     df = df.sort_values("date" if "date" in df.columns else df.columns[0])
                     last = df.iloc[-1]
                     close_col = next(
@@ -194,7 +198,7 @@ def _render_cross_asset() -> None:
                         st.metric(name, f"{val:.4g}", f"{pct:+.2f}%")
                     else:
                         st.metric(name, f"{val:.4g}")
-                except Exception:
-                    st.metric(name, "读取失败")
-            else:
-                st.metric(name, "—", "未采集")
+                else:
+                    st.metric(name, "—", "未采集")
+            except Exception:
+                st.metric(name, "读取失败")
