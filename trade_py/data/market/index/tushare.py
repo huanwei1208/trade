@@ -167,7 +167,7 @@ class IndexFetcher:
 
     def __init__(self, data_root: str | Path = "data") -> None:
         self.data_root = str(data_root)
-        self._dir = Path(data_root) / "index"
+        self._dir = Path(data_root) / "market" / "index"
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, ts_code: str) -> Path:

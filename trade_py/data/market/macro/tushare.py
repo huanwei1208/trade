@@ -31,7 +31,7 @@ class MacroFetcher:
 
     def __init__(self, data_root: str | Path = "data") -> None:
         self.data_root = str(data_root)
-        self._dir = Path(data_root) / "macro"
+        self._dir = Path(data_root) / "market" / "macro"
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, name: str) -> Path:

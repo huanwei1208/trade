@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Tab 5 — 设置 (Settings)
 
-Edit user-tunable parameters stored in data/.metadata/trade.db settings table.
+Edit user-tunable parameters stored in data/.db/trade.db settings table.
 Categories: risk, backtest, signal, scheduler.
 """
 
@@ -39,7 +39,7 @@ def _get_db():
 
 def render() -> None:
     st.header("⚙️ 设置")
-    st.caption("所有参数存储在 data/.metadata/trade.db，修改后立即生效。")
+    st.caption("所有参数存储在 data/.db/trade.db，修改后立即生效。")
 
     try:
         db = _get_db()
@@ -139,7 +139,7 @@ def _render_system_info() -> None:
 
     with col2:
         st.markdown("**数据库**")
-        db_path = data_root / ".metadata" / "trade.db"
+        db_path = __import__("trade_py.db.trade_db", fromlist=["_find_db_path"])._find_db_path(data_root)
         if db_path.exists():
             size_kb = db_path.stat().st_size / 1024
             st.success(f"✅ trade.db ({size_kb:.1f} KB)")

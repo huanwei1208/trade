@@ -19,7 +19,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DATA_ROOT = "data"
-_OUT_DIR = "cross_asset"
+_OUT_DIR = "market/cross_asset"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

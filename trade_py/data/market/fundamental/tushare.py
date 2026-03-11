@@ -89,7 +89,7 @@ class FundamentalFetcher:
 
     def __init__(self, data_root: str | Path = "data") -> None:
         self.data_root = str(data_root)
-        self._dir = Path(data_root) / "fundamental"
+        self._dir = Path(data_root) / "market" / "fundamental"
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, symbol: str) -> Path:

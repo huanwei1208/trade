@@ -122,7 +122,7 @@ def build_silver_rows(
     results = client.analyze_batch(articles, progress=True)
 
     company_pairs = _load_company_symbol_pairs(
-        str(data_root / ".metadata" / "trade.db")
+        str(__import__("trade_py.db.trade_db", fromlist=["_find_db_path"])._find_db_path(data_root))
     )
     silver_rows = []
     newly_enriched: list[str] = []

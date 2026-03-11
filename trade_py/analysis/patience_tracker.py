@@ -30,7 +30,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_WATCHLIST_FILE = ".metadata/patience_watchlist.json"
+_WATCHLIST_FILE = ".db/patience_watchlist.json"
 _BENCHMARK = "000300.SH"   # CSI 300 proxy for opportunity cost
 
 
@@ -38,7 +38,7 @@ class PatienceTracker:
     """Track opportunity cost of waiting for confirmed entries.
 
     Persistence:
-        Records are stored in ``{data_root}/.metadata/patience_watchlist.json``
+        Records are stored in ``{data_root}/.db/patience_watchlist.json``
         as a JSON dict keyed by symbol.
     """
 

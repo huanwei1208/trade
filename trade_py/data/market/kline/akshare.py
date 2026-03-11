@@ -98,7 +98,7 @@ class KlineFetcher:
 
     def __init__(self, data_root: str | Path = "data") -> None:
         self._data_root = Path(data_root)
-        self._kline_root = self._data_root / "kline"
+        self._kline_root = self._data_root / "market" / "kline"
         self._kline_root.mkdir(parents=True, exist_ok=True)
         self._db = InstrumentsDB(data_root)
 

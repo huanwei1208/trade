@@ -53,7 +53,8 @@ def _cmd_build_features(args: argparse.Namespace) -> int:
         "SW_Coal", "SW_Petroleum",
     ]
     symbol_sector: dict[str, str] = {}
-    db_path = data_root / ".metadata" / "trade.db"
+    from trade_py.db.trade_db import _find_db_path
+    db_path = _find_db_path(data_root)
     if db_path.exists():
         try:
             conn = _sqlite3.connect(str(db_path))

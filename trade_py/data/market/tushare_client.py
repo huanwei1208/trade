@@ -79,7 +79,7 @@ class TushareProClient:
         self._last_call: float = 0.0
         self._call_timestamps: deque[float] = deque()
         self._global_next_allowed_at: float = 0.0
-        self._audit_log_path = Path(config.data_root) / ".metadata" / _AUDIT_LOG_NAME
+        self._audit_log_path = Path(config.data_root) / ".db" / _AUDIT_LOG_NAME
         self._audit_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _wait(self) -> float:
@@ -214,7 +214,7 @@ _INSTANCES: dict[tuple[str, str, str], TushareProClient] = {}
 def get_pro_api(data_root: str | Path = "data") -> TushareProClient:
     """Return the singleton TushareProClient, initialising it if needed.
 
-    Reads token from SettingsDB (.metadata/trade.db) at data_root.
+    Reads token from SettingsDB (.db/trade.db) at data_root.
     Falls back to TUSHARE_TOKEN environment variable.
     """
     config = _load_client_config(data_root)

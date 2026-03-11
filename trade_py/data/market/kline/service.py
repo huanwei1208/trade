@@ -62,7 +62,7 @@ class KlineSyncService:
         self._data_root = Path(data_root)
         self._db = InstrumentsDB(self._data_root)
         self._fetcher = KlineFetcher(self._data_root)
-        self._failure_log = self._data_root / ".metadata" / "kline_failures.jsonl"
+        self._failure_log = self._data_root / ".db" / "kline_failures.jsonl"
         self._failure_log.parent.mkdir(parents=True, exist_ok=True)
 
     def refresh_instruments(self) -> list[tuple[str, str]]:

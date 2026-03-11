@@ -31,7 +31,7 @@ class NorthboundFetcher:
 
     def __init__(self, data_root: str | Path = "data") -> None:
         self.data_root = str(data_root)
-        self._dir = Path(data_root) / "northbound"
+        self._dir = Path(data_root) / "market" / "northbound"
         self._dir.mkdir(parents=True, exist_ok=True)
         self._path = self._dir / "daily.parquet"
 

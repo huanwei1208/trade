@@ -33,7 +33,7 @@ class DataGateway:
     def __init__(self, data_root: str | Path = "data", policy: ReadPolicy | None = None) -> None:
         self._root = Path(data_root)
         self._policy = policy or ReadPolicy()
-        self._meta_db = self._root / ".metadata" / "trade.db"
+        from trade_py.db.trade_db import _find_db_path; self._meta_db = _find_db_path(self._root)
         self._meta_db.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_meta_tables()
 
