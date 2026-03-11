@@ -1,10 +1,12 @@
-"""trade run — unified execution entry point."""
+"""trade run — direct job execution and event management.
+
+For daemon startup use 'trade start' instead.
+"""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import logging
-import time
 from datetime import date
 
 from trade_py.config import default_data_root
@@ -31,33 +33,24 @@ _VALID_ACTORS = [
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade run",
-        description="统一执行入口 — 调度器 / 单 job / 事件管理",
+        description="直接执行单个 job（绕开 bus，同步调试）/ 事件管理",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "固定子命令:\n"
-            "  start        启动调度器 daemon（阻塞运行）\n"
-            "  dry-run      立即执行所有 job（测试）\n"
             "  status       查看最近 job 执行记录\n"
             "  plan         查看调度计划（下次执行时间）\n"
             "  event        事件管理（sync/add/list/backfill）\n\n"
-            "Job 子命令（立即执行单个 job）:\n"
+            "Job 子命令（立即执行单个 job，绕开 bus）:\n"
             + "".join(f"  {name:<22} {jd.desc}\n" for name, jd in JOB_REGISTRY.items()) +
             "\n示例:\n"
-            "  trade run start\n"
             "  trade run kline_update\n"
             "  trade run event list --limit 20\n"
             "  trade run event sync --from 2026-01-01\n"
             "  trade run status --limit 50\n"
+            "\n提示: 使用 'trade start' 启动完整 EventBus daemon\n"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="<command>")
-
-    # ── fixed subcommands ──────────────────────────────────────────────────────
-    p_start = sub.add_parser("start", description="启动调度器 daemon（阻塞运行）")
-    p_start.add_argument("--data-root", default=_DATA_ROOT)
-
-    p_dry = sub.add_parser("dry-run", description="立即执行所有 job（测试用）")
-    p_dry.add_argument("--data-root", default=_DATA_ROOT)
 
     p_status = sub.add_parser("status", description="查看最近 job 执行记录")
     p_status.add_argument("--data-root", default=_DATA_ROOT)
@@ -253,24 +246,6 @@ def _cmd_event_backfill(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = argv or []
     args = make_parser().parse_args(argv)
-
-    if args.command == "start":
-        from trade_py.report.scheduler import register_jobs
-        import schedule as _schedule
-        register_jobs(args.data_root)
-        logger.info("Scheduler running (CST). Press Ctrl+C to stop.")
-        try:
-            while True:
-                _schedule.run_pending()
-                time.sleep(30)
-        except KeyboardInterrupt:
-            logger.info("Scheduler stopped by user")
-        return 0
-
-    if args.command == "dry-run":
-        from trade_py.report.scheduler import run_all_once
-        run_all_once(args.data_root)
-        return 0
 
     if args.command == "status":
         from trade_py.db.settings_db import SettingsDB

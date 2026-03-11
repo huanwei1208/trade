@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import textwrap
 
 
 def _setup_logging(verbose: bool = False) -> None:
@@ -16,9 +15,16 @@ def _setup_logging(verbose: bool = False) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from trade_py.cli import data, model, report, account, run
+    from trade_py.cli import data, model, report, account, run, start
 
-    domains = [("data", data), ("model", model), ("report", report), ("account", account), ("run", run)]
+    domains = [
+        ("data",    data),
+        ("model",   model),
+        ("report",  report),
+        ("account", account),
+        ("run",     run),
+        ("start",   start),
+    ]
     domain_lines = "\n".join(
         f"  {name:<10}  {mod.make_parser().description}"
         for name, mod in domains
@@ -41,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _setup_logging(args.verbose)
 
-    dispatch = {"data": data, "model": model, "report": report, "account": account, "run": run}
+    dispatch = {name: mod for name, mod in domains}
     return dispatch[args.domain].main(args.args)
 
 

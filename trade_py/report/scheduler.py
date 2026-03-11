@@ -1,141 +1,64 @@
+"""Scheduler — thin time-gate layer.
+
+Registers schedule entries that publish gate.* events on the EventBus.
+Contains NO business logic; all job execution lives in bus/handlers/.
+
+For backward compatibility, also exposes register_jobs() and run_all_once()
+used by the legacy 'trade run start' / 'trade run dry-run' commands.
+"""
 from __future__ import annotations
 
 import logging
-import time
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
-
-from pathlib import Path
 
 import schedule
 
-from trade_py.config import default_data_root
-from trade_py.jobs import JOB_REGISTRY, run_job
-from trade_py.report.notify import dispatch
+from trade_py.bus import EventBus, Topic
 
 logger = logging.getLogger(__name__)
-_CST = timezone(timedelta(hours=8))
-_pool = ThreadPoolExecutor(max_workers=6)
 
 
-def _wrap_job(name: str, data_root: str):
-    """Wrap a job with tracking/notification; returns a zero-arg callable."""
-    def _inner():
-        now = datetime.now(_CST).strftime("%H:%M:%S")
-        logger.info("[%s] Starting job: %s", now, name)
-        dispatch("start", name, f"开始: {name}", data_root)
+def register_schedule(bus: EventBus) -> None:
+    """Register time-based gate events. Scheduler fires timing; bus handles dispatch."""
+    _p = lambda t: (lambda: bus.publish(t))  # noqa: E731
 
-        run_id: int | None = None
-        try:
-            from trade_py.db.settings_db import SettingsDB
-            run_id = SettingsDB(data_root).job_run_start(name)
-        except Exception:
-            pass
+    schedule.every().day.at("07:00").do(_p(Topic.GATE_MORNING))
+    schedule.every().day.at("07:05").do(_p(Topic.GATE_PRE_MARKET))
+    schedule.every().day.at("07:35").do(_p(Topic.GATE_SIGNAL_AM))
+    schedule.every().day.at("07:45").do(_p(Topic.GATE_REPORT))
+    schedule.every().day.at("15:15").do(_p(Topic.GATE_MARKET_CLOSE))
+    schedule.every().day.at("22:00").do(_p(Topic.GATE_EVENING))
+    schedule.every().day.at("22:30").do(_p(Topic.GATE_EVENT_EXTRACT))
+    schedule.every().saturday.at("07:30").do(_p(Topic.GATE_SECTOR_WEEKLY))
+    schedule.every().saturday.at("08:00").do(_p(Topic.GATE_FUND_WEEKLY))
+    schedule.every().sunday.at("08:00").do(_p(Topic.GATE_MACRO_WEEKLY))
 
-        try:
-            result = run_job(name, data_root)
-            msg = result or f"完成: {name}"
-            logger.info("[%s] Finished job: %s — %s", now, name, msg)
-            dispatch("success", name, msg, data_root)
-            if run_id is not None:
-                try:
-                    from trade_py.db.settings_db import SettingsDB
-                    db = SettingsDB(data_root)
-                    db.job_run_finish(run_id, "success", msg)
-                    db.job_schedule_update_last(name, "success", datetime.now(_CST).strftime("%Y-%m-%d %H:%M:%S"))
-                except Exception:
-                    pass
-        except Exception as exc:
-            err_msg = f"失败: {name}\n{exc}"
-            logger.error("[%s] Job FAILED: %s - %s", now, name, exc, exc_info=True)
-            dispatch("failure", name, err_msg, data_root)
-            if run_id is not None:
-                try:
-                    from trade_py.db.settings_db import SettingsDB
-                    db = SettingsDB(data_root)
-                    db.job_run_finish(run_id, "failure", err_msg[:500])
-                    db.job_schedule_update_last(name, "failure", datetime.now(_CST).strftime("%Y-%m-%d %H:%M:%S"))
-                except Exception:
-                    pass
-            raise
-
-    _inner.__name__ = name
-    return _inner
+    logger.info("Registered %d schedule gates", len(schedule.jobs))
+    bus.replay_pending()  # crash recovery: re-dispatch stuck pending events
 
 
-def _async(fn):
-    """Submit fn to thread pool so same-slot jobs run concurrently."""
-    def _submit():
-        _pool.submit(fn)
-    _submit.__name__ = getattr(fn, "__name__", "?")
-    return _submit
-
+# ── Legacy compatibility (used by trade run start / dry-run) ───────────────────
 
 def register_jobs(data_root: str) -> None:
-    wrapped = {name: _wrap_job(name, data_root) for name in JOB_REGISTRY}
+    """Legacy entry point. Creates a TradeDB + EventBus + handlers + schedule."""
+    from trade_py.db.trade_db import TradeDB
+    from trade_py.bus import get_bus
+    from trade_py.bus.handlers import market, sentiment, signals, report as rpt
 
-    # Overnight
-    schedule.every().day.at("22:00").do(_async(wrapped["sentiment_pipeline"]))
-    schedule.every().day.at("22:30").do(_async(wrapped["event_pipeline"]))
-
-    # Pre-market (07:00 slot: kline + cross_asset run concurrently)
-    schedule.every().day.at("07:00").do(_async(wrapped["cross_asset_fetch"]))
-    schedule.every().day.at("07:00").do(_async(wrapped["kline_update"]))
-    schedule.every().day.at("07:05").do(_async(wrapped["market_index"]))
-    schedule.every().day.at("07:10").do(_async(wrapped["model_inference"]))
-    schedule.every().day.at("07:30").do(_async(wrapped["fund_flow_update"]))
-    schedule.every().day.at("07:35").do(_async(wrapped["window_score"]))
-    schedule.every().day.at("07:45").do(_async(wrapped["morning_brief"]))
-
-    # Post-market
-    schedule.every().day.at("15:15").do(_async(wrapped["fund_flow_update"]))
-    schedule.every().day.at("15:20").do(_async(wrapped["northbound"]))
-    schedule.every().day.at("15:30").do(_async(wrapped["window_score"]))
-    schedule.every().day.at("15:35").do(_async(wrapped["event_backfill"]))
-
-    # Weekly
-    schedule.every().saturday.at("07:30").do(_async(wrapped["sector_refresh"]))
-    schedule.every().saturday.at("08:00").do(_async(wrapped["fundamental"]))
-    schedule.every().sunday.at("08:00").do(_async(wrapped["macro"]))
-
-    logger.info("Registered %d scheduled jobs", len(schedule.jobs))
-
-    _PLAN = [
-        ("sentiment_pipeline",  "每天 22:00"),
-        ("cross_asset_fetch",   "每天 07:00"),
-        ("kline_update",        "每天 07:00"),
-        ("market_index",        "每天 07:05"),
-        ("fund_flow_update",    "每天 07:30 / 15:15"),
-        ("northbound",          "每天 15:20"),
-        ("window_score",        "每天 07:35 / 15:30"),
-        ("morning_brief",       "每天 07:45"),
-        ("fundamental",         "每周六 08:00"),
-        ("macro",               "每周日 08:00"),
-        ("event_pipeline",      "每天 22:30"),
-        ("event_backfill",      "每天 15:35"),
-        ("sector_refresh",      "每周六 07:30"),
-        ("model_inference",     "每天 07:10"),
-    ]
-    try:
-        from trade_py.db.settings_db import SettingsDB
-        db = SettingsDB(data_root)
-        for job_name, cron_desc in _PLAN:
-            next_run = None
-            for j in schedule.jobs:
-                if getattr(j.job_func, "__name__", None) == job_name and j.next_run:
-                    next_run = j.next_run.strftime("%Y-%m-%d %H:%M:%S")
-                    break
-            db.job_schedule_upsert(job_name, cron_desc, next_run)
-    except Exception as exc:
-        logger.warning("Failed to persist schedule plan: %s", exc)
+    db = TradeDB(data_root)
+    bus = get_bus(db)
+    for mod in [market, sentiment, signals, rpt]:
+        mod.register(bus, data_root)
+    register_schedule(bus)
 
 
 def run_all_once(data_root: str) -> None:
+    """Legacy dry-run: execute all jobs via the registry directly (no bus)."""
+    from trade_py.jobs import JOB_REGISTRY, run_job
     logger.info("=== DRY RUN: executing all jobs immediately ===")
     for name in JOB_REGISTRY:
-        fn = _wrap_job(name, data_root)
         try:
-            fn()
+            result = run_job(name, data_root)
+            logger.info("DRY RUN job %s: %s", name, result)
         except Exception as exc:
             logger.error("DRY RUN job %s failed: %s", name, exc)
     logger.info("=== DRY RUN complete ===")

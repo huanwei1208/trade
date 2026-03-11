@@ -18,7 +18,13 @@ class DuckDbMetaStore:
 
     def __init__(self, data_root: Path) -> None:
         import duckdb
-        db_path = data_root / ".meta" / "meta.duckdb"
+        # Prefer new .db/ path; fall back to legacy .meta/ path
+        new_path = data_root / ".db" / "feed.duckdb"
+        legacy = data_root / ".meta" / "meta.duckdb"
+        if new_path.exists() or not legacy.exists():
+            db_path = new_path
+        else:
+            db_path = legacy
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._con = duckdb.connect(str(db_path))
         for stmt in _ddl.ALL:
