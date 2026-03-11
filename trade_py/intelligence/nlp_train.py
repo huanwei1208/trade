@@ -6,7 +6,7 @@ This module handles:
 
 Usage:
     python -m trade_py.nlp_train --base-model yiyanghkust/finbert-tone-chinese \
-        --train-data data/raw/sentiment/bronze/ \
+        --train-data data/sentiment/bronze/ \
         --output data/models/sentiment/finbert_zh.onnx
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 
 def finetune_sentiment(
     base_model: str = "yiyanghkust/finbert-tone-chinese",
-    train_data: str = "data/raw/sentiment/",
+    train_data: str = "data/sentiment/bronze/",
     output_onnx: str = "data/models/sentiment/finbert_zh.onnx",
     epochs: int = 3,
     batch_size: int = 16,
@@ -65,7 +65,6 @@ def finetune_sentiment(
     from torch.utils.data import Dataset as _TorchDataset
 
     bronze_root = Path(train_data)
-    # Silver lives at data/sentiment/silver/ (two levels up from raw/sentiment/)
     data_root = bronze_root.parent.parent
     silver_base = data_root / "sentiment" / "silver"
 
@@ -214,7 +213,7 @@ def finetune_sentiment(
 def main():
     parser = argparse.ArgumentParser(description="Train sentiment NLP model")
     parser.add_argument("--base-model", default="yiyanghkust/finbert-tone-chinese")
-    parser.add_argument("--train-data", default="data/raw/sentiment/")
+    parser.add_argument("--train-data", default="data/sentiment/bronze/")
     parser.add_argument("--output", default="data/models/sentiment/finbert_zh.onnx")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=16)

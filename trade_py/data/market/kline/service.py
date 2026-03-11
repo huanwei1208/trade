@@ -16,6 +16,9 @@ from trade_py.db.instruments_db import InstrumentsDB
 
 logger = logging.getLogger(__name__)
 
+_TUSHARE_CHUNK_DAYS_DEFAULT = 3650  # ~10 years; keeps API call count low
+_DEFAULT_CHUNK_DAYS = 31
+
 KlineMode = Literal["incremental", "range", "full"]
 KlineAdjust = Literal["hfq", "qfq", "none"]
 
@@ -76,18 +79,86 @@ class KlineSyncService:
         return date.fromisoformat(v[:10])
 
     @staticmethod
-    def _month_chunks(start_date: date, end_date: date) -> list[tuple[date, date]]:
+    def _chunk_range(start_date: date, end_date: date, chunk_days: int) -> list[tuple[date, date]]:
         chunks: list[tuple[date, date]] = []
         cur = start_date
         while cur <= end_date:
-            if cur.month == 12:
-                month_end = date(cur.year + 1, 1, 1) - timedelta(days=1)
-            else:
-                month_end = date(cur.year, cur.month + 1, 1) - timedelta(days=1)
-            to_d = min(month_end, end_date)
+            to_d = min(cur + timedelta(days=chunk_days - 1), end_date)
             chunks.append((cur, to_d))
             cur = to_d + timedelta(days=1)
         return chunks
+
+    def _downloads_coverage(self, symbol: str) -> list[tuple[date, date]]:
+        rows = self._db._conn.execute(
+            """
+            SELECT start_date, end_date
+            FROM downloads
+            WHERE symbol = ?
+            ORDER BY start_date, end_date
+            """,
+            (symbol,),
+        ).fetchall()
+        ranges: list[tuple[date, date]] = []
+        for start_text, end_text in rows:
+            try:
+                ranges.append((date.fromisoformat(start_text[:10]), date.fromisoformat(end_text[:10])))
+            except (TypeError, ValueError):
+                continue
+        return self._merge_ranges(ranges)
+
+    @staticmethod
+    def _merge_ranges(ranges: list[tuple[date, date]]) -> list[tuple[date, date]]:
+        if not ranges:
+            return []
+        merged: list[tuple[date, date]] = []
+        for start_d, end_d in sorted(ranges):
+            if not merged:
+                merged.append((start_d, end_d))
+                continue
+            prev_start, prev_end = merged[-1]
+            if start_d <= prev_end + timedelta(days=1):
+                merged[-1] = (prev_start, max(prev_end, end_d))
+            else:
+                merged.append((start_d, end_d))
+        return merged
+
+    @staticmethod
+    def _missing_ranges(
+        start_date: date,
+        end_date: date,
+        covered: list[tuple[date, date]],
+    ) -> list[tuple[date, date]]:
+        gaps: list[tuple[date, date]] = []
+        cursor = start_date
+        for covered_start, covered_end in covered:
+            if covered_end < start_date or covered_start > end_date:
+                continue
+            window_start = max(covered_start, start_date)
+            window_end = min(covered_end, end_date)
+            if cursor < window_start:
+                gaps.append((cursor, window_start - timedelta(days=1)))
+            cursor = max(cursor, window_end + timedelta(days=1))
+            if cursor > end_date:
+                break
+        if cursor <= end_date:
+            gaps.append((cursor, end_date))
+        return gaps
+
+    def _target_ranges(self, symbol: str, opts: KlineSyncOptions) -> list[tuple[date, date]]:
+        target = self._resolve_range(symbol, opts)
+        if target is None:
+            return []
+        start_d, end_d = target
+        if opts.mode == "full":
+            return [(start_d, end_d)]
+        covered = self._downloads_coverage(symbol)
+        return self._missing_ranges(start_d, end_d, covered)
+
+    @staticmethod
+    def _chunk_days(provider_name: str) -> int:
+        if provider_name in {"tushare", "auto"}:
+            return _TUSHARE_CHUNK_DAYS_DEFAULT
+        return _DEFAULT_CHUNK_DAYS
 
     def _last_watermark(self, symbol: str) -> date | None:
         values = [
@@ -149,100 +220,135 @@ class KlineSyncService:
         empty = 0
         total_rows = 0
 
-        for i, symbol in enumerate(symbols, 1):
-            target = self._resolve_range(symbol, opts)
-            if target is None:
-                results[symbol] = SymbolSyncResult(
-                    symbol=symbol, ok=True, rows=0, provider="none",
-                    start=None, end=None,
-                )
-                empty += 1
-                continue
-            start_d, end_d = target
-            chunks = self._month_chunks(start_d, end_d)
-            provider_name = "none"
-            parts: list[pd.DataFrame] = []
-            symbol_failed = False
-            err_kind: str | None = None
-            err_msg: str | None = None
+        try:
+            from tqdm import tqdm
+            from tqdm.contrib.logging import logging_redirect_tqdm
+        except ImportError:
+            tqdm = None  # type: ignore[assignment]
 
-            for chunk_start, chunk_end in chunks:
-                f = chain.fetch(
-                    symbol=symbol,
-                    start=chunk_start.isoformat(),
-                    end=chunk_end.isoformat(),
-                    adjust=opts.adjust,
-                )
-                provider_name = f.provider
-                if f.error_kind is not None:
-                    symbol_failed = True
-                    err_kind = f.error_kind
-                    err_msg = f.error_message
-                    self._record_failure(
-                        symbol=symbol,
-                        provider=f.provider,
-                        start=chunk_start.isoformat(),
-                        end=chunk_end.isoformat(),
-                        error_kind=f.error_kind,
-                        error_message=f.error_message or "",
+        def _desc() -> str:
+            return f"kline [{succeeded}ok {failed}err {empty}skip]"
+
+        def _do_sync(bar=None) -> None:
+            nonlocal succeeded, failed, empty, total_rows
+            for i, symbol in enumerate(symbols, 1):
+                if bar is not None:
+                    bar.set_description(_desc())
+                    bar.set_postfix_str(symbol, refresh=False)
+
+                ranges = self._target_ranges(symbol, opts)
+                if not ranges:
+                    results[symbol] = SymbolSyncResult(
+                        symbol=symbol, ok=True, rows=0, provider="none",
+                        start=None, end=None,
                     )
-                    break
-                if not f.df.empty:
-                    parts.append(f.df)
-
-            if symbol_failed:
-                failed += 1
-                results[symbol] = SymbolSyncResult(
-                    symbol=symbol,
-                    ok=False,
-                    rows=0,
-                    provider=provider_name,
-                    start=start_d.isoformat(),
-                    end=end_d.isoformat(),
-                    error_kind=err_kind,
-                    error_message=err_msg,
-                )
-                logger.error(
-                    "kline sync failed symbol=%s provider=%s kind=%s error=%s",
-                    symbol, provider_name, err_kind, err_msg,
-                )
-                if opts.fail_fast:
-                    break
-            else:
-                if parts:
-                    merged = pd.concat(parts, ignore_index=True)
-                    merged = merged.drop_duplicates(subset=["date"], keep="last")
-                    merged = merged.sort_values("date").reset_index(drop=True)
-                    self._fetcher.save_parquet(symbol, merged)
-                    min_d = self._parse_date(str(merged["date"].min()))
-                    max_d = self._parse_date(str(merged["date"].max()))
-                    for src in ("akshare", "baostock"):
-                        self._db.set_watermark(src, "kline", symbol, max_d)
-                    self._db.record_download(symbol, min_d, max_d, len(merged))
-                    rows = len(merged)
-                    total_rows += rows
-                else:
-                    rows = 0
-
-                ok = True
-                succeeded += 1
-                if rows == 0:
                     empty += 1
-                results[symbol] = SymbolSyncResult(
-                    symbol=symbol,
-                    ok=ok,
-                    rows=rows,
-                    provider=provider_name,
-                    start=start_d.isoformat(),
-                    end=end_d.isoformat(),
-                )
-                logger.info(
-                    "kline sync ok symbol=%s rows=%d provider=%s range=%s..%s (%d/%d)",
-                    symbol, rows, provider_name, start_d, end_d, i, len(symbols),
-                )
+                    if bar is not None:
+                        bar.update(1)
+                    continue
 
-            if i < len(symbols) and opts.delay_ms > 0:
-                time.sleep(opts.delay_ms / 1000.0)
+                start_d = ranges[0][0]
+                end_d = ranges[-1][1]
+                provider_name = "none"
+                parts: list[pd.DataFrame] = []
+                symbol_failed = False
+                err_kind: str | None = None
+                err_msg: str | None = None
+                chunk_days = self._chunk_days(opts.provider)
+
+                for range_start, range_end in ranges:
+                    chunks = self._chunk_range(range_start, range_end, chunk_days)
+                    for chunk_start, chunk_end in chunks:
+                        f = chain.fetch(
+                            symbol=symbol,
+                            start=chunk_start.isoformat(),
+                            end=chunk_end.isoformat(),
+                            adjust=opts.adjust,
+                        )
+                        provider_name = f.provider
+                        if f.error_kind is not None:
+                            symbol_failed = True
+                            err_kind = f.error_kind
+                            err_msg = f.error_message
+                            self._record_failure(
+                                symbol=symbol,
+                                provider=f.provider,
+                                start=chunk_start.isoformat(),
+                                end=chunk_end.isoformat(),
+                                error_kind=f.error_kind,
+                                error_message=f.error_message or "",
+                            )
+                            break
+                        if not f.df.empty:
+                            parts.append(f.df)
+                    if symbol_failed:
+                        break
+
+                if symbol_failed:
+                    failed += 1
+                    results[symbol] = SymbolSyncResult(
+                        symbol=symbol,
+                        ok=False,
+                        rows=0,
+                        provider=provider_name,
+                        start=start_d.isoformat(),
+                        end=end_d.isoformat(),
+                        error_kind=err_kind,
+                        error_message=err_msg,
+                    )
+                    logger.error(
+                        "kline sync failed symbol=%s provider=%s kind=%s error=%s",
+                        symbol, provider_name, err_kind, err_msg,
+                    )
+                    if bar is not None:
+                        bar.update(1)
+                        bar.set_description(_desc())
+                    if opts.fail_fast:
+                        break
+                else:
+                    if parts:
+                        merged = pd.concat(parts, ignore_index=True)
+                        merged = merged.drop_duplicates(subset=["date"], keep="last")
+                        merged = merged.sort_values("date").reset_index(drop=True)
+                        self._fetcher.save_parquet(symbol, merged)
+                        min_d = self._parse_date(str(merged["date"].min()))
+                        max_d = self._parse_date(str(merged["date"].max()))
+                        for src in ("akshare", "baostock"):
+                            self._db.set_watermark(src, "kline", symbol, max_d)
+                        self._db.record_download(symbol, min_d, max_d, len(merged))
+                        rows = len(merged)
+                        total_rows += rows
+                    else:
+                        rows = 0
+
+                    succeeded += 1
+                    if rows == 0:
+                        empty += 1
+                    results[symbol] = SymbolSyncResult(
+                        symbol=symbol,
+                        ok=True,
+                        rows=rows,
+                        provider=provider_name,
+                        start=start_d.isoformat(),
+                        end=end_d.isoformat(),
+                    )
+                    logger.info(
+                        "kline sync ok symbol=%s rows=%d provider=%s range=%s..%s gaps=%d (%d/%d)",
+                        symbol, rows, provider_name, start_d, end_d, len(ranges), i, len(symbols),
+                    )
+                    if bar is not None:
+                        bar.update(1)
+                        bar.set_description(_desc())
+
+                if i < len(symbols) and opts.delay_ms > 0:
+                    time.sleep(opts.delay_ms / 1000.0)
+
+        if tqdm is None:
+            _do_sync()
+        else:
+            with logging_redirect_tqdm():
+                with tqdm(total=len(symbols), unit="sym", dynamic_ncols=True, desc=_desc()) as bar:
+                    _do_sync(bar)
 
         return SyncSummary(
             total_symbols=len(symbols),
@@ -296,4 +402,3 @@ class KlineSyncService:
         if limit is not None and limit > 0:
             rows = rows[:limit]
         return rows
-

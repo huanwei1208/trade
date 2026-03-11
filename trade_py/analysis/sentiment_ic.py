@@ -297,6 +297,111 @@ def _compute_by_source_ic(
     return source_ic
 
 
+def compute_ic_decay(
+    data_root: str | Path = "data",
+    factor_col: str = "net_sentiment",
+    horizons: list[int] | None = None,
+    lookback: int = 120,
+) -> dict[int, dict]:
+    """Compute IC at multiple forward horizons to analyse factor decay.
+
+    Args:
+        data_root:  Root data directory.
+        factor_col: Column name in Gold layer to use as factor signal.
+        horizons:   List of forward trading-day windows. Default: [1, 5, 10, 20, 60].
+        lookback:   Calendar days of Gold data to look back.
+
+    Returns:
+        Dict[horizon → IC stats dict] with keys: mean_ic, ic_positive_rate, ir, t_stat, valid_days.
+    """
+    if horizons is None:
+        horizons = [1, 5, 10, 20, 60]
+
+    data_root = Path(data_root)
+    end = date.today()
+    start = end - timedelta(days=lookback)
+
+    gold_df = _load_gold(data_root, start, end)
+    if gold_df.empty:
+        return {h: {"error": "No Gold data"} for h in horizons}
+
+    gold_df = gold_df[gold_df["symbol"] != "_MARKET_"]
+    if factor_col not in gold_df.columns:
+        return {h: {"error": f"Column {factor_col!r} not in Gold data"} for h in horizons}
+
+    gold_df["date"] = pd.to_datetime(gold_df["date"]).dt.date
+
+    kline_pivot = _load_kline_close(data_root)
+    if kline_pivot.empty:
+        return {h: {"error": "No kline data"} for h in horizons}
+
+    results: dict[int, dict] = {}
+    for horizon in horizons:
+        fwd_pivot = kline_pivot.shift(-horizon) / kline_pivot - 1.0
+        trading_dates = sorted(gold_df["date"].unique())
+        ic_series: list[float] = []
+
+        for d in trading_dates:
+            day_gold = gold_df[gold_df["date"] == d].set_index("symbol")
+            factor_s = day_gold[factor_col].dropna()
+            if d not in fwd_pivot.index:
+                continue
+            fwd_row = fwd_pivot.loc[d]
+            if d in kline_pivot.index:
+                active = kline_pivot.loc[d]
+                fwd_row = fwd_row[fwd_row.index.isin(active[active > 0].index)]
+            ic = _spearman_ic(factor_s, fwd_row)
+            if ic is not None:
+                ic_series.append(ic)
+
+        if not ic_series:
+            results[horizon] = {"valid_days": 0, "error": "Insufficient data"}
+            continue
+
+        ic_arr = np.array(ic_series)
+        mean_ic = float(np.mean(ic_arr))
+        std_ic = float(np.std(ic_arr, ddof=1)) if len(ic_arr) > 1 else float("nan")
+        ir = mean_ic / std_ic if std_ic > 0 else float("nan")
+        t_stat = mean_ic * math.sqrt(len(ic_arr)) / std_ic if std_ic > 0 else float("nan")
+        results[horizon] = {
+            "horizon":          horizon,
+            "valid_days":       len(ic_series),
+            "mean_ic":          round(mean_ic, 4),
+            "ic_positive_rate": round(float((ic_arr > 0).mean()), 3),
+            "ir":               round(ir, 3) if not math.isnan(ir) else None,
+            "t_stat":           round(t_stat, 3) if not math.isnan(t_stat) else None,
+            "significant":      bool(not math.isnan(t_stat) and abs(t_stat) > 1.96),
+        }
+
+    return results
+
+
+def format_ic_decay_report(decay: dict[int, dict], factor_col: str = "net_sentiment") -> str:
+    """Format IC decay dict as a human-readable table."""
+    lines = [
+        f"\n因子衰减分析: {factor_col}",
+        "─" * 52,
+        f"{'窗口':>6} {'均值IC':>8} {'IC>0%':>7} {'IR':>7} {'t统计':>7} {'显著'}",
+        "─" * 52,
+    ]
+    for horizon in sorted(decay):
+        r = decay[horizon]
+        if "error" in r:
+            lines.append(f"{horizon:>5}d  {'[无数据]'}")
+            continue
+        sig = "✅" if r.get("significant") else "  "
+        lines.append(
+            f"{horizon:>5}d"
+            f"  {r.get('mean_ic', 'N/A'):>8.4f}"
+            f"  {r.get('ic_positive_rate', 0):>6.1%}"
+            f"  {r.get('ir') or 0:>7.3f}"
+            f"  {r.get('t_stat') or 0:>7.3f}"
+            f"  {sig}"
+        )
+    lines.append("─" * 52)
+    return "\n".join(lines)
+
+
 def format_ic_report(result: dict) -> str:
     """Format IC result dict as a human-readable report string."""
     if "error" in result and result.get("valid_days", 0) == 0:

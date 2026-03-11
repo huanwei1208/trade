@@ -9,10 +9,14 @@ import time
 from dataclasses import dataclass, asdict
 from typing import Optional
 
+from trade_py.db.event_db import EventType
+
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """你是专业的A股市场金融情感分析助手。
 分析新闻文本，提取结构化的情感和事件信息，只返回JSON，不要其他内容。"""
+
+_EVENT_TYPE_OPTIONS = [e.value for e in EventType]
 
 USER_TEMPLATE = """分析以下A股市场新闻：
 
@@ -23,7 +27,7 @@ USER_TEMPLATE = """分析以下A股市场新闻：
 {{
   "sentiment_score": <float -1.0到1.0，-1.0极负面，1.0极正面>,
   "sentiment_label": <"positive"|"neutral"|"negative">,
-  "event_type": <"policy"|"earnings"|"expansion"|"acquisition"|"regulation"|"macro"|"personnel"|"product"|"other">,
+  "event_type": <{event_types}>,
   "event_magnitude": <float 0.0到1.0，0.0微小影响，1.0重大影响>,
   "affected_sectors": <受影响行业列表，如["半导体","新能源"]>,
   "key_entities": <关键实体，公司/人物/政策名称列表>,
@@ -78,10 +82,13 @@ def parse_result(data: dict, model: str,
     sensitivity = str(data.get("time_sensitivity", "short_term"))
     if sensitivity not in {"immediate", "short_term", "medium_long"}:
         sensitivity = "short_term"
+    event_type = str(data.get("event_type", "other"))
+    if event_type not in _EVENT_TYPE_OPTIONS:
+        event_type = "other"
     return SentimentResult(
         sentiment_score=float(data.get("sentiment_score", 0.0)),
         sentiment_label=str(data.get("sentiment_label", "neutral")),
-        event_type=str(data.get("event_type", "other")),
+        event_type=event_type,
         event_magnitude=float(data.get("event_magnitude", 0.0)),
         affected_sectors=list(data.get("affected_sectors", [])),
         key_entities=list(data.get("key_entities", [])),
@@ -133,7 +140,11 @@ class BaseLLMClient:
 
     def analyze(self, title: str, text: str, max_text_chars: int = 800) -> SentimentResult:
         truncated = text[:max_text_chars] if len(text) > max_text_chars else text
-        prompt = USER_TEMPLATE.format(title=title, text=truncated)
+        prompt = USER_TEMPLATE.format(
+            title=title,
+            text=truncated,
+            event_types=json.dumps(_EVENT_TYPE_OPTIONS, ensure_ascii=False),
+        )
         elapsed = time.time() - self._last_call
         if elapsed < self.RATE_LIMIT_DELAY:
             time.sleep(self.RATE_LIMIT_DELAY - elapsed)

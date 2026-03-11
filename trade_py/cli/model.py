@@ -11,18 +11,34 @@ from trade_py.signals.window_scorer import score_watchlist
 logger = logging.getLogger(__name__)
 
 
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def _events_from_sqlite(data_root: str) -> list:
+    """Load HistoricalEvent list from SQLite events table."""
+    from trade_py.db.settings_db import SettingsDB
+    from trade_py.db.event_db import HistoricalEvent
+
+    rows = SettingsDB(data_root).get_events(limit=10000)
+    events = []
+    for r in rows:
+        d = {k: v for k, v in r.items() if k not in ("affected_stocks", "created_at")}
+        d.setdefault("actor_type", "unknown")
+        try:
+            events.append(HistoricalEvent.from_dict(d))
+        except Exception as exc:
+            logger.debug("Skip event %s: %s", r.get("event_id"), exc)
+    return events
+
+
 def _cmd_build_features(args: argparse.Namespace) -> int:
-    from trade_py.db.event_db import EventDatabase
     from trade_py.analysis.feature_builder import FeatureBuilder
 
     data_root = Path(args.data_root)
-    db = EventDatabase(data_root)
-    events = db.events
+    events = _events_from_sqlite(str(data_root))
     if not events:
-        logger.error("No events found in %s", data_root / "events")
+        logger.error("No events in SQLite — run `trade run event sync` first")
         return 1
 
-    # Load symbol→sector mapping from instruments DB (kline parquet has no industry col)
     import sqlite3 as _sqlite3
     _SECTORS = [
         "SW_Agriculture", "SW_Mining", "SW_Chemical", "SW_Steel",
@@ -64,15 +80,13 @@ def _cmd_build_features(args: argparse.Namespace) -> int:
 
 
 def _cmd_build_labels(args: argparse.Namespace) -> int:
-    from trade_py.db.event_db import EventDatabase
     from trade_py.analysis.label_builder import LabelBuilder
     import duckdb
 
     data_root = Path(args.data_root)
-    db = EventDatabase(data_root)
-    events = db.events
+    events = _events_from_sqlite(str(data_root))
     if not events:
-        logger.error("No events found")
+        logger.error("No events in SQLite — run `trade run event sync` first")
         return 1
     kline_glob = str(data_root / "kline" / "**" / "*.parquet")
     try:
@@ -132,121 +146,6 @@ def _cmd_predict(args: argparse.Namespace) -> int:
     print(f"\n=== Predictions for {args.symbol} ===")
     for t, v in preds.items():
         print(f"  {t:<25s}: {v:+.4f}")
-    return 0
-
-
-def _cmd_extract_events(args: argparse.Namespace) -> int:
-    """Derive HistoricalEvent records from Silver parquet files."""
-    import glob as _glob
-    from datetime import date as _date
-    from trade_py.db.event_db import (
-        EventDatabase, HistoricalEvent, EventType, ActorType,
-    )
-
-    data_root = Path(args.data_root)
-    silver_root = data_root / "sentiment" / "silver"
-    if not silver_root.exists():
-        logger.error("No Silver data found at %s — run `trade data sentiment` first", silver_root)
-        return 1
-
-    # Collect all silver files in range
-    all_files = sorted(_glob.glob(str(silver_root / "**" / "*.parquet"), recursive=True))
-    if not all_files:
-        logger.error("No Silver parquet files found under %s", silver_root)
-        return 1
-
-    import pandas as pd
-    frames = []
-    for fp in all_files:
-        try:
-            df = pd.read_parquet(fp, columns=[
-                "date", "symbol", "event_type", "event_magnitude",
-                "affected_sectors", "sentiment_score", "content_hash", "summary",
-            ])
-            # filter by date range if specified
-            if args.start:
-                df = df[df["date"] >= args.start]
-            if args.end:
-                df = df[df["date"] <= args.end]
-            if not df.empty:
-                frames.append(df)
-        except Exception as exc:
-            logger.debug("Skipping %s: %s", fp, exc)
-
-    if not frames:
-        logger.error("No Silver rows in the requested date range")
-        return 1
-
-    silver = pd.concat(frames, ignore_index=True)
-    silver["event_magnitude"] = pd.to_numeric(silver["event_magnitude"], errors="coerce").fillna(0.0)
-    silver["sentiment_score"] = pd.to_numeric(silver["sentiment_score"], errors="coerce").fillna(0.0)
-
-    # Map EventType values; keep only valid ones
-    valid_event_types = {e.value for e in EventType}
-
-    events: list[HistoricalEvent] = []
-    skipped = 0
-    for (dt_str, ev_type), grp in silver.groupby(["date", "event_type"]):
-        if ev_type not in valid_event_types:
-            skipped += 1
-            continue
-        magnitude = float(grp["event_magnitude"].max())
-        if ev_type == "other" and magnitude < args.min_magnitude:
-            skipped += 1
-            continue
-
-        # Primary sector: most common non-empty sector from affected_sectors column
-        all_sectors: list[str] = []
-        for cell in grp["affected_sectors"].dropna():
-            for s in str(cell).split(","):
-                s = s.strip()
-                if s:
-                    all_sectors.append(s if s.startswith("SW_") else f"SW_{s}")
-        if all_sectors:
-            primary_sector = max(set(all_sectors), key=all_sectors.count)
-        else:
-            primary_sector = "SW_Unknown"
-
-        breadth = "market" if (grp["symbol"] == "_MARKET_").all() else "sector"
-        sentiment_score = float(grp["sentiment_score"].mean())
-        news_volume = int(grp["content_hash"].nunique())
-        summary = next(
-            (str(s) for s in grp["summary"].dropna() if str(s).strip()), ""
-        )
-
-        try:
-            event = HistoricalEvent(
-                event_date=_date.fromisoformat(str(dt_str)),
-                event_type=EventType(ev_type),
-                magnitude=magnitude,
-                actor_type=ActorType.unknown,
-                primary_sector=primary_sector,
-                breadth=breadth,
-                sentiment_score=sentiment_score,
-                news_volume=news_volume,
-                summary=summary,
-            )
-            events.append(event)
-        except (ValueError, KeyError) as exc:
-            logger.debug("Skip event %s/%s: %s", dt_str, ev_type, exc)
-            skipped += 1
-
-    if not events:
-        logger.error("No valid events extracted (skipped=%d)", skipped)
-        return 1
-
-    db = EventDatabase(data_root)
-    db.load()
-    existing = len(db)
-    db.add_many(events)
-    db.save()
-    logger.info(
-        "extract-events: extracted=%d  skipped=%d  existing_before=%d  total=%d  file=%s",
-        len(events), skipped, existing, len(db),
-        data_root / "events" / "historical_events.parquet",
-    )
-    print(f"Extracted {len(events)} events (skipped {skipped} low-signal rows)")
-    print(f"EventDatabase now has {len(db)} total events")
     return 0
 
 
@@ -340,25 +239,9 @@ def make_parser() -> argparse.ArgumentParser:
     p_ic.add_argument("--by-source", action="store_true", help="Break down IC by data source")
     p_ic.add_argument("--json", action="store_true", help="Also print raw JSON output")
 
-    p_ee = sub.add_parser(
-        "extract-events",
-        description="从 Silver 层派生 HistoricalEvent 并写入 events/historical_events.parquet",
-        epilog=(
-            "trade model extract-events\n"
-            "trade model extract-events --start 2025-01-01 --end 2026-03-05\n"
-            "trade model extract-events --min-magnitude 0.3"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p_ee.add_argument("--data-root", default=str(default_data_root()))
-    p_ee.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD（默认全量）")
-    p_ee.add_argument("--end",   default=None, help="结束日期 YYYY-MM-DD（默认全量）")
-    p_ee.add_argument("--min-magnitude", type=float, default=0.4,
-                      help="event_type=other 的最低 magnitude 阈值（默认 0.4）")
-
     p_bf = sub.add_parser(
         "build-features",
-        description="从 K线+事件构建 feature Parquet",
+        description="从 K线+事件构建 feature Parquet（从 SQLite 读取事件）",
         epilog="trade model build-features",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -366,7 +249,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     p_bl = sub.add_parser(
         "build-labels",
-        description="从前向收益构建 label Parquet",
+        description="从前向收益构建 label Parquet（从 SQLite 读取事件）",
         epilog="trade model build-labels",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -391,7 +274,7 @@ def make_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_nlp.add_argument("--base-model", default="yiyanghkust/finbert-tone-chinese")
-    p_nlp.add_argument("--train-data", default=str(default_data_root() / "raw" / "sentiment"))
+    p_nlp.add_argument("--train-data", default=str(default_data_root() / "sentiment" / "bronze"))
     p_nlp.add_argument("--output", default=str(default_data_root() / "models" / "sentiment" / "finbert_zh.onnx"))
     p_nlp.add_argument("--epochs", type=int, default=3)
     p_nlp.add_argument("--batch-size", type=int, default=16)
@@ -438,7 +321,6 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_nlp_train(args)
 
     return {
-        "extract-events": _cmd_extract_events,
         "build-features": _cmd_build_features,
         "build-labels":   _cmd_build_labels,
         "train":          _cmd_train,

@@ -59,6 +59,27 @@ def make_parser() -> argparse.ArgumentParser:
     )
     p_get.add_argument("key")
 
+    p_suggest = sub.add_parser(
+        "suggest",
+        description="按 model_score（或 window_score）推荐候选股票",
+        epilog="trade account suggest --limit 20 --by model_score",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_suggest.add_argument("--limit", type=int, default=20, help="最多推荐数量（默认 20）")
+    p_suggest.add_argument(
+        "--by",
+        choices=["model_score", "window_score"],
+        default="model_score",
+        help="排序依据（默认 model_score）",
+    )
+    p_suggest.add_argument(
+        "--sector-limit",
+        type=int,
+        default=3,
+        metavar="N",
+        help="每个板块最多推荐数量（默认 3）",
+    )
+
     parser.epilog = epilog_from_subparsers(parser)
     return parser
 
@@ -105,5 +126,36 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "setting-get":
         val = service.get_setting(args.key)
         print(val)
+        return 0
+    if args.command == "suggest":
+        from trade_py.db.settings_db import SettingsDB
+        from trade_py.data.market.index.tushare import SW_SECTOR_INDICES
+        db = SettingsDB(args.data_root)
+        rows = db.signal_cache_suggest(
+            limit=args.limit,
+            by=args.by,
+            sector_limit=args.sector_limit,
+        )
+        if not rows:
+            score_label = "model_score" if args.by == "model_score" else "window_score"
+            print(f"暂无候选（{score_label} 为空）。请先运行模型推理或窗口评分。")
+            return 0
+        # Build sw_idx → name map
+        sw_idx_name: dict[int, str] = {sw_idx: name for _, (name, sw_idx) in SW_SECTOR_INDICES.items()}
+        score_label = "模型评分" if args.by == "model_score" else "窗口质量"
+        print(f"\n{'股票':<14}  {score_label:>8}  {'风险%':>6}  {'窗口质量':>8}  {'板块'}")
+        print("─" * 60)
+        for r in rows:
+            sym   = r.get("symbol", "—")
+            ms    = r.get("model_score")
+            mr    = r.get("model_risk")
+            ws    = r.get("window_score")
+            ind   = r.get("industry", 255)
+            sector_name = sw_idx_name.get(ind, "未知")
+            ms_str = f"{ms:.1f}" if ms is not None else "  —  "
+            mr_str = f"{mr:.1%}" if mr is not None else " — "
+            ws_str = f"{ws}" if ws is not None else "—"
+            print(f"{sym:<14}  {ms_str:>8}  {mr_str:>6}  {ws_str:>8}  {sector_name}")
+        print(f"\n共 {len(rows)} 只候选（按 {args.by} 排序，每板块最多 {args.sector_limit} 只）")
         return 0
     return 1

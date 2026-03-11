@@ -70,7 +70,7 @@ def _parse_rows(symbol: str, raw: pd.DataFrame) -> pd.DataFrame:
             "revenue":      float(_f(pd.Series([row.get("total_revenue", 0)])).iloc[0]),
             "net_profit":   float(_f(pd.Series([row.get("n_income_attr_p", 0)])).iloc[0]),
             "op_profit":    float(_f(pd.Series([row.get("oper_profit", 0)])).iloc[0]),
-            "op_cash_flow": float(_f(pd.Series([row.get("ocfps", 0)])).iloc[0]),  # per share; total below
+            "op_cash_flow": float(_f(pd.Series([row.get("ocfps", 0)])).iloc[0]),  # 每股经营现金流
             "total_assets": float(_f(pd.Series([row.get("total_assets", 0)])).iloc[0]),
             "eps":          float(_f(pd.Series([row.get("eps", 0)])).iloc[0]),
             "bps":          float(_f(pd.Series([row.get("bps", 0)])).iloc[0]),
@@ -102,12 +102,16 @@ class FundamentalFetcher:
         return pd.read_parquet(p)
 
     def fetch_and_save(self, symbol: str, start_date: str | None = None) -> pd.DataFrame:
+        existing = self.load(symbol)
+        # incremental: only fetch quarters after the last stored report_date when no explicit start given
+        if start_date is None and not existing.empty:
+            last_dt = pd.to_datetime(existing["report_date"]).max()
+            start_date = last_dt.strftime("%Y-%m-%d")
         raw = _fetch_raw(symbol, self.data_root, start_date=start_date)
         new_df = _parse_rows(symbol, raw)
         if new_df.empty:
             logger.warning("No fundamental data fetched for %s", symbol)
-            return self.load(symbol)
-        existing = self.load(symbol)
+            return existing
         if not existing.empty:
             combined = pd.concat([existing, new_df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["symbol", "report_date"], keep="last")
@@ -119,11 +123,39 @@ class FundamentalFetcher:
         return combined
 
     def fetch_batch(self, symbols: list[str], start_date: str | None = None) -> None:
-        for sym in symbols:
-            try:
-                self.fetch_and_save(sym, start_date=start_date)
-            except Exception as exc:
-                logger.error("FundamentalFetcher: %s failed: %s", sym, exc)
+        try:
+            from tqdm import tqdm
+            from tqdm.contrib.logging import logging_redirect_tqdm
+        except ImportError:
+            tqdm = None
+
+        ok = err = 0
+
+        def _run(bar=None):
+            nonlocal ok, err
+            for sym in symbols:
+                if bar is not None:
+                    bar.set_description(f"fundamental [{ok}ok {err}err]")
+                    bar.set_postfix_str(sym, refresh=False)
+                try:
+                    df = self.fetch_and_save(sym, start_date=start_date)
+                    ok += 1
+                    if bar is not None:
+                        bar.set_description(f"fundamental [{ok}ok {err}err]")
+                except Exception as exc:
+                    err += 1
+                    logger.error("FundamentalFetcher: %s failed: %s", sym, exc)
+                finally:
+                    if bar is not None:
+                        bar.update(1)
+
+        if tqdm is None:
+            _run()
+        else:
+            with logging_redirect_tqdm():
+                with tqdm(total=len(symbols), unit="sym", dynamic_ncols=True,
+                          desc=f"fundamental [0ok 0err]") as bar:
+                    _run(bar)
 
 
 def compute_fundamental_features(

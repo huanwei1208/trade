@@ -14,12 +14,20 @@ def epilog_from_subparsers(parser: argparse.ArgumentParser) -> str:
         return ""
 
     choices = subparsers_action.choices
-    width = max((len(n) for n in choices), default=8)
+    # De-duplicate aliases (argparse adds alias → same parser object)
+    seen: set[int] = set()
+    unique: list[tuple[str, argparse.ArgumentParser]] = []
+    for name, sub in choices.items():
+        if id(sub) not in seen:
+            seen.add(id(sub))
+            unique.append((name, sub))
+
+    width = max((len(n) for n, _ in unique), default=8)
 
     desc_lines = ["子命令:"]
     example_lines: list[str] = []
 
-    for name, sub in choices.items():
+    for name, sub in unique:
         desc_lines.append(f"  {name:<{width}}  {sub.description or ''}")
         if sub.epilog:
             for line in sub.epilog.strip().splitlines():

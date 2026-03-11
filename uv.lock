@@ -4667,6 +4667,7 @@ dependencies = [
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "streamlit" },
+    { name = "tqdm" },
     { name = "tushare" },
 ]
 
@@ -4729,6 +4730,7 @@ requires-dist = [
     { name = "shap", marker = "extra == 'ml'", specifier = ">=0.45" },
     { name = "streamlit", specifier = ">=1.35" },
     { name = "torch", marker = "extra == 'nlp'" },
+    { name = "tqdm", specifier = ">=4.0" },
     { name = "transformers", marker = "extra == 'nlp'" },
     { name = "tushare", specifier = ">=1.2" },
 ]

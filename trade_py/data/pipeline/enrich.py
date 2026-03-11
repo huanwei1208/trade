@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from trade_py.data.pipeline.paths import bronze_path
 from trade_py.db.pipeline_db import PipelineDb
 
 logger = logging.getLogger(__name__)
@@ -20,9 +21,7 @@ CST = timezone(timedelta(hours=8))
 
 
 def _bronze_path(data_root: Path, source_id: str, d: date) -> Path:
-    y, m, day = d.year, d.month, d.day
-    return (data_root / "raw" / "sentiment" / source_id
-            / f"{y:04d}" / f"{m:02d}" / f"{y:04d}-{m:02d}-{day:02d}.parquet")
+    return bronze_path(data_root, source_id, d)
 
 
 def _silver_path(data_root: Path, d: date) -> Path:
@@ -50,6 +49,7 @@ def enrich(
     client,
     db: PipelineDb,
     dry_run: bool = False,
+    force: bool = False,
 ) -> dict:
     """Read Bronze for article_date, skip cached hashes, call LLM, write Silver.
 
@@ -84,7 +84,7 @@ def enrich(
 
     # Determine which hashes are already enriched (incremental cache)
     all_hashes = [r["content_hash"] for r in bronze_rows if r["content_hash"]]
-    already_enriched = db.get_enriched_hashes(all_hashes)
+    already_enriched = set() if force else db.get_enriched_hashes(all_hashes)
 
     silver_df, newly_enriched = build_silver_rows(
         bronze_rows=bronze_rows,
@@ -112,4 +112,5 @@ def enrich(
         "analysed": len(newly_enriched),
         "silver_rows": len(silver_df),
         "model": model,
+        "force": force,
     }

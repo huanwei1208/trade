@@ -16,9 +16,9 @@ def _setup_logging(verbose: bool = False) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from trade_py.cli import data, model, report, account
+    from trade_py.cli import data, model, report, account, run
 
-    domains = [("data", data), ("model", model), ("report", report), ("account", account)]
+    domains = [("data", data), ("model", model), ("report", report), ("account", account), ("run", run)]
     domain_lines = "\n".join(
         f"  {name:<10}  {mod.make_parser().description}"
         for name, mod in domains
@@ -34,14 +34,14 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="DEBUG 级日志")
-    parser.add_argument("domain", choices=[n for n, _ in domains], metavar="domain",
-                        help="{" + ",".join(n for n, _ in domains) + "}")
-    parser.add_argument("args", nargs=argparse.REMAINDER)
+    parser.add_argument("domain", choices=[n for n, _ in domains], metavar="<域>",
+                        help="{" + " | ".join(n for n, _ in domains) + "}")
+    parser.add_argument("args", nargs=argparse.REMAINDER, metavar="...", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     _setup_logging(args.verbose)
 
-    dispatch = {"data": data, "model": model, "report": report, "account": account}
+    dispatch = {"data": data, "model": model, "report": report, "account": account, "run": run}
     return dispatch[args.domain].main(args.args)
 
 

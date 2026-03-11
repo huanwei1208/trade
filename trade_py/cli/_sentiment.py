@@ -19,6 +19,8 @@ from urllib.request import Request, urlopen
 
 from trade_py.config import default_data_root, resolve_repo_path
 from trade_py.config.defaults import load_defaults
+from trade_py.data.pipeline.paths import bronze_path, bronze_root
+from trade_py.db.settings_db import SettingsDB
 
 logger = logging.getLogger(__name__)
 CST = timezone(timedelta(hours=8))
@@ -72,7 +74,7 @@ def _local_bronze_dates(data_root: str, sources: list[str],
                         start: date, end: date) -> list[date]:
     dates: list[date] = []
     for src in sources:
-        base = Path(data_root) / "raw" / "sentiment" / src
+        base = bronze_root(data_root) / src
         if not base.exists():
             continue
         for p in base.rglob("*.parquet"):
@@ -85,6 +87,93 @@ def _local_bronze_dates(data_root: str, sources: list[str],
             if start <= d <= end:
                 dates.append(d)
     return sorted(set(dates))
+
+
+def _bronze_path(data_root: str | Path, source_id: str, d: date) -> Path:
+    return bronze_path(data_root, source_id, d)
+
+
+def _silver_path(data_root: str | Path, d: date) -> Path:
+    root = Path(data_root)
+    return (root / "sentiment" / "silver"
+            / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.isoformat()}.parquet")
+
+
+def _gold_path(data_root: str | Path, d: date) -> Path:
+    root = Path(data_root)
+    return (root / "sentiment" / "gold"
+            / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.isoformat()}.parquet")
+
+
+def _sentiment_setting(data_root: str, key: str, fallback):
+    try:
+        return SettingsDB(data_root).get(key, fallback)
+    except Exception:
+        return fallback
+
+
+def _sentiment_start_date(data_root: str) -> date:
+    value = str(_sentiment_setting(data_root, "sentiment.start", "2026-01-01"))
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return date(2026, 1, 1)
+
+
+def _sentiment_settle_window_days(data_root: str) -> int:
+    value = _sentiment_setting(data_root, "sentiment.settle_window_days", 7)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 7
+
+
+def _date_span(start: date, end: date) -> list[date]:
+    cur = start
+    out: list[date] = []
+    while cur <= end:
+        out.append(cur)
+        cur += timedelta(days=1)
+    return out
+
+
+def _contiguous_windows(dates: list[date]) -> list[tuple[date, date]]:
+    if not dates:
+        return []
+    ordered = sorted(set(dates))
+    windows: list[tuple[date, date]] = []
+    start = end = ordered[0]
+    for d in ordered[1:]:
+        if d == end + timedelta(days=1):
+            end = d
+        else:
+            windows.append((start, end))
+            start = end = d
+    windows.append((start, end))
+    return windows
+
+
+def _range_fetch_and_process_dates(
+    data_root: str,
+    source_id: str,
+    dates: list[date],
+    settle_window_days: int,
+) -> tuple[list[date], list[date]]:
+    if not dates:
+        return [], []
+    latest = dates[-1]
+    recent_floor = latest - timedelta(days=max(0, settle_window_days - 1))
+    fetch_dates: list[date] = []
+    process_dates: list[date] = []
+    for d in dates:
+        bronze_exists = _bronze_path(data_root, source_id, d).exists()
+        silver_exists = _silver_path(data_root, d).exists()
+        gold_exists = _gold_path(data_root, d).exists()
+        if d >= recent_floor or not bronze_exists:
+            fetch_dates.append(d)
+        if not silver_exists or not gold_exists:
+            process_dates.append(d)
+    return sorted(set(fetch_dates)), sorted(set(process_dates))
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +201,7 @@ def _build_parser(argv: list[str]) -> tuple[argparse.Namespace, bool]:
     parser.add_argument("--data-root", default=str(default_data_root()),
                         help="Data directory")
     parser.add_argument("--source", default=d("source", "rss"),
-                        choices=["rss", "cls"],
+                        choices=["rss", "cls", "cctv"],
                         help="Data source")
     parser.add_argument("--rss-feeds", default=d("rss_feeds", "auto"),
                         help="RSS feed names (comma-sep) or 'auto'")
@@ -122,6 +211,8 @@ def _build_parser(argv: list[str]) -> tuple[argparse.Namespace, bool]:
     parser.add_argument("--rsshub-base-url", default=d("rsshub_base_url", None))
     parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction,
                         default=d("dry_run", False))
+    parser.add_argument("--force-enrich", action=argparse.BooleanOptionalAction,
+                        default=False, help="忽略 enrichment cache，强制重算 Silver")
     parser.add_argument("--api-key", default=d("api_key", None))
     parser.add_argument("--llm-provider", default=d("llm_provider", "anthropic"),
                         choices=["anthropic", "ollama"])
@@ -129,8 +220,8 @@ def _build_parser(argv: list[str]) -> tuple[argparse.Namespace, bool]:
     parser.add_argument("--ollama-base-url", default=d("ollama_base_url", None))
     parser.add_argument("--no-rss-prefetch", action="store_true",
                         default=d("no_rss_prefetch", False))
-    parser.add_argument("--fetch-mode", default=d("fetch_mode", "incremental"),
-                        choices=["incremental", "full", "none"])
+    parser.add_argument("--fetch-mode", default=d("fetch_mode", "range"),
+                        choices=["incremental", "range", "full", "none"])
     parser.add_argument("--rss-incremental-lookback-days", type=int,
                         default=int(d("rss_incremental_lookback_days", 2)))
     parser.add_argument("--all-range-dates",
@@ -173,18 +264,18 @@ def _resolve_dates(args, fetch_mode_explicit: bool) -> list[date] | int:
         if start > end:
             print(f"ERROR: start ({start}) > end ({end})")
             return 1
-        cur, dates = start, []
-        while cur <= end:
-            dates.append(cur)
-            cur += timedelta(days=1)
+        dates = _date_span(start, end)
     else:
-        dates = [date.today()]
+        if args.fetch_mode == "range":
+            dates = _date_span(_sentiment_start_date(args.data_root), date.today())
+        else:
+            dates = [date.today()]
 
     if args.start and not args.date and args.fetch_mode != "none":
-        if args.fetch_mode != "full":
-            args.fetch_mode = "full"
+        if args.fetch_mode not in {"full", "range"}:
+            args.fetch_mode = "range"
             setattr(args, "_fetch_mode_auto_switched", True)
-            setattr(args, "_fetch_mode_switch_reason", "date_range_requires_full_backfill")
+            setattr(args, "_fetch_mode_switch_reason", "date_range_requires_range_backfill")
         else:
             setattr(args, "_fetch_mode_auto_switched", False)
             setattr(args, "_fetch_mode_switch_reason", "")
@@ -200,61 +291,73 @@ def _resolve_dates(args, fetch_mode_explicit: bool) -> list[date] | int:
 # ---------------------------------------------------------------------------
 
 def _prefetch_sources(args, selected_feeds: list[dict] | None,
-                      dates: list[date], db) -> list[dict]:
+                      fetch_dates: list[date], db) -> tuple[list[dict], list[date]]:
     from trade_py.data.pipeline.ingest import ingest
 
     data_root = Path(args.data_root)
-    source_key = args.source
-
-    if args.fetch_mode == "full":
-        since_date = dates[0]
-    else:
-        latest = db.latest_date(source_key)
-        lookback = args.rss_incremental_lookback_days
-        floor = date.today() - timedelta(days=max(2, lookback))
-        since_date = max(latest - timedelta(days=lookback), floor) if latest else floor
-
-    since_dt = datetime(since_date.year, since_date.month, since_date.day, tzinfo=CST)
-    until_dt = datetime(dates[-1].year, dates[-1].month, dates[-1].day, 23, 59, 59, tzinfo=CST)
-
-    if args.source == "rss":
-        from trade_py.data.news.rss import RssSource
-        primary = RssSource(feeds=selected_feeds or [])
-    elif args.source == "cls":
-        from trade_py.data.news.cls_source import ClsSource
-        primary = ClsSource()
-    else:
-        raise ValueError(f"Unknown source: {args.source}")
+    diagnostics: list[dict] = []
+    changed_dates: set[date] = set()
+    if not fetch_dates:
+        return diagnostics, []
 
     def _pcb(msg: str) -> None:
         print(msg, flush=True)
 
-    diagnostics: list[dict] = []
-    primary_summary = ingest(primary, since_dt, until_dt, data_root, db,
-                             diagnostics_out=diagnostics, progress_cb=_pcb)
+    settle_window_days = _sentiment_settle_window_days(args.data_root)
+    today = date.today()
+    recent_floor = today - timedelta(days=max(0, settle_window_days - 1))
+    summaries: list[dict] = []
 
-    backfill_summary = None
-    if args.source == "rss" and args.fetch_mode == "full" and args.enable_backfill:
-        from trade_py.data.news.gdelt.source import GdeltSource
-        gdelt = GdeltSource(selection=args.backfill_channels,
-                            max_records_per_channel=args.backfill_max_records_per_channel)
-        gdelt_diag: list[dict] = []
-        gdelt_summary = ingest(gdelt, since_dt, until_dt, data_root, db,
-                               diagnostics_out=gdelt_diag, progress_cb=_pcb)
-        backfill_summary = {"ingest": gdelt_summary, "diagnostics": gdelt_diag}
+    for window_start, window_end in _contiguous_windows(fetch_dates):
+        since_dt = datetime(window_start.year, window_start.month, window_start.day, tzinfo=CST)
+        until_dt = datetime(window_end.year, window_end.month, window_end.day, 23, 59, 59, tzinfo=CST)
+
+        if args.source == "rss":
+            from trade_py.data.news.rss import RssSource
+            primary = RssSource(feeds=selected_feeds or [])
+        elif args.source == "cls":
+            from trade_py.data.news.cls_source import ClsSource
+            allow_early_stop = not (args.fetch_mode == "range" and window_end >= recent_floor)
+            primary = ClsSource(allow_known_hash_early_stop=allow_early_stop)
+        elif args.source == "cctv":
+            from trade_py.data.news.akshare_news import CctvNewsSource
+            primary = CctvNewsSource()
+        else:
+            raise ValueError(f"Unknown source: {args.source}")
+
+        primary_diag: list[dict] = []
+        primary_summary = ingest(primary, since_dt, until_dt, data_root, db,
+                                 diagnostics_out=primary_diag, progress_cb=_pcb)
+        diagnostics.extend(primary_diag)
+        changed_dates.update(date.fromisoformat(d) for d in primary_summary.get("changed_dates", []))
+
+        backfill_summary = None
+        if args.source == "rss" and args.fetch_mode in {"full", "range"} and args.enable_backfill:
+            from trade_py.data.news.gdelt.source import GdeltSource
+            gdelt = GdeltSource(selection=args.backfill_channels,
+                                max_records_per_channel=args.backfill_max_records_per_channel)
+            gdelt_diag: list[dict] = []
+            gdelt_summary = ingest(gdelt, since_dt, until_dt, data_root, db,
+                                   diagnostics_out=gdelt_diag, progress_cb=_pcb)
+            diagnostics.extend(gdelt_diag)
+            changed_dates.update(date.fromisoformat(d) for d in gdelt_summary.get("changed_dates", []))
+            backfill_summary = {"ingest": gdelt_summary, "diagnostics": gdelt_diag}
+
+        summaries.append({
+            "window_start": window_start.isoformat(),
+            "window_end": window_end.isoformat(),
+            "primary": primary_summary,
+            "backfill": backfill_summary,
+        })
 
     print("Source prefetch:", json.dumps({
         "source": args.source,
         "mode": args.fetch_mode,
-        "prefetch_since": since_date.isoformat(),
-        "articles": primary_summary.get("records_fetched", 0),
-        "new": primary_summary.get("records_new", 0),
-        "by_date": primary_summary.get("by_date", {}),
+        "fetch_windows": summaries,
         "diagnostics": diagnostics,
-        "backfill": backfill_summary,
         "coverage": db.coverage_report(),
     }, ensure_ascii=False))
-    return diagnostics
+    return diagnostics, sorted(changed_dates)
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +394,8 @@ def _run_pipeline_loop(args, dates: list[date],
             enrich_stats = enrich(data_root=Path(args.data_root),
                                   article_date=target_date,
                                   sources=sources, client=client,
-                                  db=db, dry_run=False)
+                                  db=db, dry_run=False,
+                                  force=bool(getattr(args, "force_enrich", False)))
         else:
             import pandas as pd
             bronze_rows = sum(
@@ -406,9 +510,7 @@ def _cmd_inspect(argv: list[str]) -> int:
             print(f"ERROR: unknown source '{args.source}'")
             return 1
 
-        bronze_pre = (data_root / "raw" / "sentiment" / args.source
-                      / f"{target.year:04d}" / f"{target.month:02d}"
-                      / f"{target.year:04d}-{target.month:02d}-{target.day:02d}.parquet")
+        bronze_pre = bronze_path(data_root, args.source, target)
         known: set[str] = set()
         if bronze_pre.exists():
             known = set(pd.read_parquet(bronze_pre, columns=["content_hash"])
@@ -427,9 +529,7 @@ def _cmd_inspect(argv: list[str]) -> int:
         print(f"Fetched: {len(records)} articles")
 
         if records:
-            dest = (data_root / "raw" / "sentiment" / args.source
-                    / f"{target.year:04d}" / f"{target.month:02d}"
-                    / f"{target.year:04d}-{target.month:02d}-{target.day:02d}.parquet")
+            dest = bronze_path(data_root, args.source, target)
             dest.parent.mkdir(parents=True, exist_ok=True)
             new_df = pd.DataFrame([{
                 "source": r.source_id, "url": r.url, "title": r.title,
@@ -445,19 +545,18 @@ def _cmd_inspect(argv: list[str]) -> int:
             print(f"Saved {len(combined)} articles → {dest}")
 
     y, m, day = target.year, target.month, target.day
-    bronze_path = (data_root / "raw" / "sentiment" / args.source
-                   / f"{y:04d}" / f"{m:02d}" / f"{y:04d}-{m:02d}-{day:02d}.parquet")
-    if not bronze_path.exists():
-        print(f"No Bronze data: {bronze_path}")
+    bronze_file = bronze_path(data_root, args.source, target)
+    if not bronze_file.exists():
+        print(f"No Bronze data: {bronze_file}")
         if not args.fetch:
             print("Tip: add --fetch to download first")
         return 0
 
-    df = pd.read_parquet(bronze_path)
+    df = pd.read_parquet(bronze_file)
     if args.feed:
         df = df[df["source"].str.lower() == args.feed.lower()]
         if df.empty:
-            feeds = sorted(pd.read_parquet(bronze_path)["source"].unique())
+            feeds = sorted(pd.read_parquet(bronze_file)["source"].unique())
             print(f"No articles for feed '{args.feed}'. Available: {feeds}")
             return 0
 
@@ -685,36 +784,113 @@ def _cmd_apply_corrections(argv: list[str]) -> int:
 
 def _print_sentiment_help() -> None:
     print("""\
-Usage: trade data sentiment [subcommand] [args...]
+Usage: trade data sentiment [subcommand] [options]
 
-子命令:
-  (无子命令)           运行完整情绪流水线 (fetch → LLM → Gold)
-  status               显示各 Feed 的质量评分
-  inspect <src> <date> 查看指定日期的 Bronze/Silver 文章
-  sample               随机抽样 Silver 文章（人工核查）
-  apply-corrections    将 .corrections/ 中的校正写回 Silver + 重算 Gold
+新闻情绪流水线：从 RSS/CLS 抓取原文 (Bronze) → LLM 分析 (Silver) → 聚合评分 (Gold)
 
-示例:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  主流水线（无子命令）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  --date DATE               只处理单天 (YYYY-MM-DD)
+  --start DATE              范围开始日期
+  --end DATE                范围结束日期（与 --start 配合，默认今天）
+  --source {rss,cls}        数据源，默认 rss
+  --fetch-mode MODE         抓取策略：
+                              range       仅抓缺失日期，近期数据重抓（默认）
+                              incremental 仅抓今天
+                              full        强制全量重抓
+                              none        跳过抓取，只跑 LLM 分析
+  --llm-provider {anthropic,ollama}   LLM 服务，默认 anthropic
+  --llm-model MODEL         指定模型（不填用默认）
+  --api-key KEY             Anthropic API Key（也可用环境变量 ANTHROPIC_API_KEY）
+  --ollama-base-url URL     Ollama 地址，默认 http://127.0.0.1:11434
+  --rsshub-base-url URL     RSSHub 地址，默认 http://127.0.0.1:1200
+  --rss-feeds FEEDS         RSS feed 名列表（逗号分隔）或 'auto'（默认）
+  --no-rss-prefetch         跳过 RSS 抓取阶段，直接用已有 Bronze
+  --dry-run                 只统计 Bronze 行数，不调 LLM
+  --force-enrich            忽略 enrichment cache，强制重算 Silver
+  --data-root DIR           数据目录，默认 data/
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  子命令
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  status                    显示各 Feed 的覆盖率/唯一性/信号密度评分
+    --lookback N              统计最近 N 天，默认 30
+    --data-root DIR
+
+  inspect <source> <date>   查看指定日期的 Bronze 文章列表
+    source: rss | gdelt | cls
+    --fetch                   先下载再展示
+    --feed NAME               只看某个 feed
+    --show-text               显示正文摘要
+    --silver                  同时展示 Silver 分析结果
+
+  sample                    随机抽样 Silver 文章（人工核查用）
+    --date DATE               默认今天
+    --label {positive,negative,neutral}  只看某类标签
+    --source SOURCE           按来源过滤
+    --symbol SYMBOL           按股票代码过滤
+    -n N                      显示条数，默认 20
+
+  apply-corrections         将人工校正写回 Silver 并重算 Gold
+    --date DATE               必填
+    --dry-run                 预览改动但不写入
+    校正文件格式 data/.corrections/YYYY-MM-DD.json：
+      [{"content_hash": "a3f9c2d1", "corrected_label": "neutral", "note": "..."}]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  常用示例
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 跑今天（用 Anthropic，需设置 API Key）
+  trade data sentiment
+
+  # 跑指定单天（本地 Ollama）
   trade data sentiment --date 2026-03-05 --llm-provider ollama
+
+  # 补历史范围（只抓缺失天，不重跑已有 Gold）
+  trade data sentiment --start 2026-01-01 --end 2026-03-05
+
+  # 只跑 LLM，不重新抓取（Bronze 已存在）
   trade data sentiment --fetch-mode none --start 2026-01-01 --end 2026-03-05
+
+  # 重算历史 Silver（事件类型升级后用这个）
+  trade data sentiment --fetch-mode none --start 2026-01-01 --end 2026-03-05 --force-enrich
+
+  # 用 CLS 数据源
+  trade data sentiment --source cls --date 2026-03-05
+
+  # 先预演再正式跑
+  trade data sentiment --date 2026-03-05 --dry-run
+
+  # 查看各 feed 质量
   trade data sentiment status
+
+  # 检查某天 Bronze + Silver 内容
   trade data sentiment inspect rss 2026-03-05 --silver
+
+  # 现场拉取并查看
+  trade data sentiment inspect rss 2026-03-05 --fetch --show-text
+
+  # 人工抽查负面情绪文章
   trade data sentiment sample --date 2026-03-05 --label negative -n 20
-  trade data sentiment apply-corrections --date 2026-03-05\
+
+  # 写回人工校正
+  trade data sentiment apply-corrections --date 2026-03-05 --dry-run
+  trade data sentiment apply-corrections --date 2026-03-05
 """)
 
 
 def main(argv: list[str]) -> int:
-    if not argv or argv[0] in ("-h", "--help"):
+    if argv and argv[0] in ("-h", "--help"):
         _print_sentiment_help()
         return 0
-    if argv[0] == "status":
+    if argv and argv[0] == "status":
         return _cmd_status(argv[1:])
-    if argv[0] == "inspect":
+    if argv and argv[0] == "inspect":
         return _cmd_inspect(argv[1:])
-    if argv[0] == "sample":
+    if argv and argv[0] == "sample":
         return _cmd_sample(argv[1:])
-    if argv[0] == "apply-corrections":
+    if argv and argv[0] == "apply-corrections":
         return _cmd_apply_corrections(argv[1:])
 
     args, fetch_mode_explicit = _build_parser(argv)
@@ -745,6 +921,12 @@ def main(argv: list[str]) -> int:
         hc = ClsSource().health_check()
         if not hc.get("healthy"):
             print(f"ERROR: CLS unhealthy: {hc.get('error', 'unknown')}")
+            return 3
+    elif args.source == "cctv":
+        from trade_py.data.news.akshare_news import CctvNewsSource
+        hc = CctvNewsSource().health_check()
+        if not hc.get("healthy"):
+            print(f"ERROR: CCTV source unhealthy: {hc.get('error', 'unknown')}")
             return 3
     if args.llm_provider == "ollama" and not args.dry_run:
         try:
@@ -788,30 +970,40 @@ def main(argv: list[str]) -> int:
             "category": f["meta"].get("category"),
         } for f in selected_feeds], ensure_ascii=False))
 
-    backfill_enabled = (args.source == "rss" and args.fetch_mode == "full"
+    backfill_enabled = (args.source == "rss" and args.fetch_mode in {"full", "range"}
                         and getattr(args, "enable_backfill", True))
     enrich_sources = [args.source, "gdelt"] if backfill_enabled else [args.source]
 
     from trade_py.db.pipeline_db import PipelineDb
     with PipelineDb(Path(args.data_root)) as db:
+        process_dates = list(dates)
+        fetch_dates = list(dates)
+        if args.fetch_mode == "range":
+            fetch_dates, process_dates = _range_fetch_and_process_dates(
+                args.data_root,
+                args.source,
+                dates,
+                _sentiment_settle_window_days(args.data_root),
+            )
         if not args.no_rss_prefetch and args.fetch_mode != "none":
-            _prefetch_sources(args, selected_feeds, dates, db)
+            _, changed_dates = _prefetch_sources(args, selected_feeds, fetch_dates, db)
+            process_dates = sorted(set(process_dates).union(changed_dates))
         else:
             print("Source prefetch: skipped")
 
-        if len(dates) > 1 and not args.all_range_dates:
+        if len(process_dates) > 1 and not args.all_range_dates:
             local_dates = _local_bronze_dates(args.data_root, enrich_sources,
-                                              dates[0], dates[-1])
+                                              process_dates[0], process_dates[-1])
             print("Local bronze coverage:", json.dumps({
-                "requested_days": len(dates),
+                "requested_days": len(process_dates),
                 "available_days": len(local_dates),
-                "missing_days": len(dates) - len(local_dates),
+                "missing_days": len(process_dates) - len(local_dates),
                 "sources": enrich_sources,
             }, ensure_ascii=False))
-            dates = local_dates
-            if not dates:
+            process_dates = [d for d in process_dates if d in set(local_dates)]
+            if not process_dates:
                 print("No local Bronze data in range; nothing to process.")
                 return 0
 
-        return _run_pipeline_loop(args, dates, selected_feeds,
+        return _run_pipeline_loop(args, process_dates, selected_feeds,
                                   ollama_base_url, db, enrich_sources)

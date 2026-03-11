@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from trade_py.data.pipeline.paths import bronze_path, bronze_root
 from trade_py.meta.feed.score import FeedScore
 
 
@@ -20,7 +21,7 @@ def compute_feed_score(
     end_date = date.today()
     start_date = end_date - timedelta(days=lookback_days - 1)
 
-    bronze_base = data_root / "raw" / "sentiment" / source_id
+    bronze_base = bronze_root(data_root) / source_id
 
     days_with_data = 0
     total_records = 0
@@ -29,7 +30,7 @@ def compute_feed_score(
 
     cur = start_date
     while cur <= end_date:
-        p = bronze_base / f"{cur.year:04d}" / f"{cur.month:02d}" / f"{cur.isoformat()}.parquet"
+        p = bronze_path(data_root, source_id, cur)
         if p.exists():
             try:
                 df = pd.read_parquet(p)
@@ -128,10 +129,10 @@ def score_all_sources(
 ) -> list[FeedScore]:
     """Score all registered (or specified) sources and persist to MetaStore."""
     if source_ids is None:
-        bronze_root = data_root / "raw" / "sentiment"
+        bronze_base = bronze_root(data_root)
         source_ids = (
-            [d.name for d in bronze_root.iterdir() if d.is_dir()]
-            if bronze_root.exists()
+            [d.name for d in bronze_base.iterdir() if d.is_dir()]
+            if bronze_base.exists()
             else []
         )
 

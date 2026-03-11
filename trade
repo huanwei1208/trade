@@ -8,6 +8,13 @@ print_help() {
   cd "$ROOT_DIR"
   uv run python -m trade_py.cli.main --help
   echo ""
+  echo "常用命令:"
+  echo "  ./trade data <args>        Python 数据域命令"
+  echo "  ./trade model <args>       Python 模型域命令"
+  echo "  ./trade report <args>      Python 报告域命令"
+  echo "  ./trade account <args>     Python 账户域命令"
+  echo "  ./trade run <args>         Python 调度/任务域命令"
+  echo ""
   echo "快捷命令 (bash 层):"
   echo "  ./trade sentiment [args]   →  trade data sentiment [args]"
   echo "  ./trade brief [args]       →  trade report brief [args]"
@@ -180,6 +187,7 @@ main() {
     model) cmd_trade_py_domain model "$@" ;;
     report) cmd_trade_py_domain report "$@" ;;
     account) cmd_trade_py_domain account "$@" ;;
+    run) cmd_trade_py_domain run "$@" ;;
     sentiment) cmd_trade_py_domain data sentiment "$@" ;;
     brief)     cmd_trade_py_domain report brief "$@" ;;
     schedule)  cmd_trade_py_domain report schedule "$@" ;;
@@ -189,7 +197,8 @@ main() {
     help|-h|--help) print_help ;;
     *)
       echo "错误：未知命令 '$sub'"
-      echo "运行 './trade help' 查看可用命令"
+      echo "可用顶层命令: data | model | report | account | run | sentiment | brief | schedule | ui | cli | py | doctor | setup-python | configure | build | test | help"
+      echo "运行 './trade help' 查看详细用法"
       exit 1
       ;;
   esac

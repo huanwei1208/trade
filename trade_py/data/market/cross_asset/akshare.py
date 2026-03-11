@@ -122,40 +122,91 @@ def fetch_fx_cnh(data_root: str = _DEFAULT_DATA_ROOT) -> pd.DataFrame:
     return df
 
 
-# ── BTC/USD (CoinGecko free API) ───────────────────────────────────────────────
+# ── BTC/USD (OKX primary, CoinGecko fallback) ─────────────────────────────────
+
+def _fetch_btc_okx(days: int) -> pd.DataFrame:
+    """Fetch BTC/USDT daily OHLC from OKX public API (no key required)."""
+    import requests
+
+    # OKX returns at most 100 candles per request; paginate if needed
+    bar = "1D"
+    limit = 100
+    all_rows: list[list] = []
+    after: int | None = None  # fetch backwards from this timestamp_ms
+
+    # Calculate earliest timestamp we need
+    import time as _time
+    earliest_ms = int((_time.time() - days * 86400) * 1000)
+
+    while True:
+        params: dict = {"instId": "BTC-USDT", "bar": bar, "limit": limit}
+        if after is not None:
+            params["after"] = after
+        resp = requests.get(
+            "https://www.okx.com/api/v5/market/history-candles",
+            params=params,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != "0" or not data.get("data"):
+            break
+        rows = data["data"]  # [[ts_ms, o, h, l, c, vol, volCcy, volCcyQuote, confirm], ...]
+        all_rows.extend(rows)
+        oldest_ts = int(rows[-1][0])
+        if oldest_ts <= earliest_ms or len(rows) < limit:
+            break
+        after = oldest_ts  # next page: fetch candles older than this
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows, columns=["ts", "open", "high", "low", "close",
+                                          "vol", "vol_ccy", "vol_ccy_quote", "confirm"])
+    df["date"] = pd.to_datetime(df["ts"].astype(int), unit="ms").dt.normalize()
+    for col in ("open", "high", "low", "close"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df[["date", "open", "high", "low", "close"]].drop_duplicates(subset=["date"])
+
+
+def _fetch_btc_coingecko(days: int) -> pd.DataFrame:
+    """Fetch BTC/USD daily OHLC from CoinGecko free API (fallback)."""
+    import requests
+
+    url = f"https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days={days}"
+    resp = requests.get(url, timeout=20, headers={"Accept": "application/json"})
+    resp.raise_for_status()
+    raw = resp.json()  # [[ts_ms, o, h, l, c], ...]
+    df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close"])
+    df["date"] = pd.to_datetime(df["ts"], unit="ms").dt.normalize()
+    return df[["date", "open", "high", "low", "close"]].drop_duplicates(subset=["date"])
+
 
 def fetch_btc(
     data_root: str = _DEFAULT_DATA_ROOT,
     days: int = 365,
 ) -> pd.DataFrame:
-    """Fetch BTC/USD daily OHLC from CoinGecko free API.
-
-    Uses /coins/bitcoin/ohlc endpoint (no API key required for public tier).
-    Granularity: 1 day when days >= 90.
-    """
-    import requests
-
+    """Fetch BTC/USDT daily OHLC. Tries OKX first, falls back to CoinGecko."""
     path = _out_path(data_root, "btc")
     existing = _load_existing(path)
-    logger.info("Fetching BTC/USD (CoinGecko)…")
+    logger.info("Fetching BTC/USD…")
 
-    # CoinGecko free API — OHLC
-    url = f"https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days={days}"
-    try:
-        resp = requests.get(url, timeout=20, headers={"Accept": "application/json"})
-        resp.raise_for_status()
-        raw = resp.json()  # list of [timestamp_ms, open, high, low, close]
-    except Exception as e:
-        logger.warning("CoinGecko fetch failed: %s", e)
+    df: pd.DataFrame | None = None
+    for source, fetcher in [("OKX", _fetch_btc_okx), ("CoinGecko", _fetch_btc_coingecko)]:
+        try:
+            df = fetcher(days)
+            if df is not None and not df.empty:
+                logger.debug("BTC data fetched from %s", source)
+                break
+        except Exception as e:
+            logger.warning("BTC fetch failed (%s): %s", source, e)
+
+    if df is None or df.empty:
+        logger.error("BTC fetch failed from all sources")
         return existing if existing is not None else pd.DataFrame()
 
-    df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close"])
-    df["date"] = pd.to_datetime(df["ts"], unit="ms").dt.normalize()
-    df = df[["date", "open", "high", "low", "close"]]
-    df = df.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
-
+    df = df.sort_values("date").reset_index(drop=True)
     if existing is not None:
-        # CoinGecko returns the last `days` of data; merge with existing
         df = pd.concat([existing, df], ignore_index=True).drop_duplicates(subset=["date"])
         df = df.sort_values("date").reset_index(drop=True)
 

@@ -108,12 +108,13 @@ class ClsSource:
     source_id: str = "cls"
     data_type: Literal["news"] = "news"
 
-    def __init__(self, max_pages: int = 50) -> None:
+    def __init__(self, max_pages: int = 50, allow_known_hash_early_stop: bool = True) -> None:
         """
         Args:
             max_pages: Safety cap on pagination depth (each page = 20 articles).
         """
         self._max_pages = max_pages
+        self._allow_known_hash_early_stop = allow_known_hash_early_stop
 
     def fetch(self, since: datetime, until: datetime,
               known_hashes: set[str] | None = None,
@@ -175,7 +176,7 @@ class ClsSource:
                     return records
 
                 # Early stop: if this hash is already in bronze, all older ones will be too
-                if known_hashes and r.content_hash in known_hashes:
+                if self._allow_known_hash_early_stop and known_hashes and r.content_hash in known_hashes:
                     records.sort(key=lambda x: x.published_at, reverse=True)
                     if progress_cb:
                         progress_cb(f"[cls] hit known article on page {page + 1} — "

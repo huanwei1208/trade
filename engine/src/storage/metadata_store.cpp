@@ -1,6 +1,7 @@
 #include "trade/storage/metadata_store.h"
 #include "trade/common/time_utils.h"
 #include <filesystem>
+#include <string>
 #include <spdlog/spdlog.h>
 #include <sqlite3.h>
 #include <stdexcept>
@@ -8,6 +9,42 @@
 namespace trade {
 
 namespace {
+
+std::string industry_case_expr(const std::string& column) {
+    return "CASE " + column +
+           " WHEN 0 THEN '农林牧渔'"
+           " WHEN 1 THEN '采掘'"
+           " WHEN 2 THEN '基础化工'"
+           " WHEN 3 THEN '钢铁'"
+           " WHEN 4 THEN '有色金属'"
+           " WHEN 5 THEN '电子'"
+           " WHEN 6 THEN '汽车'"
+           " WHEN 7 THEN '家用电器'"
+           " WHEN 8 THEN '食品饮料'"
+           " WHEN 9 THEN '纺织服装'"
+           " WHEN 10 THEN '轻工制造'"
+           " WHEN 11 THEN '医药生物'"
+           " WHEN 12 THEN '公用事业'"
+           " WHEN 13 THEN '交通运输'"
+           " WHEN 14 THEN '房地产'"
+           " WHEN 15 THEN '商业贸易'"
+           " WHEN 16 THEN '社会服务'"
+           " WHEN 17 THEN '银行'"
+           " WHEN 18 THEN '非银金融'"
+           " WHEN 19 THEN '建筑装饰'"
+           " WHEN 20 THEN '建筑材料'"
+           " WHEN 21 THEN '机械设备'"
+           " WHEN 22 THEN '国防军工'"
+           " WHEN 23 THEN '计算机'"
+           " WHEN 24 THEN '传媒'"
+           " WHEN 25 THEN '通信'"
+           " WHEN 26 THEN '环保'"
+           " WHEN 27 THEN '电力设备'"
+           " WHEN 28 THEN '美容护理'"
+           " WHEN 29 THEN '煤炭'"
+           " WHEN 30 THEN '石油石化'"
+           " ELSE '未分类' END";
+}
 
 std::optional<Date> read_date_column(sqlite3_stmt* stmt, int col) {
     auto txt = sqlite3_column_text(stmt, col);
@@ -119,6 +156,64 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
 
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_downloads_symbol_end ON downloads(symbol, end_date)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_watermarks_lookup ON watermarks(source, dataset, symbol)");
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS instrument_sector_members (
+            symbol TEXT PRIMARY KEY,
+            sector_code TEXT NOT NULL,
+            sector_name TEXT NOT NULL,
+            industry_code INTEGER NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    )");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_instrument_sector_members_sector_code "
+                "ON instrument_sector_members(sector_code)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_instrument_sector_members_industry_code "
+                "ON instrument_sector_members(industry_code)");
+    impl_->exec("DROP VIEW IF EXISTS instrument_classification_v");
+    impl_->exec(
+        std::string(
+        "CREATE VIEW instrument_classification_v AS "
+        "SELECT "
+        "i.symbol, "
+        "i.name, "
+        "i.market, "
+        "i.market_name, "
+        "i.board, "
+        "CASE i.board "
+        " WHEN 0 THEN '主板' "
+        " WHEN 1 THEN 'ST' "
+        " WHEN 2 THEN '科创板' "
+        " WHEN 3 THEN '创业板' "
+        " WHEN 4 THEN '北交所' "
+        " WHEN 5 THEN '主板新股首日' "
+        " WHEN 6 THEN '科创创业板新股首日' "
+        " ELSE '未知' END AS board_name, "
+        "i.status, "
+        "CASE i.status "
+        " WHEN 0 THEN '正常' "
+        " WHEN 1 THEN '停牌' "
+        " WHEN 2 THEN 'ST' "
+        " WHEN 3 THEN '*ST' "
+        " WHEN 4 THEN '退市整理' "
+        " ELSE '未知' END AS status_name, "
+        "CASE "
+        " WHEN i.status IN (2, 3) THEN 1 "
+        " WHEN i.board = 1 THEN 1 "
+        " WHEN upper(replace(i.name, ' ', '')) LIKE 'ST%' "
+        "   OR upper(replace(i.name, ' ', '')) LIKE '*ST%' "
+        "   OR upper(replace(i.name, ' ', '')) LIKE 'S*ST%' "
+        "   OR upper(replace(i.name, ' ', '')) LIKE 'SST%' "
+        " THEN 1 ELSE 0 END AS is_st, "
+        "m.sector_code, "
+        "m.sector_name, "
+        "COALESCE(m.industry_code, i.industry, 255) AS industry_code, "
+        ) + industry_case_expr("COALESCE(m.industry_code, i.industry, 255)") +
+        std::string(
+        " AS industry_name, "
+        "i.list_date, "
+        "i.delist_date "
+        "FROM instruments i "
+        "LEFT JOIN instrument_sector_members m ON i.symbol = m.symbol"));
 
     spdlog::debug("MetadataStore initialized at {}", db_path);
 }

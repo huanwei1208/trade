@@ -12,6 +12,7 @@ dependencies = [
     "pandas>=2.0",
     "duckdb>=1.0",
     "pyarrow>=14.0",
+    "tqdm>=4.0",
     "tushare>=1.2",
     "akshare>=1.12",
     "baostock>=0.8",

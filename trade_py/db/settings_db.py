@@ -28,6 +28,22 @@ _DEFAULT_SETTINGS: list[tuple[str, str, str, str, str]] = [
     # 调度参数
     ("scheduler.brief_time",     "09:10",   "string", "scheduler", "晨报生成时间"),
     ("scheduler.scan_interval",  "5",       "int",    "scheduler", "盘中扫描间隔（分钟）"),
+    # 市场数据参数
+    ("kline.start",              "2020-01-01", "string", "market_data", "K线默认起始日期"),
+    ("index.start_date",         "2020-01-01", "string", "market_data", "指数/板块默认起始日期"),
+    ("tushare.http_url",         "",       "string", "market_data", "Tushare API URL"),
+    ("tushare.min_interval_sec", "0.6",    "float",  "market_data", "Tushare最小请求间隔（秒）"),
+    ("tushare.minute_budget",    "50",     "int",    "market_data", "Tushare每分钟预算"),
+    ("tushare.chunk_days",       "1825",   "int",    "market_data", "Tushare K线单次请求天数跨度"),
+    ("tushare.rate_limit_backoff_sec", "5,15,30,45,60", "string", "market_data", "Tushare限流退避序列（秒）"),
+    ("tushare.audit_log_enabled","1",      "bool",   "market_data", "Tushare请求审计日志"),
+    ("sentiment.start",          "2026-01-01", "string", "market_data", "情绪数据默认起始日期"),
+    ("sentiment.settle_window_days", "7", "int", "market_data", "情绪数据稳定窗口（天）"),
+    ("event.min_magnitude",      "0.4",   "float",  "market_data", "事件提取最低强度"),
+    ("event.sync_window_days",   "7",     "int",    "market_data", "事件补齐窗口（天）"),
+    # Hook 推送
+    ("hooks.notify_url",  "",               "string", "hooks", "推送 Webhook URL（DingTalk/Telegram/飞书/通用）"),
+    ("hooks.notify_on",   "failure,success", "string", "hooks", "触发推送的事件（start/success/failure，逗号分隔）"),
 ]
 
 
@@ -85,6 +101,56 @@ class SettingsDB:
                 affected_assets  TEXT,
                 notes            TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS job_runs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_name    TEXT    NOT NULL,
+                status      TEXT    NOT NULL,   -- 'running' | 'success' | 'failure'
+                message     TEXT,
+                started_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                finished_at TIMESTAMP,
+                duration_s  REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS job_schedule (
+                job_name    TEXT PRIMARY KEY,
+                cron_desc   TEXT NOT NULL,   -- 人类可读，如 "每天 07:00"
+                next_run    TIMESTAMP,       -- 由守护进程写入，未启动时为 NULL
+                last_status TEXT,            -- 上次执行结果 (success/failure/-)
+                last_run_at TIMESTAMP,       -- 上次执行时间
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS events (
+                event_id        TEXT PRIMARY KEY,
+                event_date      DATE NOT NULL,
+                event_type      TEXT NOT NULL,
+                magnitude       REAL NOT NULL,
+                actor_type      TEXT,
+                primary_sector  TEXT,
+                breadth         TEXT,
+                sentiment_score REAL,
+                news_volume     INTEGER,
+                summary         TEXT,
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_date ON events(event_date);
+
+            CREATE TABLE IF NOT EXISTS event_propagations (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id          TEXT NOT NULL,
+                event_date        DATE NOT NULL,
+                symbol            TEXT NOT NULL,
+                sector            TEXT,
+                kg_score          REAL,
+                hop               INTEGER,
+                typical_days      INTEGER,
+                actual_return_5d  REAL,
+                actual_return_20d REAL,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_ep_symbol ON event_propagations(symbol);
+            CREATE INDEX IF NOT EXISTS idx_ep_date   ON event_propagations(event_date);
         """)
         self._conn.commit()
         self._migrate()
@@ -99,7 +165,18 @@ class SettingsDB:
         }
         if "net_sentiment" not in existing:
             cur.execute("ALTER TABLE signal_cache ADD COLUMN net_sentiment REAL")
-            self._conn.commit()
+        for col, typedef in [
+            ("event_kg_score",     "REAL"),
+            ("event_affected",     "INTEGER"),
+            ("event_type",         "TEXT"),
+            ("event_typical_days", "INTEGER"),
+            ("model_score",        "REAL"),    # LightGBM 预测的 5日超额收益百分位 [0-100]
+            ("model_risk",         "REAL"),    # P(loss_5pct_20d) 风险概率 [0-1]
+            ("model_updated",      "TEXT"),    # 最近推理日期
+        ]:
+            if col not in existing:
+                cur.execute(f"ALTER TABLE signal_cache ADD COLUMN {col} {typedef}")
+        self._conn.commit()
 
     def _seed_defaults(self) -> None:
         cur = self._conn.cursor()
@@ -217,12 +294,310 @@ class SettingsDB:
         )
         self._conn.commit()
 
-    def signal_cache_get(self, date: str) -> list[dict]:
+    def signal_cache_get(self, date: str, order_by: str = "auto") -> list[dict]:
+        """Return signal cache rows for date.
+
+        order_by: "model_score" | "window_score" | "auto" (model_score if available, else window_score)
+        """
+        if order_by == "model_score":
+            sort_col = "model_score DESC NULLS LAST"
+        elif order_by == "window_score":
+            sort_col = "window_score DESC NULLS LAST"
+        else:
+            # auto: prefer model_score, fall back to window_score
+            sort_col = "COALESCE(model_score, -1) DESC, COALESCE(window_score, 0) DESC"
         rows = self._conn.execute(
-            "SELECT * FROM signal_cache WHERE date = ? ORDER BY window_score DESC",
+            f"SELECT * FROM signal_cache WHERE date = ? ORDER BY {sort_col}",
             (date,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def signal_cache_suggest(
+        self,
+        limit: int = 20,
+        by: str = "model_score",
+        sector_limit: int = 3,
+    ) -> list[dict]:
+        """Return top candidates sorted by score, with per-sector cap.
+
+        Args:
+            limit:        Max number of suggestions.
+            by:           Sort column: "model_score" | "window_score".
+            sector_limit: Max suggestions per SW sector.
+        """
+        col = by if by in ("model_score", "window_score") else "model_score"
+
+        # Try joining instruments for sector info; fall back to no join if table missing
+        # Use latest date per symbol to avoid duplicates
+        try:
+            rows = self._conn.execute(
+                f"""
+                WITH latest AS (
+                    SELECT symbol, MAX(date) AS max_date
+                    FROM signal_cache
+                    WHERE {col} IS NOT NULL
+                    GROUP BY symbol
+                )
+                SELECT sc.date, sc.symbol, sc.model_score, sc.model_risk,
+                       sc.window_score, sc.net_sentiment,
+                       COALESCE(i.industry, 255) AS industry
+                FROM signal_cache sc
+                JOIN latest ON sc.symbol = latest.symbol AND sc.date = latest.max_date
+                LEFT JOIN instruments i ON sc.symbol = i.symbol
+                ORDER BY sc.{col} DESC
+                LIMIT ?
+                """,
+                (limit * sector_limit,),
+            ).fetchall()
+        except Exception:
+            rows = self._conn.execute(
+                f"""
+                WITH latest AS (
+                    SELECT symbol, MAX(date) AS max_date
+                    FROM signal_cache
+                    WHERE {col} IS NOT NULL
+                    GROUP BY symbol
+                )
+                SELECT sc.date, sc.symbol, sc.model_score, sc.model_risk,
+                       sc.window_score, sc.net_sentiment,
+                       255 AS industry
+                FROM signal_cache sc
+                JOIN latest ON sc.symbol = latest.symbol AND sc.date = latest.max_date
+                ORDER BY sc.{col} DESC
+                LIMIT ?
+                """,
+                (limit * sector_limit,),
+            ).fetchall()
+
+        # Apply per-sector cap
+        sector_counts: dict[int, int] = {}
+        result = []
+        for r in rows:
+            d = dict(r)
+            ind = d.get("industry", 255)
+            if sector_counts.get(ind, 0) >= sector_limit:
+                continue
+            sector_counts[ind] = sector_counts.get(ind, 0) + 1
+            result.append(d)
+            if len(result) >= limit:
+                break
+        return result
+
+    # ── Job run history ───────────────────────────────────────────────────────
+
+    def job_run_start(self, job_name: str) -> int:
+        """Insert a 'running' row; return the new row id."""
+        cur = self._conn.execute(
+            "INSERT INTO job_runs (job_name, status, started_at) "
+            "VALUES (?, 'running', CURRENT_TIMESTAMP)",
+            (job_name,),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def job_run_finish(self, run_id: int, status: str, message: str | None = None) -> None:
+        """Update the row with final status, message, and duration."""
+        self._conn.execute(
+            """
+            UPDATE job_runs
+            SET status      = ?,
+                message     = ?,
+                finished_at = CURRENT_TIMESTAMP,
+                duration_s  = CAST(
+                    (julianday('now') - julianday(started_at)) * 86400 AS REAL
+                )
+            WHERE id = ?
+            """,
+            (status, message, run_id),
+        )
+        self._conn.commit()
+
+    def job_schedule_upsert(self, job_name: str, cron_desc: str, next_run: str | None = None) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO job_schedule (job_name, cron_desc, next_run, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(job_name) DO UPDATE SET
+                cron_desc  = excluded.cron_desc,
+                next_run   = excluded.next_run,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (job_name, cron_desc, next_run),
+        )
+        self._conn.commit()
+
+    def job_schedule_update_next(self, job_name: str, next_run: str) -> None:
+        self._conn.execute(
+            "UPDATE job_schedule SET next_run = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ?",
+            (next_run, job_name),
+        )
+        self._conn.commit()
+
+    def job_schedule_update_last(self, job_name: str, status: str, last_run_at: str) -> None:
+        self._conn.execute(
+            """
+            UPDATE job_schedule
+            SET last_status = ?, last_run_at = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE job_name = ?
+            """,
+            (status, last_run_at, job_name),
+        )
+        self._conn.commit()
+
+    def job_schedule_all(self) -> list[dict]:
+        rows = self._conn.execute(
+            """
+            SELECT job_name, cron_desc, next_run, last_status, last_run_at
+            FROM job_schedule
+            ORDER BY next_run NULLS LAST, job_name
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def job_runs_recent(self, limit: int = 50) -> list[dict]:
+        """Return the most recent job run rows, newest first."""
+        rows = self._conn.execute(
+            """
+            SELECT id, job_name, status, message, started_at, finished_at,
+                   ROUND(duration_s, 1) AS duration_s
+            FROM job_runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Events ────────────────────────────────────────────────────────────────
+
+    def event_upsert(self, row: dict) -> None:
+        """INSERT OR REPLACE into events table."""
+        cols = list(row.keys())
+        placeholders = ", ".join(["?"] * len(cols))
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO events ({', '.join(cols)}) VALUES ({placeholders})",
+            [row[c] for c in cols],
+        )
+        self._conn.commit()
+
+    def event_propagation_insert_batch(self, rows: list[dict]) -> None:
+        """INSERT OR IGNORE into event_propagations (unique by event_id+symbol)."""
+        if not rows:
+            return
+        cols = list(rows[0].keys())
+        placeholders = ", ".join(["?"] * len(cols))
+        self._conn.executemany(
+            f"INSERT OR IGNORE INTO event_propagations ({', '.join(cols)}) VALUES ({placeholders})",
+            [[r[c] for c in cols] for r in rows],
+        )
+        self._conn.commit()
+
+    def get_events(
+        self,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        event_type: str | None = None,
+        failed_only: bool = False,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Return events with optional date/type filtering and propagation count.
+
+        Args:
+            from_date:   Inclusive start date (YYYY-MM-DD).
+            to_date:     Inclusive end date (YYYY-MM-DD).
+            event_type:  Filter by event type string.
+            failed_only: If True, return only events with zero propagations.
+            limit:       Max rows to return.
+
+        Returns:
+            List of dicts with all events columns plus 'affected_stocks' count.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if from_date:
+            clauses.append("e.event_date >= ?")
+            params.append(from_date)
+        if to_date:
+            clauses.append("e.event_date <= ?")
+            params.append(to_date)
+        if event_type:
+            clauses.append("e.event_type = ?")
+            params.append(event_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        having = "HAVING COUNT(ep.id) = 0" if failed_only else ""
+        params.append(limit)
+        rows = self._conn.execute(
+            f"""
+            SELECT e.event_id, e.event_date, e.event_type, e.magnitude,
+                   e.actor_type, e.primary_sector, e.breadth,
+                   e.sentiment_score, e.news_volume, e.summary,
+                   COUNT(ep.id) AS affected_stocks
+            FROM events e
+            LEFT JOIN event_propagations ep ON e.event_id = ep.event_id
+            {where}
+            GROUP BY e.event_id
+            {having}
+            ORDER BY e.event_date DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def events_recent(self, limit: int = 30, symbol: str | None = None,
+                      event_type: str | None = None) -> list[dict]:
+        """Return recent events. If symbol given, joins event_propagations."""
+        if symbol:
+            rows = self._conn.execute(
+                """
+                SELECT e.event_id, e.event_date, e.event_type, e.magnitude,
+                       e.primary_sector, e.breadth, e.summary,
+                       ep.kg_score, ep.hop, ep.typical_days,
+                       ep.actual_return_5d, ep.actual_return_20d
+                FROM events e
+                JOIN event_propagations ep ON e.event_id = ep.event_id
+                WHERE ep.symbol = ?
+                  AND (? IS NULL OR e.event_type = ?)
+                ORDER BY e.event_date DESC
+                LIMIT ?
+                """,
+                (symbol, event_type, event_type, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT e.event_id, e.event_date, e.event_type, e.magnitude,
+                       e.primary_sector, e.breadth, e.summary,
+                       COUNT(ep.id) AS affected_stocks
+                FROM events e
+                LEFT JOIN event_propagations ep ON e.event_id = ep.event_id
+                WHERE (? IS NULL OR e.event_type = ?)
+                GROUP BY e.event_id
+                ORDER BY e.event_date DESC
+                LIMIT ?
+                """,
+                (event_type, event_type, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def event_propagations_fill_returns(self, event_date: str,
+                                        symbol_returns: dict[str, float],
+                                        window: int) -> int:
+        """UPDATE actual_return_{window}d for rows where it's NULL.
+
+        Returns the number of rows updated.
+        """
+        col = f"actual_return_{window}d"
+        updated = 0
+        for symbol, ret in symbol_returns.items():
+            cur = self._conn.execute(
+                f"UPDATE event_propagations SET {col} = ? "
+                f"WHERE event_date = ? AND symbol = ? AND {col} IS NULL",
+                (ret, event_date, symbol),
+            )
+            updated += cur.rowcount
+        self._conn.commit()
+        return updated
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

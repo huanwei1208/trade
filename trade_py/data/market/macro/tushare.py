@@ -23,6 +23,7 @@ _DATASETS = {
     "ppi": ("cn_ppi",  "ppi_yoy",    "month"),
     "pmi": ("cn_pmi",  "mfg_pmi",    "month"),
 }
+_DATE_FALLBACKS = ("ann_date", "month", "year")
 
 
 class MacroFetcher:
@@ -42,6 +43,12 @@ class MacroFetcher:
             return pd.DataFrame()
         return pd.read_parquet(p)
 
+    @staticmethod
+    def _resolve_date_column(raw: pd.DataFrame, preferred: str) -> str | None:
+        """Return the actual column name matching *preferred* (case-insensitive), or None."""
+        lookup = {str(col).lower(): str(col) for col in raw.columns}
+        return lookup.get(preferred.lower())
+
     def fetch_and_save(self, name: str) -> pd.DataFrame:
         if name not in _DATASETS:
             raise ValueError(f"Unknown macro dataset: {name!r}. Choose from {list(_DATASETS)}")
@@ -54,16 +61,24 @@ class MacroFetcher:
             return self.load(name)
 
         # Normalise date column to YYYY-MM-DD
-        if date_col in raw.columns:
-            s = raw[date_col].astype(str)
-            if s.str.len().max() == 4:
-                # year only → YYYY-01-01
-                raw["date"] = pd.to_datetime(s + "0101", format="%Y%m%d", errors="coerce")
-            else:
-                raw["date"] = pd.to_datetime(s + "01", format="%Y%m%d", errors="coerce")
-        else:
-            logger.warning("MacroFetcher: no date column %r in %s", date_col, name)
+        # Try configured column first, then common tushare fallbacks
+        actual_col = self._resolve_date_column(raw, date_col)
+        if actual_col is None:
+            for fallback in _DATE_FALLBACKS:
+                actual_col = self._resolve_date_column(raw, fallback)
+                if actual_col is not None:
+                    logger.debug("MacroFetcher: %s date column %r not found, using fallback %r", name, date_col, actual_col)
+                    break
+        if actual_col is None:
+            logger.warning("MacroFetcher: no date column (tried %r + fallbacks) in %s. Columns: %s",
+                           date_col, name, list(raw.columns))
             return self.load(name)
+        s = raw[actual_col].astype(str)
+        if s.str.len().max() == 4:
+            # year only → YYYY-01-01
+            raw["date"] = pd.to_datetime(s + "0101", format="%Y%m%d", errors="coerce")
+        else:
+            raw["date"] = pd.to_datetime(s + "01", format="%Y%m%d", errors="coerce")
 
         raw = raw.sort_values("date").reset_index(drop=True)
         raw["date"] = raw["date"].dt.strftime("%Y-%m-%d")
@@ -80,7 +95,8 @@ class MacroFetcher:
         return combined
 
     def fetch_all(self) -> None:
-        for name in _DATASETS:
+        from trade_py.utils.progress import iter_progress
+        for name in iter_progress(_DATASETS, desc="macro", unit="dataset"):
             try:
                 self.fetch_and_save(name)
             except Exception as exc:

@@ -6,7 +6,6 @@ from pathlib import Path
 from trade_py.config import default_data_root
 from trade_py.intelligence.graph.builder import build_sector_graph
 from trade_py.report.morning_brief import generate
-from trade_py.report import scheduler as report_scheduler
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -14,7 +13,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="trade report",
-        description="报告与调度 — 晨报/知识图谱/定时任务",
+        description="报告生成 — 晨报/知识图谱",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -30,18 +29,6 @@ def make_parser() -> argparse.ArgumentParser:
     )
     p_brief.add_argument("--data-root", default=str(default_data_root()))
     p_brief.add_argument("--date", default=None, help="Brief date (YYYY-MM-DD)")
-
-    p_schedule = sub.add_parser(
-        "schedule",
-        description="启动日常调度器（阻塞运行）",
-        epilog=(
-            "trade report schedule\n"
-            "trade report schedule --dry-run"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p_schedule.add_argument("--data-root", default=str(default_data_root()))
-    p_schedule.add_argument("--dry-run", action="store_true")
 
     p_graph = sub.add_parser(
         "graph",
@@ -72,11 +59,6 @@ def main(argv: list[str] | None = None) -> int:
         if len(content) > 1000:
             print(f"\n... ({len(content) - 1000} more characters)")
         return 0
-    if args.command == "schedule":
-        schedule_argv: list[str] = ["--data-root", args.data_root]
-        if args.dry_run:
-            schedule_argv.append("--dry-run")
-        return report_scheduler.main(schedule_argv)
     if args.command == "graph":
         summary = build_sector_graph(args.output)
         print(f"Sector graph saved to: {summary['output']}")

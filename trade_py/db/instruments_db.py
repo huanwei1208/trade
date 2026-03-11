@@ -21,6 +21,51 @@ logger = logging.getLogger(__name__)
 _MARKET_SH = 0  # Shanghai
 _MARKET_SZ = 1  # Shenzhen
 _MARKET_BJ = 2  # Beijing
+_BOARD_MAIN = 0
+_BOARD_ST = 1
+_BOARD_STAR = 2
+_BOARD_CHINEXT = 3
+_BOARD_BSE = 4
+_STATUS_NORMAL = 0
+_STATUS_SUSPENDED = 1
+_STATUS_ST = 2
+_STATUS_STAR_ST = 3
+_INDUSTRY_UNKNOWN = 255
+
+_INDUSTRY_NAMES = {
+    0: "农林牧渔",
+    1: "采掘",
+    2: "基础化工",
+    3: "钢铁",
+    4: "有色金属",
+    5: "电子",
+    6: "汽车",
+    7: "家用电器",
+    8: "食品饮料",
+    9: "纺织服装",
+    10: "轻工制造",
+    11: "医药生物",
+    12: "公用事业",
+    13: "交通运输",
+    14: "房地产",
+    15: "商业贸易",
+    16: "社会服务",
+    17: "银行",
+    18: "非银金融",
+    19: "建筑装饰",
+    20: "建筑材料",
+    21: "机械设备",
+    22: "国防军工",
+    23: "计算机",
+    24: "传媒",
+    25: "通信",
+    26: "环保",
+    27: "电力设备",
+    28: "美容护理",
+    29: "煤炭",
+    30: "石油石化",
+    _INDUSTRY_UNKNOWN: "未分类",
+}
 
 
 def _infer_market(code: str) -> int:
@@ -35,6 +80,44 @@ def _infer_market(code: str) -> int:
 def _market_name(market: int) -> str:
     names = {0: "Shanghai", 1: "Shenzhen", 2: "Beijing", 3: "Hong Kong", 4: "US", 5: "Crypto"}
     return names.get(market, "Unknown")
+
+
+def _is_st_name(name: str) -> bool:
+    upper = name.strip().upper().replace(" ", "")
+    return (
+        upper.startswith("*ST")
+        or upper.startswith("ST")
+        or upper.startswith("S*ST")
+        or upper.startswith("SST")
+    )
+
+
+def _infer_board(symbol: str, name: str) -> int:
+    code = symbol.split(".")[0]
+    suffix = symbol.split(".")[-1].upper() if "." in symbol else ""
+    if _is_st_name(name):
+        return _BOARD_ST
+    if suffix == "BJ":
+        return _BOARD_BSE
+    if suffix == "SH" and code.startswith("688"):
+        return _BOARD_STAR
+    if suffix == "SZ" and code.startswith("30"):
+        return _BOARD_CHINEXT
+    return _BOARD_MAIN
+
+
+def _infer_status(name: str) -> int:
+    upper = name.strip().upper().replace(" ", "")
+    if upper.startswith("*ST"):
+        return _STATUS_STAR_ST
+    if upper.startswith("ST") or upper.startswith("S*ST") or upper.startswith("SST"):
+        return _STATUS_ST
+    return _STATUS_NORMAL
+
+
+def _industry_case_expr(column: str) -> str:
+    parts = [f"WHEN {code} THEN '{name}'" for code, name in _INDUSTRY_NAMES.items() if code != _INDUSTRY_UNKNOWN]
+    return "CASE " + column + " " + " ".join(parts) + f" ELSE '{_INDUSTRY_NAMES[_INDUSTRY_UNKNOWN]}' END"
 
 
 class InstrumentsDB:
@@ -125,6 +208,71 @@ class InstrumentsDB:
             "CREATE INDEX IF NOT EXISTS idx_watermarks_lookup "
             "ON watermarks(source, dataset, symbol)"
         )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS instrument_sector_members (
+                symbol        TEXT PRIMARY KEY,
+                sector_code   TEXT NOT NULL,
+                sector_name   TEXT NOT NULL,
+                industry_code INTEGER NOT NULL,
+                updated_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_instrument_sector_members_sector_code "
+            "ON instrument_sector_members(sector_code)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_instrument_sector_members_industry_code "
+            "ON instrument_sector_members(industry_code)"
+        )
+        cur.execute("DROP VIEW IF EXISTS instrument_classification_v")
+        cur.execute(f"""
+            CREATE VIEW instrument_classification_v AS
+            SELECT
+                i.symbol,
+                i.name,
+                i.market,
+                i.market_name,
+                i.board,
+                CASE i.board
+                    WHEN 0 THEN '主板'
+                    WHEN 1 THEN 'ST'
+                    WHEN 2 THEN '科创板'
+                    WHEN 3 THEN '创业板'
+                    WHEN 4 THEN '北交所'
+                    WHEN 5 THEN '主板新股首日'
+                    WHEN 6 THEN '科创创业板新股首日'
+                    ELSE '未知'
+                END AS board_name,
+                i.status,
+                CASE i.status
+                    WHEN 0 THEN '正常'
+                    WHEN 1 THEN '停牌'
+                    WHEN 2 THEN 'ST'
+                    WHEN 3 THEN '*ST'
+                    WHEN 4 THEN '退市整理'
+                    ELSE '未知'
+                END AS status_name,
+                CASE
+                    WHEN i.status IN (2, 3) THEN 1
+                    WHEN i.board = 1 THEN 1
+                    WHEN upper(replace(i.name, ' ', '')) LIKE 'ST%'
+                      OR upper(replace(i.name, ' ', '')) LIKE '*ST%'
+                      OR upper(replace(i.name, ' ', '')) LIKE 'S*ST%'
+                      OR upper(replace(i.name, ' ', '')) LIKE 'SST%'
+                    THEN 1
+                    ELSE 0
+                END AS is_st,
+                m.sector_code,
+                m.sector_name,
+                COALESCE(m.industry_code, i.industry, {_INDUSTRY_UNKNOWN}) AS industry_code,
+                {_industry_case_expr(f"COALESCE(m.industry_code, i.industry, {_INDUSTRY_UNKNOWN})")} AS industry_name,
+                i.list_date,
+                i.delist_date
+            FROM instruments i
+            LEFT JOIN instrument_sector_members m
+              ON i.symbol = m.symbol
+        """)
         self._conn.commit()
 
     # ── Instruments ────────────────────────────────────────────────────────
@@ -134,7 +282,7 @@ class InstrumentsDB:
         symbol: str,
         name: str,
         market: int | None = None,
-        industry_idx: int = 0,
+        industry_idx: int = _INDUSTRY_UNKNOWN,
     ) -> None:
         """Insert or update an instrument record.
 
@@ -142,25 +290,42 @@ class InstrumentsDB:
             symbol:       Full symbol with suffix, e.g. "600000.SH"
             name:         Stock name
             market:       Market integer (0=SH, 1=SZ, 2=BJ). Inferred if None.
-            industry_idx: SWIndustry enum integer (0 = Unknown)
+            industry_idx: SWIndustry enum integer (255 = Unknown)
         """
         code = symbol.split(".")[0]
         if market is None:
             market = _infer_market(code)
         mname = _market_name(market)
+        board = _infer_board(symbol, name)
+        status = _infer_status(name)
         self._conn.execute(
             """
             INSERT INTO instruments (symbol, name, market, board, industry,
                                      list_date, delist_date, status,
                                      total_shares, float_shares, market_name)
-            VALUES (?, ?, ?, 0, ?, NULL, NULL, 1, 0, 0, ?)
+            VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 0, 0, ?)
             ON CONFLICT(symbol) DO UPDATE SET
                 name        = excluded.name,
                 market      = excluded.market,
+                board       = excluded.board,
                 industry    = excluded.industry,
+                status      = excluded.status,
                 market_name = excluded.market_name
             """,
-            (symbol, name, market, industry_idx, mname),
+            (symbol, name, market, board, industry_idx, status, mname),
+        )
+        self._conn.commit()
+
+    def replace_sector_members(self, rows: list[tuple[str, str, str, int]]) -> None:
+        cur = self._conn.cursor()
+        cur.execute("DELETE FROM instrument_sector_members")
+        cur.executemany(
+            """
+            INSERT INTO instrument_sector_members
+                (symbol, sector_code, sector_name, industry_code, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            rows,
         )
         self._conn.commit()
 
@@ -168,6 +333,17 @@ class InstrumentsDB:
         """Return all symbols currently in the instruments table."""
         cur = self._conn.execute("SELECT symbol FROM instruments ORDER BY symbol")
         return [row[0] for row in cur.fetchall()]
+
+    def get_symbols_by_sector(self, sector: "SW") -> list[str]:  # type: ignore[name-defined]
+        """Return all symbols belonging to the given SW sector.
+
+        Queries instrument_sector_members by industry_code (SW enum int value).
+        """
+        rows = self._conn.execute(
+            "SELECT symbol FROM instrument_sector_members WHERE industry_code = ?",
+            (int(sector),),
+        ).fetchall()
+        return [r[0] for r in rows]
 
     # ── Watermarks ─────────────────────────────────────────────────────────
 

@@ -102,12 +102,16 @@ class FundFlowFetcher:
         return pd.read_parquet(p)
 
     def fetch_and_save(self, symbol: str, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
+        existing = self.load(symbol)
+        # incremental: only fetch from day after the last stored date when no explicit start given
+        if start_date is None and not existing.empty:
+            last_dt = pd.to_datetime(existing["date"]).max()
+            start_date = (last_dt + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         raw = _fetch_raw(symbol, self.data_root, start_date=start_date, end_date=end_date)
         new_df = _parse_rows(symbol, raw)
         if new_df.empty:
             logger.warning("FundFlowFetcher: no data for %s", symbol)
-            return self.load(symbol)
-        existing = self.load(symbol)
+            return existing
         if not existing.empty:
             combined = pd.concat([existing, new_df], ignore_index=True)
             combined = combined.drop_duplicates(subset=["symbol", "date"], keep="last")
@@ -119,7 +123,8 @@ class FundFlowFetcher:
         return combined
 
     def fetch_batch(self, symbols: list[str], start_date: str | None = None) -> None:
-        for sym in symbols:
+        from trade_py.utils.progress import iter_progress
+        for sym in iter_progress(symbols, desc="fund-flow", unit="sym"):
             try:
                 self.fetch_and_save(sym, start_date=start_date)
             except Exception as exc:

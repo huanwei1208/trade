@@ -83,11 +83,21 @@ def _cross_asset_env_score(ca: dict) -> float:
 
 
 def _load_watchlist_signals(data_root: str, date_str: str) -> list[dict]:
-    """Load today's signal cache from DB sorted by window_score desc."""
+    """Load today's signal cache from DB, sorted by model_score (if available) else window_score."""
     try:
         from trade_py.db.settings_db import SettingsDB
         db = SettingsDB(data_root)
-        return db.signal_cache_get(date_str)
+        return db.signal_cache_get(date_str, order_by="auto")
+    except Exception:
+        return []
+
+
+def _load_recent_events(data_root: str, limit: int = 3) -> list[dict]:
+    """Load recent events from the events table."""
+    try:
+        from trade_py.db.settings_db import SettingsDB
+        db = SettingsDB(data_root)
+        return db.events_recent(limit=limit)
     except Exception:
         return []
 
@@ -251,6 +261,7 @@ def build_brief_markdown(
     decisions: list[dict],
     digest: str,
     sentiment_ctx: dict | None = None,
+    recent_events: list[dict] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# 今日作战简报 {date_str}")
@@ -293,23 +304,56 @@ def build_brief_markdown(
     lines.append(f"> {rec_reason}")
     lines.append("")
 
-    # Focus symbols (top 3 by window_score) — now includes sentiment column
+    # Focus symbols (top 3 by model_score if available, else window_score)
     lines.append("## 重点关注（自选池 Top 3）")
     lines.append("")
-    top3 = sorted(signals, key=lambda x: x.get("window_score") or 0, reverse=True)[:3]
+    # signals already sorted by DB: model_score preferred
+    top3 = signals[:3]
+    has_model_score = any(s.get("model_score") is not None for s in top3)
     if top3:
-        lines.append("| 股票 | 窗口质量 | 净情绪 | 信号 |")
-        lines.append("|------|----------|--------|------|")
-        for s in top3:
-            sym       = s.get("symbol", "—")
-            ws        = s.get("window_score", "—")
-            net_sent  = s.get("net_sentiment")
-            sent_str  = f"{net_sent:+.2f}" if net_sent is not None else "—"
-            trend     = s.get("large_order_trend", "—") or "—"
-            lines.append(f"| {sym} | {ws}/100 | {sent_str} | {trend} |")
+        if has_model_score:
+            lines.append("| 股票 | 模型评分 | 风险概率 | 窗口质量 | 净情绪 | 信号 |")
+            lines.append("|------|----------|----------|----------|--------|------|")
+            for s in top3:
+                sym       = s.get("symbol", "—")
+                ms        = s.get("model_score")
+                mr        = s.get("model_risk")
+                ws        = s.get("window_score", "—")
+                net_sent  = s.get("net_sentiment")
+                ms_str    = f"{ms:.1f}" if ms is not None else "—"
+                mr_str    = f"{mr:.1%}" if mr is not None else "—"
+                sent_str  = f"{net_sent:+.2f}" if net_sent is not None else "—"
+                trend     = s.get("large_order_trend", "—") or "—"
+                lines.append(f"| {sym} | {ms_str}/100 | {mr_str} | {ws}/100 | {sent_str} | {trend} |")
+        else:
+            lines.append("| 股票 | 窗口质量 | 净情绪 | 信号 |")
+            lines.append("|------|----------|--------|------|")
+            for s in top3:
+                sym       = s.get("symbol", "—")
+                ws        = s.get("window_score", "—")
+                net_sent  = s.get("net_sentiment")
+                sent_str  = f"{net_sent:+.2f}" if net_sent is not None else "—"
+                trend     = s.get("large_order_trend", "—") or "—"
+                lines.append(f"| {sym} | {ws}/100 | {sent_str} | {trend} |")
     else:
-        lines.append("*自选池为空或尚未评分 — 请先运行 `run_window_score.py`*")
+        lines.append("*自选池为空或尚未评分 — 请先运行 `trade data score` 或等待调度*")
     lines.append("")
+
+    # Today's events section (from KG propagation pipeline)
+    if recent_events:
+        lines.append("## 今日重大事件")
+        lines.append("")
+        lines.append("| 日期 | 事件类型 | 板块 | 强度 | 影响股票数 | 摘要 |")
+        lines.append("|------|----------|------|------|------------|------|")
+        for ev in recent_events:
+            ev_date   = str(ev.get("event_date", "—"))[:10]
+            ev_type   = ev.get("event_type", "—")
+            sector    = (ev.get("primary_sector") or "—").replace("SW_", "")
+            mag       = ev.get("magnitude", 0)
+            n_stocks  = ev.get("affected_stocks", "—")
+            summary   = str(ev.get("summary") or "")[:40]
+            lines.append(f"| {ev_date} | {ev_type} | {sector} | {mag:.2f} | {n_stocks} | {summary} |")
+        lines.append("")
 
     # Sentiment alerts (policy signals + negative shocks from Phase 4 Gold/Silver)
     ctx = sentiment_ctx or {}
@@ -402,10 +446,11 @@ def generate(
     headlines = _load_latest_headlines(data_root)
     digest = _generate_intelligence_digest(headlines, api_key)
     sentiment_ctx = _load_sentiment_context(data_root, date_str)
+    recent_events = _load_recent_events(data_root, limit=3)
 
     # Build markdown
     md = build_brief_markdown(date_str, ca, env_score, signals, decisions, digest,
-                              sentiment_ctx=sentiment_ctx)
+                              sentiment_ctx=sentiment_ctx, recent_events=recent_events)
 
     # Save
     out_dir = Path(data_root) / "briefs"

@@ -6,17 +6,33 @@ import logging
 from trade_py.config import default_data_root, load_defaults
 from trade_py.data.market.cross_asset import fetch_all, fetch_btc, fetch_fx_cnh, fetch_gold
 from trade_py.data.market.kline import KlineSyncOptions, KlineSyncService
+from trade_py.db.settings_db import SettingsDB
 
 logger = logging.getLogger(__name__)
 
 _DATA_ROOT_ARG = str(default_data_root())
 
 
+def _kline_defaults() -> dict:
+    all_defaults = load_defaults()
+    defaults = all_defaults.get("kline", {}) if isinstance(all_defaults, dict) else {}
+    return defaults if isinstance(defaults, dict) else {}
+
+
+def _resolve_kline_start(data_root: str, explicit_start: str | None, fallback: str) -> str:
+    if explicit_start:
+        return explicit_start
+    try:
+        value = SettingsDB(data_root).get("kline.start", fallback)
+        return str(value or fallback)
+    except Exception:
+        return fallback
+
+
 def make_parser() -> argparse.ArgumentParser:
     from trade_py.cli import epilog_from_subparsers
 
-    all_defaults = load_defaults()
-    defaults = all_defaults.get("kline", {}) if isinstance(all_defaults, dict) else {}
+    defaults = _kline_defaults()
 
     def d(name: str, fallback):
         return defaults.get(name, fallback)
@@ -56,9 +72,9 @@ def make_parser() -> argparse.ArgumentParser:
 
     p_sync = kline_sub.add_parser("sync", description="K线同步 (incremental/range/full)")
     p_sync.add_argument("--data-root", default=str(default_data_root()))
-    p_sync.add_argument("--mode", choices=["incremental", "range", "full"], default=d("mode", "incremental"))
+    p_sync.add_argument("--mode", choices=["incremental", "range", "full"], default=d("mode", "range"))
     p_sync.add_argument("--symbols", default=None, help="Comma-separated symbols. Empty means all instruments.")
-    p_sync.add_argument("--start", default=d("start", "2026-01-01"))
+    p_sync.add_argument("--start", default=None)
     p_sync.add_argument("--end", default=None)
     p_sync.add_argument("--adjust", choices=["hfq", "qfq", "none"], default=d("adjust", "hfq"))
     p_sync.add_argument("--provider", choices=["auto", "tushare", "akshare", "baostock"], default=d("provider", "auto"))
@@ -131,25 +147,36 @@ def make_parser() -> argparse.ArgumentParser:
     p_nb_sync.add_argument("--end", default=None)
 
     p_idx = sub.add_parser(
-        "index",
-        description="指数日线同步 (Tushare index_daily)",
+        "market-index",
+        aliases=["index"],
+        description="市场指数与行业指数同步 (Tushare index_daily)",
         epilog=(
-            "trade data index sync\n"
-            "trade data index sync --codes 000001.SH,000300.SH --start 2020-01-01"
+            "trade data market-index sync\n"
+            "trade data market-index sync --codes 000001.SH,000300.SH --start 2020-01-01\n"
+            "trade data market-index sync-industry --start 2024-01-01\n"
+            "trade data market-index refresh-industry-members"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     idx_sub = p_idx.add_subparsers(dest="idx_cmd", required=True)
-    p_idx_sync = idx_sub.add_parser("sync", description="同步指数行情")
+    p_idx_sync = idx_sub.add_parser("sync", description="同步宽基/市场指数行情")
     p_idx_sync.add_argument("--data-root", default=str(default_data_root()))
     p_idx_sync.add_argument("--codes", default=None, help="逗号分隔指数代码，空=默认4个")
     p_idx_sync.add_argument("--start", default=None)
 
-    p_idx_sector = idx_sub.add_parser("sync-sector", description="同步申万31个一级行业指数")
+    p_idx_sector = idx_sub.add_parser(
+        "sync-industry",
+        aliases=["sync-sector"],
+        description="同步申万31个一级行业指数",
+    )
     p_idx_sector.add_argument("--data-root", default=str(default_data_root()))
     p_idx_sector.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD，空=近3年")
 
-    p_idx_members = idx_sub.add_parser("refresh-members", description="刷新股票→申万板块成分映射")
+    p_idx_members = idx_sub.add_parser(
+        "refresh-industry-members",
+        aliases=["refresh-members"],
+        description="刷新股票→申万行业成分映射",
+    )
     p_idx_members.add_argument("--data-root", default=str(default_data_root()))
 
     p_macro = sub.add_parser(
@@ -181,10 +208,12 @@ def main(argv: list[str] | None = None) -> int:
             symbols = None
             if args.symbols:
                 symbols = [s.strip() for s in str(args.symbols).split(",") if s.strip()]
+            defaults = _kline_defaults()
+            start = _resolve_kline_start(args.data_root, args.start, str(defaults.get("start", "2026-01-01")))
             opts = KlineSyncOptions(
                 mode=args.mode,
                 symbols=symbols,
-                start=args.start,
+                start=start,
                 end=args.end,
                 adjust=args.adjust,
                 provider=args.provider,

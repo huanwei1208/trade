@@ -3,7 +3,7 @@
     "data_root": "data",
     "source": "rss",
     "rss_feeds": "auto",
-    "fetch_mode": "incremental",
+    "fetch_mode": "range",
     "rss_incremental_lookback_days": 2,
     "all_range_dates": true,
     "no_rss_prefetch": false,

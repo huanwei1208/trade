@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from trade_py.data.source import DataSource, RawRecord
+from trade_py.data.pipeline.paths import bronze_path
 from trade_py.db.pipeline_db import PipelineDb
 
 logger = logging.getLogger(__name__)
@@ -18,14 +19,12 @@ CST = timezone(timedelta(hours=8))
 
 
 def _bronze_path(data_root: Path, source_id: str, d: date) -> Path:
-    y, m, day = d.year, d.month, d.day
-    return (data_root / "raw" / "sentiment" / source_id
-            / f"{y:04d}" / f"{m:02d}" / f"{y:04d}-{m:02d}-{day:02d}.parquet")
+    return bronze_path(data_root, source_id, d)
 
 
 def _upsert_parquet(path: Path, new_df: pd.DataFrame,
-                    key_cols: list[str]) -> int:
-    """Merge new_df into existing parquet. Returns count of net-new rows."""
+                    key_cols: list[str]) -> tuple[int, int]:
+    """Merge new_df into existing parquet. Returns (net-new rows, total rows)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         existing = pd.read_parquet(path)
@@ -37,7 +36,7 @@ def _upsert_parquet(path: Path, new_df: pd.DataFrame,
         combined = new_df
         new_count = len(new_df)
     combined.to_parquet(path, index=False)
-    return max(0, new_count)
+    return max(0, new_count), len(combined)
 
 
 def _load_existing_hashes(data_root: Path, source_id: str,
@@ -137,14 +136,21 @@ def ingest(
         })
 
     total_new = 0
-    bronze_counts: dict[str, int] = {}
+    bronze_counts: dict[str, dict[str, int]] = {}
+    changed_dates: list[str] = []
     for d, rows in by_date.items():
         df = pd.DataFrame(rows)
         path = _bronze_path(data_root, source.source_id, d)
-        new_count = _upsert_parquet(path, df, key_cols=["content_hash"])
+        new_count, total_count = _upsert_parquet(path, df, key_cols=["content_hash"])
         total_new += new_count
-        bronze_counts[d.isoformat()] = len(rows)
-        db.update_coverage(source.source_id, d, len(rows))
+        bronze_counts[d.isoformat()] = {
+            "fetched": len(rows),
+            "new": new_count,
+            "total": total_count,
+        }
+        if new_count > 0:
+            changed_dates.append(d.isoformat())
+        db.update_coverage(source.source_id, d, total_count)
         logger.info("Bronze %s %s: %d articles (%d new)",
                     source.source_id, d, len(rows), new_count)
 
@@ -161,5 +167,6 @@ def ingest(
         "records_new": total_new,
         "records_skipped": skipped,
         "by_date": bronze_counts,
+        "changed_dates": changed_dates,
         "error": "",
     }
