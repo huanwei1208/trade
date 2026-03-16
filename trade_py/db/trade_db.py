@@ -1581,6 +1581,65 @@ class TradeDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def planned_event_get(self, planned_event_id: str) -> dict | None:
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT * FROM planned_events WHERE planned_event_id=?",
+                (planned_event_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def planned_events_due(
+        self,
+        as_of: str | datetime | None = None,
+        *,
+        statuses: tuple[str, ...] = ("scheduled", "live"),
+        limit: int = 100,
+    ) -> list[dict]:
+        if as_of is None:
+            as_of_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        elif isinstance(as_of, datetime):
+            as_of_str = as_of.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            as_of_str = str(as_of)
+        placeholders = ", ".join(["?"] * len(statuses))
+        with self._conn_lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT *
+                FROM planned_events
+                WHERE status IN ({placeholders}) AND scheduled_at <= ?
+                ORDER BY scheduled_at ASC, planned_event_id ASC
+                LIMIT ?
+                """,
+                [*statuses, as_of_str, max(1, int(limit))],
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def planned_event_update(self, planned_event_id: str, **fields: Any) -> None:
+        if not fields:
+            return
+        columns = [k for k in fields.keys() if k in {
+            "vendor_event_id", "event_type", "entity_id", "event_date", "event_time",
+            "scheduled_at", "timezone", "title", "country", "currency", "importance",
+            "status", "expected_value", "previous_value", "actual_value", "realized_event_id",
+            "payload_json",
+        }]
+        if not columns:
+            return
+        assigns = ", ".join(f"{col}=?" for col in columns)
+        values = [fields[col] for col in columns]
+        with self._conn_lock:
+            self._conn.execute(
+                f"""
+                UPDATE planned_events
+                SET {assigns}, updated_at=CURRENT_TIMESTAMP
+                WHERE planned_event_id=?
+                """,
+                [*values, planned_event_id],
+            )
+            self._conn.commit()
+
     def agenda_queue_upsert_batch(self, rows: list[dict]) -> None:
         if not rows:
             return

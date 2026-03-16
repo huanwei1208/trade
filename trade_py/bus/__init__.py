@@ -196,6 +196,7 @@ def _make_dag_handler(
 def _make_agenda_handler(db: "TradeDB", data_root: str) -> Callable[[Event], None]:
     """Handle claimed agenda rows by publishing a topic or running a single job."""
     from trade_py.jobs import JOB_REGISTRY, run_job
+    from trade_py.event import realize_planned_events
 
     def handler(event: Event) -> None:
         payload = event.payload or {}
@@ -225,16 +226,37 @@ def _make_agenda_handler(db: "TradeDB", data_root: str) -> Callable[[Event], Non
             return
 
         if job_name:
-            stage = JOB_REGISTRY.get(job_name).stage if job_name in JOB_REGISTRY else "compute"
+            effective_job_name = job_name
+            if (
+                job_name == "event_pipeline"
+                and str(payload.get("planned_event_id") or action_payload.get("planned_event_id") or "").strip()
+            ):
+                effective_job_name = "planned_event_realize"
+
+            stage = JOB_REGISTRY.get(effective_job_name).stage if effective_job_name in JOB_REGISTRY else "compute"
             t0 = _time.time()
-            run_id = db.job_run_start(job_name, stage=stage, trigger_event_id=event.id)
+            run_id = db.job_run_start(effective_job_name, stage=stage, trigger_event_id=event.id)
             try:
-                result = run_job(job_name, data_root)
+                if effective_job_name == "planned_event_realize":
+                    planned_event_id = str(
+                        payload.get("planned_event_id")
+                        or action_payload.get("planned_event_id")
+                        or ""
+                    ).strip()
+                    result = realize_planned_events(
+                        data_root,
+                        planned_event_ids=[planned_event_id] if planned_event_id else None,
+                    )
+                else:
+                    result = run_job(effective_job_name, data_root)
                 elapsed = int((_time.time() - t0) * 1000)
                 db.job_run_finish(run_id, "ok", result_summary=result, elapsed_ms=elapsed)
                 if agenda_id:
                     db.agenda_queue_update_status(agenda_id, "done", result_summary=result[:500])
-                logger.info("agenda done: job=%s agenda_id=%s result=%s", job_name, agenda_id, result)
+                logger.info(
+                    "agenda done: job=%s effective_job=%s agenda_id=%s result=%s",
+                    job_name, effective_job_name, agenda_id, result,
+                )
                 return
             except Exception as exc:
                 elapsed = int((_time.time() - t0) * 1000)

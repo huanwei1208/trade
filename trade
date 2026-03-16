@@ -31,7 +31,12 @@ print_help() {
   echo "  ./trade open               →  trade run open"
   echo "  ./trade close              →  trade run close"
   echo "  ./trade sync               →  trade run sync"
+  echo "  ./trade today              →  trade status"
   echo "  ./trade dag [args]         →  trade inspect dag [args]"
+  echo "  ./trade calendar [args]    →  trade inspect calendar [args]"
+  echo "  ./trade events [args]      →  trade inspect events [args]"
+  echo "  ./trade factors [args]     →  trade inspect factors [args]"
+  echo "  ./trade models [args]      →  trade inspect models [args]"
   echo "  ./trade sentiment [args]   →  trade data sentiment [args]"
   echo "  ./trade brief [args]       →  trade report brief [args]"
   echo "  ./trade schedule [args]    →  trade report schedule [args]"
@@ -195,7 +200,12 @@ main() {
   shift || true
   case "$sub" in
     morning|intraday|evening|agenda|open|close|sync) cmd_trade_py_domain run "$sub" "$@" ;;
+    today) cmd_trade_py_domain status "$@" ;;
     dag) cmd_trade_py_domain inspect dag "$@" ;;
+    calendar) cmd_trade_py_domain inspect calendar "$@" ;;
+    events) cmd_trade_py_domain inspect events "$@" ;;
+    factors) cmd_trade_py_domain inspect factors "$@" ;;
+    models) cmd_trade_py_domain inspect models "$@" ;;
     run) cmd_trade_py_domain run "$@" ;;
     status) cmd_trade_py_domain status "$@" ;;
     inspect) cmd_trade_py_domain inspect "$@" ;;
@@ -223,7 +233,7 @@ main() {
     help|-h|--help) print_help ;;
     *)
       echo "错误：未知命令 '$sub'"
-      echo "可用顶层命令: run | status | inspect | data | model | factor | report | account | event | evaluate | kg | start | serve | sentiment | brief | schedule | ui | cli | py | doctor | setup-python | configure | build | test | help"
+      echo "可用顶层命令: run | status | inspect | today | calendar | events | factors | models | data | model | factor | report | account | event | evaluate | kg | start | serve | sentiment | brief | schedule | ui | cli | py | doctor | setup-python | configure | build | test | help"
       echo "运行 './trade help' 查看详细用法"
       exit 1
       ;;

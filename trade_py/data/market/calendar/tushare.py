@@ -407,7 +407,7 @@ class TradingCalendarService:
             phases = [
                 ("pre", scheduled_at - timedelta(minutes=lead_minutes), "realtime_quote_sync"),
                 ("live", scheduled_at, "realtime_compute"),
-                ("post", scheduled_at + timedelta(minutes=15), "event_pipeline"),
+                ("post", scheduled_at + timedelta(minutes=15), "planned_event_realize"),
             ]
             for phase, run_at, job_name in phases:
                 payload.append({

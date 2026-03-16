@@ -79,6 +79,12 @@ def _job_planned_event_sync(data_root: str) -> str:
     )
 
 
+def _job_planned_event_realize(data_root: str) -> str:
+    from trade_py.event import realize_planned_events
+
+    return realize_planned_events(data_root)
+
+
 def _job_realtime_symbols(data_root: str, limit: int = 50) -> list[str]:
     from trade_py.db.trade_db import TradeDB
 
@@ -283,6 +289,10 @@ JOB_REGISTRY: dict[str, JobDef] = {
     "planned_event_sync": JobDef(
         "planned_event_sync", _job_planned_event_sync, "未来计划事件同步",
         ["daily 22:05"], "fetch", ["calendar", "event"],
+    ),
+    "planned_event_realize": JobDef(
+        "planned_event_realize", _job_planned_event_realize, "未来计划事件落地",
+        ["agenda post"], "compute", ["calendar", "event"],
     ),
     "kline_update": JobDef(
         "kline_update", _job_kline, "K线增量同步",
