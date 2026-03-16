@@ -54,9 +54,10 @@ def _job_calendar_sync(data_root: str) -> str:
         )
     finally:
         service.close()
+    fallback = f" fallback={summary.fallback_reason}" if summary.fallback_used and summary.fallback_reason else ""
     return (
         f"交易日历同步: exchanges={summary.exchange_count} rows={summary.row_count} "
-        f"range={summary.start_date}..{summary.end_date}"
+        f"range={summary.start_date}..{summary.end_date}{fallback}"
     )
 
 
@@ -73,9 +74,11 @@ def _job_planned_event_sync(data_root: str) -> str:
         )
     finally:
         service.close()
+    fallback = f" fallback={summary.fallback_reason}" if summary.fallback_used and summary.fallback_reason else ""
     return (
         f"未来事件同步: eco={summary.eco_rows} disclosure={summary.disclosure_rows} "
-        f"agenda={summary.agenda_rows} range={summary.start_date}..{summary.end_date}"
+        f"agenda={summary.agenda_rows} cached={summary.cached_rows} "
+        f"range={summary.start_date}..{summary.end_date}{fallback}"
     )
 
 
@@ -118,9 +121,10 @@ def _job_realtime_quote_sync(data_root: str) -> str:
         chunk_size=50,
         asset="E",
     )
+    degraded = f" degraded={summary.degraded_reason}" if summary.degraded_reason else ""
     return (
         f"实时分钟同步: requested={summary.requested_symbols} saved={summary.symbols_saved} "
-        f"api_calls={summary.api_calls} rows={summary.rows_fetched}"
+        f"api_calls={summary.api_calls} rows={summary.rows_fetched} provider={summary.provider}{degraded}"
     )
 
 

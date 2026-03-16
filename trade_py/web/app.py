@@ -9,13 +9,17 @@ Routes:
   GET  /api/events           → event_log recent N entries
   GET  /api/runs             → job_runs recent N entries
   GET  /api/models           → model_registry list
-  GET  /api/status           → service health + model info
+  GET  /api/status           → service health + quality gate + agenda + backups
+  GET  /api/calendar         → trading calendar + planned events
+  GET  /api/agenda           → recent agenda queue
+  GET  /api/backups          → backup snapshots
   POST /predict              → online inference endpoint
 """
 from __future__ import annotations
 
 import logging
 import os
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +37,7 @@ def create_app():
         raise ImportError("fastapi required: uv add fastapi uvicorn")
 
     data_root = os.environ.get("TRADE_DATA_ROOT", "data")
-    app = FastAPI(title="Trade DAG Monitor", version="1.0")
+    app = FastAPI(title="TradeDB Console", version="1.0")
 
     # Lazy-init inference service
     from trade_py.web.inference import InferenceService
@@ -115,12 +119,62 @@ def create_app():
 
     @app.get("/api/status")
     async def get_status():
+        db = _db()
+        today = date.today().isoformat()
+        gate = db.quality_gate_get()
+        try:
+            from trade_py.backup import backup_doctor
+            backup_health = backup_doctor(data_root)
+        except Exception as exc:  # pragma: no cover - defensive web path
+            logger.warning("backup doctor failed: %s", exc)
+            backup_health = {
+                "backend": "local",
+                "enabled": False,
+                "google_drive_available": False,
+                "google_drive_folder_id": "",
+                "google_drive_key_file": "",
+            }
         return {
             "status": "ok",
             "data_root": data_root,
+            "today": today,
             "inference_models": _inference.model_names,
             "models_loaded_at": _inference.loaded_at,
+            "quality_gate": gate,
+            "due_agenda": db.agenda_queue_due(limit=10),
+            "planned_events": db.planned_events_list(
+                start_date=today,
+                end_date=(date.today() + timedelta(days=7)).isoformat(),
+                limit=10,
+            ),
+            "backups": db.backup_snapshots_recent(limit=5),
+            "backup_health": backup_health,
         }
+
+    @app.get("/api/calendar")
+    async def get_calendar(date_str: str | None = None, days: int = 5):
+        db = _db()
+        start = date.fromisoformat(date_str) if date_str else date.today()
+        calendar_rows: list[dict[str, Any]] = []
+        for offset in range(max(0, int(days)) + 1):
+            cur = start + timedelta(days=offset)
+            row = db.trading_calendar_get(cur.isoformat(), exchange="SSE")
+            if row:
+                calendar_rows.append(row)
+        planned = db.planned_events_list(
+            start_date=start.isoformat(),
+            end_date=(start + timedelta(days=max(0, int(days)))).isoformat(),
+            limit=100,
+        )
+        return {"calendar": calendar_rows, "planned_events": planned}
+
+    @app.get("/api/agenda")
+    async def get_agenda(limit: int = 50, status: str | None = None):
+        return _db().agenda_queue_recent(limit=limit, status=status)
+
+    @app.get("/api/backups")
+    async def get_backups(limit: int = 20, status: str | None = None):
+        return _db().backup_snapshots_recent(limit=limit, status=status)
 
     # ── POST /predict — online inference ─────────────────────────────────────
 

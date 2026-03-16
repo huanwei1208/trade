@@ -50,9 +50,37 @@ _TRANSIENT_PATTERNS = (
     "connection reset",
     "proxy error",
 )
-_AUTH_PATTERNS = ("invalid token", "token not found", "token失效", "token错误")
+_AUTH_PATTERNS = (
+    "invalid token",
+    "token not found",
+    "token失效",
+    "token错误",
+    "无效的 token",
+    "token不对",
+    "您的token不对",
+)
 _PERMISSION_PATTERNS = ("权限", "permission", "积分不足", "无权限")
 _INVALID_REQUEST_PATTERNS = ("参数", "parameter", "不存在", "not exist", "unknown api")
+
+
+class TushareError(RuntimeError):
+    """Base class for Tushare API failures."""
+
+
+class TushareAuthError(TushareError):
+    """Authentication or token failure."""
+
+
+class TusharePermissionError(TushareError):
+    """Permission or quota failure."""
+
+
+class TushareInvalidRequestError(TushareError):
+    """Invalid endpoint or bad parameter."""
+
+
+class TushareTransientError(TushareError):
+    """Retryable network-style failure."""
 
 
 @dataclass(frozen=True)
@@ -178,8 +206,12 @@ class TushareProClient:
                     exc=exc,
                 )
                 is_rate_limit = classification == "rate_limit"
-                if classification in {"auth", "permission", "invalid_request"}:
-                    raise RuntimeError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
+                if classification == "auth":
+                    raise TushareAuthError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
+                if classification == "permission":
+                    raise TusharePermissionError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
+                if classification == "invalid_request":
+                    raise TushareInvalidRequestError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
                 if is_rate_limit:
                     rate_limit_attempt += 1
                     if rate_limit_attempt > len(self._config.rate_limit_backoff_sec):
@@ -203,7 +235,11 @@ class TushareProClient:
                     self._global_next_allowed_at = max(self._global_next_allowed_at, time.monotonic() + wait)
                 else:
                     time.sleep(wait)
-        raise RuntimeError(
+        if last_exc is not None and _classify_exception(last_exc) == "transient":
+            raise TushareTransientError(
+                f"tushare endpoint {endpoint!r} failed after {last_max_attempts} attempts"
+            ) from last_exc
+        raise TushareError(
             f"tushare endpoint {endpoint!r} failed after {last_max_attempts} attempts"
         ) from last_exc
 
@@ -277,6 +313,12 @@ def _classify_exception(exc: Exception) -> str:
     if any(pattern in text for pattern in _TRANSIENT_PATTERNS):
         return "transient"
     return "unknown"
+
+
+def is_tushare_auth_error(exc: Exception) -> bool:
+    if isinstance(exc, TushareAuthError):
+        return True
+    return _classify_exception(exc) == "auth"
 
 
 def _params_hash(kwargs: dict[str, Any]) -> str:

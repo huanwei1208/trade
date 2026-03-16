@@ -8,9 +8,12 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import logging
 from pathlib import Path
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -22,6 +25,8 @@ class IntradaySyncSummary:
     start_time: str
     end_time: str
     freq: str
+    provider: str = "tushare"
+    degraded_reason: str = ""
 
 
 def _chunked(items: list[str], size: int) -> list[list[str]]:
@@ -44,6 +49,10 @@ def _default_window(lookback_minutes: int = 30) -> tuple[str, str]:
     end = datetime.now().replace(second=0, microsecond=0)
     start = end - timedelta(minutes=max(1, lookback_minutes))
     return start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _symbol_code(symbol: str) -> str:
+    return str(symbol or "").strip().upper().split(".", 1)[0]
 
 
 class TushareIntradayFetcher:
@@ -79,6 +88,14 @@ class TushareIntradayFetcher:
         combined.to_parquet(path, index=False)
         return combined
 
+    def _persist_grouped(self, grouped: dict[str, list[pd.DataFrame]], freq: str) -> int:
+        saved = 0
+        for symbol, frames in grouped.items():
+            merged = pd.concat(frames, ignore_index=True)
+            self._merge_and_save(symbol, merged, freq)
+            saved += 1
+        return saved
+
     @staticmethod
     def _parse_frame(raw: pd.DataFrame, freq: str) -> pd.DataFrame:
         if raw is None or raw.empty:
@@ -97,6 +114,89 @@ class TushareIntradayFetcher:
         keep = ["symbol", "timestamp", "date", "freq", "open", "high", "low", "close", "volume", "amount"]
         return work[keep].sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
+    @staticmethod
+    def _parse_akshare_spot(raw: pd.DataFrame, symbols: list[str], freq: str, timestamp: str) -> pd.DataFrame:
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+        work = raw.copy()
+        work["代码"] = work["代码"].astype(str).str.zfill(6)
+        ts = pd.to_datetime(timestamp, errors="coerce")
+        if pd.isna(ts):
+            ts = pd.Timestamp.now().floor("min")
+        rows: list[dict[str, object]] = []
+        mapping = {str(row["代码"]): row for _, row in work.iterrows()}
+        for symbol in symbols:
+            code = _symbol_code(symbol)
+            row = mapping.get(code)
+            if row is None:
+                continue
+            close = float(pd.to_numeric(row.get("最新价"), errors="coerce") or 0.0)
+            prev_close = float(pd.to_numeric(row.get("昨收"), errors="coerce") or 0.0)
+            open_px = float(pd.to_numeric(row.get("今开"), errors="coerce") or close or prev_close)
+            high_px = float(pd.to_numeric(row.get("最高"), errors="coerce") or close or open_px)
+            low_px = float(pd.to_numeric(row.get("最低"), errors="coerce") or close or open_px)
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "timestamp": ts,
+                    "date": ts.strftime("%Y-%m-%d"),
+                    "freq": str(freq).upper(),
+                    "open": open_px,
+                    "high": high_px,
+                    "low": low_px,
+                    "close": close or open_px,
+                    "volume": float(pd.to_numeric(row.get("成交量"), errors="coerce") or 0.0),
+                    "amount": float(pd.to_numeric(row.get("成交额"), errors="coerce") or 0.0),
+                }
+            )
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+
+    def _fetch_akshare_spot_fallback(
+        self,
+        symbols: list[str],
+        *,
+        freq: str,
+        end_time: str,
+    ) -> tuple[dict[str, list[pd.DataFrame]], int]:
+        import akshare as ak
+
+        raw = ak.stock_zh_a_spot_em()
+        parsed = self._parse_akshare_spot(raw, symbols, freq, end_time)
+        grouped: dict[str, list[pd.DataFrame]] = defaultdict(list)
+        if parsed.empty:
+            return grouped, 0
+        for symbol, frame in parsed.groupby("symbol", sort=False):
+            grouped[symbol].append(frame.copy())
+        return grouped, len(parsed)
+
+    def _build_local_cache_fallback(
+        self,
+        symbols: list[str],
+        *,
+        freq: str,
+        end_time: str,
+    ) -> tuple[dict[str, list[pd.DataFrame]], int]:
+        ts = pd.to_datetime(end_time, errors="coerce")
+        if pd.isna(ts):
+            ts = pd.Timestamp.now().floor("min")
+        grouped: dict[str, list[pd.DataFrame]] = defaultdict(list)
+        count = 0
+        for symbol in symbols:
+            frame = self.load(symbol, freq=freq)
+            if frame.empty:
+                continue
+            latest = frame.sort_values("timestamp").iloc[-1].to_dict()
+            latest["timestamp"] = ts
+            latest["date"] = ts.strftime("%Y-%m-%d")
+            latest["freq"] = str(freq).upper()
+            latest["volume"] = 0.0
+            latest["amount"] = 0.0
+            grouped[symbol].append(pd.DataFrame([latest]))
+            count += 1
+        return grouped, count
+
     def fetch_batch(
         self,
         symbols: list[str],
@@ -108,7 +208,7 @@ class TushareIntradayFetcher:
         chunk_size: int = 50,
         asset: str = "E",
     ) -> IntradaySyncSummary:
-        from trade_py.data.market.tushare_client import get_pro_api
+        from trade_py.data.market.tushare_client import TushareAuthError, get_pro_api
 
         ts_codes = _normalize_ts_codes(symbols)
         if not ts_codes:
@@ -117,35 +217,55 @@ class TushareIntradayFetcher:
 
         start_s = start_time or _default_window(lookback_minutes)[0]
         end_s = end_time or _default_window(lookback_minutes)[1]
-        pro = get_pro_api(self.data_root)
         grouped: dict[str, list[pd.DataFrame]] = defaultdict(list)
         api_calls = 0
         rows_fetched = 0
+        provider = "tushare"
+        degraded_reason = ""
 
-        for chunk in _chunked(ts_codes, max(1, int(chunk_size))):
-            raw = pro.call(
-                "rt_min",
-                ts_code=",".join(chunk),
-                asset=asset,
-                freq=str(freq).upper(),
-                start_time=start_s,
-                end_time=end_s,
-            )
-            api_calls += 1
-            if raw is None or raw.empty:
-                continue
-            rows_fetched += len(raw)
-            parsed = self._parse_frame(raw, freq)
-            if parsed.empty:
-                continue
-            for symbol, frame in parsed.groupby("symbol", sort=False):
-                grouped[symbol].append(frame.copy())
+        try:
+            pro = get_pro_api(self.data_root)
+            for chunk in _chunked(ts_codes, max(1, int(chunk_size))):
+                raw = pro.call(
+                    "rt_min",
+                    ts_code=",".join(chunk),
+                    asset=asset,
+                    freq=str(freq).upper(),
+                    start_time=start_s,
+                    end_time=end_s,
+                )
+                api_calls += 1
+                if raw is None or raw.empty:
+                    continue
+                rows_fetched += len(raw)
+                parsed = self._parse_frame(raw, freq)
+                if parsed.empty:
+                    continue
+                for symbol, frame in parsed.groupby("symbol", sort=False):
+                    grouped[symbol].append(frame.copy())
+        except TushareAuthError as exc:
+            provider = "akshare_spot"
+            degraded_reason = f"tushare auth fallback: {exc}"
+            logger.warning("intraday sync fallback to akshare spot: %s", exc)
+            try:
+                grouped, rows_fetched = self._fetch_akshare_spot_fallback(
+                    ts_codes,
+                    freq=freq,
+                    end_time=end_s,
+                )
+                api_calls = 1 if rows_fetched else 0
+            except Exception as fallback_exc:
+                logger.warning("intraday sync fallback to local cache: %s", fallback_exc)
+                provider = "local_cache"
+                degraded_reason = f"{degraded_reason}; akshare fallback failed: {fallback_exc}"
+                grouped, rows_fetched = self._build_local_cache_fallback(
+                    ts_codes,
+                    freq=freq,
+                    end_time=end_s,
+                )
+                api_calls = 0
 
-        saved = 0
-        for symbol, frames in grouped.items():
-            merged = pd.concat(frames, ignore_index=True)
-            self._merge_and_save(symbol, merged, freq)
-            saved += 1
+        saved = self._persist_grouped(grouped, freq)
 
         return IntradaySyncSummary(
             requested_symbols=len(ts_codes),
@@ -155,4 +275,6 @@ class TushareIntradayFetcher:
             start_time=start_s,
             end_time=end_s,
             freq=str(freq).upper(),
+            provider=provider,
+            degraded_reason=degraded_reason,
         )

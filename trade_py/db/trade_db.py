@@ -94,6 +94,13 @@ _DEFAULT_SETTINGS: list[tuple[str, str, str, str, str]] = [
     ("tushare.chunk_days",       "1825",   "int",    "market_data", "Tushare K线单次请求天数跨度"),
     ("tushare.rate_limit_backoff_sec", "5,15,30,45,60", "string", "market_data", "Tushare限流退避序列（秒）"),
     ("tushare.audit_log_enabled","1",      "bool",   "market_data", "Tushare请求审计日志"),
+    ("storage.enabled",          "0", "bool", "storage", "启用远端存储/备份"),
+    ("storage.backend",          "local", "string", "storage", "存储后端"),
+    ("storage.google_drive_key_file", "", "string", "storage", "Google Drive service account key file"),
+    ("storage.google_drive_folder_id", "", "string", "storage", "Google Drive root folder id"),
+    ("storage.google_drive_timeout_ms", "30000", "int", "storage", "Google Drive timeout"),
+    ("storage.google_drive_retry_count", "2", "int", "storage", "Google Drive retry count"),
+    ("storage.backup_remote_dir", "trade-backups", "string", "storage", "备份远端目录"),
     ("sentiment.start",          "2024-01-01", "string", "market_data", "情绪数据默认起始日期"),
     ("sentiment.settle_window_days", "7", "int", "market_data", "情绪数据稳定窗口（天）"),
     ("event.min_magnitude",      "0.4",   "float",  "market_data", "事件提取最低强度"),
@@ -412,6 +419,29 @@ class TradeDB:
                 ON agenda_queue(status, run_at, priority);
             CREATE INDEX IF NOT EXISTS idx_agenda_queue_event
                 ON agenda_queue(planned_event_id, phase);
+
+            -- OPS: backup snapshots
+            CREATE TABLE IF NOT EXISTS backup_snapshots (
+                snapshot_id         TEXT PRIMARY KEY,
+                label               TEXT,
+                driver              TEXT NOT NULL DEFAULT 'local',
+                scope               TEXT NOT NULL DEFAULT 'data_root',
+                archive_path        TEXT,
+                manifest_path       TEXT,
+                remote_archive_path TEXT,
+                remote_manifest_path TEXT,
+                status              TEXT NOT NULL DEFAULT 'created',
+                size_bytes          INTEGER NOT NULL DEFAULT 0,
+                file_count          INTEGER NOT NULL DEFAULT 0,
+                sha256              TEXT,
+                created_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                restored_at         TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_backup_snapshots_created
+                ON backup_snapshots(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_backup_snapshots_status
+                ON backup_snapshots(status, created_at DESC);
 
             -- CFG: pipeline_dag
             CREATE TABLE IF NOT EXISTS pipeline_dag (
@@ -1789,6 +1819,81 @@ class TradeDB:
                 (status, result_summary, executed_at, agenda_id),
             )
             self._conn.commit()
+
+    def backup_snapshot_upsert(self, row: dict[str, Any]) -> None:
+        payload = {
+            "snapshot_id": str(row.get("snapshot_id") or "").strip(),
+            "label": row.get("label"),
+            "driver": str(row.get("driver") or "local"),
+            "scope": str(row.get("scope") or "data_root"),
+            "archive_path": row.get("archive_path"),
+            "manifest_path": row.get("manifest_path"),
+            "remote_archive_path": row.get("remote_archive_path"),
+            "remote_manifest_path": row.get("remote_manifest_path"),
+            "status": str(row.get("status") or "created"),
+            "size_bytes": int(row.get("size_bytes") or 0),
+            "file_count": int(row.get("file_count") or 0),
+            "sha256": row.get("sha256"),
+            "restored_at": row.get("restored_at"),
+        }
+        if not payload["snapshot_id"]:
+            return
+        with self._conn_lock:
+            self._conn.execute(
+                """
+                INSERT INTO backup_snapshots
+                    (snapshot_id, label, driver, scope, archive_path, manifest_path,
+                     remote_archive_path, remote_manifest_path, status,
+                     size_bytes, file_count, sha256, restored_at, created_at, updated_at)
+                VALUES
+                    (:snapshot_id, :label, :driver, :scope, :archive_path, :manifest_path,
+                     :remote_archive_path, :remote_manifest_path, :status,
+                     :size_bytes, :file_count, :sha256, :restored_at, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(snapshot_id) DO UPDATE SET
+                    label=excluded.label,
+                    driver=excluded.driver,
+                    scope=excluded.scope,
+                    archive_path=excluded.archive_path,
+                    manifest_path=excluded.manifest_path,
+                    remote_archive_path=excluded.remote_archive_path,
+                    remote_manifest_path=excluded.remote_manifest_path,
+                    status=excluded.status,
+                    size_bytes=excluded.size_bytes,
+                    file_count=excluded.file_count,
+                    sha256=excluded.sha256,
+                    restored_at=excluded.restored_at,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                payload,
+            )
+            self._conn.commit()
+
+    def backup_snapshot_get(self, snapshot_id: str) -> dict | None:
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT * FROM backup_snapshots WHERE snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def backup_snapshots_recent(self, limit: int = 20, status: str | None = None) -> list[dict]:
+        params: list[Any] = []
+        where = ""
+        if status:
+            where = "WHERE status = ?"
+            params.append(status)
+        with self._conn_lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT *
+                FROM backup_snapshots
+                {where}
+                ORDER BY created_at DESC, snapshot_id DESC
+                LIMIT ?
+                """,
+                [*params, max(1, int(limit))],
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ── Event Log (was bus_events) ─────────────────────────────────────────────
 

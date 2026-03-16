@@ -677,19 +677,23 @@ def main(argv: list[str] | None = None) -> int:
                     asset=args.asset,
                 )
                 logger.info(
-                    "realtime sync summary: symbols=%d api_calls=%d rows=%d saved=%d freq=%s window=%s..%s",
+                    "realtime sync summary: symbols=%d api_calls=%d rows=%d saved=%d freq=%s provider=%s degraded=%s window=%s..%s",
                     summary.requested_symbols,
                     summary.api_calls,
                     summary.rows_fetched,
                     summary.symbols_saved,
                     summary.freq,
+                    summary.provider,
+                    summary.degraded_reason or "-",
                     summary.start_time,
                     summary.end_time,
                 )
                 return DataRunResult(
                     summary=(
                         f"实时分钟同步: requested={summary.requested_symbols} saved={summary.symbols_saved} "
-                        f"api_calls={summary.api_calls} rows={summary.rows_fetched} freq={summary.freq}"
+                        f"api_calls={summary.api_calls} rows={summary.rows_fetched} freq={summary.freq} "
+                        f"provider={summary.provider}"
+                        + (f" degraded={summary.degraded_reason}" if summary.degraded_reason else "")
                     ),
                     symbols_processed=summary.symbols_saved,
                 )
@@ -748,7 +752,8 @@ def main(argv: list[str] | None = None) -> int:
                     summary=(
                         f"实时流水线: requested={sync_summary.requested_symbols} saved={sync_summary.symbols_saved} "
                         f"api_calls={sync_summary.api_calls} row_count={int(result.get('row_count') or 0)} "
-                        f"snapshot={result.get('snapshot_path') or '-'}"
+                        f"snapshot={result.get('snapshot_path') or '-'} provider={sync_summary.provider}"
+                        + (f" degraded={sync_summary.degraded_reason}" if sync_summary.degraded_reason else "")
                     ),
                     symbols_processed=int(result.get("row_count") or 0),
                 )

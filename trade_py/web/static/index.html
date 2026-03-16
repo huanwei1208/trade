@@ -3,313 +3,631 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Trade DAG Monitor</title>
+<title>TradeDB Console</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
-  header { background: #1e293b; border-bottom: 1px solid #334155; padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
-  header h1 { font-size: 1.1rem; font-weight: 600; color: #f8fafc; }
-  header .badge { background: #0ea5e9; color: white; font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; }
-  .tabs { display: flex; gap: 4px; padding: 12px 24px 0; background: #1e293b; border-bottom: 1px solid #334155; }
-  .tab { padding: 8px 16px; cursor: pointer; border-radius: 6px 6px 0 0; font-size: 0.85rem; color: #94a3b8; border: 1px solid transparent; border-bottom: none; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  header { background: #111827; border-bottom: 1px solid #334155; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 1.05rem; font-weight: 700; color: #f8fafc; }
+  header p { font-size: 0.8rem; color: #94a3b8; margin-top: 2px; }
+  .header-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .badge { padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 700; }
+  .badge.ok { background: #14532d; color: #86efac; }
+  .badge.partial { background: #78350f; color: #fcd34d; }
+  .badge.degraded { background: #7f1d1d; color: #fca5a5; }
+  .badge.unknown { background: #1e3a8a; color: #bfdbfe; }
+  .subtle { color: #94a3b8; font-size: 0.78rem; }
+  .tabs { display: flex; gap: 6px; padding: 12px 20px 0; background: #111827; border-bottom: 1px solid #334155; flex-wrap: wrap; }
+  .tab { padding: 9px 14px; cursor: pointer; border-radius: 8px 8px 0 0; font-size: 0.84rem; color: #94a3b8; border: 1px solid transparent; border-bottom: none; }
   .tab.active { background: #0f172a; color: #f8fafc; border-color: #334155; }
-  .tab:hover:not(.active) { color: #cbd5e1; background: #1e3a5f33; }
-  main { padding: 24px; }
-
-  /* DAG View */
-  .dag-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
-  .stage-col { background: #1e293b; border-radius: 10px; border: 1px solid #334155; overflow: hidden; }
+  .tab:hover:not(.active) { background: rgba(30, 64, 175, 0.15); color: #dbeafe; }
+  main { padding: 20px; }
+  main > section { display: none; }
+  main > section.active { display: block; }
+  .grid { display: grid; gap: 16px; }
+  .grid.cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 16px; }
+  .card, .panel { background: #111827; border: 1px solid #334155; border-radius: 12px; overflow: hidden; }
+  .card { padding: 16px; }
+  .card-label { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; margin-bottom: 8px; }
+  .card-value { font-size: 1.5rem; font-weight: 700; color: #f8fafc; }
+  .card-sub { margin-top: 6px; font-size: 0.8rem; color: #94a3b8; }
+  .panel-header { padding: 12px 16px; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .panel-header h2 { font-size: 0.92rem; font-weight: 600; }
+  .panel-body { padding: 14px 16px; }
+  .panel-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .refresh-btn, .primary-btn { background: #0ea5e9; color: #fff; border: none; border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 0.8rem; }
+  .refresh-btn:hover, .primary-btn:hover { background: #0284c7; }
+  .panel-header .refresh-btn { margin-left: auto; }
+  .meta-list { display: grid; gap: 10px; }
+  .meta-row { padding: 10px 12px; border: 1px solid #233047; border-radius: 10px; background: #0f172a; }
+  .meta-row strong { color: #f8fafc; }
+  .meta-row .line { font-size: 0.8rem; color: #cbd5e1; margin-top: 2px; word-break: break-word; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; }
+  .pill.ok { background: #14532d; color: #86efac; }
+  .pill.partial { background: #78350f; color: #fcd34d; }
+  .pill.degraded, .pill.error, .pill.failed { background: #7f1d1d; color: #fca5a5; }
+  .pill.running { background: #0c4a6e; color: #7dd3fc; }
+  .pill.pending { background: #3f3f46; color: #d4d4d8; }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .controls input, .controls select, .controls textarea { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 7px 10px; border-radius: 8px; font-size: 0.82rem; }
+  .controls textarea { min-height: 90px; width: 100%; resize: vertical; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  th { text-align: left; padding: 9px 12px; color: #94a3b8; background: #0b1220; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; }
+  td { padding: 9px 12px; border-top: 1px solid #1e293b; color: #cbd5e1; vertical-align: top; }
+  tr:hover td { background: #132033; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .table-wrap { overflow-x: auto; }
+  .dag-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
+  .stage-col { background: #111827; border-radius: 12px; border: 1px solid #334155; overflow: hidden; }
   .stage-header { padding: 12px 16px; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; border-bottom: 1px solid #334155; }
-  .stage-fetch   .stage-header { background: #1e3a5f; color: #38bdf8; }
-  .stage-compute .stage-header { background: #1a3a2a; color: #4ade80; }
-  .stage-train   .stage-header { background: #2d1f3d; color: #c084fc; }
-  .dag-node { padding: 10px 14px; border-bottom: 1px solid #1e293b; cursor: pointer; transition: background 0.15s; }
+  .stage-fetch .stage-header { background: #1e3a5f; color: #38bdf8; }
+  .stage-compute .stage-header { background: #163826; color: #4ade80; }
+  .stage-train .stage-header { background: #3b1d51; color: #d8b4fe; }
+  .dag-node { padding: 12px 14px; border-bottom: 1px solid #162033; transition: background 0.15s; }
   .dag-node:last-child { border-bottom: none; }
-  .dag-node:hover { background: #263349; }
-  .dag-node.disabled { opacity: 0.45; }
-  .node-source { font-size: 0.72rem; color: #64748b; margin-bottom: 2px; font-family: monospace; }
-  .node-job { font-size: 0.85rem; font-weight: 600; color: #e2e8f0; }
-  .node-emits { font-size: 0.72rem; color: #94a3b8; margin-top: 2px; font-family: monospace; }
-  .node-desc { font-size: 0.72rem; color: #475569; margin-top: 2px; }
-  .node-toggle { float: right; font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; border: none; cursor: pointer; }
-  .node-toggle.on  { background: #166534; color: #4ade80; }
-  .node-toggle.off { background: #450a0a; color: #f87171; }
-
-  /* Events / Runs table */
-  .panel { background: #1e293b; border-radius: 10px; border: 1px solid #334155; overflow: hidden; }
-  .panel-header { padding: 12px 16px; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 12px; }
-  .panel-header h2 { font-size: 0.9rem; font-weight: 600; }
-  .refresh-btn { margin-left: auto; background: #0ea5e9; color: white; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
-  .refresh-btn:hover { background: #0284c7; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
-  th { padding: 8px 12px; text-align: left; background: #0f172a; color: #64748b; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  td { padding: 8px 12px; border-top: 1px solid #1e293b; color: #cbd5e1; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px; }
-  tr:hover td { background: #1a2740; }
-  .status-ok      { color: #4ade80; }
-  .status-error   { color: #f87171; }
-  .status-pending { color: #facc15; }
-  .status-running { color: #38bdf8; }
-
-  /* Trigger form */
-  .trigger-form { display: flex; gap: 8px; padding: 16px; background: #1e293b; border-radius: 10px; border: 1px solid #334155; align-items: center; flex-wrap: wrap; }
-  .trigger-form input { flex: 1; min-width: 200px; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 6px 10px; border-radius: 6px; font-size: 0.85rem; }
-  .trigger-form button { background: #7c3aed; color: white; border: none; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
-  .trigger-form button:hover { background: #6d28d9; }
-  .gate-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; width: 100%; }
-  .gate-btn { background: #1e3a5f; color: #38bdf8; border: 1px solid #1d4ed8; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.75rem; font-family: monospace; }
-  .gate-btn:hover { background: #1d4ed8; }
-
-  .toast { position: fixed; bottom: 24px; right: 24px; background: #0ea5e9; color: white; padding: 10px 18px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
-  .toast.show { opacity: 1; }
-
-  #content { display: none; }
-  #content.active { display: block; }
+  .dag-node:hover { background: #152235; }
+  .dag-node.disabled { opacity: 0.5; }
+  .dag-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .node-job { font-size: 0.86rem; font-weight: 600; color: #f8fafc; }
+  .node-source, .node-emits, .node-desc { margin-top: 4px; font-size: 0.75rem; color: #94a3b8; }
+  .node-source, .node-emits { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .node-toggle { font-size: 0.74rem; padding: 3px 8px; border: none; border-radius: 6px; cursor: pointer; }
+  .node-toggle.on { background: #14532d; color: #86efac; }
+  .node-toggle.off { background: #7f1d1d; color: #fca5a5; }
+  .empty { color: #64748b; font-size: 0.8rem; }
+  .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .toast { position: fixed; right: 20px; bottom: 20px; background: #0ea5e9; color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 0.82rem; opacity: 0; transform: translateY(12px); transition: opacity 0.2s, transform 0.2s; pointer-events: none; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  @media (max-width: 720px) {
+    header { align-items: flex-start; }
+    .panel-header .refresh-btn { margin-left: 0; }
+    main { padding: 14px; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>Trade DAG Monitor</h1>
-  <span class="badge" id="status-badge">loading…</span>
+  <div>
+    <h1>TradeDB Console</h1>
+    <p>统一总览 / 调度 / 事件 / KG / 模型 / 备份</p>
+  </div>
+  <div class="header-meta">
+    <span id="status-badge" class="badge unknown">loading…</span>
+    <span id="header-note" class="subtle">准备中</span>
+  </div>
 </header>
 
 <div class="tabs">
-  <div class="tab active" onclick="showTab('dag')">Pipeline DAG</div>
-  <div class="tab" onclick="showTab('events')">Event Log</div>
-  <div class="tab" onclick="showTab('runs')">Job Runs</div>
+  <div class="tab active" onclick="showTab('overview')">Overview</div>
+  <div class="tab" onclick="showTab('dag')">Pipeline</div>
+  <div class="tab" onclick="showTab('calendar')">Calendar</div>
+  <div class="tab" onclick="showTab('agenda')">Agenda</div>
+  <div class="tab" onclick="showTab('events')">Events</div>
+  <div class="tab" onclick="showTab('runs')">Runs</div>
   <div class="tab" onclick="showTab('models')">Models</div>
   <div class="tab" onclick="showTab('trigger')">Trigger</div>
 </div>
 
 <main>
-  <!-- DAG tab -->
-  <div id="tab-dag">
-    <div class="dag-grid" id="dag-grid">
+  <section id="tab-overview" class="active">
+    <div class="grid cards">
+      <div class="card">
+        <div class="card-label">Quality Gate</div>
+        <div id="card-gate" class="card-value">-</div>
+        <div id="card-gate-sub" class="card-sub">-</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Models Loaded</div>
+        <div id="card-models" class="card-value">0</div>
+        <div id="card-models-sub" class="card-sub">-</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Due Agenda</div>
+        <div id="card-agenda" class="card-value">0</div>
+        <div id="card-agenda-sub" class="card-sub">-</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Planned 7D</div>
+        <div id="card-planned" class="card-value">0</div>
+        <div id="card-planned-sub" class="card-sub">-</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Backups</div>
+        <div id="card-backups" class="card-value">0</div>
+        <div id="card-backups-sub" class="card-sub">-</div>
+      </div>
+    </div>
+
+    <div class="panel-grid">
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Quality / Runtime</h2>
+          <button class="refresh-btn" onclick="loadOverview()">Refresh</button>
+        </div>
+        <div class="panel-body meta-list" id="overview-runtime"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h2>Due Agenda</h2></div>
+        <div class="panel-body meta-list" id="overview-agenda"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h2>Upcoming Planned Events</h2></div>
+        <div class="panel-body meta-list" id="overview-planned"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h2>Recent Backups</h2></div>
+        <div class="panel-body meta-list" id="overview-backups"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-dag">
+    <div class="dag-grid">
       <div class="stage-col stage-fetch">
-        <div class="stage-header">FETCH</div>
+        <div class="stage-header">Fetch</div>
         <div id="col-fetch"></div>
       </div>
       <div class="stage-col stage-compute">
-        <div class="stage-header">COMPUTE</div>
+        <div class="stage-header">Compute</div>
         <div id="col-compute"></div>
       </div>
       <div class="stage-col stage-train">
-        <div class="stage-header">TRAIN</div>
+        <div class="stage-header">Train</div>
         <div id="col-train"></div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Events tab -->
-  <div id="tab-events" style="display:none">
+  <section id="tab-calendar">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Trading Calendar / Planned Events</h2>
+        <div class="controls">
+          <input type="date" id="calendar-date" />
+          <input type="number" id="calendar-days" min="0" max="30" value="5" />
+          <button class="refresh-btn" onclick="loadCalendar()">Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body two-col">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Open</th><th>Pretrade</th><th>Source</th></tr></thead>
+            <tbody id="calendar-tbody"></tbody>
+          </table>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Scheduled</th><th>Type</th><th>Importance</th><th>Title</th></tr></thead>
+            <tbody id="planned-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-agenda">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Agenda Queue</h2>
+        <div class="controls">
+          <select id="agenda-status">
+            <option value="">all</option>
+            <option value="pending">pending</option>
+            <option value="running">running</option>
+            <option value="done">done</option>
+            <option value="error">error</option>
+          </select>
+          <button class="refresh-btn" onclick="loadAgenda()">Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Run At</th><th>Phase</th><th>Status</th><th>Job</th><th>Title</th></tr></thead>
+          <tbody id="agenda-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-events">
     <div class="panel">
       <div class="panel-header">
         <h2>Recent Event Log</h2>
         <button class="refresh-btn" onclick="loadEvents()">Refresh</button>
       </div>
-      <div style="overflow-x:auto">
-        <table><thead><tr>
-          <th>ID</th><th>Status</th><th>Topic</th><th>Handler</th><th>Elapsed(ms)</th><th>Created</th>
-        </tr></thead>
-        <tbody id="events-tbody"></tbody></table>
+      <div class="panel-body table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Status</th><th>Topic</th><th>Handler</th><th>Elapsed(ms)</th><th>Created</th></tr></thead>
+          <tbody id="events-tbody"></tbody>
+        </table>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Runs tab -->
-  <div id="tab-runs" style="display:none">
+  <section id="tab-runs">
     <div class="panel">
       <div class="panel-header">
         <h2>Recent Job Runs</h2>
         <button class="refresh-btn" onclick="loadRuns()">Refresh</button>
       </div>
-      <div style="overflow-x:auto">
-        <table><thead><tr>
-          <th>ID</th><th>Job</th><th>Stage</th><th>Status</th><th>Elapsed(ms)</th><th>Summary</th><th>Started</th>
-        </tr></thead>
-        <tbody id="runs-tbody"></tbody></table>
+      <div class="panel-body table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Job</th><th>Stage</th><th>Status</th><th>Elapsed(ms)</th><th>Summary</th><th>Started</th></tr></thead>
+          <tbody id="runs-tbody"></tbody>
+        </table>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Models tab -->
-  <div id="tab-models" style="display:none">
+  <section id="tab-models">
     <div class="panel">
       <div class="panel-header">
         <h2>Model Registry</h2>
         <button class="refresh-btn" onclick="loadModels()">Refresh</button>
       </div>
-      <div style="overflow-x:auto">
-        <table><thead><tr>
-          <th>ID</th><th>Name</th><th>Type</th><th>Active</th><th>Trained At</th><th>Metrics</th>
-        </tr></thead>
-        <tbody id="models-tbody"></tbody></table>
+      <div class="panel-body table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Active</th><th>Trained At</th><th>Metrics</th></tr></thead>
+          <tbody id="models-tbody"></tbody>
+        </table>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Trigger tab -->
-  <div id="tab-trigger" style="display:none">
-    <div class="trigger-form">
-      <label style="color:#94a3b8;font-size:0.85rem">Topic:</label>
-      <input id="trigger-topic" placeholder="gate.morning" />
-      <button onclick="triggerEvent()">Publish</button>
-      <div class="gate-btns" id="gate-btns"></div>
+  <section id="tab-trigger">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Trigger Event</h2>
+      </div>
+      <div class="panel-body">
+        <div class="controls">
+          <input id="trigger-topic" placeholder="gate.morning" style="min-width: 220px; flex: 1" />
+          <button class="primary-btn" onclick="triggerEvent()">Publish</button>
+        </div>
+        <div class="controls" style="margin-top: 12px;">
+          <textarea id="trigger-payload" placeholder='{"force": true}'>{}</textarea>
+        </div>
+        <div class="controls" id="gate-btns" style="margin-top: 12px;"></div>
+      </div>
     </div>
-  </div>
+  </section>
 </main>
 
-<div class="toast" id="toast"></div>
+<div id="toast" class="toast"></div>
 
 <script>
 const GATES = [
-  'gate.morning','gate.pre_market','gate.signal_am','gate.report',
-  'gate.market_close','gate.evening','gate.event_extract',
-  'gate.sector_weekly','gate.fundamental_weekly','gate.macro_weekly','gate.model_weekly'
+  'gate.morning', 'gate.intraday', 'gate.pre_market', 'gate.signal_am',
+  'gate.report', 'gate.market_close', 'gate.evening', 'gate.event_extract',
+  'gate.macro_weekly', 'gate.model_weekly'
 ];
 
-function showTab(name) {
-  document.querySelectorAll('.tab').forEach((t,i) => t.classList.remove('active'));
-  document.querySelectorAll('main > div').forEach(d => d.style.display = 'none');
-  const tabs = document.querySelectorAll('.tab');
-  const names = ['dag','events','runs','models','trigger'];
-  tabs[names.indexOf(name)].classList.add('active');
-  document.getElementById('tab-' + name).style.display = 'block';
-  if (name === 'dag') loadDag();
-  if (name === 'events') loadEvents();
-  if (name === 'runs') loadRuns();
-  if (name === 'models') loadModels();
-  if (name === 'trigger') buildGateBtns();
+let activeTab = 'overview';
+
+function todayString() {
+  const now = new Date();
+  const tzOffset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - tzOffset).toISOString().slice(0, 10);
 }
 
-function toast(msg) {
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function statusClass(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (['ok', 'active', 'enabled', 'created', 'pushed', 'restored', 'done'].includes(normalized)) return 'ok';
+  if (['partial'].includes(normalized)) return 'partial';
+  if (['degraded', 'error', 'failed', 'cancelled', 'blocked_by_dependency'].includes(normalized)) return 'degraded';
+  if (['running'].includes(normalized)) return 'running';
+  if (['pending', 'scheduled', 'watch', 'live'].includes(normalized)) return 'pending';
+  return 'unknown';
+}
+
+function badgeHtml(status, text) {
+  const klass = statusClass(status);
+  return `<span class="pill ${klass}">${escapeHtml(text || status || '-')}</span>`;
+}
+
+function renderRows(containerId, rows, mapper, emptyText) {
+  const el = document.getElementById(containerId);
+  if (!rows || rows.length === 0) {
+    el.innerHTML = `<div class="empty">${escapeHtml(emptyText || '暂无数据')}</div>`;
+    return;
+  }
+  el.innerHTML = rows.map(mapper).join('');
+}
+
+function toast(message, isError = false) {
   const el = document.getElementById('toast');
-  el.textContent = msg;
+  el.textContent = message;
+  el.style.background = isError ? '#dc2626' : '#0ea5e9';
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2500);
+  window.clearTimeout(window.__tradeToastTimer);
+  window.__tradeToastTimer = window.setTimeout(() => el.classList.remove('show'), 2600);
 }
 
-async function apiFetch(url, opts) {
-  const r = await fetch(url, opts);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+async function apiFetch(url, options) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
 }
 
-// Status badge
-async function loadStatus() {
-  try {
-    const s = await apiFetch('/api/status');
-    const badge = document.getElementById('status-badge');
-    badge.textContent = s.inference_models.length + ' models loaded';
-    badge.style.background = s.inference_models.length > 0 ? '#16a34a' : '#d97706';
-  } catch(e) {}
+function setHeaderStatus(gate, note) {
+  const badge = document.getElementById('status-badge');
+  const gateStatus = gate?.status || 'unknown';
+  badge.className = `badge ${statusClass(gateStatus)}`;
+  badge.textContent = gateStatus;
+  document.getElementById('header-note').textContent = note || 'TradeDB ready';
 }
 
-// DAG
+async function loadOverview() {
+  const data = await apiFetch('/api/status');
+  const gate = data.quality_gate || {};
+  const models = data.inference_models || [];
+  const dueAgenda = data.due_agenda || [];
+  const plannedEvents = data.planned_events || [];
+  const backups = data.backups || [];
+  const backupHealth = data.backup_health || {};
+  const note = gate.reason_summary
+    ? `${gate.eval_date || '-'} · ${gate.reason_summary}`
+    : `${models.length} models · ${plannedEvents.length} planned events`;
+  setHeaderStatus(gate, note);
+
+  document.getElementById('card-gate').textContent = gate.status || '-';
+  document.getElementById('card-gate-sub').textContent = gate.reason_summary || 'no gate summary';
+  document.getElementById('card-models').textContent = models.length;
+  document.getElementById('card-models-sub').textContent = data.models_loaded_at || 'not loaded';
+  document.getElementById('card-agenda').textContent = dueAgenda.length;
+  document.getElementById('card-agenda-sub').textContent = dueAgenda.length ? (dueAgenda[0].run_at || '-') : 'queue empty';
+  document.getElementById('card-planned').textContent = plannedEvents.length;
+  document.getElementById('card-planned-sub').textContent = plannedEvents.length ? (plannedEvents[0].scheduled_at || '-') : 'no planned events';
+  document.getElementById('card-backups').textContent = backups.length;
+  document.getElementById('card-backups-sub').textContent = backupHealth.backend ? `${backupHealth.backend} / ${backupHealth.enabled ? 'enabled' : 'disabled'}` : 'local';
+
+  renderRows('overview-runtime', [
+    {
+      label: 'Quality Gate',
+      top: badgeHtml(gate.status, gate.status || 'unknown'),
+      lines: [
+        gate.eval_date ? `eval_date=${gate.eval_date}` : 'eval_date=-',
+        gate.reason_summary || 'no reason summary',
+      ],
+    },
+    {
+      label: 'Models',
+      top: `${models.length} loaded`,
+      lines: [
+        models.join(', ') || 'no active inference models',
+        data.data_root || '',
+      ],
+    },
+    {
+      label: 'Backups',
+      top: `${backupHealth.backend || 'local'} / ${backupHealth.enabled ? 'enabled' : 'disabled'}`,
+      lines: [
+        `gdrive=${backupHealth.google_drive_available ? 'ready' : 'not-ready'}`,
+        backupHealth.google_drive_folder_id ? `folder=${backupHealth.google_drive_folder_id}` : 'folder=-',
+      ],
+    },
+  ], row => `
+    <div class="meta-row">
+      <strong>${escapeHtml(row.label)}</strong>
+      <div class="line">${row.top}</div>
+      ${row.lines.map(line => `<div class="line">${escapeHtml(line)}</div>`).join('')}
+    </div>
+  `, '暂无状态');
+
+  renderRows('overview-agenda', dueAgenda, row => `
+    <div class="meta-row">
+      <strong>${escapeHtml(row.title || row.job_name || row.trigger_topic || '-') }</strong>
+      <div class="line">${badgeHtml(row.status, row.status || 'pending')} ${escapeHtml(row.phase || '-')}</div>
+      <div class="line mono">${escapeHtml(row.run_at || '-')}</div>
+    </div>
+  `, '当前没有到期 agenda');
+
+  renderRows('overview-planned', plannedEvents, row => `
+    <div class="meta-row">
+      <strong>${escapeHtml(row.title || '-')}</strong>
+      <div class="line">${badgeHtml(row.importance, row.importance || '-')} ${escapeHtml(row.event_type || '-')}</div>
+      <div class="line mono">${escapeHtml(row.scheduled_at || '-')}</div>
+    </div>
+  `, '未来 7 天没有 planned event');
+
+  renderRows('overview-backups', backups, row => `
+    <div class="meta-row">
+      <strong>${escapeHtml(row.snapshot_id || '-')}</strong>
+      <div class="line">${badgeHtml(row.status, row.status || '-')} ${escapeHtml(row.driver || 'local')}</div>
+      <div class="line mono">${escapeHtml(row.created_at || '-')}</div>
+    </div>
+  `, '暂无备份记录');
+}
+
+async function loadCalendar() {
+  const dateStr = document.getElementById('calendar-date').value || todayString();
+  const days = document.getElementById('calendar-days').value || '5';
+  const data = await apiFetch(`/api/calendar?date_str=${encodeURIComponent(dateStr)}&days=${encodeURIComponent(days)}`);
+  const calendarRows = data.calendar || [];
+  const plannedRows = data.planned_events || [];
+
+  document.getElementById('calendar-tbody').innerHTML = calendarRows.length ? calendarRows.map(row => `
+    <tr>
+      <td class="mono">${escapeHtml(row.trade_date || '-')}</td>
+      <td>${badgeHtml(row.is_open ? 'ok' : 'pending', row.is_open ? 'open' : 'closed')}</td>
+      <td class="mono">${escapeHtml(row.pretrade_date || '-')}</td>
+      <td>${escapeHtml(row.source || '-')}</td>
+    </tr>
+  `).join('') : `<tr><td colspan="4" class="empty">没有交易日历数据</td></tr>`;
+
+  document.getElementById('planned-tbody').innerHTML = plannedRows.length ? plannedRows.map(row => `
+    <tr>
+      <td class="mono">${escapeHtml((row.scheduled_at || '').slice(0, 19) || '-')}</td>
+      <td>${escapeHtml(row.event_type || '-')}</td>
+      <td>${badgeHtml(row.importance, row.importance || '-')}</td>
+      <td title="${escapeHtml(row.title || '')}">${escapeHtml(row.title || '-')}</td>
+    </tr>
+  `).join('') : `<tr><td colspan="4" class="empty">没有 future planned events</td></tr>`;
+}
+
+async function loadAgenda() {
+  const status = document.getElementById('agenda-status').value;
+  const url = status ? `/api/agenda?limit=50&status=${encodeURIComponent(status)}` : '/api/agenda?limit=50';
+  const rows = await apiFetch(url);
+  document.getElementById('agenda-tbody').innerHTML = rows.length ? rows.map(row => `
+    <tr>
+      <td>${escapeHtml(row.agenda_id)}</td>
+      <td class="mono">${escapeHtml((row.run_at || '').slice(0, 19) || '-')}</td>
+      <td>${escapeHtml(row.phase || '-')}</td>
+      <td>${badgeHtml(row.status, row.status || '-')}</td>
+      <td>${escapeHtml(row.job_name || row.trigger_topic || '-')}</td>
+      <td title="${escapeHtml(row.title || '')}">${escapeHtml(row.title || '-')}</td>
+    </tr>
+  `).join('') : `<tr><td colspan="6" class="empty">agenda 队列为空</td></tr>`;
+}
+
 async function loadDag() {
   const data = await apiFetch('/api/dag?all=true');
-  ['fetch','compute','train'].forEach(stage => {
-    const col = document.getElementById('col-' + stage);
-    const nodes = data.stages[stage] || [];
-    col.innerHTML = nodes.map(n => `
-      <div class="dag-node ${n.enabled ? '' : 'disabled'}" id="node-${n.id}">
-        <button class="node-toggle ${n.enabled ? 'on' : 'off'}"
-                onclick="toggleNode(${n.id}, ${n.enabled ? 0 : 1}); event.stopPropagation()">
-          ${n.enabled ? 'ON' : 'OFF'}
-        </button>
-        <div class="node-source">${n.source}</div>
-        <div class="node-job">${n.job_name}</div>
-        ${n.emits ? `<div class="node-emits">→ ${n.emits}</div>` : ''}
-        ${n.description ? `<div class="node-desc">${n.description}</div>` : ''}
-      </div>`).join('');
+  ['fetch', 'compute', 'train'].forEach(stage => {
+    const col = document.getElementById(`col-${stage}`);
+    const nodes = data.stages?.[stage] || [];
+    if (!nodes.length) {
+      col.innerHTML = '<div class="dag-node empty">暂无节点</div>';
+      return;
+    }
+    col.innerHTML = nodes.map(node => `
+      <div class="dag-node ${node.enabled ? '' : 'disabled'}">
+        <div class="dag-top">
+          <div class="node-job">${escapeHtml(node.job_name)}</div>
+          <button class="node-toggle ${node.enabled ? 'on' : 'off'}" onclick="toggleNode(${node.id}, ${node.enabled ? 0 : 1}); event.stopPropagation();">${node.enabled ? 'ON' : 'OFF'}</button>
+        </div>
+        <div class="node-source">${escapeHtml(node.source || '-')}</div>
+        ${node.emits ? `<div class="node-emits">→ ${escapeHtml(node.emits)}</div>` : ''}
+        ${node.description ? `<div class="node-desc">${escapeHtml(node.description)}</div>` : ''}
+      </div>
+    `).join('');
   });
 }
 
 async function toggleNode(id, enable) {
-  const action = enable ? 'enable' : 'disable';
-  await apiFetch(`/api/dag/${id}/${action}`, {method:'POST'});
-  toast(`Node ${id} ${enable ? 'enabled' : 'disabled'}`);
+  await apiFetch(`/api/dag/${id}/${enable ? 'enable' : 'disable'}`, { method: 'POST' });
+  toast(`DAG node ${id} ${enable ? 'enabled' : 'disabled'}`);
   loadDag();
 }
 
-// Events
 async function loadEvents() {
   const rows = await apiFetch('/api/events?limit=50');
-  const tbody = document.getElementById('events-tbody');
-  tbody.innerHTML = rows.map(r => {
-    const cls = 'status-' + (r.status || 'pending');
-    return `<tr>
-      <td>${r.id}</td>
-      <td class="${cls}">${r.status}</td>
-      <td>${r.topic}</td>
-      <td>${r.handler || ''}</td>
-      <td>${r.elapsed_ms ?? '-'}</td>
-      <td>${(r.created_at||'').slice(0,19)}</td>
-    </tr>`;
-  }).join('');
+  document.getElementById('events-tbody').innerHTML = rows.length ? rows.map(row => `
+    <tr>
+      <td>${escapeHtml(row.id)}</td>
+      <td>${badgeHtml(row.status, row.status || '-')}</td>
+      <td class="mono">${escapeHtml(row.topic || '-')}</td>
+      <td>${escapeHtml(row.handler || '-')}</td>
+      <td>${escapeHtml(row.elapsed_ms ?? '-')}</td>
+      <td class="mono">${escapeHtml((row.created_at || '').slice(0, 19) || '-')}</td>
+    </tr>
+  `).join('') : `<tr><td colspan="6" class="empty">暂无事件日志</td></tr>`;
 }
 
-// Runs
 async function loadRuns() {
   const rows = await apiFetch('/api/runs?limit=50');
-  const tbody = document.getElementById('runs-tbody');
-  tbody.innerHTML = rows.map(r => {
-    const cls = 'status-' + (r.status || 'running');
-    const summary = (r.result_summary || '').slice(0, 60);
-    return `<tr>
-      <td>${r.id}</td>
-      <td>${r.job_name}</td>
-      <td>${r.stage || ''}</td>
-      <td class="${cls}">${r.status}</td>
-      <td>${r.elapsed_ms ?? '-'}</td>
-      <td title="${r.result_summary || ''}">${summary}</td>
-      <td>${(r.started_at||'').slice(0,19)}</td>
-    </tr>`;
-  }).join('');
+  document.getElementById('runs-tbody').innerHTML = rows.length ? rows.map(row => `
+    <tr>
+      <td>${escapeHtml(row.id)}</td>
+      <td>${escapeHtml(row.job_name || '-')}</td>
+      <td>${escapeHtml(row.stage || '-')}</td>
+      <td>${badgeHtml(row.status, row.status || '-')}</td>
+      <td>${escapeHtml(row.elapsed_ms ?? '-')}</td>
+      <td title="${escapeHtml(row.result_summary || '')}">${escapeHtml((row.result_summary || '').slice(0, 120) || '-')}</td>
+      <td class="mono">${escapeHtml((row.started_at || '').slice(0, 19) || '-')}</td>
+    </tr>
+  `).join('') : `<tr><td colspan="7" class="empty">暂无 job runs</td></tr>`;
 }
 
-// Models
 async function loadModels() {
   const rows = await apiFetch('/api/models');
-  const tbody = document.getElementById('models-tbody');
-  tbody.innerHTML = rows.map(r => {
-    const metrics = r.metrics ? JSON.stringify(r.metrics).slice(0,80) : '-';
-    return `<tr>
-      <td>${r.id}</td>
-      <td>${r.model_name}</td>
-      <td>${r.model_type}</td>
-      <td>${r.is_active ? '✓ active' : '-'}</td>
-      <td>${(r.trained_at||'').slice(0,19)}</td>
-      <td title="${JSON.stringify(r.metrics||{})}">${metrics}</td>
-    </tr>`;
-  }).join('');
+  document.getElementById('models-tbody').innerHTML = rows.length ? rows.map(row => `
+    <tr>
+      <td>${escapeHtml(row.id)}</td>
+      <td>${escapeHtml(row.model_name || '-')}</td>
+      <td>${escapeHtml(row.model_type || row.backend || '-')}</td>
+      <td>${row.is_active ? badgeHtml('ok', 'active') : '-'}</td>
+      <td class="mono">${escapeHtml((row.trained_at || '').slice(0, 19) || '-')}</td>
+      <td title="${escapeHtml(JSON.stringify(row.metrics || {}))}" class="mono">${escapeHtml(JSON.stringify(row.metrics || {}).slice(0, 120) || '-')}</td>
+    </tr>
+  `).join('') : `<tr><td colspan="6" class="empty">暂无模型记录</td></tr>`;
 }
 
-// Trigger
-function buildGateBtns() {
-  document.getElementById('gate-btns').innerHTML = GATES.map(g =>
-    `<button class="gate-btn" onclick="document.getElementById('trigger-topic').value='${g}'">${g}</button>`
-  ).join('');
+function buildGateButtons() {
+  document.getElementById('gate-btns').innerHTML = GATES.map(gate => `
+    <button class="refresh-btn" onclick="document.getElementById('trigger-topic').value='${gate}'">${gate}</button>
+  `).join('');
 }
 
 async function triggerEvent() {
   const topic = document.getElementById('trigger-topic').value.trim();
-  if (!topic) return;
+  const payloadText = document.getElementById('trigger-payload').value.trim() || '{}';
+  if (!topic) {
+    toast('请输入 topic', true);
+    return;
+  }
+  let payload;
   try {
-    const r = await apiFetch('/api/trigger', {
+    payload = JSON.parse(payloadText);
+  } catch (err) {
+    toast(`payload 不是合法 JSON: ${err.message}`, true);
+    return;
+  }
+  try {
+    const result = await apiFetch('/api/trigger', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({topic, payload: {}})
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic, payload }),
     });
-    toast(`Published event_id=${r.event_id}  topic=${r.topic}`);
-  } catch(e) {
-    toast('Error: ' + e.message);
+    toast(`published event_id=${result.event_id}`);
+  } catch (err) {
+    toast(`trigger failed: ${err.message}`, true);
   }
 }
 
-// Init
-loadStatus();
-loadDag();
-setInterval(loadStatus, 30000);
+function showTab(name) {
+  activeTab = name;
+  document.querySelectorAll('.tab').forEach((tab, idx) => {
+    tab.classList.toggle('active', tab.textContent.toLowerCase() === name || (
+      ['overview', 'pipeline', 'calendar', 'agenda', 'events', 'runs', 'models', 'trigger'][idx] === name
+    ));
+  });
+  document.querySelectorAll('main > section').forEach(section => section.classList.remove('active'));
+  document.getElementById(`tab-${name}`).classList.add('active');
+  refreshActiveTab();
+}
+
+function refreshActiveTab() {
+  if (activeTab === 'overview') return loadOverview().catch(err => toast(err.message, true));
+  if (activeTab === 'dag') return loadDag().catch(err => toast(err.message, true));
+  if (activeTab === 'calendar') return loadCalendar().catch(err => toast(err.message, true));
+  if (activeTab === 'agenda') return loadAgenda().catch(err => toast(err.message, true));
+  if (activeTab === 'events') return loadEvents().catch(err => toast(err.message, true));
+  if (activeTab === 'runs') return loadRuns().catch(err => toast(err.message, true));
+  if (activeTab === 'models') return loadModels().catch(err => toast(err.message, true));
+  return Promise.resolve();
+}
+
+document.getElementById('calendar-date').value = todayString();
+buildGateButtons();
+loadOverview().catch(err => toast(err.message, true));
+setInterval(() => {
+  loadOverview().catch(() => {});
+  if (activeTab !== 'overview') {
+    refreshActiveTab();
+  }
+}, 30000);
 </script>
 </body>
 </html>

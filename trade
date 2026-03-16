@@ -12,6 +12,10 @@ print_help() {
   echo "  ./trade run <args>         统一触发入口（事件 / agenda / job）"
   echo "  ./trade status [args]      系统总览（质量门禁 / agenda / 最近执行）"
   echo "  ./trade inspect <args>     统一查看入口（dag / calendar / agenda / kg 等）"
+  echo "  ./trade web [args]         启动 TradeDB Web Console"
+  echo "  ./trade backup <args>      备份与恢复（本地快照 / Google Drive）"
+  echo ""
+  echo "高级域（调试 / 细分任务）:"
   echo "  ./trade data <args>        数据采集"
   echo "  ./trade model <args>       模型与信号分析"
   echo "  ./trade factor <args>      因子仓与因子评估"
@@ -32,11 +36,13 @@ print_help() {
   echo "  ./trade close              →  trade run close"
   echo "  ./trade sync               →  trade run sync"
   echo "  ./trade today              →  trade status"
+  echo "  ./trade web                →  trade serve"
   echo "  ./trade dag [args]         →  trade inspect dag [args]"
   echo "  ./trade calendar [args]    →  trade inspect calendar [args]"
   echo "  ./trade events [args]      →  trade inspect events [args]"
   echo "  ./trade factors [args]     →  trade inspect factors [args]"
   echo "  ./trade models [args]      →  trade inspect models [args]"
+  echo "  ./trade backups [args]     →  trade inspect backups [args]"
   echo "  ./trade sentiment [args]   →  trade data sentiment [args]"
   echo "  ./trade brief [args]       →  trade report brief [args]"
   echo "  ./trade schedule [args]    →  trade report schedule [args]"
@@ -187,6 +193,13 @@ cmd_trade_py_domain() {
   fi
 }
 
+cmd_trade_py_domain_allow_empty() {
+  local domain="$1"; shift || true
+  require_cmd uv
+  cd "$ROOT_DIR"
+  uv run python -m trade_py.cli.main "$domain" "$@"
+}
+
 cmd_test() {
   local preset
   preset="$(default_preset "${1:-}")"
@@ -200,15 +213,17 @@ main() {
   shift || true
   case "$sub" in
     morning|intraday|evening|agenda|open|close|sync) cmd_trade_py_domain run "$sub" "$@" ;;
-    today) cmd_trade_py_domain status "$@" ;;
+    today) cmd_trade_py_domain_allow_empty status "$@" ;;
     dag) cmd_trade_py_domain inspect dag "$@" ;;
     calendar) cmd_trade_py_domain inspect calendar "$@" ;;
     events) cmd_trade_py_domain inspect events "$@" ;;
     factors) cmd_trade_py_domain inspect factors "$@" ;;
     models) cmd_trade_py_domain inspect models "$@" ;;
+    backups) cmd_trade_py_domain inspect backups "$@" ;;
     run) cmd_trade_py_domain run "$@" ;;
-    status) cmd_trade_py_domain status "$@" ;;
+    status) cmd_trade_py_domain_allow_empty status "$@" ;;
     inspect) cmd_trade_py_domain inspect "$@" ;;
+    backup) cmd_trade_py_domain backup "$@" ;;
     doctor) cmd_doctor "$@" ;;
     setup-python) cmd_setup_python "$@" ;;
     configure) cmd_configure "$@" ;;
@@ -222,8 +237,8 @@ main() {
     event) cmd_trade_py_domain event "$@" ;;
     evaluate) cmd_trade_py_domain evaluate "$@" ;;
     kg) cmd_trade_py_domain kg "$@" ;;
-    start) cmd_trade_py_domain start "$@" ;;
-    serve) cmd_trade_py_domain serve "$@" ;;
+    start) cmd_trade_py_domain_allow_empty start "$@" ;;
+    serve|web) cmd_trade_py_domain_allow_empty serve "$@" ;;
     sentiment) cmd_trade_py_domain data sentiment "$@" ;;
     brief)     cmd_trade_py_domain report brief "$@" ;;
     schedule)  cmd_trade_py_domain report schedule "$@" ;;
@@ -233,7 +248,7 @@ main() {
     help|-h|--help) print_help ;;
     *)
       echo "错误：未知命令 '$sub'"
-      echo "可用顶层命令: run | status | inspect | today | calendar | events | factors | models | data | model | factor | report | account | event | evaluate | kg | start | serve | sentiment | brief | schedule | ui | cli | py | doctor | setup-python | configure | build | test | help"
+      echo "可用顶层命令: run | status | inspect | web | backup | today | calendar | events | factors | models | backups | data | model | factor | report | account | event | evaluate | kg | start | serve | sentiment | brief | schedule | ui | cli | py | doctor | setup-python | configure | build | test | help"
       echo "运行 './trade help' 查看详细用法"
       exit 1
       ;;

@@ -43,10 +43,15 @@ def make_parser() -> argparse.ArgumentParser:
     p_events.add_argument("--data-root", default=_DATA_ROOT)
     p_events.add_argument("--limit", type=int, default=20)
 
+    p_backups = sub.add_parser("backups", description="查看最近备份")
+    p_backups.add_argument("--data-root", default=_DATA_ROOT)
+    p_backups.add_argument("--limit", type=int, default=20)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    from trade_py.cli import backup as backup_cli
     from trade_py.cli import event as event_cli
     from trade_py.cli import factor as factor_cli
     from trade_py.cli import kg as kg_cli
@@ -72,6 +77,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "events":
         return event_cli.main(["list", "--data-root", args.data_root, "--limit", str(args.limit)])
+
+    if args.command == "backups":
+        return backup_cli.main(["--data-root", args.data_root, "list", "--limit", str(args.limit)])
 
     db = TradeDB(args.data_root)
 

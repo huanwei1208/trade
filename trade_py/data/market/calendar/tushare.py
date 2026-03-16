@@ -11,7 +11,7 @@ from typing import Any, Iterable, Sequence
 
 import pandas as pd
 
-from trade_py.data.market.tushare_client import get_pro_api
+from trade_py.data.market.tushare_client import TushareAuthError, get_pro_api
 from trade_py.db.trade_db import TradeDB
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,13 @@ def _month_ranges(start: date, end: date) -> Iterable[tuple[date, date]]:
         cursor = nxt
 
 
+def _date_range(start: date, end: date) -> Iterable[date]:
+    cursor = start
+    while cursor <= end:
+        yield cursor
+        cursor += timedelta(days=1)
+
+
 def _stable_planned_event_id(source: str, vendor_event_id: str) -> str:
     digest = hashlib.sha1(f"{source}|{vendor_event_id}".encode("utf-8")).hexdigest()[:24]
     return f"pe_{digest}"
@@ -136,6 +143,8 @@ class CalendarSyncSummary:
     row_count: int
     start_date: str
     end_date: str
+    fallback_used: bool = False
+    fallback_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -145,6 +154,9 @@ class PlannedEventSyncSummary:
     agenda_rows: int
     start_date: str
     end_date: str
+    fallback_used: bool = False
+    fallback_reason: str = ""
+    cached_rows: int = 0
 
 
 class TradingCalendarService:
@@ -161,6 +173,44 @@ class TradingCalendarService:
     def _default_calendar_range(self) -> tuple[date, date]:
         today = date.today()
         return date(today.year, 1, 1), date(today.year + 1, 12, 31)
+
+    def _cached_calendar_rows(self, start: date, end: date, exchange: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for current in _date_range(start, end):
+            row = self._db.trading_calendar_get(current.isoformat(), exchange=exchange)
+            if row:
+                rows.append(row)
+        return rows
+
+    def _weekday_fallback_calendar_rows(self, start: date, end: date, exchange: str) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        previous_open: str | None = None
+        for current in _date_range(start, end):
+            is_open = 1 if current.weekday() < 5 else 0
+            trade_date = current.isoformat()
+            payload.append({
+                "exchange": exchange,
+                "trade_date": trade_date,
+                "is_open": is_open,
+                "pretrade_date": previous_open or trade_date,
+                "session_am_open": "09:30:00",
+                "session_am_close": "11:30:00",
+                "session_pm_open": "13:00:00",
+                "session_pm_close": "15:00:00",
+                "source": "fallback_weekday",
+            })
+            if is_open:
+                previous_open = trade_date
+        return payload
+
+    def _cached_planned_event_count(self, start: date, end: date) -> int:
+        return len(
+            self._db.planned_events_list(
+                start_date=start,
+                end_date=end,
+                limit=10000,
+            )
+        )
 
     def sync_calendar(
         self,
@@ -179,8 +229,36 @@ class TradingCalendarService:
         end_ts = _tushare_date(end)
         total_rows = 0
         exchange_count = 0
+        fallback_used = False
+        fallback_reasons: list[str] = []
         for exchange in exchanges:
-            raw = self._pro.call("trade_cal", exchange=str(exchange).upper(), start_date=start_ts, end_date=end_ts)
+            try:
+                raw = self._pro.call("trade_cal", exchange=str(exchange).upper(), start_date=start_ts, end_date=end_ts)
+            except TushareAuthError as exc:
+                fallback_used = True
+                fallback_reasons.append(f"{exchange}: auth fallback")
+                cached_rows = self._cached_calendar_rows(start, end, str(exchange).upper())
+                if cached_rows:
+                    total_rows += len(cached_rows)
+                    exchange_count += 1
+                    logger.warning(
+                        "TradingCalendarService: using cached trading calendar for %s range=%s..%s because auth failed: %s",
+                        exchange, _date_text(start), _date_text(end), exc,
+                    )
+                    continue
+                payload = self._weekday_fallback_calendar_rows(start, end, str(exchange).upper())
+                self._db.trading_calendar_upsert_batch(payload)
+                self._db.sync_state_set(
+                    "fallback", "trade_cal", str(exchange).upper(),
+                    last_date=_date_text(end), row_count=len(payload),
+                )
+                total_rows += len(payload)
+                exchange_count += 1
+                logger.warning(
+                    "TradingCalendarService: using weekday fallback for %s range=%s..%s because auth failed: %s",
+                    exchange, _date_text(start), _date_text(end), exc,
+                )
+                continue
             if raw is None or raw.empty:
                 continue
             payload: list[dict[str, Any]] = []
@@ -208,10 +286,13 @@ class TradingCalendarService:
             row_count=total_rows,
             start_date=_date_text(start) or "",
             end_date=_date_text(end) or "",
+            fallback_used=fallback_used,
+            fallback_reason="; ".join(fallback_reasons[:3]),
         )
         logger.info(
-            "TradingCalendarService: synced calendar exchanges=%d rows=%d range=%s..%s",
+            "TradingCalendarService: synced calendar exchanges=%d rows=%d range=%s..%s fallback=%s",
             summary.exchange_count, summary.row_count, summary.start_date, summary.end_date,
+            summary.fallback_reason or "-",
         )
         return summary
 
@@ -235,8 +316,30 @@ class TradingCalendarService:
             default_start, default_end = self._default_planned_event_range()
             start = start or default_start
             end = end or default_end
-        eco_rows = self._sync_eco_cal(start, end) if include_eco else 0
-        disclosure_rows = self._sync_disclosure_dates(start, end, symbols=symbols) if include_disclosure else 0
+        eco_rows = 0
+        disclosure_rows = 0
+        fallback_used = False
+        fallback_reasons: list[str] = []
+        if include_eco:
+            try:
+                eco_rows = self._sync_eco_cal(start, end)
+            except TushareAuthError as exc:
+                fallback_used = True
+                fallback_reasons.append("eco_cal auth fallback")
+                logger.warning(
+                    "TradingCalendarService: using cached planned eco events range=%s..%s because auth failed: %s",
+                    _date_text(start), _date_text(end), exc,
+                )
+        if include_disclosure:
+            try:
+                disclosure_rows = self._sync_disclosure_dates(start, end, symbols=symbols)
+            except TushareAuthError as exc:
+                fallback_used = True
+                fallback_reasons.append("disclosure auth fallback")
+                logger.warning(
+                    "TradingCalendarService: using cached disclosure events range=%s..%s because auth failed: %s",
+                    _date_text(start), _date_text(end), exc,
+                )
         agenda_rows = 0
         if build_agenda:
             agenda_start = max(start, date.today())
@@ -247,11 +350,15 @@ class TradingCalendarService:
             agenda_rows=agenda_rows,
             start_date=_date_text(start) or "",
             end_date=_date_text(end) or "",
+            fallback_used=fallback_used,
+            fallback_reason="; ".join(fallback_reasons[:3]),
+            cached_rows=self._cached_planned_event_count(start, end) if fallback_used else 0,
         )
         logger.info(
-            "TradingCalendarService: synced planned events eco=%d disclosure=%d agenda=%d range=%s..%s",
+            "TradingCalendarService: synced planned events eco=%d disclosure=%d agenda=%d cached=%d range=%s..%s fallback=%s",
             summary.eco_rows, summary.disclosure_rows, summary.agenda_rows,
-            summary.start_date, summary.end_date,
+            summary.cached_rows, summary.start_date, summary.end_date,
+            summary.fallback_reason or "-",
         )
         return summary
 
