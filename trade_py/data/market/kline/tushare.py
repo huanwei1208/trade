@@ -6,6 +6,7 @@ Output schema matches the project standard (11 columns).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import pandas as pd
 
@@ -17,6 +18,60 @@ logger = logging.getLogger(__name__)
 def _to_ts_code(symbol: str) -> str:
     """'600000.SH' → '600000.SH'  (Tushare uses the same dotted format)."""
     return ensure_symbol(symbol)
+
+
+def _adj_value(adjust: str) -> str | None:
+    return {"hfq": "hfq", "qfq": "qfq", "none": None}.get(adjust, "hfq")
+
+
+def _fetch_raw_trade_date(trade_date: str, data_root: str, adjust: str = "hfq") -> pd.DataFrame:
+    from trade_py.data.market.tushare_client import get_pro_api
+
+    pro = get_pro_api(data_root)
+    df = pro.call(
+        "daily",
+        trade_date=trade_date.replace("-", ""),
+        adj=_adj_value(adjust),
+    )
+    return df if df is not None else pd.DataFrame()
+
+
+def _trade_dates(start: str, end: str) -> list[str]:
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    if start_ts > end_ts:
+        return []
+    return [ts.strftime("%Y-%m-%d") for ts in pd.bdate_range(start_ts, end_ts)]
+
+
+def _parse_raw(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=_COLUMN_ORDER)
+    col_map = {
+        "trade_date": "date",
+        "vol": "volume",
+        "amount": "amount",
+        "pct_chg": "turnover_rate",
+        "pre_close": "prev_close",
+    }
+    df = raw.rename(columns=col_map)
+    if "amount" in df.columns:
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0) * 1000.0
+    if "turnover_rate" not in df.columns:
+        df["turnover_rate"] = 0.0
+    keep = [
+        "date", "open", "high", "low", "close", "volume", "amount", "turnover_rate", "prev_close",
+    ]
+    keep = [c for c in keep if c in df.columns]
+    return _finalize_frame(symbol, df[keep].copy())
+
+
+@dataclass
+class TradeDateBatchResult:
+    frames: dict[str, pd.DataFrame]
+    api_calls: int
+    trade_dates: int
+    days_with_hits: int
 
 
 class TushareKlineProvider:
@@ -33,39 +88,53 @@ class TushareKlineProvider:
         start_d = start.replace("-", "")
         end_d = end.replace("-", "")
 
-        # Tushare adj values: "hfq" = backward-adjusted, "qfq" = forward, None = unadjusted
-        adj_val = {"hfq": "hfq", "qfq": "qfq", "none": None}.get(adjust, "hfq")
-
         raw = pro.call(
             "daily",
             ts_code=ts_code,
             start_date=start_d,
             end_date=end_d,
-            adj=adj_val,
+            adj=_adj_value(adjust),
         )
-        if raw is None or raw.empty:
-            return pd.DataFrame(columns=_COLUMN_ORDER)
+        return _parse_raw(raw, symbol)
 
-        # Tushare columns: ts_code, trade_date, open, high, low, close, pre_close,
-        #                   change, pct_chg, vol, amount
-        col_map = {
-            "trade_date": "date",
-            "vol": "volume",        # 手 (lots)
-            "amount": "amount",     # 千元 → 元 (×1000 below)
-            "pct_chg": "turnover_rate",  # placeholder; real turnover fetched separately
-            "pre_close": "prev_close",
-        }
-        df = raw.rename(columns=col_map)
+    def fetch_batch_by_trade_date(
+        self,
+        symbols: list[str],
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        trade_dates: list[str] | None = None,
+        adjust: str = "hfq",
+    ) -> TradeDateBatchResult:
+        normalized = [ensure_symbol(sym) for sym in symbols if str(sym).strip()]
+        if not normalized:
+            return TradeDateBatchResult(frames={}, api_calls=0, trade_dates=0, days_with_hits=0)
+        dates = sorted(set(trade_dates or _trade_dates(start or "", end or "")))
+        if not dates:
+            return TradeDateBatchResult(frames={}, api_calls=0, trade_dates=0, days_with_hits=0)
 
-        # amount: Tushare returns 千元, convert to 元
-        if "amount" in df.columns:
-            df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0) * 1000.0
+        symbol_set = set(normalized)
+        grouped: dict[str, list[pd.DataFrame]] = {}
+        api_calls = 0
+        day_hits = 0
+        for trade_date in dates:
+            raw = _fetch_raw_trade_date(trade_date, self._data_root, adjust=adjust)
+            api_calls += 1
+            if raw.empty or "ts_code" not in raw.columns:
+                continue
+            filtered = raw[raw["ts_code"].astype(str).str.upper().isin(symbol_set)].copy()
+            if filtered.empty:
+                continue
+            day_hits += 1
+            for symbol, frame in filtered.groupby(filtered["ts_code"].astype(str).str.upper(), sort=False):
+                grouped.setdefault(symbol, []).append(frame.copy())
 
-        # If turnover_rate not present, set to 0
-        if "turnover_rate" not in df.columns:
-            df["turnover_rate"] = 0.0
-
-        keep = ["date", "open", "high", "low", "close", "volume", "amount",
-                "turnover_rate", "prev_close"]
-        keep = [c for c in keep if c in df.columns]
-        return _finalize_frame(symbol, df[keep].copy())
+        frames: dict[str, pd.DataFrame] = {}
+        for symbol, frame_list in grouped.items():
+            frames[symbol] = _parse_raw(pd.concat(frame_list, ignore_index=True), symbol)
+        return TradeDateBatchResult(
+            frames=frames,
+            api_calls=api_calls,
+            trade_dates=len(dates),
+            days_with_hits=day_hits,
+        )

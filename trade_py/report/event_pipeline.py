@@ -18,7 +18,6 @@ from __future__ import annotations
 import glob as _glob
 import hashlib
 import logging
-from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -30,9 +29,10 @@ logger = logging.getLogger(__name__)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _make_event_id(event_date: str, event_type: str, primary_sector: str) -> str:
+def _make_event_id(event_date: str, event_type: str,
+                   primary_sector: str, breadth: str = "sector") -> str:
     """SHA1-based 12-char unique ID for an event."""
-    raw = f"{event_date}|{event_type}|{primary_sector}"
+    raw = f"{event_date}|{event_type}|{primary_sector}|{breadth}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -50,10 +50,16 @@ def _read_silver_for_date(data_root: Path, target_date: date) -> pd.DataFrame:
     frames = []
     for fp in all_files:
         try:
-            df = pd.read_parquet(fp, columns=[
+            df = pd.read_parquet(fp)
+            wanted = [
                 "date", "symbol", "event_type", "event_magnitude",
                 "affected_sectors", "sentiment_score", "content_hash", "summary",
-            ])
+                "confidence", "market_impact_scope", "base_noise_score",
+            ]
+            for col in wanted:
+                if col not in df.columns:
+                    df[col] = None
+            df = df[wanted]
             df = df[df["date"] == date_str]
             if not df.empty:
                 frames.append(df)
@@ -63,6 +69,150 @@ def _read_silver_for_date(data_root: Path, target_date: date) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+def _normalise_sector_token(token: str) -> str:
+    token = str(token).strip()
+    if not token:
+        return "SW_Unknown"
+    raw = token[3:] if token.startswith("SW_") else token
+    if not raw:
+        return "SW_Unknown"
+
+    try:
+        from trade_py.analysis.knowledge_graph import SW
+        from trade_py.data.market.index.tushare import _map_industry_to_sw
+
+        sw_by_name = {sw.name.lower(): sw for sw in SW}
+        sw_by_flat = {sw.name.replace("_", "").replace("-", "").lower(): sw for sw in SW}
+        alias_to_sw = {
+            "半导体": SW.Electronics,
+            "消费电子": SW.Electronics,
+            "科技": SW.Computer,
+            "科技股": SW.Computer,
+            "人工智能": SW.Computer,
+            "ai": SW.Computer,
+            "数据中心": SW.Computer,
+            "算力租赁": SW.Computer,
+            "网络安全": SW.Computer,
+            "互联网": SW.Computer,
+            "计算机与通信业": SW.Computer,
+            "新能源": SW.ElectricalEquipment,
+            "电气机械和器材制造业": SW.ElectricalEquipment,
+            "金融": SW.NonBankFinancial,
+            "债券市场": SW.NonBankFinancial,
+            "期货": SW.NonBankFinancial,
+            "私募信贷": SW.NonBankFinancial,
+            "银行业": SW.Banking,
+            "贵金属": SW.NonFerrousMetal,
+            "黄金": SW.NonFerrousMetal,
+            "电解铝": SW.NonFerrousMetal,
+            "白酒": SW.FoodBeverage,
+            "食品": SW.FoodBeverage,
+            "食品制造业": SW.FoodBeverage,
+            "乳制品": SW.FoodBeverage,
+            "农产品": SW.Agriculture,
+            "消费": SW.Commerce,
+            "军工": SW.Defense,
+            "国防": SW.Defense,
+            "航运": SW.Transportation,
+            "海运": SW.Transportation,
+            "航空": SW.Transportation,
+            "石油": SW.Petroleum,
+            "原油": SW.Petroleum,
+            "油气设备": SW.Petroleum,
+            "制造业": SW.MechanicalEquipment,
+            "法律服务": SW.SocialService,
+            "电力": SW.Utilities,
+            "股市": SW.NonBankFinancial,
+        }
+
+        lowered = raw.replace(" ", "").replace("-", "").replace("_", "").lower()
+        if lowered in sw_by_name:
+            return f"SW_{sw_by_name[lowered].name}"
+        if lowered in sw_by_flat:
+            return f"SW_{sw_by_flat[lowered].name}"
+        if raw in alias_to_sw:
+            return f"SW_{alias_to_sw[raw].name}"
+        mapped_idx = _map_industry_to_sw(raw)
+        if mapped_idx != 255:
+            return f"SW_{SW(int(mapped_idx)).name}"
+    except Exception:
+        pass
+
+    return "SW_Unknown"
+
+
+def _pick_primary_sector(cell: object) -> str:
+    if cell is None or (isinstance(cell, float) and pd.isna(cell)):
+        return "SW_Unknown"
+    parts = [p.strip() for p in str(cell).split(",") if p and str(p).strip()]
+    if not parts:
+        return "SW_Unknown"
+    return _normalise_sector_token(parts[0])
+
+
+def _normalise_event_type(raw_type: object, primary_sector: str,
+                          sentiment_score: float, summary: object) -> str:
+    raw = str(raw_type or "").strip().lower()
+    if not raw:
+        return "other"
+
+    sector = str(primary_sector or "SW_Unknown")
+    is_positive = float(sentiment_score or 0.0) >= 0
+    summary_text = str(summary or "").lower()
+
+    known = {
+        "semiconductor_policy", "new_energy_policy",
+        "real_estate_easing", "real_estate_tightening",
+        "rate_cut", "rate_hike", "commodity_surge", "commodity_slump",
+        "defense_spending_up", "macro_recovery", "macro_slowdown",
+        "geopolitical_risk", "earnings_beat", "earnings_miss",
+        "merger_acquisition", "regulatory_tightening",
+        "supply_disruption", "other",
+    }
+    if raw in known:
+        return raw
+
+    if raw == "policy":
+        if sector in {"SW_Electronics", "SW_Computer", "SW_Telecom"}:
+            return "semiconductor_policy" if is_positive else "regulatory_tightening"
+        if sector in {"SW_ElectricalEquipment", "SW_Auto", "SW_Environment", "SW_Chemical"}:
+            return "new_energy_policy" if is_positive else "regulatory_tightening"
+        if sector in {
+            "SW_RealEstate", "SW_Construction", "SW_BuildingMaterial",
+            "SW_Banking", "SW_HouseholdAppliance", "SW_Steel", "SW_Commerce",
+        }:
+            return "real_estate_easing" if is_positive else "real_estate_tightening"
+        if sector == "SW_Defense":
+            return "defense_spending_up" if is_positive else "regulatory_tightening"
+        return "macro_recovery" if is_positive else "macro_slowdown"
+
+    if raw in {"macro", "expansion"}:
+        return "macro_recovery" if is_positive else "macro_slowdown"
+
+    if raw == "earnings":
+        return "earnings_beat" if is_positive else "earnings_miss"
+
+    if raw == "regulation":
+        return "macro_recovery" if is_positive else "regulatory_tightening"
+
+    if raw == "acquisition":
+        return "merger_acquisition"
+
+    if raw == "product":
+        if sector in {"SW_Electronics", "SW_Computer", "SW_Telecom"}:
+            return "semiconductor_policy" if is_positive else "earnings_miss"
+        if sector in {"SW_ElectricalEquipment", "SW_Auto"}:
+            return "new_energy_policy" if is_positive else "earnings_miss"
+        return "earnings_beat" if is_positive else "earnings_miss"
+
+    if raw == "personnel":
+        if "军工" in summary_text or sector == "SW_Defense":
+            return "defense_spending_up" if is_positive else "macro_slowdown"
+        return "macro_recovery" if is_positive else "macro_slowdown"
+
+    return "other"
 
 
 def _extract_events(silver: pd.DataFrame, min_magnitude: float = 0.4) -> list[dict]:
@@ -75,17 +225,43 @@ def _extract_events(silver: pd.DataFrame, min_magnitude: float = 0.4) -> list[di
 
     valid_event_types = {e.value for e in EventType}
     silver = silver.copy()
+    silver["event_type"] = silver["event_type"].astype(str).str.strip()
     silver["event_magnitude"] = pd.to_numeric(silver["event_magnitude"], errors="coerce").fillna(0.0)
     silver["sentiment_score"] = pd.to_numeric(silver["sentiment_score"], errors="coerce").fillna(0.0)
+    silver["confidence"] = pd.to_numeric(silver.get("confidence"), errors="coerce").fillna(0.5)
+    silver["base_noise_score"] = pd.to_numeric(silver.get("base_noise_score"), errors="coerce").fillna(0.0)
+    silver["_primary_sector"] = silver["affected_sectors"].apply(_pick_primary_sector)
+    silver["_event_type_norm"] = silver.apply(
+        lambda row: _normalise_event_type(
+            row["event_type"],
+            row["_primary_sector"],
+            float(row["sentiment_score"]),
+            row.get("summary"),
+        ),
+        axis=1,
+    )
 
-    # Derive breadth per row
-    silver["_breadth"] = silver["symbol"].apply(lambda s: "market" if s == "_MARKET_" else "sector")
+    if "market_impact_scope" in silver.columns:
+        scope = silver["market_impact_scope"].astype(str).str.strip().str.lower()
+    else:
+        scope = pd.Series([""] * len(silver), index=silver.index)
+
+    def _breadth_for_row(row: pd.Series) -> str:
+        if row["symbol"] == "_MARKET_" or row["_scope"] == "market":
+            return "market"
+        if row["_scope"] in {"individual", "stock", "company"}:
+            return "company"
+        return "sector"
+
+    silver["_scope"] = scope
+    silver["_breadth"] = silver.apply(_breadth_for_row, axis=1)
 
     # Filter: magnitude >= threshold, known event type
     filtered = silver[
         (silver["event_magnitude"] >= min_magnitude) &
-        (silver["event_type"].isin(valid_event_types)) &
-        (silver["event_type"] != "other")
+        (silver["_event_type_norm"].isin(valid_event_types)) &
+        (silver["_event_type_norm"] != "other") &
+        ((silver["base_noise_score"] <= 0.75) | (silver["confidence"] >= 0.6))
     ]
     if filtered.empty:
         return []
@@ -93,33 +269,31 @@ def _extract_events(silver: pd.DataFrame, min_magnitude: float = 0.4) -> list[di
     events: list[dict] = []
     date_str: str = str(filtered["date"].iloc[0])
 
-    for (ev_type, _breadth), grp in filtered.groupby(["event_type", "_breadth"]):
-        # Determine primary_sector
-        all_sectors: list[str] = []
-        for cell in grp["affected_sectors"].dropna():
-            for s in str(cell).split(","):
-                s = s.strip()
-                if s:
-                    all_sectors.append(s if s.startswith("SW_") else f"SW_{s}")
-        primary_sector = max(set(all_sectors), key=all_sectors.count) if all_sectors else "SW_Unknown"
-
+    for (ev_type, primary_sector, _breadth), grp in filtered.groupby(
+        ["_event_type_norm", "_primary_sector", "_breadth"]
+    ):
         magnitude = float(grp["event_magnitude"].max())
         sentiment_score = float(grp["sentiment_score"].mean())
+        confidence = float(grp["confidence"].mean())
         news_volume = int(grp["content_hash"].nunique()) if "content_hash" in grp.columns else len(grp)
-        summary = next((str(s) for s in grp["summary"].dropna() if str(s).strip()), "")
-        event_id = _make_event_id(date_str, str(ev_type), primary_sector)
+        summary_row = grp.sort_values(["event_magnitude", "confidence"], ascending=False).iloc[0]
+        summary = str(summary_row.get("summary") or "").strip()
+        hashes = sorted({str(v).strip() for v in grp.get("content_hash", []) if str(v).strip()})
+        source_hash = hashlib.sha1("|".join(hashes).encode()).hexdigest()[:16] if hashes else None
+        event_id = _make_event_id(date_str, str(ev_type), primary_sector, str(_breadth))
 
         events.append({
             "event_id":       event_id,
             "event_date":     date_str,
             "event_type":     str(ev_type),
             "magnitude":      magnitude,
-            "actor_type":     "unknown",
-            "primary_sector": primary_sector,
+            "entity_id":      primary_sector,
             "breadth":        str(_breadth),
+            "confidence":     confidence,
             "sentiment_score": sentiment_score,
             "news_volume":    news_volume,
             "summary":        summary[:500] if summary else "",
+            "source_hash":    source_hash,
         })
 
     return events
@@ -130,7 +304,7 @@ def _run_kg_propagation(events: list[dict], data_root: str) -> list[dict]:
     from trade_py.analysis.knowledge_graph import SectorGraph
     from trade_py.db.instruments_db import InstrumentsDB
 
-    graph = SectorGraph()
+    graph = SectorGraph.from_snapshot_or_db(data_root, merge_defaults=True, prefer_snapshot=True)
     inst_db = InstrumentsDB(data_root)
     available_events = set(graph.available_events())
 
@@ -171,7 +345,9 @@ def _compute_excess_returns(data_root: str, event_date: str,
         return {}
     try:
         import duckdb
-        kline_glob = str(Path(data_root) / "kline" / "**" / "*.parquet")
+        from trade_py.utils.data_inspector import _resolve_kline_dir
+
+        kline_glob = str(_resolve_kline_dir(data_root) / "**" / "*.parquet")
         con = duckdb.connect()
         # Get close prices on event_date and window trading days later
         df = con.execute(f"""
@@ -362,10 +538,12 @@ def run_event_backfill_range(data_root: str, start: str, end: str) -> tuple[int,
     # Get distinct event dates in range that have NULL returns
     rows = db._conn.execute(
         """
-        SELECT DISTINCT event_date FROM event_propagations
-        WHERE event_date >= ? AND event_date <= ?
-          AND (actual_return_5d IS NULL OR actual_return_20d IS NULL)
-        ORDER BY event_date
+        SELECT DISTINCT me.event_date
+        FROM event_propagations ep
+        JOIN market_events me ON me.event_id = ep.event_id
+        WHERE me.event_date >= ? AND me.event_date <= ?
+          AND (ep.actual_return_5d IS NULL OR ep.actual_return_20d IS NULL)
+        ORDER BY me.event_date
         """,
         (start, end),
     ).fetchall()
@@ -378,8 +556,12 @@ def run_event_backfill_range(data_root: str, start: str, end: str) -> tuple[int,
         # Only fill 5d returns if 5+ trading days have elapsed (~7 calendar days)
         if (today - ev_date).days >= 7:
             sym_rows = db._conn.execute(
-                "SELECT DISTINCT symbol FROM event_propagations "
-                "WHERE event_date = ? AND actual_return_5d IS NULL",
+                """
+                SELECT DISTINCT ep.symbol
+                FROM event_propagations ep
+                JOIN market_events me ON me.event_id = ep.event_id
+                WHERE me.event_date = ? AND ep.actual_return_5d IS NULL
+                """,
                 (event_date_str,),
             ).fetchall()
             symbols = [r[0] for r in sym_rows]
@@ -390,8 +572,12 @@ def run_event_backfill_range(data_root: str, start: str, end: str) -> tuple[int,
         # Only fill 20d returns if 20+ trading days have elapsed (~28 calendar days)
         if (today - ev_date).days >= 28:
             sym_rows = db._conn.execute(
-                "SELECT DISTINCT symbol FROM event_propagations "
-                "WHERE event_date = ? AND actual_return_20d IS NULL",
+                """
+                SELECT DISTINCT ep.symbol
+                FROM event_propagations ep
+                JOIN market_events me ON me.event_id = ep.event_id
+                WHERE me.event_date = ? AND ep.actual_return_20d IS NULL
+                """,
                 (event_date_str,),
             ).fetchall()
             symbols = [r[0] for r in sym_rows]
@@ -420,8 +606,12 @@ def run_event_backfill(data_root: str) -> tuple[int, int]:
     # 5-day window: event_date = today - 7 calendar days
     date_5d = (today - timedelta(days=7)).isoformat()
     rows_5d = db._conn.execute(
-        "SELECT DISTINCT symbol FROM event_propagations "
-        "WHERE event_date = ? AND actual_return_5d IS NULL",
+        """
+        SELECT DISTINCT ep.symbol
+        FROM event_propagations ep
+        JOIN market_events me ON me.event_id = ep.event_id
+        WHERE me.event_date = ? AND ep.actual_return_5d IS NULL
+        """,
         (date_5d,),
     ).fetchall()
     symbols_5d = [r[0] for r in rows_5d]
@@ -431,8 +621,12 @@ def run_event_backfill(data_root: str) -> tuple[int, int]:
     # 20-day window: event_date = today - 28 calendar days
     date_20d = (today - timedelta(days=28)).isoformat()
     rows_20d = db._conn.execute(
-        "SELECT DISTINCT symbol FROM event_propagations "
-        "WHERE event_date = ? AND actual_return_20d IS NULL",
+        """
+        SELECT DISTINCT ep.symbol
+        FROM event_propagations ep
+        JOIN market_events me ON me.event_id = ep.event_id
+        WHERE me.event_date = ? AND ep.actual_return_20d IS NULL
+        """,
         (date_20d,),
     ).fetchall()
     symbols_20d = [r[0] for r in rows_20d]

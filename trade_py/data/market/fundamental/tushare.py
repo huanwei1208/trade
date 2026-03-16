@@ -9,6 +9,7 @@ Storage: data/fundamental/{symbol}.parquet
 from __future__ import annotations
 
 import logging
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -37,6 +38,35 @@ def _fetch_raw(ts_code: str, data_root: str, start_date: str | None = None) -> p
         kwargs["start_date"] = start_date.replace("-", "")
     df = pro.call("fina_indicator", **kwargs)
     return df if df is not None else pd.DataFrame()
+
+
+def _fetch_raw_period(period: str, data_root: str) -> pd.DataFrame:
+    from trade_py.data.market.tushare_client import get_pro_api
+
+    pro = get_pro_api(data_root)
+    kwargs = {
+        "period": period.replace("-", ""),
+        "fields": (
+            "ts_code,ann_date,end_date,roe,eps,bps,netprofit_yoy,"
+            "or_yoy,ocfps,total_revenue,n_income_attr_p,oper_profit,"
+            "total_assets,q_opincome"
+        ),
+    }
+    df = pro.call("fina_indicator_vip", **kwargs)
+    return df if df is not None else pd.DataFrame()
+
+
+def _quarter_periods(start_date: str, end_date: str | None = None) -> list[str]:
+    start = pd.Timestamp(start_date)
+    end = pd.Timestamp(end_date or date.today().isoformat())
+    periods: list[str] = []
+    for year in range(start.year, end.year + 1):
+        for month_day in ("0331", "0630", "0930", "1231"):
+            period = pd.Timestamp(f"{year}-{month_day[:2]}-{month_day[2:]}")
+            if period < start or period > end + pd.Timedelta(days=92):
+                continue
+            periods.append(period.strftime("%Y%m%d"))
+    return sorted(set(periods))
 
 
 def _parse_rows(symbol: str, raw: pd.DataFrame) -> pd.DataFrame:
@@ -101,16 +131,9 @@ class FundamentalFetcher:
             return pd.DataFrame()
         return pd.read_parquet(p)
 
-    def fetch_and_save(self, symbol: str, start_date: str | None = None) -> pd.DataFrame:
+    def _merge_and_save(self, symbol: str, new_df: pd.DataFrame) -> pd.DataFrame:
         existing = self.load(symbol)
-        # incremental: only fetch quarters after the last stored report_date when no explicit start given
-        if start_date is None and not existing.empty:
-            last_dt = pd.to_datetime(existing["report_date"]).max()
-            start_date = last_dt.strftime("%Y-%m-%d")
-        raw = _fetch_raw(symbol, self.data_root, start_date=start_date)
-        new_df = _parse_rows(symbol, raw)
         if new_df.empty:
-            logger.warning("No fundamental data fetched for %s", symbol)
             return existing
         if not existing.empty:
             combined = pd.concat([existing, new_df], ignore_index=True)
@@ -122,18 +145,86 @@ class FundamentalFetcher:
         logger.info("FundamentalFetcher: saved %d rows for %s", len(combined), symbol)
         return combined
 
-    def fetch_batch(self, symbols: list[str], start_date: str | None = None) -> None:
+    def fetch_and_save(self, symbol: str, start_date: str | None = None) -> pd.DataFrame:
+        existing = self.load(symbol)
+        # incremental: only fetch quarters after the last stored report_date when no explicit start given
+        if start_date is None and not existing.empty:
+            last_dt = pd.to_datetime(existing["report_date"]).max()
+            start_date = last_dt.strftime("%Y-%m-%d")
+        raw = _fetch_raw(symbol, self.data_root, start_date=start_date)
+        new_df = _parse_rows(symbol, raw)
+        if new_df.empty:
+            logger.warning("No fundamental data fetched for %s", symbol)
+            return existing
+        return self._merge_and_save(symbol, new_df)
+
+    def _resolve_batch_start(self, symbols: list[str], start_date: str | None = None) -> str:
+        if start_date:
+            return start_date
+        candidates: list[pd.Timestamp] = []
+        for sym in symbols:
+            existing = self.load(sym)
+            if existing.empty or "report_date" not in existing.columns:
+                continue
+            candidates.append(pd.to_datetime(existing["report_date"]).max())
+        if candidates:
+            return min(candidates).strftime("%Y-%m-%d")
+        return "2024-01-01"
+
+    def _fetch_batch_vip(self, symbols: list[str], start_date: str | None = None) -> dict:
+        target = {str(sym).strip().upper() for sym in symbols if str(sym).strip()}
+        effective_start = self._resolve_batch_start(symbols, start_date=start_date)
+        periods = _quarter_periods(effective_start)
+        grouped: dict[str, list[pd.DataFrame]] = {}
+        api_calls = 0
+        hit_periods = 0
+        for period in periods:
+            raw = _fetch_raw_period(period, self.data_root)
+            api_calls += 1
+            if raw.empty or "ts_code" not in raw.columns:
+                continue
+            filtered = raw[raw["ts_code"].astype(str).str.upper().isin(target)].copy()
+            if filtered.empty:
+                continue
+            hit_periods += 1
+            for symbol, frame in filtered.groupby(filtered["ts_code"].astype(str).str.upper(), sort=False):
+                grouped.setdefault(symbol, []).append(frame.copy())
+
+        saved = 0
+        for symbol, frames in grouped.items():
+            parsed = _parse_rows(symbol, pd.concat(frames, ignore_index=True))
+            self._merge_and_save(symbol, parsed)
+            saved += 1
+        return {
+            "mode": "vip_period_batch",
+            "symbols": len(symbols),
+            "saved_symbols": saved,
+            "api_calls": api_calls,
+            "periods_with_hits": hit_periods,
+            "start_date": effective_start,
+            "period_count": len(periods),
+        }
+
+    def fetch_batch(self, symbols: list[str], start_date: str | None = None) -> dict:
         try:
             from tqdm import tqdm
             from tqdm.contrib.logging import logging_redirect_tqdm
         except ImportError:
             tqdm = None
 
+        normalized = [str(sym).strip().upper() for sym in symbols if str(sym).strip()]
+        if len(normalized) > 1:
+            logger.info(
+                "FundamentalFetcher: using fina_indicator_vip batch mode for %d symbols",
+                len(normalized),
+            )
+            return self._fetch_batch_vip(normalized, start_date=start_date)
+
         ok = err = 0
 
         def _run(bar=None):
             nonlocal ok, err
-            for sym in symbols:
+            for sym in normalized:
                 if bar is not None:
                     bar.set_description(f"fundamental [{ok}ok {err}err]")
                     bar.set_postfix_str(sym, refresh=False)
@@ -153,9 +244,17 @@ class FundamentalFetcher:
             _run()
         else:
             with logging_redirect_tqdm():
-                with tqdm(total=len(symbols), unit="sym", dynamic_ncols=True,
+                with tqdm(total=len(normalized), unit="sym", dynamic_ncols=True,
                           desc=f"fundamental [0ok 0err]") as bar:
                     _run(bar)
+        return {
+            "mode": "symbol_loop",
+            "symbols": len(normalized),
+            "saved_symbols": ok,
+            "errors": err,
+            "api_calls": len(normalized),
+            "start_date": start_date or "",
+        }
 
 
 def compute_fundamental_features(

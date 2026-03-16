@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 
 # ── Status helpers ─────────────────────────────────────────────────────────────
 
+
+def _resolve_kline_dir(data_root: str | Path = "data") -> Path:
+    root = Path(data_root)
+    candidates = (root / "market" / "kline", root / "kline")
+    for candidate in candidates:
+        if candidate.exists() and any(candidate.rglob("*.parquet")):
+            return candidate
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return root / "kline"
+
 def status_emoji(n: int, days_threshold: int = 3) -> str:
     """Return status emoji based on row count and recency check."""
     if n == 0:
@@ -56,7 +68,7 @@ def parquet_stats(files: list[str | Path]) -> dict[str, Any]:
 
 def kline_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Return kline data statistics using DuckDB."""
-    kline_dir = Path(data_root) / "kline"
+    kline_dir = _resolve_kline_dir(data_root)
     if not kline_dir.exists():
         return {"symbols": 0, "rows": 0, "min_date": None, "max_date": None}
     try:
@@ -83,6 +95,50 @@ def kline_stats(data_root: str | Path = "data") -> dict[str, Any]:
         return {"symbols": 0, "rows": 0, "error": str(exc)}
 
 
+def kline_coverage_stats(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
+    try:
+        from trade_py.db.instruments_db import InstrumentsDB
+
+        db = InstrumentsDB(data_root)
+        db_symbols = set(db.get_all_symbols())
+        kline_dir = _resolve_kline_dir(data_root)
+        file_symbols = {p.stem.replace("_", ".") for p in kline_dir.glob("**/*.parquet")}
+        missing = sorted(db_symbols - file_symbols)
+        suspicious = sorted(s for s in db_symbols if s.startswith("920") and s.endswith(".SH"))
+        present = len(db_symbols) - len(missing)
+        coverage_pct = round((present / len(db_symbols)) * 100, 1) if db_symbols else 0.0
+        return {
+            "db_symbols": len(db_symbols),
+            "file_symbols": len(file_symbols),
+            "missing_symbols": len(missing),
+            "coverage_pct": coverage_pct,
+            "missing_sample": missing[:sample_limit],
+            "suspicious_suffix_symbols": len(suspicious),
+            "suspicious_sample": suspicious[:sample_limit],
+        }
+    except Exception as exc:
+        logger.debug("kline_coverage_stats error: %s", exc)
+        return {"db_symbols": 0, "error": str(exc)}
+
+
+def kline_freshness_stats(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
+    try:
+        from trade_py.data.market.kline import KlineSyncService
+
+        rows = KlineSyncService(data_root).status(limit=1000000)
+        stale_values = [int(r["stale_days"]) for r in rows if r.get("stale_days") not in {None, "-"}]
+        return {
+            "stale_ge_1": sum(1 for v in stale_values if v >= 1),
+            "stale_ge_5": sum(1 for v in stale_values if v >= 5),
+            "stale_ge_30": sum(1 for v in stale_values if v >= 30),
+            "max_stale_days": max(stale_values) if stale_values else 0,
+            "stale_sample": rows[:sample_limit],
+        }
+    except Exception as exc:
+        logger.debug("kline_freshness_stats error: %s", exc)
+        return {"stale_ge_1": 0, "error": str(exc)}
+
+
 def db_instrument_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Return instrument DB statistics."""
     try:
@@ -96,7 +152,7 @@ def db_instrument_stats(data_root: str | Path = "data") -> dict[str, Any]:
         ).fetchone()
         mapped = int(mapped_rows[0]) if mapped_rows else 0
         sector_members = db._conn.execute(
-            "SELECT COUNT(*) FROM instrument_sector_members"
+            "SELECT COUNT(*) FROM sector_members"
         ).fetchone()
         sector_count = int(sector_members[0]) if sector_members else 0
         return {
@@ -175,7 +231,7 @@ def events_stats(data_root: str | Path = "data") -> dict[str, Any]:
         from trade_py.db.settings_db import SettingsDB
         db = SettingsDB(data_root)
         events_row = db._conn.execute(
-            "SELECT COUNT(*), MIN(event_date), MAX(event_date) FROM events"
+            "SELECT COUNT(*), MIN(event_date), MAX(event_date) FROM market_events"
         ).fetchone()
         prop_row = db._conn.execute(
             "SELECT COUNT(*) FROM event_propagations"
@@ -195,10 +251,12 @@ def events_stats(data_root: str | Path = "data") -> dict[str, Any]:
 
 # ── Aggregate status ──────────────────────────────────────────────────────────
 
-def get_data_status(data_root: str | Path = "data") -> dict[str, Any]:
+def get_data_status(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
     """Return a consolidated status dict across all data layers."""
     return {
         "kline":       kline_stats(data_root),
+        "kline_coverage": kline_coverage_stats(data_root, sample_limit=sample_limit),
+        "kline_freshness": kline_freshness_stats(data_root, sample_limit=sample_limit),
         "instruments": db_instrument_stats(data_root),
         "sentiment":   sentiment_stats(data_root),
         "events":      events_stats(data_root),
@@ -219,6 +277,10 @@ def display_status_table(status: dict[str, Any]) -> None:
             print(line)
 
 
+def build_status_lines(status: dict[str, Any]) -> list[str]:
+    return _build_status_md(status)
+
+
 def _build_status_md(status: dict[str, Any]) -> list[str]:
     lines = [f"## 数据层状态 ({status.get('as_of', 'N/A')})", ""]
 
@@ -231,6 +293,27 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
         f"- 日期范围: {k.get('min_date', '—')} ~ {k.get('max_date', '—')}",
         "",
     ]
+
+    kc = status.get("kline_coverage", {})
+    if kc:
+        lines += [
+            "### K线覆盖",
+            f"- 覆盖率: **{kc.get('coverage_pct', 0.0):.1f}%** ({kc.get('db_symbols', 0):,} 仪表 / {kc.get('file_symbols', 0):,} 文件symbol)",
+            f"- 缺失 symbol: {kc.get('missing_symbols', 0):,}",
+            f"- 可疑 suffix symbol: {kc.get('suspicious_suffix_symbols', 0):,}",
+            "",
+        ]
+
+    kf = status.get("kline_freshness", {})
+    if kf:
+        lines += [
+            "### K线时效",
+            f"- stale >= 1d: {kf.get('stale_ge_1', 0):,}",
+            f"- stale >= 5d: {kf.get('stale_ge_5', 0):,}",
+            f"- stale >= 30d: {kf.get('stale_ge_30', 0):,}",
+            f"- 最大滞后: {kf.get('max_stale_days', 0)} 天",
+            "",
+        ]
 
     i = status.get("instruments", {})
     i_total = i.get("total_symbols", 0)

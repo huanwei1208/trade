@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Window quality scorer for the watchlist.
+"""Window quality scorer for the watchlist and full universe.
 
 Computes a 0-100 score for each symbol indicating how "clean" the current
 price action window is for making a decision.
@@ -19,6 +19,7 @@ import logging
 import sys
 import datetime
 from pathlib import Path
+from typing import Any
 import pandas as pd
 
 from trade_py.data.access import DataGateway
@@ -270,43 +271,31 @@ def compute_window_score(
     return max(0, min(100, round(composite)))
 
 
-def score_watchlist(
-    data_root: str = _DEFAULT_DATA_ROOT,
-    date_str: str | None = None,
+def _score_symbols(
+    symbols: list[str],
+    db: Any,
+    gateway: DataGateway,
+    data_root: str,
+    date_str: str,
+    target_d: datetime.date,
 ) -> dict[str, int]:
-    """Score all symbols in the watchlist and cache results.
-
-    Returns a dict mapping symbol → score.
-    """
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    from trade_py.db.settings_db import SettingsDB
-
-    db = SettingsDB(data_root)
-    gateway = DataGateway(data_root)
-    symbols = db.watchlist_get()
-    if not symbols:
-        logger.info("Watchlist is empty, nothing to score")
-        return {}
-
-    date_str = date_str or datetime.date.today().isoformat()
-    target_d = datetime.date.fromisoformat(date_str)
-
+    """Internal: score a list of symbols and cache results. Returns symbol→score."""
     scores: dict[str, int] = {}
+    gold_dir = Path(data_root) / "sentiment" / "gold"
+
     for symbol in symbols:
         df, k_report = gateway.get_kline(symbol, lookback_bars=260, end_date=target_d)
         if k_report.action != "hit_local" or k_report.degraded:
-            logger.warning("window_scorer kline report: %s", gateway.format_report(k_report))
+            logger.debug("window_scorer kline report: %s", gateway.format_report(k_report))
 
         score = compute_window_score(symbol, df, gateway, data_root, date_str)
         scores[symbol] = score
 
-        # Also pull net_sentiment from Gold for caching alongside the score
-        gold_dir = Path(data_root) / "sentiment" / "gold"
         net_sentiment_val = None
         if gold_dir.exists():
             for delta in range(5):
                 d = target_d - datetime.timedelta(days=delta)
-                gp = (gold_dir / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.isoformat()}.parquet")
+                gp = gold_dir / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.isoformat()}.parquet"
                 if gp.exists():
                     try:
                         gdf = pd.read_parquet(gp)
@@ -317,12 +306,77 @@ def score_watchlist(
                         pass
                     break
 
-        logger.info("%s  window_score=%d  net_sentiment=%s",
-                    symbol, score, net_sentiment_val)
+        cache_fields: dict = {
+            "window_score": score,
+            "net_sentiment": net_sentiment_val if net_sentiment_val is not None else 0.0,
+        }
+        db.signal_upsert(date_str, symbol, **cache_fields)
 
-        cache_fields: dict = {"window_score": score}
-        if net_sentiment_val is not None:
-            cache_fields["net_sentiment"] = net_sentiment_val
-        db.signal_cache_upsert(date_str, symbol, **cache_fields)
+    return scores
 
+
+def score_watchlist(
+    data_root: str = _DEFAULT_DATA_ROOT,
+    date_str: str | None = None,
+) -> dict[str, int]:
+    """Score all symbols in the watchlist and cache results.
+
+    Returns a dict mapping symbol → score.
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from trade_py.db.trade_db import TradeDB
+
+    db = TradeDB(data_root)
+    gateway = DataGateway(data_root)
+    symbols = db.watchlist_get()
+    if not symbols:
+        logger.info("Watchlist is empty, nothing to score")
+        return {}
+
+    date_str = date_str or datetime.date.today().isoformat()
+    target_d = datetime.date.fromisoformat(date_str)
+    scores = _score_symbols(symbols, db, gateway, data_root, date_str, target_d)
+    logger.info("score_watchlist: %d symbols scored", len(scores))
+    return scores
+
+
+def score_universe(
+    data_root: str = _DEFAULT_DATA_ROOT,
+    date_str: str | None = None,
+    limit: int | None = None,
+) -> dict[str, int]:
+    """Score ALL instruments in the DB and cache results.
+
+    This is the full-market version used by the compute stage of the DAG.
+    For large universes (5000+ symbols) this can take significant time.
+
+    Args:
+        data_root: Path to the data root directory.
+        date_str:  Target date (default: today).
+        limit:     Cap number of symbols (for testing; None = all).
+
+    Returns:
+        dict mapping symbol → score.
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from trade_py.db.trade_db import TradeDB
+
+    db = TradeDB(data_root)
+    gateway = DataGateway(data_root)
+
+    # Full-market scoring job should always cover the instrument universe.
+    symbols = db.get_all_symbols()
+    if limit is not None:
+        symbols = symbols[:limit]
+
+    if not symbols:
+        logger.info("No symbols to score")
+        return {}
+
+    date_str = date_str or datetime.date.today().isoformat()
+    target_d = datetime.date.fromisoformat(date_str)
+
+    logger.info("score_universe: scoring %d symbols for %s", len(symbols), date_str)
+    scores = _score_symbols(symbols, db, gateway, data_root, date_str, target_d)
+    logger.info("score_universe: done — %d symbols scored", len(scores))
     return scores

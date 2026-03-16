@@ -31,6 +31,32 @@ def _fetch_raw(symbol: str, data_root: str, start_date: str | None = None, end_d
     return df if df is not None else pd.DataFrame()
 
 
+def _fetch_raw_trade_date(trade_date: str, data_root: str) -> pd.DataFrame:
+    from trade_py.data.market.tushare_client import get_pro_api
+
+    pro = get_pro_api(data_root)
+    df = pro.call("moneyflow", trade_date=trade_date.replace("-", ""))
+    return df if df is not None else pd.DataFrame()
+
+
+def _resolve_window(start_date: str | None = None, end_date: str | None = None) -> tuple[date, date]:
+    end = date.fromisoformat(end_date) if end_date else date.today()
+    if start_date:
+        start = date.fromisoformat(start_date)
+    else:
+        start = end - timedelta(days=_DEFAULT_DAYS)
+    return start, end
+
+
+def _date_span(start: date, end: date) -> list[str]:
+    current = start
+    values: list[str] = []
+    while current <= end:
+        values.append(current.strftime("%Y%m%d"))
+        current += timedelta(days=1)
+    return values
+
+
 def _parse_rows(symbol: str, raw: pd.DataFrame) -> pd.DataFrame:
     """Convert Tushare moneyflow DataFrame to project fund-flow schema."""
     if raw is None or raw.empty:
@@ -101,16 +127,9 @@ class FundFlowFetcher:
             return pd.DataFrame()
         return pd.read_parquet(p)
 
-    def fetch_and_save(self, symbol: str, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
+    def _merge_and_save(self, symbol: str, new_df: pd.DataFrame) -> pd.DataFrame:
         existing = self.load(symbol)
-        # incremental: only fetch from day after the last stored date when no explicit start given
-        if start_date is None and not existing.empty:
-            last_dt = pd.to_datetime(existing["date"]).max()
-            start_date = (last_dt + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-        raw = _fetch_raw(symbol, self.data_root, start_date=start_date, end_date=end_date)
-        new_df = _parse_rows(symbol, raw)
         if new_df.empty:
-            logger.warning("FundFlowFetcher: no data for %s", symbol)
             return existing
         if not existing.empty:
             combined = pd.concat([existing, new_df], ignore_index=True)
@@ -122,13 +141,95 @@ class FundFlowFetcher:
         logger.info("FundFlowFetcher: saved %d rows for %s", len(combined), symbol)
         return combined
 
-    def fetch_batch(self, symbols: list[str], start_date: str | None = None) -> None:
+    def fetch_and_save(self, symbol: str, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
+        existing = self.load(symbol)
+        # incremental: only fetch from day after the last stored date when no explicit start given
+        if start_date is None and not existing.empty:
+            last_dt = pd.to_datetime(existing["date"]).max()
+            start_date = (last_dt + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        raw = _fetch_raw(symbol, self.data_root, start_date=start_date, end_date=end_date)
+        new_df = _parse_rows(symbol, raw)
+        if new_df.empty:
+            logger.warning("FundFlowFetcher: no data for %s", symbol)
+            return existing
+        return self._merge_and_save(symbol, new_df)
+
+    def _fetch_batch_by_trade_date(
+        self,
+        symbols: list[str],
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict:
+        symbol_set = {str(sym).strip().upper() for sym in symbols if str(sym).strip()}
+        start, end = _resolve_window(start_date, end_date)
+        grouped: dict[str, list[pd.DataFrame]] = {}
+        api_calls = 0
+        day_hits = 0
+        for trade_date in _date_span(start, end):
+            raw = _fetch_raw_trade_date(trade_date, self.data_root)
+            api_calls += 1
+            if raw.empty or "ts_code" not in raw.columns:
+                continue
+            filtered = raw[raw["ts_code"].astype(str).str.upper().isin(symbol_set)].copy()
+            if filtered.empty:
+                continue
+            day_hits += 1
+            for symbol, frame in filtered.groupby(filtered["ts_code"].astype(str).str.upper(), sort=False):
+                grouped.setdefault(symbol, []).append(frame.copy())
+
+        saved = 0
+        for symbol, frames in grouped.items():
+            parsed = _parse_rows(symbol, pd.concat(frames, ignore_index=True))
+            self._merge_and_save(symbol, parsed)
+            saved += 1
+        return {
+            "mode": "trade_date_batch",
+            "symbols": len(symbols),
+            "saved_symbols": saved,
+            "api_calls": api_calls,
+            "days_with_hits": day_hits,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+        }
+
+    def fetch_batch(
+        self,
+        symbols: list[str],
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> dict:
         from trade_py.utils.progress import iter_progress
-        for sym in iter_progress(symbols, desc="fund-flow", unit="sym"):
+        normalized = [str(sym).strip().upper() for sym in symbols if str(sym).strip()]
+        start, end = _resolve_window(start_date, end_date)
+        range_days = max(1, (end - start).days + 1)
+        if len(normalized) > 1 and range_days < len(normalized):
+            logger.info(
+                "FundFlowFetcher: using batch trade_date mode for %d symbols across %d days",
+                len(normalized),
+                range_days,
+            )
+            return self._fetch_batch_by_trade_date(
+                normalized,
+                start_date=start.isoformat(),
+                end_date=end.isoformat(),
+            )
+
+        ok = 0
+        for sym in iter_progress(normalized, desc="fund-flow", unit="sym"):
             try:
-                self.fetch_and_save(sym, start_date=start_date)
+                self.fetch_and_save(sym, start_date=start.isoformat(), end_date=end.isoformat())
+                ok += 1
             except Exception as exc:
                 logger.error("FundFlowFetcher: %s failed: %s", sym, exc)
+        return {
+            "mode": "symbol_loop",
+            "symbols": len(normalized),
+            "saved_symbols": ok,
+            "api_calls": len(normalized),
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+        }
 
     def latest_ratio(self, symbol: str, as_of: date | None = None) -> float:
         df = self.load(symbol)

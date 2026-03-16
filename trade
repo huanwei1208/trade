@@ -8,12 +8,20 @@ print_help() {
   cd "$ROOT_DIR"
   uv run python -m trade_py.cli.main --help
   echo ""
-  echo "常用命令:"
-  echo "  ./trade data <args>        Python 数据域命令"
-  echo "  ./trade model <args>       Python 模型域命令"
-  echo "  ./trade report <args>      Python 报告域命令"
-  echo "  ./trade account <args>     Python 账户域命令"
-  echo "  ./trade run <args>         Python 调度/任务域命令"
+  echo "正式入口:"
+  echo "  ./trade run <args>         统一触发入口（事件 / agenda / job）"
+  echo "  ./trade status [args]      系统总览（质量门禁 / agenda / 最近执行）"
+  echo "  ./trade inspect <args>     统一查看入口（dag / calendar / agenda / kg 等）"
+  echo "  ./trade data <args>        数据采集"
+  echo "  ./trade model <args>       模型与信号分析"
+  echo "  ./trade factor <args>      因子仓与因子评估"
+  echo "  ./trade report <args>      报告生成"
+  echo "  ./trade account <args>     账户与自选股管理"
+  echo "  ./trade event <args>       事件管理 / DAG / job 触发"
+  echo "  ./trade evaluate <args>    评估层与质量门禁"
+  echo "  ./trade kg <args>          Learned KG 候选边学习 / 审核 / 上线"
+  echo "  ./trade start <args>       启动 EventBus daemon"
+  echo "  ./trade serve <args>       启动 Web UI / 在线服务"
   echo ""
   echo "快捷命令 (bash 层):"
   echo "  ./trade sentiment [args]   →  trade data sentiment [args]"
@@ -178,6 +186,9 @@ main() {
   local sub="${1:-help}"
   shift || true
   case "$sub" in
+    run) cmd_trade_py_domain run "$@" ;;
+    status) cmd_trade_py_domain status "$@" ;;
+    inspect) cmd_trade_py_domain inspect "$@" ;;
     doctor) cmd_doctor "$@" ;;
     setup-python) cmd_setup_python "$@" ;;
     configure) cmd_configure "$@" ;;
@@ -185,9 +196,14 @@ main() {
     cli) cmd_cli "$@" ;;
     data) cmd_trade_py_domain data "$@" ;;
     model) cmd_trade_py_domain model "$@" ;;
+    factor) cmd_trade_py_domain factor "$@" ;;
     report) cmd_trade_py_domain report "$@" ;;
     account) cmd_trade_py_domain account "$@" ;;
-    run) cmd_trade_py_domain run "$@" ;;
+    event) cmd_trade_py_domain event "$@" ;;
+    evaluate) cmd_trade_py_domain evaluate "$@" ;;
+    kg) cmd_trade_py_domain kg "$@" ;;
+    start) cmd_trade_py_domain start "$@" ;;
+    serve) cmd_trade_py_domain serve "$@" ;;
     sentiment) cmd_trade_py_domain data sentiment "$@" ;;
     brief)     cmd_trade_py_domain report brief "$@" ;;
     schedule)  cmd_trade_py_domain report schedule "$@" ;;
@@ -197,7 +213,7 @@ main() {
     help|-h|--help) print_help ;;
     *)
       echo "错误：未知命令 '$sub'"
-      echo "可用顶层命令: data | model | report | account | run | sentiment | brief | schedule | ui | cli | py | doctor | setup-python | configure | build | test | help"
+      echo "可用顶层命令: run | status | inspect | data | model | factor | report | account | event | evaluate | kg | start | serve | sentiment | brief | schedule | ui | cli | py | doctor | setup-python | configure | build | test | help"
       echo "运行 './trade help' 查看详细用法"
       exit 1
       ;;

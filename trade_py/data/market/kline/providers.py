@@ -7,6 +7,7 @@ from typing import Protocol
 
 import pandas as pd
 
+from trade_py.utils.a_share_symbols import ensure_a_share_symbol, infer_a_share_suffix
 from trade_py.utils.retry import retry
 
 logger = logging.getLogger(__name__)
@@ -19,17 +20,11 @@ _COLUMN_ORDER = [
 
 
 def _infer_suffix(code: str) -> str:
-    if code.startswith(("6", "9")):
-        return ".SH"
-    if code.startswith(("4", "8")):
-        return ".BJ"
-    return ".SZ"
+    return infer_a_share_suffix(code)
 
 
 def ensure_symbol(code_or_symbol: str) -> str:
-    if "." in code_or_symbol:
-        return code_or_symbol.upper()
-    return (code_or_symbol + _infer_suffix(code_or_symbol)).upper()
+    return ensure_a_share_symbol(code_or_symbol)
 
 
 def to_code(symbol: str) -> str:
@@ -220,4 +215,3 @@ def build_provider_chain(provider: str, data_root: str = "data") -> ProviderChai
         ])
     except Exception:
         return ProviderChain([AkshareKlineProvider(), BaostockKlineProvider()])
-

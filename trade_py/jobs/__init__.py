@@ -1,12 +1,17 @@
-"""Job registry — 14 scheduled jobs, each a plain (data_root) -> str callable.
+"""Job registry — scheduled jobs, each a plain (data_root) -> str callable.
 
-Scheduler (scheduler.py) wraps these with tracking/notifications.
-CLI (cli/run.py) calls run_job() directly for ad-hoc execution.
+DAG Stages:
+  FETCH:   kline_update, cross_asset_fetch, market_index, fund_flow_update,
+           northbound, sentiment_pipeline, sector_refresh, fundamental, macro
+  COMPUTE: window_score, morning_brief, event_pipeline, event_backfill,
+           build_features, build_labels
+  TRAIN:   model_train  (writes to model_registry; inference is a separate service)
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -19,10 +24,11 @@ class JobDef:
     fn: Callable[[str], str]   # (data_root) -> summary_str
     desc: str
     schedule: list[str]        # e.g. ["daily 07:00", "saturday 07:30"]
+    stage: str = "fetch"       # fetch | compute | train
     tags: list[str] = field(default_factory=list)
 
 
-# ── Job implementations ────────────────────────────────────────────────────────
+# ── FETCH jobs ─────────────────────────────────────────────────────────────────
 
 def _job_sentiment_pipeline(data_root: str) -> str:
     from trade_py.cli._sentiment import main as sentiment_main
@@ -36,11 +42,98 @@ def _job_cross_asset(data_root: str) -> str:
     return "跨资产数据同步完成"
 
 
+def _job_calendar_sync(data_root: str) -> str:
+    from trade_py.data.market.calendar import TradingCalendarService
+
+    today = date.today()
+    service = TradingCalendarService(data_root)
+    try:
+        summary = service.sync_calendar(
+            start_date=date(today.year, 1, 1),
+            end_date=date(today.year + 1, 12, 31),
+        )
+    finally:
+        service.close()
+    return (
+        f"交易日历同步: exchanges={summary.exchange_count} rows={summary.row_count} "
+        f"range={summary.start_date}..{summary.end_date}"
+    )
+
+
+def _job_planned_event_sync(data_root: str) -> str:
+    from trade_py.data.market.calendar import TradingCalendarService
+
+    today = date.today()
+    service = TradingCalendarService(data_root)
+    try:
+        summary = service.sync_planned_events(
+            start_date=today - timedelta(days=7),
+            end_date=today + timedelta(days=90),
+            build_agenda=True,
+        )
+    finally:
+        service.close()
+    return (
+        f"未来事件同步: eco={summary.eco_rows} disclosure={summary.disclosure_rows} "
+        f"agenda={summary.agenda_rows} range={summary.start_date}..{summary.end_date}"
+    )
+
+
+def _job_realtime_symbols(data_root: str, limit: int = 50) -> list[str]:
+    from trade_py.db.trade_db import TradeDB
+
+    db = TradeDB(data_root)
+    watchlist = db.watchlist_get()
+    if watchlist:
+        return watchlist[:limit]
+    rows = db.signal_suggest(limit=limit, by="model_score")
+    return [str(row.get("symbol") or "").strip().upper() for row in rows if str(row.get("symbol") or "").strip()]
+
+
 def _job_kline(data_root: str) -> str:
     from trade_py.data.market.kline import KlineSyncOptions, KlineSyncService
     service = KlineSyncService(data_root)
     summary = service.sync(KlineSyncOptions(mode="incremental"))
-    return f"K线同步: {summary.total_symbols} symbols, {summary.total_rows} 行"
+    return (
+        f"K线同步: mode={summary.sync_mode} api_calls={summary.api_calls if summary.api_calls is not None else '-'} "
+        f"{summary.total_symbols} symbols, {summary.total_rows} 行"
+    )
+
+
+def _job_realtime_quote_sync(data_root: str) -> str:
+    from trade_py.data.market.intraday import TushareIntradayFetcher
+
+    symbols = _job_realtime_symbols(data_root, limit=50)
+    fetcher = TushareIntradayFetcher(data_root)
+    summary = fetcher.fetch_batch(
+        symbols,
+        freq="1MIN",
+        lookback_minutes=90,
+        chunk_size=50,
+        asset="E",
+    )
+    return (
+        f"实时分钟同步: requested={summary.requested_symbols} saved={summary.symbols_saved} "
+        f"api_calls={summary.api_calls} rows={summary.rows_fetched}"
+    )
+
+
+def _job_realtime_compute(data_root: str) -> str:
+    from trade_py.analysis.intraday_runtime import compute_intraday_snapshot
+
+    symbols = _job_realtime_symbols(data_root, limit=50)
+    result = compute_intraday_snapshot(
+        data_root,
+        symbols=symbols,
+        freq="1MIN",
+        lookback_bars=30,
+        top=20,
+        persist_factors=True,
+    )
+    return (
+        f"盘中计算: row_count={int(result.get('row_count') or 0)} "
+        f"snapshot={result.get('snapshot_path') or '-'}"
+    )
 
 
 def _job_market_index(data_root: str) -> str:
@@ -53,12 +146,11 @@ def _job_market_index(data_root: str) -> str:
 
 def _job_fund_flow(data_root: str) -> str:
     from trade_py.data.market.fund_flow import FundFlowFetcher
-    from trade_py.db.instruments_db import InstrumentsDB
-    from trade_py.db.settings_db import SettingsDB
+    from trade_py.db.trade_db import TradeDB
 
-    db = InstrumentsDB(data_root)
+    db = TradeDB(data_root)
     fetcher = FundFlowFetcher(data_root)
-    watchlist = SettingsDB(data_root).watchlist_get()
+    watchlist = db.watchlist_get()
     symbols = watchlist or db.get_all_symbols()[:50]
     logger.info("Updating fund flow for %d symbols", len(symbols))
     fetcher.fetch_batch(symbols)
@@ -72,23 +164,11 @@ def _job_northbound(data_root: str) -> str:
     return f"北向资金同步: {len(df)} 行"
 
 
-def _job_window_score(data_root: str) -> str:
-    from trade_py.signals.window_scorer import score_watchlist
-    scores = score_watchlist(data_root)
-    return f"窗口评分计算完成: {len(scores)} symbols"
-
-
-def _job_morning_brief(data_root: str) -> str:
-    from trade_py.report.morning_brief import generate
-    path = generate(data_root)
-    return f"晨报已生成: {path}"
-
-
 def _job_fundamental(data_root: str) -> str:
     from trade_py.data.market.fundamental import FundamentalFetcher
-    from trade_py.db.instruments_db import InstrumentsDB
+    from trade_py.db.trade_db import TradeDB
 
-    db = InstrumentsDB(data_root)
+    db = TradeDB(data_root)
     symbols = db.get_all_symbols()
     fetcher = FundamentalFetcher(data_root)
     fetcher.fetch_batch(symbols)
@@ -107,18 +187,6 @@ def _job_macro(data_root: str) -> str:
     return f"宏观数据同步完成: {', '.join(datasets)}"
 
 
-def _job_event_pipeline(data_root: str) -> str:
-    from trade_py.event import sync_events
-
-    return sync_events(data_root).format()
-
-
-def _job_event_backfill(data_root: str) -> str:
-    from trade_py.event import backfill_events
-
-    return backfill_events(data_root)
-
-
 def _job_sector_refresh(data_root: str) -> str:
     from trade_py.data.market.index import IndexFetcher
     fetcher = IndexFetcher(data_root)
@@ -126,125 +194,169 @@ def _job_sector_refresh(data_root: str) -> str:
     return f"板块映射刷新: {len(updated)} 只标的"
 
 
-def _job_model_inference(data_root: str) -> str:
-    import json
-    import numpy as np
-    import pandas as pd
-    from datetime import date as _date
-    from trade_py.db.settings_db import SettingsDB
+# ── COMPUTE jobs ───────────────────────────────────────────────────────────────
 
-    model_dir = Path(data_root) / "models" / "propagation"
-    features_path = Path(data_root) / "events" / "features.parquet"
+def _job_window_score(data_root: str) -> str:
+    from trade_py.signals.window_scorer import score_universe
+    scores = score_universe(data_root)
+    return f"全市场评分完成: {len(scores)} symbols"
 
-    if not (model_dir / "return_5d.pkl").exists():
-        return "模型文件不存在，跳过推理（请先运行 trade model train）"
-    if not features_path.exists():
-        return "特征文件不存在，跳过推理（请先运行 trade model build-features）"
+
+def _job_morning_brief(data_root: str) -> str:
+    from trade_py.report.morning_brief import generate
+    path = generate(data_root)
+    return f"晨报已生成: {path}"
+
+
+def _job_event_pipeline(data_root: str) -> str:
+    from trade_py.event import sync_events
+    return sync_events(data_root).format()
+
+
+def _job_event_backfill(data_root: str) -> str:
+    from trade_py.event import backfill_events
+    return backfill_events(data_root)
+
+
+def _job_build_features(data_root: str) -> str:
+    """Build feature matrix from event_propagations + signals + instruments."""
+    from trade_py.analysis.propagation_runtime import (
+        build_training_feature_frame,
+        save_feature_maps,
+    )
+
+    out_dir = Path(data_root) / "events"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "features.parquet"
+    df, maps = build_training_feature_frame(data_root)
+    if df.empty:
+        return "特征构建: 无事件传播数据，跳过"
+
+    df.to_parquet(out_path, index=False)
+    save_feature_maps(data_root, maps)
+    labeled = df["actual_return_5d"].notna().sum()
+    return f"特征构建完成: {len(df)} 条传播记录, {labeled} 条有标签"
+
+
+def _job_build_labels(data_root: str) -> str:
+    """Ensure event_propagations.actual_return_5d/20d are filled via backfill."""
+    from trade_py.event import backfill_events
+    result = backfill_events(data_root)
+    return f"标签构建完成: {result}"
+
+
+def _job_model_train(data_root: str) -> str:
+    """Train propagation models and register candidates in model_registry."""
+    from trade_py.analysis.propagation_training import train_models
 
     try:
-        import joblib
-    except ImportError:
-        return "joblib 未安装，跳过推理"
+        rows = train_models(data_root, backend="all", cv_splits=5, activate_backend=None)
+    except FileNotFoundError:
+        return "特征文件不存在，跳过训练（请先运行 build_features）"
+    except Exception as exc:
+        return f"模型训练失败: {exc}"
 
-    feat_cols_path = model_dir / "feature_cols.json"
-    if feat_cols_path.exists():
-        feat_cols = json.loads(feat_cols_path.read_text())
-    else:
-        from trade_py.analysis.feature_builder import ALL_FEATURE_COLS
-        feat_cols = ALL_FEATURE_COLS
+    if not rows:
+        return "模型训练跳过：可用标签不足"
 
-    df = pd.read_parquet(features_path)
-    if df.empty:
-        return "特征数据为空，跳过推理"
-    latest = df.sort_values("date").groupby("symbol").last().reset_index()
-    available_cols = [c for c in feat_cols if c in latest.columns]
-    X = latest[available_cols].fillna(0).to_numpy(dtype=np.float32)
-    symbols = latest["symbol"].tolist()
-
-    model_5d = joblib.load(model_dir / "return_5d.pkl")
-    scores_5d = model_5d.predict(X)
-    ranks = np.argsort(np.argsort(scores_5d)) / max(len(scores_5d) - 1, 1) * 100
-
-    risk_proba = None
-    risk_path = model_dir / "loss_5pct_20d.pkl"
-    if risk_path.exists():
-        try:
-            risk_model = joblib.load(risk_path)
-            risk_proba = risk_model.predict_proba(X)[:, 1]
-        except Exception as exc:
-            logger.warning("risk model predict_proba failed: %s", exc)
-
-    date_str = _date.today().isoformat()
-    db = SettingsDB(data_root)
-    for i, sym in enumerate(symbols):
-        db.signal_cache_upsert(
-            date_str, sym,
-            model_score=float(ranks[i]),
-            model_risk=float(risk_proba[i]) if risk_proba is not None else None,
-            model_updated=date_str,
-        )
-
-    return f"模型推理完成: {len(symbols)} 只标的，model_score 已更新"
+    summaries = []
+    for row in rows:
+        metrics = row.get("metrics", {})
+        metric_name = metrics.get("cv_metric_name", "metric")
+        metric_val = metrics.get("cv_metric")
+        state = row.get("promotion_state", "candidate")
+        if metric_val is not None:
+            summaries.append(f"{row['target_name']}[{row['backend']}/{state}] {metric_name}={metric_val}")
+        else:
+            summaries.append(f"{row['target_name']}[{row['backend']}/{state}]")
+    return "模型训练完成: " + "; ".join(summaries)
 
 
 # ── Registry ───────────────────────────────────────────────────────────────────
 
 JOB_REGISTRY: dict[str, JobDef] = {
+    # FETCH stage
+    "calendar_sync": JobDef(
+        "calendar_sync", _job_calendar_sync, "交易日历同步",
+        ["sunday 07:30"], "fetch", ["calendar", "meta"],
+    ),
+    "planned_event_sync": JobDef(
+        "planned_event_sync", _job_planned_event_sync, "未来计划事件同步",
+        ["daily 22:05"], "fetch", ["calendar", "event"],
+    ),
     "kline_update": JobDef(
         "kline_update", _job_kline, "K线增量同步",
-        ["daily 07:00"], ["market"],
+        ["daily 07:00"], "fetch", ["market"],
+    ),
+    "realtime_quote_sync": JobDef(
+        "realtime_quote_sync", _job_realtime_quote_sync, "盘中分钟行情同步",
+        ["weekday intraday"], "fetch", ["market", "intraday"],
     ),
     "cross_asset_fetch": JobDef(
         "cross_asset_fetch", _job_cross_asset, "跨资产行情抓取",
-        ["daily 07:00"], ["market"],
+        ["daily 07:00"], "fetch", ["market"],
     ),
     "market_index": JobDef(
         "market_index", _job_market_index, "市场/行业指数同步",
-        ["daily 07:05"], ["market"],
+        ["daily 07:05"], "fetch", ["market"],
     ),
     "fund_flow_update": JobDef(
         "fund_flow_update", _job_fund_flow, "资金流向同步",
-        ["daily 07:30", "daily 15:15"], ["market"],
+        ["daily 07:30", "daily 15:15"], "fetch", ["market"],
     ),
     "northbound": JobDef(
         "northbound", _job_northbound, "北向资金同步",
-        ["daily 15:20"], ["market"],
-    ),
-    "window_score": JobDef(
-        "window_score", _job_window_score, "窗口评分计算",
-        ["daily 07:35", "daily 15:30"], ["signal"],
-    ),
-    "morning_brief": JobDef(
-        "morning_brief", _job_morning_brief, "晨报生成",
-        ["daily 07:45"], ["report"],
+        ["daily 15:20"], "fetch", ["market"],
     ),
     "sentiment_pipeline": JobDef(
         "sentiment_pipeline", _job_sentiment_pipeline, "LLM情绪流水线",
-        ["daily 22:00"], ["nlp"],
-    ),
-    "event_pipeline": JobDef(
-        "event_pipeline", _job_event_pipeline, "事件提取+KG传导",
-        ["daily 22:30"], ["event"],
-    ),
-    "event_backfill": JobDef(
-        "event_backfill", _job_event_backfill, "回填超额收益",
-        ["daily 15:35"], ["event"],
+        ["daily 22:00"], "fetch", ["nlp"],
     ),
     "sector_refresh": JobDef(
         "sector_refresh", _job_sector_refresh, "板块成分映射刷新",
-        ["saturday 07:30"], ["market"],
+        ["saturday 07:30"], "fetch", ["market"],
     ),
     "fundamental": JobDef(
         "fundamental", _job_fundamental, "财务数据同步",
-        ["saturday 08:00"], ["market"],
+        ["saturday 08:00"], "fetch", ["market"],
     ),
     "macro": JobDef(
         "macro", _job_macro, "宏观数据同步",
-        ["sunday 08:00"], ["market"],
+        ["sunday 08:00"], "fetch", ["market"],
     ),
-    "model_inference": JobDef(
-        "model_inference", _job_model_inference, "模型推理更新评分",
-        ["daily 07:10"], ["model"],
+    # COMPUTE stage
+    "window_score": JobDef(
+        "window_score", _job_window_score, "全市场窗口评分",
+        ["daily 07:35", "daily 15:30"], "compute", ["signal"],
+    ),
+    "realtime_compute": JobDef(
+        "realtime_compute", _job_realtime_compute, "盘中分钟因子计算",
+        ["weekday intraday"], "compute", ["signal", "intraday"],
+    ),
+    "morning_brief": JobDef(
+        "morning_brief", _job_morning_brief, "晨报生成",
+        ["daily 07:45"], "compute", ["report"],
+    ),
+    "event_pipeline": JobDef(
+        "event_pipeline", _job_event_pipeline, "事件提取+KG传导",
+        ["daily 22:30"], "compute", ["event"],
+    ),
+    "event_backfill": JobDef(
+        "event_backfill", _job_event_backfill, "回填超额收益",
+        ["daily 15:35"], "compute", ["event"],
+    ),
+    "build_features": JobDef(
+        "build_features", _job_build_features, "特征矩阵构建",
+        ["sunday 09:00"], "compute", ["model"],
+    ),
+    "build_labels": JobDef(
+        "build_labels", _job_build_labels, "标签构建（回填收益）",
+        ["sunday 09:05"], "compute", ["model"],
+    ),
+    # TRAIN stage
+    "model_train": JobDef(
+        "model_train", _job_model_train, "KG事件传播模型训练",
+        ["sunday 09:10"], "train", ["model"],
     ),
 }
 

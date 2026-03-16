@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trade DAG Monitor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  header { background: #1e293b; border-bottom: 1px solid #334155; padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 1.1rem; font-weight: 600; color: #f8fafc; }
+  header .badge { background: #0ea5e9; color: white; font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; }
+  .tabs { display: flex; gap: 4px; padding: 12px 24px 0; background: #1e293b; border-bottom: 1px solid #334155; }
+  .tab { padding: 8px 16px; cursor: pointer; border-radius: 6px 6px 0 0; font-size: 0.85rem; color: #94a3b8; border: 1px solid transparent; border-bottom: none; }
+  .tab.active { background: #0f172a; color: #f8fafc; border-color: #334155; }
+  .tab:hover:not(.active) { color: #cbd5e1; background: #1e3a5f33; }
+  main { padding: 24px; }
+
+  /* DAG View */
+  .dag-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .stage-col { background: #1e293b; border-radius: 10px; border: 1px solid #334155; overflow: hidden; }
+  .stage-header { padding: 12px 16px; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; border-bottom: 1px solid #334155; }
+  .stage-fetch   .stage-header { background: #1e3a5f; color: #38bdf8; }
+  .stage-compute .stage-header { background: #1a3a2a; color: #4ade80; }
+  .stage-train   .stage-header { background: #2d1f3d; color: #c084fc; }
+  .dag-node { padding: 10px 14px; border-bottom: 1px solid #1e293b; cursor: pointer; transition: background 0.15s; }
+  .dag-node:last-child { border-bottom: none; }
+  .dag-node:hover { background: #263349; }
+  .dag-node.disabled { opacity: 0.45; }
+  .node-source { font-size: 0.72rem; color: #64748b; margin-bottom: 2px; font-family: monospace; }
+  .node-job { font-size: 0.85rem; font-weight: 600; color: #e2e8f0; }
+  .node-emits { font-size: 0.72rem; color: #94a3b8; margin-top: 2px; font-family: monospace; }
+  .node-desc { font-size: 0.72rem; color: #475569; margin-top: 2px; }
+  .node-toggle { float: right; font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; border: none; cursor: pointer; }
+  .node-toggle.on  { background: #166534; color: #4ade80; }
+  .node-toggle.off { background: #450a0a; color: #f87171; }
+
+  /* Events / Runs table */
+  .panel { background: #1e293b; border-radius: 10px; border: 1px solid #334155; overflow: hidden; }
+  .panel-header { padding: 12px 16px; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 12px; }
+  .panel-header h2 { font-size: 0.9rem; font-weight: 600; }
+  .refresh-btn { margin-left: auto; background: #0ea5e9; color: white; border: none; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+  .refresh-btn:hover { background: #0284c7; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  th { padding: 8px 12px; text-align: left; background: #0f172a; color: #64748b; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td { padding: 8px 12px; border-top: 1px solid #1e293b; color: #cbd5e1; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px; }
+  tr:hover td { background: #1a2740; }
+  .status-ok      { color: #4ade80; }
+  .status-error   { color: #f87171; }
+  .status-pending { color: #facc15; }
+  .status-running { color: #38bdf8; }
+
+  /* Trigger form */
+  .trigger-form { display: flex; gap: 8px; padding: 16px; background: #1e293b; border-radius: 10px; border: 1px solid #334155; align-items: center; flex-wrap: wrap; }
+  .trigger-form input { flex: 1; min-width: 200px; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 6px 10px; border-radius: 6px; font-size: 0.85rem; }
+  .trigger-form button { background: #7c3aed; color: white; border: none; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+  .trigger-form button:hover { background: #6d28d9; }
+  .gate-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; width: 100%; }
+  .gate-btn { background: #1e3a5f; color: #38bdf8; border: 1px solid #1d4ed8; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.75rem; font-family: monospace; }
+  .gate-btn:hover { background: #1d4ed8; }
+
+  .toast { position: fixed; bottom: 24px; right: 24px; background: #0ea5e9; color: white; padding: 10px 18px; border-radius: 8px; font-size: 0.85rem; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+
+  #content { display: none; }
+  #content.active { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Trade DAG Monitor</h1>
+  <span class="badge" id="status-badge">loading…</span>
+</header>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('dag')">Pipeline DAG</div>
+  <div class="tab" onclick="showTab('events')">Event Log</div>
+  <div class="tab" onclick="showTab('runs')">Job Runs</div>
+  <div class="tab" onclick="showTab('models')">Models</div>
+  <div class="tab" onclick="showTab('trigger')">Trigger</div>
+</div>
+
+<main>
+  <!-- DAG tab -->
+  <div id="tab-dag">
+    <div class="dag-grid" id="dag-grid">
+      <div class="stage-col stage-fetch">
+        <div class="stage-header">FETCH</div>
+        <div id="col-fetch"></div>
+      </div>
+      <div class="stage-col stage-compute">
+        <div class="stage-header">COMPUTE</div>
+        <div id="col-compute"></div>
+      </div>
+      <div class="stage-col stage-train">
+        <div class="stage-header">TRAIN</div>
+        <div id="col-train"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Events tab -->
+  <div id="tab-events" style="display:none">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Recent Event Log</h2>
+        <button class="refresh-btn" onclick="loadEvents()">Refresh</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table><thead><tr>
+          <th>ID</th><th>Status</th><th>Topic</th><th>Handler</th><th>Elapsed(ms)</th><th>Created</th>
+        </tr></thead>
+        <tbody id="events-tbody"></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Runs tab -->
+  <div id="tab-runs" style="display:none">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Recent Job Runs</h2>
+        <button class="refresh-btn" onclick="loadRuns()">Refresh</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table><thead><tr>
+          <th>ID</th><th>Job</th><th>Stage</th><th>Status</th><th>Elapsed(ms)</th><th>Summary</th><th>Started</th>
+        </tr></thead>
+        <tbody id="runs-tbody"></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Models tab -->
+  <div id="tab-models" style="display:none">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Model Registry</h2>
+        <button class="refresh-btn" onclick="loadModels()">Refresh</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table><thead><tr>
+          <th>ID</th><th>Name</th><th>Type</th><th>Active</th><th>Trained At</th><th>Metrics</th>
+        </tr></thead>
+        <tbody id="models-tbody"></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trigger tab -->
+  <div id="tab-trigger" style="display:none">
+    <div class="trigger-form">
+      <label style="color:#94a3b8;font-size:0.85rem">Topic:</label>
+      <input id="trigger-topic" placeholder="gate.morning" />
+      <button onclick="triggerEvent()">Publish</button>
+      <div class="gate-btns" id="gate-btns"></div>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const GATES = [
+  'gate.morning','gate.pre_market','gate.signal_am','gate.report',
+  'gate.market_close','gate.evening','gate.event_extract',
+  'gate.sector_weekly','gate.fundamental_weekly','gate.macro_weekly','gate.model_weekly'
+];
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.remove('active'));
+  document.querySelectorAll('main > div').forEach(d => d.style.display = 'none');
+  const tabs = document.querySelectorAll('.tab');
+  const names = ['dag','events','runs','models','trigger'];
+  tabs[names.indexOf(name)].classList.add('active');
+  document.getElementById('tab-' + name).style.display = 'block';
+  if (name === 'dag') loadDag();
+  if (name === 'events') loadEvents();
+  if (name === 'runs') loadRuns();
+  if (name === 'models') loadModels();
+  if (name === 'trigger') buildGateBtns();
+}
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+async function apiFetch(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// Status badge
+async function loadStatus() {
+  try {
+    const s = await apiFetch('/api/status');
+    const badge = document.getElementById('status-badge');
+    badge.textContent = s.inference_models.length + ' models loaded';
+    badge.style.background = s.inference_models.length > 0 ? '#16a34a' : '#d97706';
+  } catch(e) {}
+}
+
+// DAG
+async function loadDag() {
+  const data = await apiFetch('/api/dag?all=true');
+  ['fetch','compute','train'].forEach(stage => {
+    const col = document.getElementById('col-' + stage);
+    const nodes = data.stages[stage] || [];
+    col.innerHTML = nodes.map(n => `
+      <div class="dag-node ${n.enabled ? '' : 'disabled'}" id="node-${n.id}">
+        <button class="node-toggle ${n.enabled ? 'on' : 'off'}"
+                onclick="toggleNode(${n.id}, ${n.enabled ? 0 : 1}); event.stopPropagation()">
+          ${n.enabled ? 'ON' : 'OFF'}
+        </button>
+        <div class="node-source">${n.source}</div>
+        <div class="node-job">${n.job_name}</div>
+        ${n.emits ? `<div class="node-emits">→ ${n.emits}</div>` : ''}
+        ${n.description ? `<div class="node-desc">${n.description}</div>` : ''}
+      </div>`).join('');
+  });
+}
+
+async function toggleNode(id, enable) {
+  const action = enable ? 'enable' : 'disable';
+  await apiFetch(`/api/dag/${id}/${action}`, {method:'POST'});
+  toast(`Node ${id} ${enable ? 'enabled' : 'disabled'}`);
+  loadDag();
+}
+
+// Events
+async function loadEvents() {
+  const rows = await apiFetch('/api/events?limit=50');
+  const tbody = document.getElementById('events-tbody');
+  tbody.innerHTML = rows.map(r => {
+    const cls = 'status-' + (r.status || 'pending');
+    return `<tr>
+      <td>${r.id}</td>
+      <td class="${cls}">${r.status}</td>
+      <td>${r.topic}</td>
+      <td>${r.handler || ''}</td>
+      <td>${r.elapsed_ms ?? '-'}</td>
+      <td>${(r.created_at||'').slice(0,19)}</td>
+    </tr>`;
+  }).join('');
+}
+
+// Runs
+async function loadRuns() {
+  const rows = await apiFetch('/api/runs?limit=50');
+  const tbody = document.getElementById('runs-tbody');
+  tbody.innerHTML = rows.map(r => {
+    const cls = 'status-' + (r.status || 'running');
+    const summary = (r.result_summary || '').slice(0, 60);
+    return `<tr>
+      <td>${r.id}</td>
+      <td>${r.job_name}</td>
+      <td>${r.stage || ''}</td>
+      <td class="${cls}">${r.status}</td>
+      <td>${r.elapsed_ms ?? '-'}</td>
+      <td title="${r.result_summary || ''}">${summary}</td>
+      <td>${(r.started_at||'').slice(0,19)}</td>
+    </tr>`;
+  }).join('');
+}
+
+// Models
+async function loadModels() {
+  const rows = await apiFetch('/api/models');
+  const tbody = document.getElementById('models-tbody');
+  tbody.innerHTML = rows.map(r => {
+    const metrics = r.metrics ? JSON.stringify(r.metrics).slice(0,80) : '-';
+    return `<tr>
+      <td>${r.id}</td>
+      <td>${r.model_name}</td>
+      <td>${r.model_type}</td>
+      <td>${r.is_active ? '✓ active' : '-'}</td>
+      <td>${(r.trained_at||'').slice(0,19)}</td>
+      <td title="${JSON.stringify(r.metrics||{})}">${metrics}</td>
+    </tr>`;
+  }).join('');
+}
+
+// Trigger
+function buildGateBtns() {
+  document.getElementById('gate-btns').innerHTML = GATES.map(g =>
+    `<button class="gate-btn" onclick="document.getElementById('trigger-topic').value='${g}'">${g}</button>`
+  ).join('');
+}
+
+async function triggerEvent() {
+  const topic = document.getElementById('trigger-topic').value.trim();
+  if (!topic) return;
+  try {
+    const r = await apiFetch('/api/trigger', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({topic, payload: {}})
+    });
+    toast(`Published event_id=${r.event_id}  topic=${r.topic}`);
+  } catch(e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+// Init
+loadStatus();
+loadDag();
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>

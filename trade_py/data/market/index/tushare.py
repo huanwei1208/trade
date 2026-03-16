@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from trade_py.utils.a_share_symbols import ensure_a_share_symbol
+
 logger = logging.getLogger(__name__)
 _INDUSTRY_UNKNOWN = 255
 
@@ -127,21 +129,17 @@ def _map_industry_to_sw(industry: str) -> int:
 
 def _ensure_symbol(value: str) -> str:
     value = str(value).strip().upper()
-    if "." in value:
+    if value.endswith(".SI"):
         return value
-    if value.startswith(("6", "9")):
-        return value + ".SH"
-    if value.startswith(("4", "8")):
-        return value + ".BJ"
-    return value + ".SZ"
+    return ensure_a_share_symbol(value)
 
 
 def _default_start_date(data_root: str) -> str:
     try:
         from trade_py.db.settings_db import SettingsDB
-        return str(SettingsDB(data_root).get("index.start_date", "2015-01-01"))
+        return str(SettingsDB(data_root).get("index.start_date", None) or "2024-01-01")
     except Exception:
-        return "2015-01-01"
+        return "2024-01-01"
 
 
 def _fetch_raw(ts_code: str, data_root: str, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame:
@@ -375,10 +373,10 @@ class IndexFetcher:
 
         with db._conn:
             db._conn.execute("UPDATE instruments SET industry=?", (_INDUSTRY_UNKNOWN,))
-            db._conn.execute("DELETE FROM instrument_sector_members")
+            db._conn.execute("DELETE FROM sector_members")
             db._conn.executemany(
                 """
-                INSERT INTO instrument_sector_members
+                INSERT INTO sector_members
                     (symbol, sector_code, sector_name, industry_code, updated_at)
                 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,

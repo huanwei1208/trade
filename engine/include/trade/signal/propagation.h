@@ -23,6 +23,9 @@ public:
     // Load sector graph from JSON. Returns false on failure.
     bool load(const std::string& json_path);
 
+    // Load approved graph relations directly from SQLite trade.db.
+    bool load_sqlite(const std::string& db_path);
+
     // Returns true if graph is loaded and ready.
     bool ready() const { return loaded_; }
 

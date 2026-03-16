@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 import json
+from datetime import datetime, timezone
 from dataclasses import dataclass, field, asdict
 from enum import IntEnum
 from pathlib import Path
@@ -88,6 +89,8 @@ SW_NAMES_ZH = {
     SW.Coal: "煤炭",
     SW.Petroleum: "石油石化",
 }
+
+_SW_BY_ENTITY = {f"SW_{sw.name}": sw for sw in SW}
 
 
 # ── Edge types ────────────────────────────────────────────────────────────────
@@ -394,6 +397,98 @@ class SectorGraph:
         for e in self._edges:
             self._adj.setdefault(e.source, []).append((e.target, e))
 
+    @staticmethod
+    def _sw_from_entity(entity_id: str | None) -> Optional[SW]:
+        if not entity_id:
+            return None
+        return _SW_BY_ENTITY.get(str(entity_id).strip())
+
+    @classmethod
+    def snapshot_path(cls, data_root: str | Path = "data") -> Path:
+        return Path(data_root) / "kg" / "active_snapshot.json"
+
+    @classmethod
+    def from_db(cls, data_root: str | Path = "data",
+                merge_defaults: bool = True) -> "SectorGraph":
+        """Build graph from approved DB relations, with optional static fallback."""
+        from trade_py.db.trade_db import TradeDB
+
+        db = TradeDB(data_root)
+        rows = db.kg_active_relations()
+        if not rows:
+            return cls()
+
+        edges_by_key: dict[tuple[SW, SW, str], SectorEdge] = {}
+        event_mapping: dict[str, list[tuple[SW, float]]] = {}
+
+        if merge_defaults:
+            for edge in _EDGES:
+                edges_by_key[(edge.source, edge.target, edge.relation)] = edge
+            event_mapping = {k: list(v) for k, v in EVENT_SECTOR_MAPPING.items()}
+
+        event_mapping_by_key: dict[tuple[str, SW], float] = {}
+        for event_type, sectors in event_mapping.items():
+            for sector, score in sectors:
+                event_mapping_by_key[(event_type, sector)] = score
+
+        for row in rows:
+            rel_type = str(row.get("rel_type") or "")
+            from_entity = str(row.get("from_entity") or "")
+            to_entity = str(row.get("to_entity") or "")
+            direction = int(row.get("direction", 1) or 1)
+            weight = abs(float(row.get("weight", 0.0) or 0.0))
+            typical_days = int(row.get("typical_days", 0) or 0)
+
+            src_sw = cls._sw_from_entity(from_entity)
+            tgt_sw = cls._sw_from_entity(to_entity)
+            if rel_type == "event_map":
+                if tgt_sw is None:
+                    continue
+                score = round(weight * direction, 4)
+                event_mapping_by_key[(from_entity, tgt_sw)] = score
+                continue
+            if src_sw is None or tgt_sw is None:
+                continue
+            edges_by_key[(src_sw, tgt_sw, rel_type)] = SectorEdge(
+                source=src_sw,
+                target=tgt_sw,
+                relation=rel_type,
+                weight=weight,
+                direction=direction,
+                typical_days=typical_days,
+                description=str(row.get("source") or ""),
+            )
+
+        event_mapping = {}
+        for (event_type, sector), score in event_mapping_by_key.items():
+            event_mapping.setdefault(event_type, []).append((sector, score))
+        for event_type, sectors in event_mapping.items():
+            event_mapping[event_type] = sorted(sectors, key=lambda item: abs(item[1]), reverse=True)
+
+        return cls(edges=list(edges_by_key.values()), event_mapping=event_mapping)
+
+    @classmethod
+    def from_snapshot_or_db(
+        cls,
+        data_root: str | Path = "data",
+        *,
+        merge_defaults: bool = True,
+        prefer_snapshot: bool = True,
+    ) -> "SectorGraph":
+        path = cls.snapshot_path(data_root)
+        if prefer_snapshot and path.exists():
+            try:
+                return cls.load(path)
+            except Exception:
+                pass
+        graph = cls.from_db(data_root, merge_defaults=merge_defaults)
+        if prefer_snapshot:
+            try:
+                graph.save(path)
+            except Exception:
+                pass
+        return graph
+
     # ── Propagation ──────────────────────────────────────────────────────────
 
     def propagate(self,
@@ -549,9 +644,17 @@ class SectorGraph:
         for sw in SW:
             nodes.append({
                 "id": f"SW_{sw.name}",
+                "node_type": "sector",
                 "sw_code": int(sw),
                 "name_zh": SW_NAMES_ZH.get(sw, sw.name),
                 "name_en": sw.name,
+            })
+        for event_type in sorted(self._event_mapping.keys()):
+            nodes.append({
+                "id": event_type,
+                "node_type": "event_type",
+                "name_zh": event_type,
+                "name_en": event_type,
             })
 
         edges = []
@@ -574,11 +677,44 @@ class SectorGraph:
             ]
 
         return {
-            "version": "1.0",
+            "version": "1.1",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "nodes": nodes,
             "edges": edges,
             "event_mappings": event_mappings,
         }
+
+    def to_registry_rows(self, *, source: str = "kg_snapshot") -> list[dict]:
+        rows: list[dict] = []
+        payload = self.to_dict()
+        for node in payload.get("nodes", []):
+            entity_id = str(node.get("id") or "").strip()
+            if not entity_id:
+                continue
+            node_type = str(node.get("node_type") or "unknown")
+            display_name = str(node.get("name_zh") or node.get("name_en") or entity_id)
+            rows.append(
+                {
+                    "entity_id": entity_id,
+                    "entity_type": node_type,
+                    "display_name": display_name,
+                    "source": source,
+                    "status": "active",
+                }
+            )
+        return rows
+
+    @classmethod
+    def build_active_snapshot(
+        cls,
+        data_root: str | Path = "data",
+        *,
+        merge_defaults: bool = True,
+    ) -> Path:
+        graph = cls.from_db(data_root, merge_defaults=merge_defaults)
+        path = cls.snapshot_path(data_root)
+        graph.save(path)
+        return path
 
     def save(self, path: str | Path) -> None:
         """Save graph to JSON file."""

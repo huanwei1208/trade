@@ -1,18 +1,19 @@
 """EventBus — in-process pub/sub with SQLite persistence.
 
 Architecture:
-- EventBus.publish(topic, payload)  → writes bus_events row + dispatches handlers async
-- EventBus.subscribe(topic, fn)     → registers a handler callable
-- EventBus.replay_pending()         → on startup, re-dispatch stuck 'pending' rows
+- EventBus.publish(topic, payload)    → writes event_log row + dispatches handlers async
+- EventBus.subscribe(topic, fn)       → registers a handler callable
+- EventBus.replay_pending()           → on startup, re-dispatch stuck 'pending' rows
+- bootstrap_from_dag(db, data_root)   → read pipeline_dag table, create subscriptions
 
-Topic constants are in the Topic class. No CLI commands; query bus_events
-directly via SQLite:
-  SELECT id, topic, status, handler, created_at FROM bus_events ORDER BY id DESC LIMIT 20;
+Topic constants are in the Topic class. Query event_log directly:
+  SELECT id, topic, status, handler, created_at FROM event_log ORDER BY id DESC LIMIT 20;
 """
 from __future__ import annotations
 
 import json
 import logging
+import time as _time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 class Topic:
     # Schedule gates (time-triggered, one-to-many)
     GATE_MORNING          = "gate.morning"           # 07:00
+    GATE_INTRADAY         = "gate.intraday"          # every 1min during market session
     GATE_PRE_MARKET       = "gate.pre_market"         # 07:05
     GATE_SIGNAL_AM        = "gate.signal_am"          # 07:35
     GATE_REPORT           = "gate.report"             # 07:45
@@ -39,35 +41,32 @@ class Topic:
     GATE_SECTOR_WEEKLY    = "gate.sector_weekly"      # Sat 07:30
     GATE_FUND_WEEKLY      = "gate.fundamental_weekly" # Sat 08:00
     GATE_MACRO_WEEKLY     = "gate.macro_weekly"       # Sun 08:00
+    GATE_MODEL_WEEKLY     = "gate.model_weekly"       # Sun 09:00
 
-    # Job topics (manual precise trigger, one-to-one)
-    JOB_KLINE             = "job.kline_update"
-    JOB_CROSS_ASSET       = "job.cross_asset"
-    JOB_MARKET_INDEX      = "job.market_index"
-    JOB_FUND_FLOW         = "job.fund_flow"
-    JOB_NORTHBOUND        = "job.northbound"
-    JOB_WINDOW_SCORE      = "job.window_score"
-    JOB_MORNING_BRIEF     = "job.morning_brief"
-    JOB_SENTIMENT         = "job.sentiment_pipeline"
-    JOB_EVENT_PIPELINE    = "job.event_pipeline"
-    JOB_EVENT_BACKFILL    = "job.event_backfill"
-    JOB_SECTOR_REFRESH    = "job.sector_refresh"
-    JOB_FUNDAMENTAL       = "job.fundamental"
-    JOB_MACRO             = "job.macro"
-    JOB_MODEL_INFERENCE   = "job.model_inference"
+    # Agenda-driven dispatch
+    AGENDA_DUE            = "agenda.due"
 
     # Downstream data events (result notifications for cascade triggers)
     KLINE_SYNCED          = "data.kline.synced"
+    REALTIME_SYNCED       = "data.realtime.synced"
     INDEX_SYNCED          = "data.index.synced"
-    SILVER_CREATED        = "data.sentiment.silver"
-    WINDOW_SCORE_UPDATED  = "signal.window_score"
-    MODEL_INFERRED        = "signal.model"
+    SENTIMENT_SYNCED      = "data.sentiment.synced"
+    WINDOW_SCORE_UPDATED  = "signal.window.updated"
     MORNING_BRIEF_READY   = "report.morning_brief"
+    FEATURES_BUILT        = "model.features.built"
+    LABELS_BUILT          = "model.labels.built"
+    MODEL_TRAINED         = "model.trained"
+
+    # Legacy aliases (kept for backward compat)
+    SILVER_CREATED        = "data.sentiment.synced"
+    MODEL_INFERRED        = "signal.model"
 
     # All gate topics (for dry-run iteration)
     ALL_GATES = [
-        GATE_MORNING, GATE_PRE_MARKET, GATE_SIGNAL_AM, GATE_REPORT,
+        GATE_MORNING, GATE_INTRADAY, GATE_PRE_MARKET, GATE_SIGNAL_AM, GATE_REPORT,
         GATE_MARKET_CLOSE, GATE_EVENING, GATE_EVENT_EXTRACT,
+        GATE_SECTOR_WEEKLY, GATE_FUND_WEEKLY, GATE_MACRO_WEEKLY,
+        GATE_MODEL_WEEKLY,
     ]
 
 
@@ -78,6 +77,7 @@ class Event:
     id: int
     topic: str
     payload: dict
+    parent_event_id: int | None
     created_at: datetime
     bus: "EventBus"  # back-reference so handlers can publish downstream events
 
@@ -87,8 +87,8 @@ class Event:
 class EventBus:
     """In-process pub/sub with SQLite persistence.
 
-    pub path: write DB row (status=pending) → submit handlers to thread pool
-    Each handler runs in a separate thread; on completion, updates DB row to ok/error.
+    pub path: write event_log row (status=pending) → submit handlers to thread pool
+    Each handler runs in a separate thread; on completion, updates event_log row to ok/error.
     """
 
     def __init__(self, db: "TradeDB", max_workers: int = 6) -> None:
@@ -100,21 +100,22 @@ class EventBus:
         """Register a handler for a topic. Handlers run asynchronously."""
         self._subs[topic].append(handler)
 
-    def publish(self, topic: str, payload: dict | None = None) -> Event:
-        """Persist event to DB and dispatch to all subscribed handlers asynchronously."""
+    def publish(self, topic: str, payload: dict | None = None,
+                parent_event_id: int | None = None) -> Event:
+        """Persist event to event_log and dispatch to all subscribed handlers async."""
         payload = payload or {}
-        eid = self._db.bus_event_insert(topic, json.dumps(payload))
+        eid = self._db.event_log_insert(topic, json.dumps(payload), parent_event_id)
         event = Event(
             id=eid,
             topic=topic,
             payload=payload,
+            parent_event_id=parent_event_id,
             created_at=datetime.now(timezone.utc),
             bus=self,
         )
         handlers = self._subs.get(topic, [])
         if not handlers:
-            # No handlers: mark as ok immediately (no-op delivery)
-            self._db.bus_event_complete(eid, "ok", "<no_handler>")
+            self._db.event_log_complete(eid, "ok", "<no_handler>")
         else:
             for h in handlers:
                 self._pool.submit(self._run_handler, h, event)
@@ -122,28 +123,160 @@ class EventBus:
 
     def _run_handler(self, handler: Callable[[Event], None], event: Event) -> None:
         handler_name = getattr(handler, "__qualname__", repr(handler))
+        t0 = _time.time()
         try:
             handler(event)
-            self._db.bus_event_complete(event.id, "ok", handler_name)
+            elapsed = int((_time.time() - t0) * 1000)
+            self._db.event_log_complete(event.id, "ok", handler_name, elapsed_ms=elapsed)
         except Exception as exc:
+            elapsed = int((_time.time() - t0) * 1000)
             logger.error(
                 "handler %s | topic=%s failed: %s",
                 handler_name, event.topic, exc, exc_info=True,
             )
-            self._db.bus_event_complete(
-                event.id, "error", handler_name, str(exc)[:500]
+            self._db.event_log_complete(
+                event.id, "error", handler_name, str(exc)[:500], elapsed_ms=elapsed
             )
 
     def replay_pending(self) -> None:
         """On daemon startup: re-dispatch events stuck in 'pending' state (crash recovery)."""
-        pending = self._db.bus_events_pending()
+        pending = self._db.event_log_pending()
         if pending:
             logger.info("Replaying %d pending bus events", len(pending))
         for row in pending:
             self.publish(row["topic"], json.loads(row["payload"] or "{}"))
 
+    def wait_for_idle(self, *, min_event_id: int | None = None, timeout_sec: float = 30.0) -> bool:
+        deadline = _time.time() + max(0.1, timeout_sec)
+        while _time.time() < deadline:
+            pending = self._db.event_log_pending(min_id=min_event_id)
+            if not pending:
+                return True
+            _time.sleep(0.1)
+        return False
+
     def shutdown(self, wait: bool = True) -> None:
         self._pool.shutdown(wait=wait)
+
+
+# ── DAG bootstrap ──────────────────────────────────────────────────────────────
+
+def _make_dag_handler(
+    db: "TradeDB",
+    job_name: str,
+    emits: str | None,
+    stage: str,
+    data_root: str,
+) -> Callable[[Event], None]:
+    """Create a handler closure that runs a job, writes job_runs, and optionally emits."""
+    from trade_py.jobs import run_job
+
+    def handler(event: Event) -> None:
+        logger.info("dag: job=%s stage=%s topic=%s", job_name, stage, event.topic)
+        t0 = _time.time()
+        run_id = db.job_run_start(job_name, stage=stage, trigger_event_id=event.id)
+        try:
+            result = run_job(job_name, data_root)
+            elapsed = int((_time.time() - t0) * 1000)
+            db.job_run_finish(run_id, "ok", result_summary=result, elapsed_ms=elapsed)
+            logger.info("dag done: job=%s result=%s", job_name, result)
+            if emits:
+                event.bus.publish(emits, {"result": result}, parent_event_id=event.id)
+        except Exception as exc:
+            elapsed = int((_time.time() - t0) * 1000)
+            db.job_run_finish(run_id, "error",
+                              result_summary=str(exc)[:500], elapsed_ms=elapsed)
+            raise
+
+    handler.__name__ = job_name
+    handler.__qualname__ = f"dag.{stage}.{job_name}"
+    return handler
+
+
+def _make_agenda_handler(db: "TradeDB", data_root: str) -> Callable[[Event], None]:
+    """Handle claimed agenda rows by publishing a topic or running a single job."""
+    from trade_py.jobs import JOB_REGISTRY, run_job
+
+    def handler(event: Event) -> None:
+        payload = event.payload or {}
+        agenda_id = int(payload.get("agenda_id") or 0)
+        trigger_topic = str(payload.get("trigger_topic") or "").strip()
+        job_name = str(payload.get("job_name") or "").strip()
+        raw_payload = payload.get("payload_json")
+        if isinstance(raw_payload, str):
+            try:
+                action_payload = json.loads(raw_payload)
+            except Exception:
+                action_payload = {"raw_payload": raw_payload}
+        elif isinstance(raw_payload, dict):
+            action_payload = raw_payload
+        else:
+            action_payload = {}
+
+        if agenda_id:
+            db.agenda_queue_update_status(agenda_id, "running")
+
+        if trigger_topic:
+            event.bus.publish(trigger_topic, action_payload, parent_event_id=event.id)
+            if agenda_id:
+                db.agenda_queue_update_status(
+                    agenda_id, "done", result_summary=f"published {trigger_topic}"
+                )
+            return
+
+        if job_name:
+            stage = JOB_REGISTRY.get(job_name).stage if job_name in JOB_REGISTRY else "compute"
+            t0 = _time.time()
+            run_id = db.job_run_start(job_name, stage=stage, trigger_event_id=event.id)
+            try:
+                result = run_job(job_name, data_root)
+                elapsed = int((_time.time() - t0) * 1000)
+                db.job_run_finish(run_id, "ok", result_summary=result, elapsed_ms=elapsed)
+                if agenda_id:
+                    db.agenda_queue_update_status(agenda_id, "done", result_summary=result[:500])
+                logger.info("agenda done: job=%s agenda_id=%s result=%s", job_name, agenda_id, result)
+                return
+            except Exception as exc:
+                elapsed = int((_time.time() - t0) * 1000)
+                db.job_run_finish(
+                    run_id, "error", result_summary=str(exc)[:500], elapsed_ms=elapsed
+                )
+                if agenda_id:
+                    db.agenda_queue_update_status(
+                        agenda_id, "error", result_summary=str(exc)[:500]
+                    )
+                raise
+
+        if agenda_id:
+            db.agenda_queue_update_status(
+                agenda_id, "skipped", result_summary="no trigger_topic/job_name"
+            )
+
+    handler.__name__ = "agenda_due"
+    handler.__qualname__ = "agenda.dispatch"
+    return handler
+
+
+def bootstrap_from_dag(db: "TradeDB", data_root: str) -> "EventBus":
+    """Read pipeline_dag table, subscribe handlers for each enabled row.
+
+    This replaces the hardcoded handler registration in bus/handlers/*.py.
+    Returns the global EventBus singleton.
+    """
+    bus = get_bus(db)
+    rows = db.pipeline_dag_all(enabled_only=True)
+    for row in rows:
+        handler = _make_dag_handler(
+            db,
+            job_name=row["job_name"],
+            emits=row["emits"],
+            stage=row["stage"],
+            data_root=data_root,
+        )
+        bus.subscribe(row["source"], handler)
+    bus.subscribe(Topic.AGENDA_DUE, _make_agenda_handler(db, data_root))
+    logger.info("bootstrap_from_dag: subscribed %d handlers from pipeline_dag", len(rows))
+    return bus
 
 
 # ── Singleton accessor ─────────────────────────────────────────────────────────

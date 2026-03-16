@@ -93,7 +93,7 @@ def compute_feed_score(
         with PipelineDb(data_root) as db:
             rows = db._con.execute(
                 "SELECT status FROM ingest_runs "
-                "WHERE source_id = ? AND fetched_at >= TIMESTAMPTZ ?",
+                "WHERE source_id = ? AND fetched_at >= ?",
                 [source_id, cutoff],
             ).fetchall()
         if rows:

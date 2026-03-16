@@ -1,6 +1,7 @@
 """trade start — daemon entry point.
 
-Starts the EventBus with all handlers registered, then runs the scheduler loop.
+Starts the EventBus with all handlers registered via pipeline_dag,
+then runs the scheduler loop.
 
 Usage:
   trade start                     # run daemon (blocking)
@@ -23,7 +24,7 @@ _DATA_ROOT = str(default_data_root())
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade start",
-        description="启动 EventBus daemon（handler 注册 + 调度器）",
+        description="启动 EventBus daemon（DAG bootstrap + 调度器）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例:\n"
@@ -41,17 +42,15 @@ def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv or [])
 
     from trade_py.db.trade_db import TradeDB
-    from trade_py.bus import EventBus, Topic, get_bus
-    from trade_py.bus.handlers import market, sentiment, signals, report as rpt
+    from trade_py.bus import Topic, get_bus, bootstrap_from_dag
     from trade_py.report.scheduler import register_schedule
     import schedule
 
     db = TradeDB(args.data_root)
     bus = get_bus(db)
 
-    # Register all handlers
-    for mod in [market, sentiment, signals, rpt]:
-        mod.register(bus, args.data_root)
+    # Bootstrap handlers from pipeline_dag (replaces hardcoded handler registration)
+    bootstrap_from_dag(db, args.data_root)
 
     if args.dry_run:
         logger.info("=== DRY RUN: publishing all gate events ===")
@@ -64,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # Normal daemon mode
-    register_schedule(bus)
+    register_schedule(bus, db)
     logger.info("Daemon running (CST). Press Ctrl+C to stop.")
     try:
         while True:

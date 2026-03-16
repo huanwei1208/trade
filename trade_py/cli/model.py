@@ -31,90 +31,219 @@ def _events_from_sqlite(data_root: str) -> list:
 
 
 def _cmd_build_features(args: argparse.Namespace) -> int:
-    from trade_py.analysis.feature_builder import FeatureBuilder
+    from trade_py.analysis.propagation_runtime import build_training_feature_frame, save_feature_maps
 
     data_root = Path(args.data_root)
-    events = _events_from_sqlite(str(data_root))
-    if not events:
-        logger.error("No events in SQLite — run `trade run event sync` first")
-        return 1
-
-    import sqlite3 as _sqlite3
-    _SECTORS = [
-        "SW_Agriculture", "SW_Mining", "SW_Chemical", "SW_Steel",
-        "SW_NonFerrousMetal", "SW_Electronics", "SW_Auto",
-        "SW_HouseholdAppliance", "SW_FoodBeverage", "SW_Textile",
-        "SW_LightManufacturing", "SW_Medicine", "SW_Utilities",
-        "SW_Transportation", "SW_RealEstate", "SW_Commerce",
-        "SW_SocialService", "SW_Banking", "SW_NonBankFinancial",
-        "SW_Construction", "SW_BuildingMaterial", "SW_MechanicalEquipment",
-        "SW_Defense", "SW_Computer", "SW_Media", "SW_Telecom",
-        "SW_Environment", "SW_ElectricalEquipment", "SW_Beauty",
-        "SW_Coal", "SW_Petroleum",
-    ]
-    symbol_sector: dict[str, str] = {}
-    from trade_py.db.trade_db import _find_db_path
-    db_path = _find_db_path(data_root)
-    if db_path.exists():
-        try:
-            conn = _sqlite3.connect(str(db_path))
-            rows = conn.execute("SELECT symbol, industry FROM instruments").fetchall()
-            conn.close()
-            for sym, ind in rows:
-                idx = int(ind) if ind is not None else 0
-                symbol_sector[str(sym)] = _SECTORS[idx] if 0 <= idx < len(_SECTORS) else "SW_Unknown"
-        except Exception as exc:
-            logger.warning("Could not load industry from instruments DB: %s", exc)
-    if not symbol_sector:
-        logger.warning("No symbol→sector mapping found; all sectors will be SW_Unknown")
-
-    builder = FeatureBuilder(data_root)
-    df = builder.build_batch(events, symbol_sector)
+    df, maps = build_training_feature_frame(args.data_root)
     if df.empty:
-        logger.error("No features built — check kline data coverage")
+        logger.error("No features built — check event_propagations / signals / gold coverage")
         return 1
     out = data_root / "events" / "features.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
+    save_feature_maps(args.data_root, maps)
     logger.info("Saved %d feature rows to %s", len(df), out)
     return 0
 
 
 def _cmd_build_labels(args: argparse.Namespace) -> int:
-    from trade_py.analysis.label_builder import LabelBuilder
-    import duckdb
+    from trade_py.event import backfill_events
 
-    data_root = Path(args.data_root)
-    events = _events_from_sqlite(str(data_root))
-    if not events:
-        logger.error("No events in SQLite — run `trade run event sync` first")
-        return 1
-    kline_glob = str(data_root / "kline" / "**" / "*.parquet")
-    try:
-        con = duckdb.connect()
-        symbols = con.execute(
-            f"SELECT DISTINCT symbol FROM read_parquet('{kline_glob}', union_by_name=true)"
-        ).df()["symbol"].tolist()
-        con.close()
-    except Exception as exc:
-        logger.error("Cannot load symbol universe: %s", exc)
-        return 1
-    builder = LabelBuilder(data_root)
-    df = builder.build_batch(events, symbols)
-    if df.empty:
-        logger.error("No labels built")
-        return 1
-    logger.info("Saved %d label rows to %s", len(df), builder.save(df))
+    result = backfill_events(args.data_root)
+    logger.info("Label backfill result: %s", result)
     return 0
 
 
 def _cmd_train(args: argparse.Namespace) -> int:
-    from trade_py.analysis.model_trainer import PropagationModel
-    model = PropagationModel(Path(args.data_root))
-    model.load_data()
-    for target, score in model.train(n_cv_splits=args.cv).items():
-        logger.info("  %-25s %.4f", target, score)
-    logger.info("Models saved to %s", model.save())
+    from trade_py.analysis.propagation_training import train_models
+
+    try:
+        rows = train_models(
+            args.data_root,
+            backend=args.backend,
+            cv_splits=args.cv,
+            activate_backend=(args.activate_backend or "").replace("-", "_") or None,
+        )
+    except Exception as exc:
+        logger.error("Model training failed: %s", exc)
+        return 1
+
+    if not rows:
+        logger.warning("No models were trained")
+        return 0
+
+    for row in rows:
+        metrics = row.get("metrics", {})
+        promo = metrics.get("promotion_check", {}) if isinstance(metrics, dict) else {}
+        logger.info(
+            "trained id=%s target=%s backend=%s state=%s metric=%s eligible=%s",
+            row.get("id"),
+            row.get("target_name"),
+            row.get("backend"),
+            row.get("promotion_state"),
+            metrics.get("cv_metric"),
+            promo.get("eligible"),
+        )
+    return 0
+
+
+def _cmd_model_list(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
+
+    db = TradeDB(args.data_root)
+    rows = db.model_registry_list()
+    if args.target:
+        rows = [row for row in rows if str(row.get("target_name") or row.get("model_name")) == args.target]
+    if args.backend:
+        rows = [row for row in rows if str(row.get("backend") or "") == args.backend]
+    if not rows:
+        print("No models found")
+        return 0
+
+    print(f"{'id':<6} {'target':<18} {'backend':<12} {'state':<10} {'eligible':<8} {'trained_at':<20} file")
+    print("-" * 108)
+    for row in rows:
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        promo = metrics.get("promotion_check", {}) if isinstance(metrics, dict) else {}
+        print(
+            f"{str(row.get('id')):<6} "
+            f"{str(row.get('target_name') or row.get('model_name')):<18} "
+            f"{str(row.get('backend') or ''):<12} "
+            f"{str(row.get('promotion_state') or ('active' if row.get('is_active') else 'candidate')):<10} "
+            f"{str(bool(promo.get('eligible')) if promo else '—'):<8} "
+            f"{str(row.get('trained_at') or ''):<20} "
+            f"{str(row.get('file_path') or '')}"
+        )
+    return 0
+
+
+def _cmd_model_compare(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
+
+    db = TradeDB(args.data_root)
+    rows = db.model_registry_list()
+    if args.target:
+        rows = [row for row in rows if str(row.get("target_name") or row.get("model_name")) == args.target]
+    if args.backend:
+        rows = [row for row in rows if str(row.get("backend") or "") == args.backend]
+    if not rows:
+        print("No models found")
+        return 0
+
+    eval_rows = db.model_eval_list(args.eval_date)
+    eval_by_name = {
+        str(row.get("model_name") or ""): row
+        for row in eval_rows
+    }
+
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        target_name = str(row.get("target_name") or row.get("model_name") or "unknown")
+        grouped.setdefault(target_name, []).append(row)
+
+    for target_name in sorted(grouped):
+        print(f"[{target_name}]")
+        target_rows = grouped[target_name]
+        target_rows.sort(
+            key=lambda row: (
+                0 if str(row.get("promotion_state") or "") == "active" else 1,
+                -float((row.get("metrics") or {}).get("cv_metric") or -9999),
+                str(row.get("backend") or ""),
+                -int(row.get("id") or 0),
+            )
+        )
+        print(f"{'id':<6} {'backend':<12} {'state':<10} {'cv_metric':>10} {'cv_mae':>10} {'eligible':<8} trained_at")
+        print("-" * 86)
+        for row in target_rows:
+            metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+            promo = metrics.get("promotion_check", {}) if isinstance(metrics, dict) else {}
+            cv_metric = metrics.get("cv_metric")
+            cv_mae = metrics.get("cv_mae")
+            print(
+                f"{str(row.get('id')):<6} {str(row.get('backend') or ''):<12} "
+                f"{str(row.get('promotion_state') or ''):<10} "
+                f"{('—' if cv_metric is None else f'{float(cv_metric):.4f}'):>10} "
+                f"{('—' if cv_mae is None else f'{float(cv_mae):.4f}'):>10} "
+                f"{str(bool(promo.get('eligible')) if promo else '—'):<8} "
+                f"{str(row.get('trained_at') or '')}"
+            )
+        eval_row = eval_by_name.get(target_name)
+        if eval_row:
+            baseline = eval_row.get("baseline_json") if isinstance(eval_row.get("baseline_json"), dict) else {}
+            baseline_delta = baseline.get("baseline_delta") if isinstance(baseline, dict) else None
+            rank_ic = eval_row.get("rank_ic")
+            mae = eval_row.get("mae")
+            topk = eval_row.get("topk_hit_rate")
+            brier = eval_row.get("risk_brier_score")
+            print(
+                "active_eval:"
+                f" status={eval_row.get('status')}"
+                f" rank_ic={('—' if rank_ic is None else f'{float(rank_ic):.4f}')}"
+                f" mae={('—' if mae is None else f'{float(mae):.4f}')}"
+                f" topk={('—' if topk is None else f'{float(topk):.2%}')}"
+                f" brier={('—' if brier is None else f'{float(brier):.4f}')}"
+                f" baseline_delta={('—' if baseline_delta is None else f'{float(baseline_delta):.4f}')}"
+            )
+        print()
+    return 0
+
+
+def _cmd_model_promote(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
+
+    db = TradeDB(args.data_root)
+    candidate = db.model_registry_get(args.model_id)
+    if candidate is None:
+        logger.error("Model id %s not found", args.model_id)
+        return 1
+    metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
+    promo = metrics.get("promotion_check", {}) if isinstance(metrics, dict) else {}
+    if not args.force and not bool(promo.get("eligible")):
+        logger.error(
+            "Model id=%s is not promotion-eligible. pass_current=%s consecutive_passes=%s eligible=%s",
+            args.model_id,
+            promo.get("pass_current"),
+            promo.get("consecutive_passes"),
+            promo.get("eligible"),
+        )
+        return 1
+    row = db.model_registry_promote(args.model_id)
+    if row is None:
+        logger.error("Model id %s not found", args.model_id)
+        return 1
+    logger.info(
+        "Promoted model id=%s target=%s backend=%s",
+        row.get("id"),
+        row.get("target_name") or row.get("model_name"),
+        row.get("backend"),
+    )
+    return 0
+
+
+def _cmd_sync_factors(args: argparse.Namespace) -> int:
+    from trade_py.analysis.propagation_runtime import materialize_inference_factors
+
+    target_date, symbols, feature_cols = materialize_inference_factors(args.data_root, args.date)
+    if not target_date:
+        logger.error("No signals found; cannot materialize factors")
+        return 1
+    logger.info(
+        "Materialized %d symbols into factors for %s (%d features)",
+        symbols,
+        target_date,
+        len(feature_cols),
+    )
+    return 0
+
+
+def _cmd_sync_signals(args: argparse.Namespace) -> int:
+    from trade_py.analysis.propagation_runtime import sync_signal_predictions
+
+    target_date, updated = sync_signal_predictions(args.data_root, args.date)
+    if not target_date:
+        logger.error("No signals found; cannot sync model scores")
+        return 1
+    logger.info("Updated model scores for %d symbols on %s", updated, target_date)
     return 0
 
 
@@ -258,12 +387,63 @@ def make_parser() -> argparse.ArgumentParser:
 
     p_tr = sub.add_parser(
         "train",
-        description="训练 LightGBM 传导模型",
-        epilog="trade model train\ntrade model train --cv 10",
+        description="训练传播模型（LightGBM / XGBoost / CatBoost / tabular NN）",
+        epilog="trade model train\ntrade model train --backend all\ntrade model train --backend xgboost\ntrade model train --backend catboost",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_tr.add_argument("--data-root", default=str(default_data_root()))
     p_tr.add_argument("--cv", type=int, default=5)
+    p_tr.add_argument("--backend", default="all", choices=["all", "lgbm", "xgboost", "catboost", "tabular-nn"])
+    p_tr.add_argument("--activate-backend", default=None, choices=["lgbm", "xgboost", "catboost", "tabular_nn", "tabular-nn"])
+
+    p_ml = sub.add_parser(
+        "list",
+        description="列出已注册模型及状态",
+        epilog="trade model list\ntrade model list --target kg_return_5d",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_ml.add_argument("--data-root", default=str(default_data_root()))
+    p_ml.add_argument("--target", default=None)
+    p_ml.add_argument("--backend", default=None)
+
+    p_cmp = sub.add_parser(
+        "compare",
+        description="对比 active / candidate 模型及最新评估",
+        epilog="trade model compare\ntrade model compare --target kg_return_5d",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_cmp.add_argument("--data-root", default=str(default_data_root()))
+    p_cmp.add_argument("--target", default=None)
+    p_cmp.add_argument("--backend", default=None)
+    p_cmp.add_argument("--eval-date", default=None)
+
+    p_mp = sub.add_parser(
+        "promote",
+        description="将候选模型提升为 active",
+        epilog="trade model promote --model-id 12",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_mp.add_argument("--data-root", default=str(default_data_root()))
+    p_mp.add_argument("--model-id", type=int, required=True)
+    p_mp.add_argument("--force", action="store_true", help="忽略晋级门槛，强制切换 active")
+
+    p_sf = sub.add_parser(
+        "sync-factors",
+        description="把推理所需的传播特征落到 factors 表",
+        epilog="trade model sync-factors\ntrade model sync-factors --date 2026-03-12",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_sf.add_argument("--data-root", default=str(default_data_root()))
+    p_sf.add_argument("--date", default=None)
+
+    p_ss = sub.add_parser(
+        "sync-signals",
+        description="用当前活跃模型批量回写 signals.model_*",
+        epilog="trade model sync-signals\ntrade model sync-signals --date 2026-03-12",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_ss.add_argument("--data-root", default=str(default_data_root()))
+    p_ss.add_argument("--date", default=None)
 
     p_nlp = sub.add_parser(
         "nlp-train",
@@ -325,6 +505,11 @@ def main(argv: list[str] | None = None) -> int:
         "build-features": _cmd_build_features,
         "build-labels":   _cmd_build_labels,
         "train":          _cmd_train,
+        "list":           _cmd_model_list,
+        "compare":        _cmd_model_compare,
+        "promote":        _cmd_model_promote,
+        "sync-factors":   _cmd_sync_factors,
+        "sync-signals":   _cmd_sync_signals,
         "predict":        _cmd_predict,
         "report":         _cmd_model_report,
     }.get(args.command, lambda _: 1)(args)

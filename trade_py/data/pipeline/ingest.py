@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 from datetime import datetime, date, timezone, timedelta
@@ -51,6 +52,45 @@ def _load_existing_hashes(data_root: Path, source_id: str,
             hashes.update(df["content_hash"].dropna().tolist())
         cur += timedelta(days=1)
     return hashes
+
+
+def _meta_cell(value):
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return ",".join(str(item) for item in value)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _record_to_row(record: RawRecord) -> dict:
+    row = {
+        "source": record.source_id,
+        "url": record.url,
+        "title": record.title,
+        "text": record.text,
+        "published_at": record.published_at.isoformat(),
+        "content_hash": record.content_hash,
+    }
+    if not isinstance(record.meta, dict) or not record.meta:
+        return row
+    row["meta_json"] = json.dumps(record.meta, ensure_ascii=False, sort_keys=True)
+    for meta_key, column in {
+        "feed_name": "feed_name",
+        "catalog": "feed_catalog",
+        "driver": "driver",
+        "provider_kind": "provider_kind",
+        "provider_family": "provider_family",
+        "region": "region",
+        "language": "language",
+        "auth_mode": "auth_mode",
+        "lane": "lane",
+        "fetch_window_policy": "fetch_window_policy",
+    }.items():
+        if meta_key in record.meta:
+            row[column] = _meta_cell(record.meta.get(meta_key))
+    return row
 
 
 def ingest(
@@ -126,14 +166,7 @@ def ingest(
         d = r.published_at.astimezone(CST).date()
         if d < since_date or d > until_date:
             continue
-        by_date[d].append({
-            "source": r.source_id,
-            "url": r.url,
-            "title": r.title,
-            "text": r.text,
-            "published_at": r.published_at.isoformat(),
-            "content_hash": r.content_hash,
-        })
+        by_date[d].append(_record_to_row(r))
 
     total_new = 0
     bronze_counts: dict[str, dict[str, int]] = {}

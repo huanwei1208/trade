@@ -92,6 +92,15 @@ def _load_watchlist_signals(data_root: str, date_str: str) -> list[dict]:
         return []
 
 
+def _load_quality_gate(data_root: str, date_str: str) -> dict | None:
+    try:
+        from trade_py.db.trade_db import TradeDB
+
+        return TradeDB(data_root).quality_gate_get(date_str)
+    except Exception:
+        return None
+
+
 def _load_recent_events(data_root: str, limit: int = 3) -> list[dict]:
     """Load recent events from the events table."""
     try:
@@ -262,10 +271,47 @@ def build_brief_markdown(
     digest: str,
     sentiment_ctx: dict | None = None,
     recent_events: list[dict] | None = None,
+    quality_gate: dict | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# 今日作战简报 {date_str}")
     lines.append("")
+
+    if quality_gate:
+        status = quality_gate.get("status", "unknown")
+        metrics = quality_gate.get("metrics_json") or {}
+        reasons = quality_gate.get("reasons_json") or []
+        latest_reasons = metrics.get("latest_reasons") or []
+        matured_reasons = metrics.get("matured_reasons") or []
+        status_label = {
+            "ok": "可用",
+            "degraded": "降级",
+            "partial": "部分可用",
+            "blocked_by_dependency": "依赖缺失",
+            "error": "异常",
+        }.get(status, status)
+        lines.append("## 质量状态")
+        lines.append("")
+        lines.append(f"**状态：** `{status_label}`")
+        if metrics:
+            lines.append(f"**运行视角：** `{metrics.get('operational_status', '—')}`")
+            lines.append(f"**研究视角：** `{metrics.get('research_status', '—')}`")
+        if reasons:
+            lines.append("")
+            lines.append("**主要原因：**")
+            for reason in reasons[:5]:
+                lines.append(f"- {reason}")
+        if latest_reasons:
+            lines.append("")
+            lines.append("**最新链路：**")
+            for reason in latest_reasons[:3]:
+                lines.append(f"- {reason}")
+        if matured_reasons:
+            lines.append("")
+            lines.append("**成熟窗口：**")
+            for reason in matured_reasons[:3]:
+                lines.append(f"- {reason}")
+        lines.append("")
 
     # Macro environment
     lines.append("## 宏观环境")
@@ -447,10 +493,12 @@ def generate(
     digest = _generate_intelligence_digest(headlines, api_key)
     sentiment_ctx = _load_sentiment_context(data_root, date_str)
     recent_events = _load_recent_events(data_root, limit=3)
+    quality_gate = _load_quality_gate(data_root, date_str)
 
     # Build markdown
     md = build_brief_markdown(date_str, ca, env_score, signals, decisions, digest,
-                              sentiment_ctx=sentiment_ctx, recent_events=recent_events)
+                              sentiment_ctx=sentiment_ctx, recent_events=recent_events,
+                              quality_gate=quality_gate)
 
     # Save
     out_dir = Path(data_root) / "briefs"

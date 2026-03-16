@@ -63,12 +63,18 @@ def _compute_signal_strength(sym_df: pd.DataFrame) -> float:
     # 4. Mean LLM confidence (minor corrective term)
     conf_mean = (float(sym_df["confidence"].mean())
                  if "confidence" in sym_df.columns else 0.5)
+    noise_penalty = (
+        1.0 - float(sym_df["base_noise_score"].mean())
+        if "base_noise_score" in sym_df.columns and len(sym_df) > 0
+        else 1.0
+    )
 
     strength = (
         vol_score      * 0.40
         + diversity_score * 0.25
         + consensus_score * 0.25
-        + conf_mean       * 0.10
+        + conf_mean       * 0.05
+        + noise_penalty   * 0.05
     )
     return round(strength, 4)
 
@@ -97,6 +103,12 @@ def aggregate(data_root: Path, target_date: date,
         target_df = con.execute(f"""
             SELECT symbol, date, sentiment_score, sentiment_label,
                    event_magnitude, confidence,
+                   COALESCE(base_sentiment_score, sentiment_score, 0.0) AS base_sentiment_score,
+                   COALESCE(base_event_magnitude, event_magnitude, 0.0) AS base_event_magnitude,
+                   COALESCE(base_policy_signal, FALSE) AS base_policy_signal,
+                   COALESCE(base_entity_density, 0.0) AS base_entity_density,
+                   COALESCE(base_novelty_score, 1.0) AS base_novelty_score,
+                   COALESCE(base_noise_score, 0.0) AS base_noise_score,
                    COALESCE(source, 'unknown') AS source
             FROM read_parquet('{silver_glob}', union_by_name=true)
             WHERE date = '{target_date.isoformat()}'
@@ -108,7 +120,8 @@ def aggregate(data_root: Path, target_date: date,
 
         from_date = (pd.Timestamp(target_date) - pd.Timedelta(days=lookback_days)).date()
         history_df = con.execute(f"""
-            SELECT symbol, date, sentiment_score, sentiment_label
+            SELECT symbol, date, sentiment_score, sentiment_label,
+                   COALESCE(base_sentiment_score, sentiment_score, 0.0) AS base_sentiment_score
             FROM read_parquet('{silver_glob}', union_by_name=true)
             WHERE date >= '{from_date.isoformat()}'
               AND date <= '{target_date.isoformat()}'
@@ -140,6 +153,8 @@ def aggregate(data_root: Path, target_date: date,
         hist_scores = sym_hist["sentiment_score"].values
         hist_mean = float(np.mean(hist_scores)) if len(hist_scores) > 0 else 0.0
         sent_velocity = mean_score - hist_mean
+        hist_base_scores = sym_hist["base_sentiment_score"].values if "base_sentiment_score" in sym_hist.columns else hist_scores
+        hist_base_mean = float(np.mean(hist_base_scores)) if len(hist_base_scores) > 0 else 0.0
 
         neg_frac_today = float(neg / total) if total > 0 else 0.0
         hist_labels = sym_hist["sentiment_label"].values
@@ -148,6 +163,12 @@ def aggregate(data_root: Path, target_date: date,
             if len(hist_labels) > 0 else 0.0
         )
         neg_shock = neg_frac_today - hist_neg_frac
+        hist_daily_counts = sym_hist.groupby("date").size()
+        hist_avg_count = float(hist_daily_counts.mean()) if not hist_daily_counts.empty else float(total)
+        n_sources = sym_today["source"].nunique() if "source" in sym_today.columns else 1
+        base_scores = sym_today["base_sentiment_score"].to_numpy(dtype=float) if "base_sentiment_score" in sym_today.columns else scores
+        volume_burst = float(total / max(hist_avg_count, 1.0))
+        cross_source_confirmation = float(min(1.0, n_sources / max(1.0, min(float(total), 3.0))))
 
         gold_rows.append({
             "date": target_date.isoformat(),
@@ -160,6 +181,15 @@ def aggregate(data_root: Path, target_date: date,
             "event_magnitude": float(sym_today["event_magnitude"].max()),
             "confidence": float(sym_today["confidence"].mean()),
             "signal_strength": _compute_signal_strength(sym_today),
+            "bf_net_sentiment": float(np.mean(base_scores)) if len(base_scores) > 0 else 0.0,
+            "bf_sent_velocity": float((np.mean(base_scores) if len(base_scores) > 0 else 0.0) - hist_base_mean),
+            "bf_event_strength": float(sym_today["base_event_magnitude"].max()) if "base_event_magnitude" in sym_today.columns else float(sym_today["event_magnitude"].max()),
+            "bf_policy_intensity": float(pd.to_numeric(sym_today.get("base_policy_signal", pd.Series([0] * len(sym_today))), errors="coerce").fillna(0.0).mean()),
+            "bf_entity_density": float(pd.to_numeric(sym_today.get("base_entity_density", pd.Series([0.0] * len(sym_today))), errors="coerce").fillna(0.0).mean()),
+            "bf_novelty": float(pd.to_numeric(sym_today.get("base_novelty_score", pd.Series([1.0] * len(sym_today))), errors="coerce").fillna(1.0).mean()),
+            "bf_volume_burst": volume_burst,
+            "bf_cross_source_confirmation": cross_source_confirmation,
+            "bf_noise_penalty": 1.0 - float(pd.to_numeric(sym_today.get("base_noise_score", pd.Series([0.0] * len(sym_today))), errors="coerce").fillna(0.0).mean()),
         })
 
     if gold_rows:

@@ -5,6 +5,7 @@
     "rss_feeds": "auto",
     "fetch_mode": "range",
     "rss_incremental_lookback_days": 2,
+    "chunk": "auto",
     "all_range_dates": true,
     "no_rss_prefetch": false,
     "enable_backfill": true,
@@ -12,6 +13,11 @@
     "backfill_max_records_per_channel": 250,
     "rsshub_probe_timeout": 8.0,
     "rsshub_probe_retries": 5,
+    "rss_max_workers": 6,
+    "rss_fetch_timeout": 20,
+    "rss_fetch_retries": 2,
+    "show_source_diagnostics": false,
+    "semantic_mode": "hybrid",
     "llm_provider": "ollama",
     "llm_model": "qwen2.5:7b-instruct",
     "ollama_base_url": "http://127.0.0.1:11434",
@@ -20,7 +26,7 @@
   },
   "kline": {
     "mode": "incremental",
-    "start": "2020-01-01",
+    "start": "2024-01-01",
     "adjust": "hfq",
     "provider": "auto",
     "delay_ms": 300

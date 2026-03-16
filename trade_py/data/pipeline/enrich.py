@@ -48,6 +48,7 @@ def enrich(
     sources: list[str],
     client,
     db: PipelineDb,
+    semantic_mode: str = "hybrid",
     dry_run: bool = False,
     force: bool = False,
 ) -> dict:
@@ -83,8 +84,11 @@ def enrich(
                 "analysed": 0, "silver_rows": 0, "mode": "dry_run"}
 
     # Determine which hashes are already enriched (incremental cache)
+    llm_enabled = client is not None and semantic_mode in {"hybrid", "llm"}
     all_hashes = [r["content_hash"] for r in bronze_rows if r["content_hash"]]
-    already_enriched = set() if force else db.get_enriched_hashes(all_hashes)
+    already_enriched = set()
+    if llm_enabled and not force:
+        already_enriched = db.get_enriched_hashes(all_hashes)
 
     silver_df, newly_enriched = build_silver_rows(
         bronze_rows=bronze_rows,
@@ -92,6 +96,7 @@ def enrich(
         client=client,
         data_root=data_root,
         already_enriched=already_enriched,
+        semantic_mode=semantic_mode,
     )
 
     if not silver_df.empty:
@@ -102,7 +107,7 @@ def enrich(
                     article_date, len(silver_df), path)
 
     # Mark newly enriched in DB
-    model = getattr(client, "model", "")
+    model = getattr(client, "model", "") if llm_enabled else "base"
     if newly_enriched:
         db.mark_enriched_batch(newly_enriched, model=model)
 
@@ -112,5 +117,6 @@ def enrich(
         "analysed": len(newly_enriched),
         "silver_rows": len(silver_df),
         "model": model,
+        "semantic_mode": semantic_mode,
         "force": force,
     }

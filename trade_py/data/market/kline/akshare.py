@@ -18,7 +18,7 @@ Usage:
     fetcher = KlineFetcher("data")
     fetcher.fetch_instruments()
     fetcher.update("600000.SH")
-    fetcher.update_all(start_fallback="2020-01-01")
+    fetcher.update_all()
 """
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from typing import Optional
 import pandas as pd
 
 from trade_py.db.instruments_db import InstrumentsDB
+from trade_py.utils.a_share_symbols import ensure_a_share_symbol, infer_a_share_suffix
 from trade_py.utils.retry import retry
 
 logger = logging.getLogger(__name__)
@@ -68,25 +69,12 @@ def _to_akshare_code(symbol: str) -> str:
 
 
 def _infer_suffix(code: str) -> str:
-    """Infer exchange suffix from 6-digit stock code.
-
-    Rules:
-        6/9 → Shanghai (.SH)
-        0/2/3 → Shenzhen (.SZ)
-        4/8 → Beijing (.BJ)
-    """
-    if code.startswith(("6", "9")):
-        return ".SH"
-    if code.startswith(("4", "8")):
-        return ".BJ"
-    return ".SZ"
+    return infer_a_share_suffix(code)
 
 
 def _ensure_symbol(code_or_symbol: str) -> str:
     """Return a canonical symbol with suffix (e.g. '600000.SH')."""
-    if "." in code_or_symbol:
-        return code_or_symbol
-    return code_or_symbol + _infer_suffix(code_or_symbol)
+    return ensure_a_share_symbol(code_or_symbol)
 
 
 class KlineFetcher:
@@ -257,7 +245,7 @@ class KlineFetcher:
     def update(
         self,
         symbol: str,
-        start_fallback: str = "2020-01-01",
+        start_fallback: str | None = None,
         adjust: str = "hfq",
     ) -> int:
         """Incrementally fetch new bars for one symbol and persist to Parquet.
@@ -266,7 +254,7 @@ class KlineFetcher:
 
         Args:
             symbol:         Stock symbol e.g. "600000.SH"
-            start_fallback: Date to use when no watermark exists
+            start_fallback: Date to use when no watermark exists. None => read settings.kline.start
             adjust:         akshare price adjustment mode
 
         Returns:
@@ -278,7 +266,7 @@ class KlineFetcher:
             # Start from the day after the last watermark
             fetch_start = (wm + timedelta(days=1)).isoformat()
         else:
-            fetch_start = start_fallback
+            fetch_start = str(self._db.get("kline.start", None) or start_fallback or "2024-01-01")
 
         today = date.today().isoformat()
         if fetch_start > today:
@@ -307,14 +295,14 @@ class KlineFetcher:
     def update_all(
         self,
         symbols: Optional[list[str]] = None,
-        start_fallback: str = "2020-01-01",
+        start_fallback: str | None = None,
         delay_ms: int = 200,
     ) -> dict[str, int]:
         """Incrementally update all (or specified) symbols.
 
         Args:
             symbols:        List of symbols to update (defaults to all in DB)
-            start_fallback: Fallback start date for symbols with no watermark
+            start_fallback: Fallback start date for symbols with no watermark. None => read settings.kline.start
             delay_ms:       Delay in milliseconds between requests (rate limiting)
 
         Returns:

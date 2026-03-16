@@ -5,6 +5,7 @@ import argparse
 from trade_py.config import default_data_root
 from trade_py.data.account.repository import AccountRepository
 from trade_py.data.account.service import AccountService
+from trade_py.db.trade_db import TradeDB
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -61,14 +62,14 @@ def make_parser() -> argparse.ArgumentParser:
 
     p_suggest = sub.add_parser(
         "suggest",
-        description="按 model_score（或 window_score）推荐候选股票",
+        description="按 model_score / window_score / event_kg_score 推荐候选股票",
         epilog="trade account suggest --limit 20 --by model_score",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_suggest.add_argument("--limit", type=int, default=20, help="最多推荐数量（默认 20）")
     p_suggest.add_argument(
         "--by",
-        choices=["model_score", "window_score"],
+        choices=["model_score", "window_score", "event_kg_score"],
         default="model_score",
         help="排序依据（默认 model_score）",
     )
@@ -131,18 +132,47 @@ def main(argv: list[str] | None = None) -> int:
         from trade_py.db.settings_db import SettingsDB
         from trade_py.data.market.index.tushare import SW_SECTOR_INDICES
         db = SettingsDB(args.data_root)
+        gate_db = TradeDB(args.data_root)
+        gate = gate_db.quality_gate_get()
         rows = db.signal_cache_suggest(
             limit=args.limit,
             by=args.by,
             sector_limit=args.sector_limit,
         )
         if not rows:
-            score_label = "model_score" if args.by == "model_score" else "window_score"
+            score_label = {
+                "model_score": "model_score",
+                "window_score": "window_score",
+                "event_kg_score": "event_kg_score",
+            }.get(args.by, "model_score")
             print(f"暂无候选（{score_label} 为空）。请先运行模型推理或窗口评分。")
             return 0
         # Build sw_idx → name map
         sw_idx_name: dict[int, str] = {sw_idx: name for _, (name, sw_idx) in SW_SECTOR_INDICES.items()}
-        score_label = "模型评分" if args.by == "model_score" else "窗口质量"
+        score_label = {
+            "model_score": "模型评分",
+            "window_score": "窗口质量",
+            "event_kg_score": "事件分数",
+        }.get(args.by, "模型评分")
+        if gate:
+            status = gate.get("status", "unknown")
+            eval_date = gate.get("eval_date", "—")
+            metrics = gate.get("metrics_json") or {}
+            latest_reasons = metrics.get("latest_reasons") or []
+            matured_reasons = metrics.get("matured_reasons") or []
+            print(
+                f"质量状态: {status}  ({eval_date})"
+                f"  operational={metrics.get('operational_status', '—')}"
+                f"  research={metrics.get('research_status', '—')}"
+            )
+            if latest_reasons:
+                print("最新链路: " + " | ".join(str(reason) for reason in latest_reasons[:2]))
+            if matured_reasons:
+                print("成熟窗口: " + " | ".join(str(reason) for reason in matured_reasons[:2]))
+            print()
+        else:
+            print("质量状态: 未评估。建议先运行 `trade evaluate daily`。")
+            print()
         print(f"\n{'股票':<14}  {score_label:>8}  {'风险%':>6}  {'窗口质量':>8}  {'板块'}")
         print("─" * 60)
         for r in rows:
@@ -150,9 +180,19 @@ def main(argv: list[str] | None = None) -> int:
             ms    = r.get("model_score")
             mr    = r.get("model_risk")
             ws    = r.get("window_score")
+            es    = r.get("event_kg_score")
             ind   = r.get("industry", 255)
             sector_name = sw_idx_name.get(ind, "未知")
-            ms_str = f"{ms:.1f}" if ms is not None else "  —  "
+            primary_score = {
+                "model_score": ms,
+                "window_score": ws,
+                "event_kg_score": es,
+            }.get(args.by)
+            ms_str = (
+                f"{float(primary_score):.3f}" if args.by == "event_kg_score" and primary_score is not None
+                else f"{float(primary_score):.1f}" if primary_score is not None
+                else "  —  "
+            )
             mr_str = f"{mr:.1%}" if mr is not None else " — "
             ws_str = f"{ws}" if ws is not None else "—"
             print(f"{sym:<14}  {ms_str:>8}  {mr_str:>6}  {ws_str:>8}  {sector_name}")

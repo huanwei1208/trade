@@ -23,7 +23,7 @@ _DATASETS = {
     "ppi": ("cn_ppi",  "ppi_yoy",    "month"),
     "pmi": ("cn_pmi",  "mfg_pmi",    "month"),
 }
-_DATE_FALLBACKS = ("ann_date", "month", "year")
+_DATE_FALLBACKS = ("ann_date", "month", "year", "quarter")
 
 
 class MacroFetcher:
@@ -49,6 +49,16 @@ class MacroFetcher:
         lookup = {str(col).lower(): str(col) for col in raw.columns}
         return lookup.get(preferred.lower())
 
+    @staticmethod
+    def _normalise_dates(raw: pd.DataFrame, actual_col: str) -> pd.Series:
+        values = raw[actual_col].astype(str).str.strip().str.upper()
+        if values.str.fullmatch(r"\d{4}Q[1-4]").all():
+            periods = pd.PeriodIndex(values, freq="Q")
+            return periods.to_timestamp(how="end").normalize()
+        if values.str.len().max() == 4:
+            return pd.to_datetime(values + "0101", format="%Y%m%d", errors="coerce")
+        return pd.to_datetime(values + "01", format="%Y%m%d", errors="coerce")
+
     def fetch_and_save(self, name: str) -> pd.DataFrame:
         if name not in _DATASETS:
             raise ValueError(f"Unknown macro dataset: {name!r}. Choose from {list(_DATASETS)}")
@@ -73,12 +83,7 @@ class MacroFetcher:
             logger.warning("MacroFetcher: no date column (tried %r + fallbacks) in %s. Columns: %s",
                            date_col, name, list(raw.columns))
             return self.load(name)
-        s = raw[actual_col].astype(str)
-        if s.str.len().max() == 4:
-            # year only → YYYY-01-01
-            raw["date"] = pd.to_datetime(s + "0101", format="%Y%m%d", errors="coerce")
-        else:
-            raw["date"] = pd.to_datetime(s + "01", format="%Y%m%d", errors="coerce")
+        raw["date"] = self._normalise_dates(raw, actual_col)
 
         raw = raw.sort_values("date").reset_index(drop=True)
         raw["date"] = raw["date"].dt.strftime("%Y-%m-%d")
