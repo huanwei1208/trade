@@ -13,6 +13,7 @@ _DATA_ROOT = str(default_data_root())
 _TARGET_TOPICS = {
     "morning": "gate.morning",
     "intraday": "gate.intraday",
+    "realtime": "gate.intraday",
     "pre-market": "gate.pre_market",
     "signal-am": "gate.signal_am",
     "report": "gate.report",
@@ -23,6 +24,12 @@ _TARGET_TOPICS = {
     "fundamental-weekly": "gate.fundamental_weekly",
     "macro-weekly": "gate.macro_weekly",
     "model-weekly": "gate.model_weekly",
+}
+
+_WORKFLOWS = {
+    "open": ["morning", "pre-market", "signal-am", "report"],
+    "close": ["market-close", "evening", "event-extract"],
+    "sync": ["calendar_sync", "planned_event_sync"],
 }
 
 
@@ -36,6 +43,9 @@ def make_parser() -> argparse.ArgumentParser:
             "  trade run morning\n"
             "  trade run intraday\n"
             "  trade run agenda\n"
+            "  trade run open\n"
+            "  trade run close\n"
+            "  trade run sync\n"
             "  trade run calendar_sync\n"
             "  trade run planned_event_sync\n"
             "  trade run all"
@@ -58,47 +68,59 @@ def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv or [])
     target = str(args.target).strip()
 
-    if target == "all":
-        return start_cli.main(["--data-root", args.data_root, "--dry-run"])
+    def _run_one(name: str) -> int:
+        if name == "all":
+            return start_cli.main(["--data-root", args.data_root, "--dry-run"])
 
-    if target == "agenda":
-        db = TradeDB(args.data_root)
-        bus = get_bus(db)
-        bootstrap_from_dag(db, args.data_root)
-        recent = db.event_log_recent(limit=1)
-        min_event_id = (int(recent[0]["id"]) + 1) if recent else 1
-        count = drain_due_agenda(bus, db, limit=args.limit)
-        if count:
-            bus.wait_for_idle(min_event_id=min_event_id, timeout_sec=30.0)
-        bus.shutdown(wait=True)
-        print(f"已派发 {count} 条到期 agenda")
+        if name == "agenda":
+            db = TradeDB(args.data_root)
+            bus = get_bus(db)
+            bootstrap_from_dag(db, args.data_root)
+            recent = db.event_log_recent(limit=1)
+            min_event_id = (int(recent[0]["id"]) + 1) if recent else 1
+            count = drain_due_agenda(bus, db, limit=args.limit)
+            if count:
+                bus.wait_for_idle(min_event_id=min_event_id, timeout_sec=30.0)
+            bus.shutdown(wait=True)
+            print(f"已派发 {count} 条到期 agenda")
+            return 0
+
+        topic = _TARGET_TOPICS.get(name)
+        if topic:
+            return event_cli.main([
+                "trigger", topic,
+                "--data-root", args.data_root,
+                "--payload", args.payload,
+            ])
+
+        if name in JOB_REGISTRY:
+            return event_cli.main([
+                "run", name,
+                "--data-root", args.data_root,
+            ])
+
+        if "." in name:
+            return event_cli.main([
+                "trigger", name,
+                "--data-root", args.data_root,
+                "--payload", args.payload,
+            ])
+
+        logger.error("Unknown run target: %s", name)
+        print(
+            "未知 target。可用高层事件: "
+            + ", ".join(sorted(_TARGET_TOPICS))
+            + "; workflow: "
+            + ", ".join(sorted(_WORKFLOWS))
+            + "; 特殊值: agenda, all; 或直接传 job 名"
+        )
+        return 2
+
+    if target in _WORKFLOWS:
+        for name in _WORKFLOWS[target]:
+            rc = _run_one(name)
+            if rc != 0:
+                return rc
         return 0
 
-    topic = _TARGET_TOPICS.get(target)
-    if topic:
-        return event_cli.main([
-            "trigger", topic,
-            "--data-root", args.data_root,
-            "--payload", args.payload,
-        ])
-
-    if target in JOB_REGISTRY:
-        return event_cli.main([
-            "run", target,
-            "--data-root", args.data_root,
-        ])
-
-    if "." in target:
-        return event_cli.main([
-            "trigger", target,
-            "--data-root", args.data_root,
-            "--payload", args.payload,
-        ])
-
-    logger.error("Unknown run target: %s", target)
-    print(
-        "未知 target。可用高层事件: "
-        + ", ".join(sorted(_TARGET_TOPICS))
-        + "; 特殊值: agenda, all; 或直接传 job 名"
-    )
-    return 2
+    return _run_one(target)

@@ -24,6 +24,14 @@ print_help() {
   echo "  ./trade serve <args>       启动 Web UI / 在线服务"
   echo ""
   echo "快捷命令 (bash 层):"
+  echo "  ./trade morning            →  trade run morning"
+  echo "  ./trade intraday           →  trade run intraday"
+  echo "  ./trade evening            →  trade run evening"
+  echo "  ./trade agenda [args]      →  trade run agenda [args]"
+  echo "  ./trade open               →  trade run open"
+  echo "  ./trade close              →  trade run close"
+  echo "  ./trade sync               →  trade run sync"
+  echo "  ./trade dag [args]         →  trade inspect dag [args]"
   echo "  ./trade sentiment [args]   →  trade data sentiment [args]"
   echo "  ./trade brief [args]       →  trade report brief [args]"
   echo "  ./trade schedule [args]    →  trade report schedule [args]"
@@ -186,6 +194,8 @@ main() {
   local sub="${1:-help}"
   shift || true
   case "$sub" in
+    morning|intraday|evening|agenda|open|close|sync) cmd_trade_py_domain run "$sub" "$@" ;;
+    dag) cmd_trade_py_domain inspect dag "$@" ;;
     run) cmd_trade_py_domain run "$@" ;;
     status) cmd_trade_py_domain status "$@" ;;
     inspect) cmd_trade_py_domain inspect "$@" ;;
