@@ -33,6 +33,11 @@ from threading import Lock
 from typing import Any
 
 try:  # pragma: no cover - optional at import time
+    from fastapi import Request as FastAPIRequest
+except Exception:  # pragma: no cover - fastapi missing outside web usage
+    FastAPIRequest = Any
+
+try:  # pragma: no cover - optional at import time
     from fastapi import BackgroundTasks as FastAPIBackgroundTasks
 except Exception:  # pragma: no cover - fastapi missing outside web usage
     FastAPIBackgroundTasks = Any
@@ -98,7 +103,7 @@ def _hive_status(*, lag_days: int | None = None, coverage_pct: float | None = No
 def create_app():
     """FastAPI app factory (used by uvicorn --factory)."""
     try:
-        from fastapi import Body, FastAPI, HTTPException, Request
+        from fastapi import Body, FastAPI, HTTPException
         from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
@@ -941,7 +946,7 @@ def create_app():
         )
 
     @app.get("/api/events/stream")
-    async def stream_events(request: Request, after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):
+    async def stream_events(request: FastAPIRequest, after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):
         async def _gen():
             last_id = max(0, int(after_id))
             try:
