@@ -1094,6 +1094,9 @@ let activeTab = 'overview';
 let workflowCache = [];
 let selectedWorkflowId = null;
 let locale = localStorage.getItem('trade_locale') || 'zh-CN';
+let eventStream = null;
+let liveEventRows = [];
+let refreshTimer = null;
 
 function t(key, fallback = '') {
   return (I18N[locale] && I18N[locale][key]) || I18N['zh-CN'][key] || fallback || key;
@@ -1249,6 +1252,61 @@ function buildRootCauseBreadcrumb(detail) {
     cursor = row.parent_event_id;
   }
   return chain;
+}
+
+function renderOverviewEvents(rows) {
+  const list = rows || [];
+  document.getElementById('overview-events').innerHTML = list.length ? list.map((row) => `
+    <tr>
+      <td>${escapeHtml(row.id)}</td>
+      <td>${badgeHtml(row.status, row.status || '-')}</td>
+      <td class="mono">${escapeHtml(row.topic || '-')}</td>
+      <td>${escapeHtml(row.handler || '-')}</td>
+      <td class="mono">${fmtDateTime(row.created_at)}</td>
+      <td>${escapeHtml(String(row.error || '').slice(0, 120) || '-')}</td>
+    </tr>
+  `).join('') : `<tr><td colspan="6" class="empty">${escapeHtml(t('noEvents'))}</td></tr>`;
+}
+
+function scheduleRefresh(delayMs = 1800) {
+  if (refreshTimer != null) return;
+  refreshTimer = window.setTimeout(() => {
+    refreshTimer = null;
+    if (!document.hidden) {
+      refreshActiveTab();
+    }
+  }, delayMs);
+}
+
+function startEventStream() {
+  if (eventStream) return;
+  eventStream = new EventSource('/api/events/stream');
+  eventStream.onmessage = (event) => {
+    try {
+      const row = JSON.parse(event.data);
+      liveEventRows = [row, ...liveEventRows.filter((item) => item.id !== row.id)].slice(0, 18);
+      if (activeTab === 'overview') {
+        renderOverviewEvents(liveEventRows);
+      }
+      if (
+        String(row.status || '') === 'error' ||
+        String(row.topic || '').startsWith('gate.') ||
+        activeTab === 'workflows' ||
+        activeTab === 'dag'
+      ) {
+        scheduleRefresh();
+      }
+    } catch (err) {
+      console.error('event stream parse failed', err);
+    }
+  };
+  eventStream.onerror = () => {
+    if (eventStream) {
+      eventStream.close();
+      eventStream = null;
+    }
+    window.setTimeout(startEventStream, 5000);
+  };
 }
 
 async function runTarget(target, payload = {}, limit = 10) {
@@ -1487,19 +1545,25 @@ async function loadOverview() {
     </div>
   `).join('') : `<div class="empty">${escapeHtml(t('noPlannedEvents'))}</div>`;
 
-  document.getElementById('overview-events').innerHTML = recentEvents.length ? recentEvents.map((row) => `
-    <tr>
-      <td>${escapeHtml(row.id)}</td>
-      <td>${badgeHtml(row.status, row.status || '-')}</td>
-      <td class="mono">${escapeHtml(row.topic || '-')}</td>
-      <td>${escapeHtml(row.handler || '-')}</td>
-      <td class="mono">${fmtDateTime(row.created_at)}</td>
-      <td>${escapeHtml(String(row.error || '').slice(0, 120) || '-')}</td>
-    </tr>
-  `).join('') : `<tr><td colspan="6" class="empty">${escapeHtml(t('noEvents'))}</td></tr>`;
+  if (recentEvents.length) {
+    const merged = [...recentEvents, ...liveEventRows]
+      .reduce((acc, row) => {
+        if (!acc.some((item) => item.id === row.id)) acc.push(row);
+        return acc;
+      }, [])
+      .slice(0, 18);
+    liveEventRows = merged;
+  }
+  renderOverviewEvents(liveEventRows);
 }
 
 async function loadHive() {
+  document.getElementById('hive-summary-cards').innerHTML = `
+    <div class="card"><div class="card-label">hive</div><div class="card-value">...</div><div class="card-sub">loading</div></div>
+  `;
+  document.getElementById('hive-highlight-grid').innerHTML = '';
+  document.getElementById('hive-domain-grid').innerHTML = '';
+  document.getElementById('hive-tbody').innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(locale === 'zh-CN' ? '正在构建数据蜂巢快照...' : 'Building hive snapshot...')}</td></tr>`;
   const data = await apiFetch('/api/hive');
   const summary = data.summary || {};
   const datasets = data.datasets || [];
@@ -1845,9 +1909,18 @@ document.getElementById('calendar-date').value = todayString();
 document.getElementById('locale-select').value = locale;
 applyI18n();
 buildWorkflowButtons();
-Promise.all([loadOverview(), loadHive(), loadDag(), loadWorkflows(), loadCalendar(), loadAgenda(), loadModels()])
-  .catch((err) => toast(err.message, true));
-window.setInterval(() => refreshActiveTab(), 20000);
+startEventStream();
+refreshActiveTab();
+window.setTimeout(() => {
+  if (activeTab !== 'hive') {
+    apiFetch('/api/hive').catch(() => {});
+  }
+}, 1500);
+window.setInterval(() => {
+  if (!document.hidden) {
+    refreshActiveTab();
+  }
+}, 60000);
 </script>
 </body>
 </html>

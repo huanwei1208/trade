@@ -2063,6 +2063,30 @@ class TradeDB:
                 ).fetchall()
         return [dict(r) for r in rows]
 
+    def event_log_since(self, after_id: int = 0, limit: int = 100, topic: str | None = None) -> list[dict]:
+        with self._conn_lock:
+            if topic:
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM event_log
+                    WHERE id > ? AND topic = ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (max(0, int(after_id)), topic, max(1, int(limit))),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM event_log
+                    WHERE id > ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (max(0, int(after_id)), max(1, int(limit))),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
     def event_log_mark_stale(self, older_than_hours: float = 1.0, note: str | None = None) -> int:
         summary = note or f"marked stale after {older_than_hours:.1f}h without completion"
         with self._conn_lock:

@@ -21,10 +21,14 @@ Routes:
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
+import time
 from datetime import date, timedelta
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 try:  # pragma: no cover - optional at import time
@@ -106,7 +110,7 @@ def create_app():
     """FastAPI app factory (used by uvicorn --factory)."""
     try:
         from fastapi import Body, FastAPI, HTTPException
-        from fastapi.responses import FileResponse, JSONResponse
+        from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
     except ImportError:
@@ -118,12 +122,97 @@ def create_app():
     # Lazy-init inference service
     from trade_py.web.inference import InferenceService
     _inference = InferenceService(data_root)
+    _payload_cache: dict[str, dict[str, Any]] = {}
+    _payload_cache_lock = Lock()
 
     # ── DB helper ─────────────────────────────────────────────────────────────
 
     def _db():
         from trade_py.db.trade_db import TradeDB
         return TradeDB(data_root)
+
+    def _payload_signature(kind: str) -> str:
+        db = _db()
+        with db._conn_lock:
+            row = db._conn.execute(
+                """
+                SELECT
+                    COALESCE((SELECT MAX(updated_at) FROM daily_quality_gate), ''),
+                    COALESCE((SELECT MAX(id) FROM job_runs), 0),
+                    COALESCE((SELECT MAX(id) FROM event_log), 0),
+                    COALESCE((SELECT MAX(updated_at) FROM agenda_queue), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM planned_events), ''),
+                    COALESCE((SELECT MAX(trained_at) FROM model_registry), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM sync_state), '')
+                """
+            ).fetchone()
+        base = "|".join(str(item or "") for item in (row or ()))
+        return f"{kind}:{base}"
+
+    def _cache_get(name: str, *, signature: str, ttl_seconds: float) -> dict[str, Any] | None:
+        now = time.monotonic()
+        with _payload_cache_lock:
+            entry = _payload_cache.get(name)
+            if not entry:
+                return None
+            if entry.get("signature") != signature:
+                return None
+            if now - float(entry.get("built_at", 0.0)) > ttl_seconds:
+                return None
+            return entry.get("payload")
+
+    def _cache_set(name: str, *, signature: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with _payload_cache_lock:
+            _payload_cache[name] = {
+                "signature": signature,
+                "built_at": time.monotonic(),
+                "payload": payload,
+            }
+        return payload
+
+    def _light_hive_snapshot(db, gate: dict[str, Any]) -> dict[str, Any]:
+        metrics = gate.get("metrics_json") or {}
+        fund_cov = metrics.get("fund_flow_coverage")
+        fundamental_cov = metrics.get("fundamental_coverage")
+        event_count = metrics.get("event_count")
+        items = [
+            {"status": _hive_status(coverage_pct=fund_cov), "domain": "market"},
+            {"status": _hive_status(coverage_pct=fundamental_cov), "domain": "market"},
+            {"status": _hive_status(count=event_count, empty_is_error=True), "domain": "event"},
+        ]
+        summary = {
+            "total": len(items),
+            "ok": sum(1 for item in items if item["status"] == "ok"),
+            "partial": sum(1 for item in items if item["status"] == "partial"),
+            "error": sum(1 for item in items if item["status"] == "error"),
+        }
+        domains = {
+            "market": {
+                "count": 2,
+                "ok": sum(1 for item in items[:2] if item["status"] == "ok"),
+                "partial": sum(1 for item in items[:2] if item["status"] == "partial"),
+                "error": sum(1 for item in items[:2] if item["status"] == "error"),
+            },
+            "event": {
+                "count": 1,
+                "ok": 1 if items[2]["status"] == "ok" else 0,
+                "partial": 1 if items[2]["status"] == "partial" else 0,
+                "error": 1 if items[2]["status"] == "error" else 0,
+            },
+        }
+        highlights = [
+            {"kind": "coverage", "title": "Fund Flow Coverage", "value": round(float(fund_cov or 0.0) * 100, 1)},
+            {"kind": "coverage", "title": "Fundamental Coverage", "value": round(float(fundamental_cov or 0.0) * 100, 1)},
+            {"kind": "event", "title": "Recent Event Count", "value": int(event_count or 0)},
+        ]
+        return {
+            "datasets": [],
+            "domains": domains,
+            "highlights": highlights,
+            "summary": summary,
+            "as_of": date.today().isoformat(),
+            "cached": False,
+        }
 
     def _data_hive_payload() -> dict[str, Any]:
         from trade_py.utils.data_inspector import get_data_status
@@ -349,6 +438,7 @@ def create_app():
             "highlights": highlights,
             "summary": summary,
             "as_of": date.today().isoformat(),
+            "cached": True,
         }
 
     def _overview_payload() -> dict[str, Any]:
@@ -358,7 +448,8 @@ def create_app():
         runtime = db.pipeline_dag_runtime(recent_limit=200)
         top_signals_model = db.signal_suggest(limit=5, by="model_score")
         top_signals_kg = db.signal_suggest(limit=5, by="event_kg_score")
-        hive = _data_hive_payload()
+        hive_signature = _payload_signature("hive")
+        hive = _cache_get("hive", signature=hive_signature, ttl_seconds=30.0) or _light_hive_snapshot(db, gate)
         brief = _latest_brief_summary(data_root)
         due_agenda = db.agenda_queue_due(limit=6)
         planned_events = db.planned_events_list(
@@ -575,11 +666,45 @@ def create_app():
         db = _db()
         db.job_runs_mark_stale_by_policy()
         db.event_log_mark_stale()
-        return _overview_payload()
+        signature = _payload_signature("overview")
+        cached = _cache_get("overview", signature=signature, ttl_seconds=8.0)
+        if cached is not None:
+            return cached
+        payload = _overview_payload()
+        return _cache_set("overview", signature=signature, payload=payload)
 
     @app.get("/api/hive")
     async def get_hive():
-        return _data_hive_payload()
+        signature = _payload_signature("hive")
+        cached = _cache_get("hive", signature=signature, ttl_seconds=30.0)
+        if cached is not None:
+            return cached
+        payload = _data_hive_payload()
+        return _cache_set("hive", signature=signature, payload=payload)
+
+    @app.get("/api/events/stream")
+    async def stream_events(after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):
+        async def _gen():
+            last_id = max(0, int(after_id))
+            while True:
+                rows = _db().event_log_since(after_id=last_id, limit=limit)
+                if rows:
+                    for row in rows:
+                        last_id = max(last_id, int(row.get("id") or 0))
+                        yield f"data: {json.dumps(row, ensure_ascii=False)}\n\n"
+                else:
+                    yield ": ping\n\n"
+                await asyncio.sleep(max(0.5, float(poll_seconds)))
+
+        return StreamingResponse(
+            _gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get("/api/calendar")
     async def get_calendar(date_str: str | None = None, days: int = 5):
