@@ -43,6 +43,10 @@ def make_parser() -> argparse.ArgumentParser:
     p_events.add_argument("--data-root", default=_DATA_ROOT)
     p_events.add_argument("--limit", type=int, default=20)
 
+    p_hive = sub.add_parser("hive", description="查看数据蜂巢状态")
+    p_hive.add_argument("--data-root", default=_DATA_ROOT)
+    p_hive.add_argument("--sample-limit", type=int, default=8)
+
     p_workflows = sub.add_parser("workflows", description="查看最近 workflow 运行轨迹")
     p_workflows.add_argument("--data-root", default=_DATA_ROOT)
     p_workflows.add_argument("--limit", type=int, default=10)
@@ -81,6 +85,39 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "events":
         return event_cli.main(["list", "--data-root", args.data_root, "--limit", str(args.limit)])
+
+    if args.command == "hive":
+        from trade_py.utils.data_inspector import get_data_status
+
+        status = get_data_status(args.data_root, sample_limit=args.sample_limit)
+        kline = status.get("kline", {})
+        coverage = status.get("kline_coverage", {})
+        freshness = status.get("kline_freshness", {})
+        sentiment = status.get("sentiment", {})
+        events = status.get("events", {})
+        instruments = status.get("instruments", {})
+        print("data_hive:")
+        print(
+            f"  kline: max_date={kline.get('max_date')} symbols={kline.get('symbols')} "
+            f"coverage={coverage.get('coverage_pct')}% missing={coverage.get('missing_symbols')}"
+        )
+        print(
+            f"  freshness: stale>=1d={freshness.get('stale_ge_1')} "
+            f"stale>=5d={freshness.get('stale_ge_5')} max={freshness.get('max_stale_days')}"
+        )
+        print(
+            f"  sentiment: silver_max={sentiment.get('silver', {}).get('max_date')} "
+            f"gold_max={sentiment.get('gold', {}).get('max_date')}"
+        )
+        print(
+            f"  events: max_date={events.get('max_date')} "
+            f"event_count={events.get('event_count')} propagations={events.get('propagation_count')}"
+        )
+        print(
+            f"  instruments: total={instruments.get('total_symbols')} "
+            f"coverage={instruments.get('coverage_pct')}% unmapped={instruments.get('unmapped')}"
+        )
+        return 0
 
     if args.command == "workflows":
         db = TradeDB(args.data_root)

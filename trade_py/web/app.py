@@ -35,6 +35,73 @@ except Exception:  # pragma: no cover - fastapi missing outside web usage
 logger = logging.getLogger(__name__)
 
 
+def _parse_iso_date(value: str | None) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _lag_days(value: str | None) -> int | None:
+    d = _parse_iso_date(value)
+    if not d:
+        return None
+    return (date.today() - d).days
+
+
+def _tree_latest_date(root: Path) -> str | None:
+    if not root.exists():
+        return None
+    latest = None
+    for path in root.rglob("*.parquet"):
+        stem = path.stem
+        if len(stem) == 10 and stem[4] == "-" and stem[7] == "-":
+            latest = stem if latest is None else max(latest, stem)
+    return latest
+
+
+def _hive_status(*, lag_days: int | None = None, coverage_pct: float | None = None,
+                 count: int | None = None, empty_is_error: bool = False) -> str:
+    if count is not None and empty_is_error and count <= 0:
+        return "error"
+    if coverage_pct is not None:
+        if coverage_pct < 0.5:
+            return "error"
+        if coverage_pct < 0.85:
+            return "partial"
+    if lag_days is not None:
+        if lag_days > 7:
+            return "error"
+        if lag_days > 2:
+            return "partial"
+    return "ok"
+
+
+def _latest_brief_summary(data_root: str) -> dict[str, Any]:
+    brief_dir = Path(data_root) / "briefs"
+    if not brief_dir.exists():
+        return {"path": None, "date": None, "excerpt": []}
+    files = sorted(brief_dir.glob("*.md"), reverse=True)
+    if not files:
+        return {"path": None, "date": None, "excerpt": []}
+    latest = files[0]
+    excerpt: list[str] = []
+    try:
+        for line in latest.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text or text.startswith("#"):
+                continue
+            excerpt.append(text)
+            if len(excerpt) >= 4:
+                break
+    except Exception:
+        excerpt = []
+    return {"path": str(latest), "date": latest.stem, "excerpt": excerpt}
+
+
 def create_app():
     """FastAPI app factory (used by uvicorn --factory)."""
     try:
@@ -57,6 +124,296 @@ def create_app():
     def _db():
         from trade_py.db.trade_db import TradeDB
         return TradeDB(data_root)
+
+    def _data_hive_payload() -> dict[str, Any]:
+        from trade_py.utils.data_inspector import get_data_status
+
+        db = _db()
+        gate = db.quality_gate_get() or {}
+        gate_metrics = gate.get("metrics_json") or {}
+        status = get_data_status(data_root, sample_limit=8)
+        sentiment = status.get("sentiment", {})
+        kline = status.get("kline", {})
+        kline_cov = status.get("kline_coverage", {})
+        kline_fresh = status.get("kline_freshness", {})
+        instruments = status.get("instruments", {})
+        events = status.get("events", {})
+        silver = sentiment.get("silver", {})
+        gold = sentiment.get("gold", {})
+
+        fund_flow_latest = _tree_latest_date(Path(data_root) / "market" / "fund_flow")
+        fundamental_latest = _tree_latest_date(Path(data_root) / "market" / "fundamental")
+
+        model_rows = db.model_registry_list()
+        active_models = [row for row in model_rows if row.get("is_active") or row.get("promotion_state") == "active"]
+        due_agenda = db.agenda_queue_due(limit=20)
+        planned_events = db.planned_events_list(
+            start_date=date.today().isoformat(),
+            end_date=(date.today() + timedelta(days=7)).isoformat(),
+            limit=50,
+        )
+
+        datasets = [
+            {
+                "id": "kline",
+                "name": "Kline",
+                "domain": "market",
+                "refresh_target": "sync",
+                "lineage": "market-index -> kline -> factors -> signals",
+                "freshness_date": kline.get("max_date"),
+                "lag_days": _lag_days(kline.get("max_date")),
+                "coverage_pct": (kline_cov.get("coverage_pct") or 0.0) / 100.0 if kline_cov.get("coverage_pct") is not None else None,
+                "rows": kline.get("rows", 0),
+                "count": kline.get("symbols", 0),
+                "status": _hive_status(
+                    lag_days=_lag_days(kline.get("max_date")),
+                    coverage_pct=((kline_cov.get("coverage_pct") or 0.0) / 100.0) if kline_cov.get("coverage_pct") is not None else None,
+                    count=kline.get("symbols", 0),
+                    empty_is_error=True,
+                ),
+                "notes": [
+                    f"missing_symbols={kline_cov.get('missing_symbols', 0)}",
+                    f"stale_ge_5={kline_fresh.get('stale_ge_5', 0)}",
+                ],
+            },
+            {
+                "id": "fund_flow",
+                "name": "Fund Flow",
+                "domain": "market",
+                "refresh_target": "sync",
+                "lineage": "fund-flow -> window/factors -> signals",
+                "freshness_date": fund_flow_latest,
+                "lag_days": _lag_days(fund_flow_latest),
+                "coverage_pct": gate_metrics.get("fund_flow_coverage"),
+                "rows": None,
+                "count": None,
+                "status": _hive_status(
+                    lag_days=_lag_days(fund_flow_latest),
+                    coverage_pct=gate_metrics.get("fund_flow_coverage"),
+                ),
+                "notes": [],
+            },
+            {
+                "id": "fundamental",
+                "name": "Fundamental",
+                "domain": "market",
+                "refresh_target": "sync",
+                "lineage": "fundamental -> instrument/factors -> signals",
+                "freshness_date": fundamental_latest,
+                "lag_days": _lag_days(fundamental_latest),
+                "coverage_pct": gate_metrics.get("fundamental_coverage"),
+                "rows": None,
+                "count": None,
+                "status": _hive_status(
+                    lag_days=_lag_days(fundamental_latest),
+                    coverage_pct=gate_metrics.get("fundamental_coverage"),
+                ),
+                "notes": [],
+            },
+            {
+                "id": "sector_map",
+                "name": "Sector Map",
+                "domain": "reference",
+                "refresh_target": "sync",
+                "lineage": "reference -> event targets -> KG / features",
+                "freshness_date": None,
+                "lag_days": None,
+                "coverage_pct": (instruments.get("coverage_pct") or 0.0) / 100.0 if instruments.get("coverage_pct") is not None else None,
+                "rows": instruments.get("sector_member_rows", 0),
+                "count": instruments.get("total_symbols", 0),
+                "status": _hive_status(
+                    coverage_pct=((instruments.get("coverage_pct") or 0.0) / 100.0) if instruments.get("coverage_pct") is not None else None,
+                    count=instruments.get("total_symbols", 0),
+                    empty_is_error=True,
+                ),
+                "notes": [f"unmapped={instruments.get('unmapped', 0)}"],
+            },
+            {
+                "id": "sentiment_silver",
+                "name": "Sentiment Silver",
+                "domain": "sentiment",
+                "refresh_target": "evening",
+                "lineage": "bronze -> silver -> gold -> market_events",
+                "freshness_date": silver.get("max_date"),
+                "lag_days": _lag_days(silver.get("max_date")),
+                "coverage_pct": None,
+                "rows": silver.get("rows", 0),
+                "count": silver.get("dates", 0),
+                "status": _hive_status(
+                    lag_days=_lag_days(silver.get("max_date")),
+                    count=silver.get("dates", 0),
+                    empty_is_error=True,
+                ),
+                "notes": [],
+            },
+            {
+                "id": "sentiment_gold",
+                "name": "Sentiment Gold",
+                "domain": "sentiment",
+                "refresh_target": "evening",
+                "lineage": "silver -> gold -> market_events -> propagation",
+                "freshness_date": gold.get("max_date"),
+                "lag_days": _lag_days(gold.get("max_date")),
+                "coverage_pct": None,
+                "rows": gold.get("rows", 0),
+                "count": gold.get("dates", 0),
+                "status": _hive_status(
+                    lag_days=_lag_days(gold.get("max_date")),
+                    count=gold.get("dates", 0),
+                    empty_is_error=True,
+                ),
+                "notes": [],
+            },
+            {
+                "id": "events",
+                "name": "Market Events",
+                "domain": "event",
+                "refresh_target": "evening",
+                "lineage": "event_pipeline -> propagations -> factors/signals",
+                "freshness_date": events.get("max_date"),
+                "lag_days": _lag_days(events.get("max_date")),
+                "coverage_pct": None,
+                "rows": events.get("propagation_count", 0),
+                "count": events.get("event_count", 0),
+                "status": _hive_status(
+                    lag_days=_lag_days(events.get("max_date")),
+                    count=events.get("event_count", 0),
+                    empty_is_error=True,
+                ),
+                "notes": [f"propagations={events.get('propagation_count', 0)}"],
+            },
+            {
+                "id": "planned_events",
+                "name": "Planned Events",
+                "domain": "calendar",
+                "refresh_target": "sync",
+                "lineage": "planned_events -> agenda -> realized market_events",
+                "freshness_date": planned_events[0].get("scheduled_at", "")[:10] if planned_events else None,
+                "lag_days": None,
+                "coverage_pct": None,
+                "rows": len(planned_events),
+                "count": len(planned_events),
+                "status": _hive_status(count=len(planned_events), empty_is_error=True),
+                "notes": [f"due_agenda={len(due_agenda)}"],
+            },
+            {
+                "id": "models",
+                "name": "Active Models",
+                "domain": "model",
+                "refresh_target": "evaluate",
+                "lineage": "features -> train/evaluate -> active models -> signals",
+                "freshness_date": active_models[0].get("trained_at", "")[:10] if active_models else None,
+                "lag_days": _lag_days(active_models[0].get("trained_at", "")[:10] if active_models else None),
+                "coverage_pct": None,
+                "rows": len(model_rows),
+                "count": len(active_models),
+                "status": _hive_status(
+                    lag_days=_lag_days(active_models[0].get("trained_at", "")[:10] if active_models else None),
+                    count=len(active_models),
+                    empty_is_error=True,
+                ),
+                "notes": [],
+            },
+        ]
+        by_domain: dict[str, dict[str, Any]] = {}
+        for item in datasets:
+            bucket = by_domain.setdefault(item["domain"], {"count": 0, "ok": 0, "partial": 0, "error": 0})
+            bucket["count"] += 1
+            bucket[item["status"]] = bucket.get(item["status"], 0) + 1
+        highlights = [
+            {
+                "kind": "coverage",
+                "title": "Kline missing symbols",
+                "value": kline_cov.get("missing_symbols", 0),
+            },
+            {
+                "kind": "freshness",
+                "title": "Kline stale >=5d",
+                "value": kline_fresh.get("stale_ge_5", 0),
+            },
+            {
+                "kind": "mapping",
+                "title": "Unmapped instruments",
+                "value": instruments.get("unmapped", 0),
+            },
+        ]
+        summary = {
+            "total": len(datasets),
+            "ok": sum(1 for item in datasets if item["status"] == "ok"),
+            "partial": sum(1 for item in datasets if item["status"] == "partial"),
+            "error": sum(1 for item in datasets if item["status"] == "error"),
+        }
+        return {
+            "datasets": datasets,
+            "domains": by_domain,
+            "highlights": highlights,
+            "summary": summary,
+            "as_of": date.today().isoformat(),
+        }
+
+    def _overview_payload() -> dict[str, Any]:
+        db = _db()
+        gate = db.quality_gate_get() or {}
+        workflows = db.event_workflow_recent(limit=6)
+        runtime = db.pipeline_dag_runtime(recent_limit=200)
+        top_signals_model = db.signal_suggest(limit=5, by="model_score")
+        top_signals_kg = db.signal_suggest(limit=5, by="event_kg_score")
+        hive = _data_hive_payload()
+        brief = _latest_brief_summary(data_root)
+        due_agenda = db.agenda_queue_due(limit=6)
+        planned_events = db.planned_events_list(
+            start_date=date.today().isoformat(),
+            end_date=(date.today() + timedelta(days=7)).isoformat(),
+            limit=8,
+        )
+        recent_events = db.event_log_recent(limit=18)
+        reasons = gate.get("reasons_json") or []
+        metrics = gate.get("metrics_json") or {}
+        operational_status = metrics.get("operational_status")
+        research_status = metrics.get("research_status")
+        root_causes = [row for row in workflows if row.get("root_cause")][:5]
+        conclusion = {
+            "headline": (
+                "Daily operations ready"
+                if operational_status == "ok" and gate.get("status") == "ok"
+                else "Operationally ready, research still maturing"
+                if operational_status == "ok"
+                else "Pipeline needs attention"
+            ),
+            "gate_status": gate.get("status", "unknown"),
+            "operational_status": operational_status,
+            "research_status": research_status,
+            "reason_summary": gate.get("reason_summary") or "",
+            "reasons": reasons,
+        }
+        progress = {
+            "workflow_total": len(workflows),
+            "workflow_running": sum(1 for row in workflows if row.get("status") == "running"),
+            "workflow_error": sum(1 for row in workflows if row.get("status") == "error"),
+            "workflow_ok": sum(1 for row in workflows if row.get("status") == "ok"),
+            "dag_stage_summary": runtime.get("stage_summary", {}),
+        }
+        return {
+            "system": {
+                "today": date.today().isoformat(),
+                "data_root": data_root,
+                "models_loaded_at": _inference.loaded_at,
+                "inference_models": _inference.model_names,
+            },
+            "conclusion": conclusion,
+            "progress": progress,
+            "brief": brief,
+            "top_signals": {
+                "model_score": top_signals_model,
+                "event_kg_score": top_signals_kg,
+            },
+            "workflows": workflows,
+            "root_causes": root_causes,
+            "agenda": due_agenda,
+            "planned_events": planned_events,
+            "recent_events": recent_events,
+            "data_hive": hive,
+        }
 
     # ── Static files ──────────────────────────────────────────────────────────
 
@@ -212,6 +569,17 @@ def create_app():
             "backups": db.backup_snapshots_recent(limit=5),
             "backup_health": backup_health,
         }
+
+    @app.get("/api/overview")
+    async def get_overview():
+        db = _db()
+        db.job_runs_mark_stale_by_policy()
+        db.event_log_mark_stale()
+        return _overview_payload()
+
+    @app.get("/api/hive")
+    async def get_hive():
+        return _data_hive_payload()
 
     @app.get("/api/calendar")
     async def get_calendar(date_str: str | None = None, days: int = 5):

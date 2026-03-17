@@ -37,12 +37,15 @@ print_help() {
   echo "  ./trade sync               →  trade run sync"
   echo "  ./trade today              →  trade status"
   echo "  ./trade check              →  trade status"
+  echo "  ./trade overview           →  trade status"
   echo "  ./trade console            →  trade serve"
   echo "  ./trade web                →  trade serve"
+  echo "  ./trade dashboard          →  trade serve"
   echo "  ./trade dag [args]         →  trade inspect dag [args]"
   echo "  ./trade pipeline [args]    →  trade inspect dag [args]"
   echo "  ./trade calendar [args]    →  trade inspect calendar [args]"
   echo "  ./trade events [args]      →  trade inspect events [args]"
+  echo "  ./trade hive [args]        →  trade inspect hive [args]"
   echo "  ./trade workflows [args]   →  trade inspect workflows [args]"
   echo "  ./trade factors [args]     →  trade inspect factors [args]"
   echo "  ./trade models [args]      →  trade inspect models [args]"
@@ -217,10 +220,11 @@ main() {
   shift || true
   case "$sub" in
     morning|intraday|evening|agenda|open|close|sync) cmd_trade_py_domain run "$sub" "$@" ;;
-    today|check) cmd_trade_py_domain_allow_empty status "$@" ;;
+    today|check|overview) cmd_trade_py_domain_allow_empty status "$@" ;;
     dag|pipeline) cmd_trade_py_domain inspect dag "$@" ;;
     calendar) cmd_trade_py_domain inspect calendar "$@" ;;
     events) cmd_trade_py_domain inspect events "$@" ;;
+    hive) cmd_trade_py_domain inspect hive "$@" ;;
     workflows|workflow) cmd_trade_py_domain inspect workflows "$@" ;;
     factors) cmd_trade_py_domain inspect factors "$@" ;;
     models) cmd_trade_py_domain inspect models "$@" ;;
@@ -243,7 +247,7 @@ main() {
     evaluate) cmd_trade_py_domain evaluate "$@" ;;
     kg) cmd_trade_py_domain kg "$@" ;;
     start) cmd_trade_py_domain_allow_empty start "$@" ;;
-    serve|web|console) cmd_trade_py_domain_allow_empty serve "$@" ;;
+    serve|web|console|dashboard) cmd_trade_py_domain_allow_empty serve "$@" ;;
     sentiment) cmd_trade_py_domain data sentiment "$@" ;;
     brief)     cmd_trade_py_domain report brief "$@" ;;
     schedule)  cmd_trade_py_domain report schedule "$@" ;;
@@ -253,7 +257,7 @@ main() {
     help|-h|--help) print_help ;;
     *)
       echo "错误：未知命令 '$sub'"
-      echo "可用顶层命令: run | status | inspect | web | console | backup | today | check | dag | pipeline | calendar | events | workflows | factors | models | backups | data | model | factor | report | account | event | evaluate | kg | start | serve | sentiment | brief | schedule | ui | cli | py | doctor | setup-python | configure | build | test | help"
+      echo "可用顶层命令: run | status | inspect | web | dashboard | console | backup | today | check | overview | dag | pipeline | calendar | events | hive | workflows | factors | models | backups | data | model | factor | report | account | event | evaluate | kg | start | serve | sentiment | brief | schedule | ui | cli | py | doctor | setup-python | configure | build | test | help"
       echo "运行 './trade help' 查看详细用法"
       exit 1
       ;;
