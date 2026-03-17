@@ -1,3 +1,4 @@
+import * as dagre from "dagre";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 
@@ -100,6 +101,7 @@ const I18N: Record<Locale, Dict> = {
     finalResults: "最终事件结果",
     failedNodes: "失败节点",
     rerun: "重跑节点",
+    execute: "执行",
     rerunUpstream: "补前继链路",
     rerunDownstream: "续跑后继链路",
     rerunFull: "整条链路重跑",
@@ -169,6 +171,7 @@ const I18N: Record<Locale, Dict> = {
     finalResults: "Final outcomes",
     failedNodes: "Failed nodes",
     rerun: "Rerun node",
+    execute: "Run",
     rerunUpstream: "Backfill upstream chain",
     rerunDownstream: "Continue downstream chain",
     rerunFull: "Replay full workflow",
@@ -243,19 +246,28 @@ function slugStage(value: unknown) {
   return String(value || "unknown").trim() || "unknown";
 }
 
+function stageTitle(value: unknown) {
+  const text = String(value || "").trim();
+  if (!text) return "Unknown";
+  return text
+    .split(/[_\-.]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function buildDagLayout(
   rows: DagNode[],
   rawEdges: DagEdge[],
   focusDagIds?: Set<number>,
   overrides?: PositionOverrideMap,
 ): DagLayout {
-  const nodeWidth = 220;
-  const nodeHeight = 96;
-  const topicHeight = 64;
-  const colGap = 96;
-  const rowGap = 24;
-  const padX = 28;
-  const padY = 48;
+  const taskWidth = 232;
+  const taskHeight = 108;
+  const topicWidth = 208;
+  const topicHeight = 72;
+  const padX = 36;
+  const padY = 56;
   const topicNodes = new Map<string, GraphNode>();
   const taskNodes = new Map<string, GraphNode>();
   const emittedByTopic = new Map<string, GraphNode[]>();
@@ -276,8 +288,8 @@ function buildDagLayout(
       stage,
       x: 0,
       y: 0,
-      width: nodeWidth,
-      height: nodeHeight,
+      width: taskWidth,
+      height: taskHeight,
       dagId,
     };
     taskNodes.set(key, taskNode);
@@ -330,7 +342,7 @@ function buildDagLayout(
             stage: "source",
             x: 0,
             y: 0,
-            width: 200,
+            width: topicWidth,
             height: topicHeight,
             dagId: undefined,
           });
@@ -350,105 +362,74 @@ function buildDagLayout(
   }
 
   const allNodes = [...topicNodes.values(), ...taskNodes.values()];
-  const roots = allNodes
-    .filter((node) => (predecessors.get(node.key)?.size || 0) === 0)
-    .sort((a, b) => a.label.localeCompare(b.label));
-  const depthByNode = new Map<string, number>();
-  const queue = [...roots.map((node) => node.key)];
-  for (const key of queue) depthByNode.set(key, 0);
-  while (queue.length) {
-    const current = queue.shift()!;
-    const currentDepth = depthByNode.get(current) || 0;
-    for (const next of successors.get(current) || []) {
-      const proposed = currentDepth + 1;
-      if ((depthByNode.get(next) ?? -1) < proposed) {
-        depthByNode.set(next, proposed);
-      }
-      queue.push(next);
-    }
-  }
+  const graph = new dagre.graphlib.Graph({ multigraph: false, compound: false });
+  graph.setGraph({
+    rankdir: "LR",
+    ranksep: 108,
+    nodesep: 34,
+    edgesep: 28,
+    marginx: padX,
+    marginy: padY,
+    ranker: "network-simplex",
+    acyclicer: "greedy",
+  });
+  graph.setDefaultEdgeLabel(() => ({}));
+
   for (const node of allNodes) {
-    if (!depthByNode.has(node.key)) depthByNode.set(node.key, 0);
+    graph.setNode(node.key, {
+      width: node.width,
+      height: node.height,
+      kind: node.kind,
+      stage: node.stage,
+      label: node.label,
+      focused: Boolean(node.dagId && focusDagIds?.has(node.dagId)),
+    });
   }
+  for (const edge of edges) {
+    graph.setEdge(edge.from, edge.to, { key: `${edge.from}->${edge.to}` });
+  }
+
+  dagre.layout(graph);
 
   const levelsMap = new Map<number, GraphNode[]>();
+  let maxRight = 0;
+  let maxBottom = 0;
   for (const node of allNodes) {
-    const depth = depthByNode.get(node.key) || 0;
-    const bucket = levelsMap.get(depth) || [];
+    const layoutNode = graph.node(node.key) as { x: number; y: number; rank?: number } | undefined;
+    const override = overrides?.[node.key];
+    node.x = override?.x ?? ((layoutNode?.x ?? padX) - node.width / 2);
+    node.y = override?.y ?? ((layoutNode?.y ?? padY) - node.height / 2);
+    const rank = Number(layoutNode?.rank ?? 0);
+    const bucket = levelsMap.get(rank) || [];
     bucket.push(node);
-    levelsMap.set(depth, bucket);
+    levelsMap.set(rank, bucket);
+    maxRight = Math.max(maxRight, node.x + node.width);
+    maxBottom = Math.max(maxBottom, node.y + node.height);
   }
+
   const levelKeys = Array.from(levelsMap.keys()).sort((a, b) => a - b);
-  const orderByNode = new Map<string, number>();
-  const statusRank = { error: 0, running: 1, partial: 2, ok: 3, pending: 4, unknown: 5 } as Record<string, number>;
-  const sortBucket = (bucket: GraphNode[], relationMap: Map<string, Set<string>>) => {
-    bucket.sort((a, b) => {
-      const aRel = Array.from(relationMap.get(a.key) || []);
-      const bRel = Array.from(relationMap.get(b.key) || []);
-      const aCenter = aRel.length ? aRel.reduce((sum, key) => sum + (orderByNode.get(key) ?? 0), 0) / aRel.length : 0;
-      const bCenter = bRel.length ? bRel.reduce((sum, key) => sum + (orderByNode.get(key) ?? 0), 0) / bRel.length : 0;
-      if (aCenter !== bCenter) return aCenter - bCenter;
-      const diff = (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9);
-      if (diff !== 0) return diff;
-      if (focusDagIds && (a.dagId || b.dagId)) {
-        const af = a.dagId && focusDagIds.has(a.dagId) ? -1 : 0;
-        const bf = b.dagId && focusDagIds.has(b.dagId) ? -1 : 0;
-        if (af !== bf) return af - bf;
-      }
-      if (a.kind !== b.kind) return a.kind === "topic" ? -1 : 1;
-      return a.label.localeCompare(b.label);
-    });
-    bucket.forEach((node, index) => {
-      orderByNode.set(node.key, index);
-    });
-  };
-  for (const depth of levelKeys) {
-    sortBucket(levelsMap.get(depth) || [], predecessors);
-  }
-  for (let sweep = 0; sweep < 3; sweep += 1) {
-    for (const depth of levelKeys.slice(1)) {
-      sortBucket(levelsMap.get(depth) || [], predecessors);
-    }
-    for (const depth of [...levelKeys].reverse().slice(1)) {
-      sortBucket(levelsMap.get(depth) || [], successors);
-    }
-  }
-
-  const levelHeights = new Map<number, number>();
-  let maxContentHeight = 0;
-  for (const depth of levelKeys) {
+  const levels = levelKeys.map((depth, index) => {
     const bucket = levelsMap.get(depth) || [];
-    const contentHeight = bucket.reduce((sum, node, index) => sum + node.height + (index > 0 ? rowGap : 0), 0);
-    levelHeights.set(depth, contentHeight);
-    maxContentHeight = Math.max(maxContentHeight, contentHeight);
-  }
-  for (const depth of levelKeys) {
-    const bucket = levelsMap.get(depth) || [];
-    const contentHeight = levelHeights.get(depth) || 0;
-    let cursorY = padY + Math.max(0, (maxContentHeight - contentHeight) / 2);
-    bucket.forEach((node) => {
-      node.x = padX + depth * (nodeWidth + colGap);
-      node.y = cursorY;
-      cursorY += node.height + rowGap;
-      const override = overrides?.[node.key];
-      if (override) {
-        node.x = override.x;
-        node.y = override.y;
-      }
-    });
-  }
+    const taskStages = Array.from(new Set(bucket.filter((node) => node.kind === "task").map((node) => node.stage)));
+    const label = bucket.every((node) => node.kind === "topic")
+      ? "Sources"
+      : taskStages.length === 1
+      ? stageTitle(taskStages[0])
+      : taskStages.length
+      ? taskStages.slice(0, 2).map((value) => stageTitle(value)).join(" / ")
+      : `Layer ${index + 1}`;
+    const left = Math.min(...bucket.map((node) => node.x));
+    const right = Math.max(...bucket.map((node) => node.x + node.width));
+    return {
+      depth,
+      label,
+      x: left,
+      width: Math.max(taskWidth, right - left),
+    };
+  });
 
-  const levels = levelKeys.map((depth) => ({
-    depth,
-    label: depth === 0 ? "Root" : `L${depth}`,
-    x: padX + depth * (nodeWidth + colGap),
-    width: nodeWidth,
-  }));
-  const width = Math.max(
-    980,
-    padX * 2 + Math.max(1, levels.length) * nodeWidth + Math.max(0, levels.length - 1) * colGap,
-  );
-  const height = Math.max(420, padY * 2 + maxContentHeight + 72);
+  const width = Math.max(980, Math.ceil(maxRight + padX));
+  const height = Math.max(420, Math.ceil(maxBottom + padY));
   const graphEdges: GraphEdge[] = edges
     .map((edge) => {
       const from = allNodes.find((node) => node.key === edge.from);
@@ -1012,12 +993,14 @@ function App() {
       onHoverEnd?: () => void;
       onPin?: (key: string) => void;
       focusDagIds?: Set<number>;
+      onExecute?: (node: GraphNode) => void;
     },
   ) {
     if (!layout.nodes.length) return <div className="empty">{t("noData")}</div>;
 
-    function startDrag(event: ReactMouseEvent<HTMLButtonElement>, node: GraphNode) {
+    function startDrag(event: ReactMouseEvent<HTMLDivElement>, node: GraphNode) {
       if (!options?.onNodeMove) return;
+      if ((event.target as HTMLElement).closest(".dag-node-quick-action")) return;
       const originX = event.clientX;
       const originY = event.clientY;
       const startX = node.x;
@@ -1069,8 +1052,9 @@ function App() {
               const isFocused = node.dagId && options?.focusDagIds?.size ? options.focusDagIds.has(node.dagId) : false;
               const shouldDim = options?.focusDagIds?.size && node.kind === "task" && !isFocused;
               return (
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabIndex={0}
                   key={node.key}
                   className={[
                     "dag-node",
@@ -1085,17 +1069,38 @@ function App() {
                     options?.onSelect?.(node.key);
                     options?.onPin?.(node.key);
                   }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      options?.onSelect?.(node.key);
+                      options?.onPin?.(node.key);
+                    }
+                  }}
                   onMouseDown={(event) => startDrag(event, node)}
                   onMouseEnter={() => options?.onHoverStart?.(node.key)}
                   onMouseLeave={() => options?.onHoverEnd?.()}
                 >
                   <div className="dag-node-top">
                     <span className="dag-node-title">{node.label}</span>
-                    <span className={`pill ${statusClass(node.status)}`}>{node.status}</span>
+                    <div className="dag-node-meta">
+                      <span className={`pill ${statusClass(node.status)}`}>{node.status}</span>
+                      {node.kind === "task" && node.dagId ? (
+                        <button
+                          type="button"
+                          className="dag-node-quick-action"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            options?.onExecute?.(node);
+                          }}
+                        >
+                          {t("execute")}
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="dag-node-subtitle">{shortText(node.subtitle, 54)}</div>
                   <div className={`dag-node-detail ${node.status === "error" ? "error-text" : ""}`}>{shortText(node.detail || "-", 96)}</div>
-                </button>
+                </div>
               );
             })}
             {options?.flyout}
@@ -1321,6 +1326,14 @@ function App() {
             onPin: togglePinnedFlyout,
             onNodeMove: (nodeKey, x, y) => updateGraphNodePosition(globalGraphKey, nodeKey, x, y),
             focusDagIds,
+            onExecute: (node) => {
+              if (!node.dagId) return;
+              if (selectedWorkflow?.root_event_id && workflowNodeIds.has(node.dagId)) {
+                void rerunNode(selectedWorkflow.root_event_id, node.dagId, "self");
+                return;
+              }
+              void runDagNode(node.dagId, "self");
+            },
             flyout: renderNodeFlyout(
               globalGraph,
               selectedGlobalGraphNode,
