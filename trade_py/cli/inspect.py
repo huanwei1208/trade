@@ -43,6 +43,10 @@ def make_parser() -> argparse.ArgumentParser:
     p_events.add_argument("--data-root", default=_DATA_ROOT)
     p_events.add_argument("--limit", type=int, default=20)
 
+    p_workflows = sub.add_parser("workflows", description="查看最近 workflow 运行轨迹")
+    p_workflows.add_argument("--data-root", default=_DATA_ROOT)
+    p_workflows.add_argument("--limit", type=int, default=10)
+
     p_backups = sub.add_parser("backups", description="查看最近备份")
     p_backups.add_argument("--data-root", default=_DATA_ROOT)
     p_backups.add_argument("--limit", type=int, default=20)
@@ -77,6 +81,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "events":
         return event_cli.main(["list", "--data-root", args.data_root, "--limit", str(args.limit)])
+
+    if args.command == "workflows":
+        db = TradeDB(args.data_root)
+        rows = db.event_workflow_recent(limit=args.limit)
+        for row in rows:
+            root_cause = row.get("root_cause") or {}
+            cause = str(root_cause.get("message") or "").strip()
+            print(
+                f"{row.get('root_event_id'):>4}  {str(row.get('status') or '-'):8}  "
+                f"{str(row.get('topic') or '-'):<24}  "
+                f"{str(row.get('progress', {}).get('completed', 0))}/{str(row.get('progress', {}).get('total', 0)):<5}  "
+                f"{str(row.get('title') or '-')}"
+            )
+            if cause:
+                print(f"      cause: {cause[:180]}")
+        return 0
 
     if args.command == "backups":
         return backup_cli.main(["--data-root", args.data_root, "list", "--limit", str(args.limit)])

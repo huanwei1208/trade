@@ -1,12 +1,16 @@
 """FastAPI application — DAG Web UI + Online Inference Service.
 
 Routes:
-  GET  /                     → index.html (DAG three-column view)
+  GET  /                     → index.html (console)
   GET  /api/dag              → pipeline_dag table (stage-grouped)
+  GET  /api/dag/runtime      → DAG runtime state + latest runs/errors
   POST /api/dag/{id}/enable  → enable a DAG node
   POST /api/dag/{id}/disable → disable a DAG node
   POST /api/trigger          → publish event to bus
+  POST /api/run              → run a high-level workflow target
   GET  /api/events           → event_log recent N entries
+  GET  /api/workflows        → recent workflow traces
+  GET  /api/workflows/{id}   → workflow detail
   GET  /api/runs             → job_runs recent N entries
   GET  /api/models           → model_registry list
   GET  /api/status           → service health + quality gate + agenda + backups
@@ -23,13 +27,18 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+try:  # pragma: no cover - optional at import time
+    from fastapi import BackgroundTasks as FastAPIBackgroundTasks
+except Exception:  # pragma: no cover - fastapi missing outside web usage
+    FastAPIBackgroundTasks = Any
+
 logger = logging.getLogger(__name__)
 
 
 def create_app():
     """FastAPI app factory (used by uvicorn --factory)."""
     try:
-        from fastapi import FastAPI, HTTPException
+        from fastapi import Body, FastAPI, HTTPException
         from fastapi.responses import FileResponse, JSONResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
@@ -72,6 +81,13 @@ def create_app():
             by_stage.setdefault(r["stage"], []).append(r)
         return {"stages": by_stage, "total": len(rows)}
 
+    @app.get("/api/dag/runtime")
+    async def get_dag_runtime(limit: int = 200):
+        db = _db()
+        db.job_runs_mark_stale_by_policy()
+        db.event_log_mark_stale()
+        return db.pipeline_dag_runtime(recent_limit=limit)
+
     @app.post("/api/dag/{dag_id}/enable")
     async def enable_dag(dag_id: int):
         _db().pipeline_dag_set_enabled(dag_id, True)
@@ -84,30 +100,76 @@ def create_app():
 
     # ── API: trigger event ────────────────────────────────────────────────────
 
-    class TriggerRequest(BaseModel):
-        topic: str
-        payload: dict = {}
-
     @app.post("/api/trigger")
-    async def trigger_event(req: TriggerRequest):
+    async def trigger_event(req: dict = Body(...)):
         from trade_py.bus import get_bus, bootstrap_from_dag
+
+        topic = str(req.get("topic") or "").strip()
+        if not topic:
+            raise HTTPException(status_code=400, detail="topic is required")
+        payload = req.get("payload") or {}
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="payload must be a JSON object")
         db = _db()
         bus = get_bus(db)
         bootstrap_from_dag(db, data_root)
-        event = bus.publish(req.topic, req.payload)
-        return {"event_id": event.id, "topic": req.topic}
+        event = bus.publish(topic, payload)
+        return {"event_id": event.id, "topic": topic}
+
+    @app.post("/api/run")
+    async def run_target(background_tasks: FastAPIBackgroundTasks, req: dict = Body(...)):
+        from trade_py.cli import run as run_cli
+
+        target = str(req.get("target") or "").strip()
+        if not target:
+            raise HTTPException(status_code=400, detail="target is required")
+        payload = req.get("payload") or {}
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="payload must be a JSON object")
+        limit = max(1, int(req.get("limit") or 10))
+
+        argv = [target, "--data-root", data_root]
+        if target == "agenda":
+            argv += ["--limit", str(limit)]
+        if payload:
+            import json as _json
+
+            argv += ["--payload", _json.dumps(payload, ensure_ascii=False)]
+        background_tasks.add_task(run_cli.main, argv)
+        return {"accepted": True, "target": target, "limit": limit}
 
     # ── API: event_log ────────────────────────────────────────────────────────
 
     @app.get("/api/events")
     async def get_events(limit: int = 50, topic: str | None = None):
-        return _db().event_log_recent(limit, topic)
+        db = _db()
+        db.event_log_mark_stale()
+        return db.event_log_recent(limit, topic)
+
+    @app.get("/api/workflows")
+    async def get_workflows(limit: int = 20):
+        db = _db()
+        db.job_runs_mark_stale_by_policy()
+        db.event_log_mark_stale()
+        return db.event_workflow_recent(limit=limit)
+
+    @app.get("/api/workflows/{root_event_id}")
+    async def get_workflow_detail(root_event_id: int):
+        db = _db()
+        db.job_runs_mark_stale_by_policy()
+        db.event_log_mark_stale()
+        detail = db.event_workflow_detail(root_event_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="workflow not found")
+        return detail
 
     # ── API: job_runs ─────────────────────────────────────────────────────────
 
     @app.get("/api/runs")
     async def get_runs(limit: int = 50, stage: str | None = None):
-        return _db().job_runs_recent(limit, stage=stage)
+        db = _db()
+        db.job_runs_mark_stale_by_policy()
+        return db.job_runs_recent(limit, stage=stage)
 
     # ── API: model_registry ───────────────────────────────────────────────────
 

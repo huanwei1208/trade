@@ -183,6 +183,20 @@ def _normalize_date_text(value: Any) -> str | None:
         return None
 
 
+def _json_loads_safe(value: Any, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    text = str(value).strip()
+    if not text:
+        return default
+    try:
+        return json.loads(text)
+    except Exception:
+        return default
+
+
 def _find_db_path(data_root: Path) -> Path:
     new_path = data_root / ".db" / "trade.db"
     if new_path.exists():
@@ -2103,6 +2117,312 @@ class TradeDB:
 
     def bus_events_pending(self, topic: str | None = None, min_id: int | None = None) -> list[dict]:
         return self.event_log_pending(topic, min_id=min_id)
+
+    def _event_tree_rows(self, root_event_id: int) -> list[dict]:
+        with self._conn_lock:
+            rows = self._conn.execute(
+                """
+                WITH RECURSIVE tree AS (
+                    SELECT
+                        id, topic, payload, parent_event_id, status, handler, error,
+                        created_at, processed_at, elapsed_ms, 0 AS depth
+                    FROM event_log
+                    WHERE id = ?
+                    UNION ALL
+                    SELECT
+                        e.id, e.topic, e.payload, e.parent_event_id, e.status, e.handler, e.error,
+                        e.created_at, e.processed_at, e.elapsed_ms, tree.depth + 1
+                    FROM event_log e
+                    JOIN tree ON e.parent_event_id = tree.id
+                )
+                SELECT * FROM tree ORDER BY id
+                """,
+                (root_event_id,),
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            item["payload_json"] = _json_loads_safe(item.get("payload"), {})
+            result.append(item)
+        return result
+
+    def _workflow_expected_nodes(self, root_topic: str) -> list[dict]:
+        dag_rows = self.pipeline_dag_all(enabled_only=False)
+        by_source: dict[str, list[dict]] = {}
+        for row in dag_rows:
+            by_source.setdefault(str(row.get("source") or ""), []).append(row)
+        queue = [str(root_topic or "")]
+        seen_topics = set(queue)
+        expected: list[dict] = []
+        seen_rows: set[int] = set()
+        while queue:
+            topic = queue.pop(0)
+            for row in by_source.get(topic, []):
+                row_id = int(row.get("id") or 0)
+                if row_id in seen_rows:
+                    continue
+                seen_rows.add(row_id)
+                expected.append(dict(row))
+                emits = str(row.get("emits") or "").strip()
+                if emits and emits not in seen_topics:
+                    seen_topics.add(emits)
+                    queue.append(emits)
+        return expected
+
+    def event_workflow_detail(self, root_event_id: int) -> dict | None:
+        event_rows = self._event_tree_rows(root_event_id)
+        if not event_rows:
+            return None
+
+        root = event_rows[0]
+        event_ids = [int(row["id"]) for row in event_rows]
+        placeholders = ", ".join(["?"] * len(event_ids))
+        with self._conn_lock:
+            job_rows = self._conn.execute(
+                f"""
+                SELECT id, job_name, stage, trigger_event_id, status,
+                       result_summary, symbols_processed, started_at,
+                       completed_at, elapsed_ms
+                FROM job_runs
+                WHERE trigger_event_id IN ({placeholders})
+                ORDER BY id
+                """,
+                event_ids,
+            ).fetchall()
+        jobs = [dict(row) for row in job_rows]
+
+        event_by_id = {int(row["id"]): row for row in event_rows}
+        event_by_topic: dict[str, list[dict]] = {}
+        for row in event_rows:
+            event_by_topic.setdefault(str(row.get("topic") or ""), []).append(row)
+        jobs_by_name: dict[str, list[dict]] = {}
+        for row in jobs:
+            jobs_by_name.setdefault(str(row.get("job_name") or ""), []).append(row)
+
+        expected_nodes = self._workflow_expected_nodes(str(root.get("topic") or ""))
+        nodes: list[dict] = []
+        for row in expected_nodes:
+            job_name = str(row.get("job_name") or "")
+            source_topic = str(row.get("source") or "")
+            emits_topic = str(row.get("emits") or "")
+            source_event = (event_by_topic.get(source_topic) or [None])[-1]
+            emitted_event = (event_by_topic.get(emits_topic) or [None])[-1] if emits_topic else None
+            job = (jobs_by_name.get(job_name) or [None])[-1]
+            status = "pending"
+            error = None
+            if job:
+                status = str(job.get("status") or "pending")
+                error = job.get("result_summary") or None
+            elif source_event:
+                status = str(source_event.get("status") or "pending")
+                error = source_event.get("error") or None
+            elif emitted_event:
+                status = "ok" if str(emitted_event.get("status") or "") == "ok" else "pending"
+            nodes.append({
+                "dag_id": row.get("id"),
+                "job_name": job_name,
+                "stage": row.get("stage"),
+                "source": source_topic,
+                "emits": emits_topic,
+                "description": row.get("description"),
+                "enabled": bool(row.get("enabled")),
+                "status": status,
+                "error": error,
+                "job_run": job,
+                "source_event": source_event,
+                "emitted_event": emitted_event,
+            })
+
+        completed = sum(1 for node in nodes if node["status"] == "ok")
+        running = sum(1 for node in nodes if node["status"] == "running")
+        error_count = sum(1 for node in nodes if node["status"] == "error")
+        pending = max(0, len(nodes) - completed - running - error_count)
+
+        root_cause = None
+        job_errors = [row for row in jobs if str(row.get("status") or "") == "error"]
+        if job_errors:
+            err = job_errors[0]
+            root_cause = {
+                "kind": "job",
+                "node": err.get("job_name"),
+                "message": err.get("result_summary"),
+                "trigger_event_id": err.get("trigger_event_id"),
+                "run_id": err.get("id"),
+            }
+        else:
+            direct_event_errors = [
+                row for row in event_rows
+                if str(row.get("status") or "") == "error" and str(row.get("handler") or "") != "<stale_cleanup>"
+            ]
+            stale_errors = [row for row in event_rows if str(row.get("status") or "") == "error"]
+            err = (direct_event_errors or stale_errors or [None])[0]
+            if err:
+                root_cause = {
+                    "kind": "event",
+                    "node": err.get("topic"),
+                    "message": err.get("error"),
+                    "handler": err.get("handler"),
+                    "event_id": err.get("id"),
+                }
+
+        overall_status = "ok"
+        if error_count or str(root.get("status") or "") == "error":
+            overall_status = "error"
+        elif running:
+            overall_status = "running"
+        elif pending and nodes:
+            overall_status = "partial"
+
+        payload = root.get("payload_json") or {}
+        title = (
+            payload.get("title")
+            or payload.get("name")
+            or payload.get("job_name")
+            or str(root.get("topic") or "")
+        )
+        return {
+            "root_event_id": int(root.get("id") or 0),
+            "topic": root.get("topic"),
+            "title": title,
+            "status": overall_status,
+            "created_at": root.get("created_at"),
+            "processed_at": root.get("processed_at"),
+            "payload_json": payload,
+            "nodes": nodes,
+            "events": event_rows,
+            "jobs": jobs,
+            "progress": {
+                "completed": completed,
+                "running": running,
+                "error": error_count,
+                "pending": pending,
+                "total": len(nodes),
+                "ratio": round((completed / len(nodes)), 4) if nodes else 0.0,
+            },
+            "root_cause": root_cause,
+        }
+
+    def event_workflow_recent(self, limit: int = 20) -> list[dict]:
+        with self._conn_lock:
+            roots = self._conn.execute(
+                """
+                SELECT id, topic, payload, parent_event_id, status, handler, error,
+                       created_at, processed_at, elapsed_ms
+                FROM event_log
+                WHERE parent_event_id IS NULL
+                   OR topic LIKE 'gate.%'
+                   OR topic = 'agenda.due'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        result: list[dict] = []
+        seen_ids: set[int] = set()
+        for row in roots:
+            root_id = int(row["id"])
+            if root_id in seen_ids:
+                continue
+            seen_ids.add(root_id)
+            detail = self.event_workflow_detail(root_id)
+            if not detail:
+                continue
+            result.append({
+                "root_event_id": detail["root_event_id"],
+                "topic": detail["topic"],
+                "title": detail["title"],
+                "status": detail["status"],
+                "created_at": detail["created_at"],
+                "processed_at": detail["processed_at"],
+                "progress": detail["progress"],
+                "root_cause": detail["root_cause"],
+            })
+        return result
+
+    def pipeline_dag_runtime(self, recent_limit: int = 200) -> dict[str, Any]:
+        nodes = self.pipeline_dag_all(enabled_only=False)
+        with self._conn_lock:
+            run_rows = self._conn.execute(
+                """
+                SELECT id, job_name, stage, trigger_event_id, status,
+                       result_summary, started_at, completed_at, elapsed_ms
+                FROM job_runs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(50, int(recent_limit)),),
+            ).fetchall()
+            event_rows = self._conn.execute(
+                """
+                SELECT id, topic, status, handler, error, created_at, processed_at, elapsed_ms
+                FROM event_log
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(50, int(recent_limit)),),
+            ).fetchall()
+
+        runs_by_job: dict[str, list[dict]] = {}
+        for row in run_rows:
+            runs_by_job.setdefault(str(row["job_name"]), []).append(dict(row))
+        events_by_topic: dict[str, list[dict]] = {}
+        for row in event_rows:
+            events_by_topic.setdefault(str(row["topic"]), []).append(dict(row))
+
+        runtime_nodes: list[dict] = []
+        edges: list[dict] = []
+        stage_summary: dict[str, dict[str, int]] = {}
+        for row in nodes:
+            job_name = str(row.get("job_name") or "")
+            source_topic = str(row.get("source") or "")
+            emits_topic = str(row.get("emits") or "")
+            job_runs = runs_by_job.get(job_name, [])
+            source_events = events_by_topic.get(source_topic, [])
+            latest_run = job_runs[0] if job_runs else None
+            latest_source = source_events[0] if source_events else None
+            latest_error_run = next((item for item in job_runs if str(item.get("status")) == "error"), None)
+            latest_error_event = next((item for item in source_events if str(item.get("status")) == "error"), None)
+            running_count = sum(1 for item in job_runs if str(item.get("status")) == "running")
+            ok_count = sum(1 for item in job_runs[:10] if str(item.get("status")) == "ok")
+            error_count = sum(1 for item in job_runs[:10] if str(item.get("status")) == "error")
+            status = "unknown"
+            if running_count:
+                status = "running"
+            elif latest_run:
+                status = str(latest_run.get("status") or "unknown")
+            elif latest_source:
+                status = str(latest_source.get("status") or "unknown")
+            error_detail = (
+                (latest_error_run or {}).get("result_summary")
+                or (latest_error_event or {}).get("error")
+            )
+            node = {
+                **dict(row),
+                "status": status,
+                "last_run": latest_run,
+                "last_source_event": latest_source,
+                "running_count": running_count,
+                "recent_ok_count": ok_count,
+                "recent_error_count": error_count,
+                "error_detail": error_detail,
+            }
+            runtime_nodes.append(node)
+            if source_topic:
+                edges.append({"from": source_topic, "to": job_name, "kind": "source"})
+            if emits_topic:
+                edges.append({"from": job_name, "to": emits_topic, "kind": "emit"})
+            stage = str(row.get("stage") or "unknown")
+            stats = stage_summary.setdefault(stage, {"total": 0, "running": 0, "error": 0, "ok": 0, "disabled": 0})
+            stats["total"] += 1
+            if not bool(row.get("enabled")):
+                stats["disabled"] += 1
+            elif status == "running":
+                stats["running"] += 1
+            elif status == "error":
+                stats["error"] += 1
+            elif status == "ok":
+                stats["ok"] += 1
+        return {"nodes": runtime_nodes, "edges": edges, "stage_summary": stage_summary}
 
     # ── Pipeline DAG ───────────────────────────────────────────────────────────
 
