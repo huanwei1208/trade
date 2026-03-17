@@ -18,6 +18,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import threading
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -96,6 +97,8 @@ class EventBus:
         self._db = db
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bus")
         self._subs: dict[str, list[Callable[[Event], None]]] = defaultdict(list)
+        self._active_lock = threading.RLock()
+        self._active_tasks_by_event: dict[int, int] = {}
 
     def subscribe(self, topic: str, handler: Callable[[Event], None]) -> None:
         """Register a handler for a topic. Handlers run asynchronously."""
@@ -119,7 +122,12 @@ class EventBus:
             self._db.event_log_complete(eid, "ok", "<no_handler>")
         else:
             for h in handlers:
-                self._pool.submit(self._run_handler, h, event)
+                self._mark_handler_started(event.id)
+                try:
+                    self._pool.submit(self._run_handler, h, event)
+                except Exception:
+                    self._mark_handler_finished(event.id)
+                    raise
         return event
 
     def _run_handler(self, handler: Callable[[Event], None], event: Event) -> None:
@@ -138,6 +146,26 @@ class EventBus:
             self._db.event_log_complete(
                 event.id, "error", handler_name, str(exc)[:500], elapsed_ms=elapsed
             )
+        finally:
+            self._mark_handler_finished(event.id)
+
+    def _mark_handler_started(self, event_id: int) -> None:
+        with self._active_lock:
+            self._active_tasks_by_event[event_id] = self._active_tasks_by_event.get(event_id, 0) + 1
+
+    def _mark_handler_finished(self, event_id: int) -> None:
+        with self._active_lock:
+            current = int(self._active_tasks_by_event.get(event_id, 0))
+            if current <= 1:
+                self._active_tasks_by_event.pop(event_id, None)
+            else:
+                self._active_tasks_by_event[event_id] = current - 1
+
+    def _has_active_handlers(self, min_event_id: int | None = None) -> bool:
+        with self._active_lock:
+            if min_event_id is None:
+                return any(count > 0 for count in self._active_tasks_by_event.values())
+            return any(event_id >= min_event_id and count > 0 for event_id, count in self._active_tasks_by_event.items())
 
     def replay_pending(self) -> None:
         """On daemon startup: re-dispatch events stuck in 'pending' state (crash recovery)."""
@@ -151,7 +179,8 @@ class EventBus:
         deadline = _time.time() + max(0.1, timeout_sec)
         while _time.time() < deadline:
             pending = self._db.event_log_pending(min_id=min_event_id)
-            if not pending:
+            active = self._has_active_handlers(min_event_id=min_event_id)
+            if not pending and not active:
                 return True
             _time.sleep(0.1)
         return False

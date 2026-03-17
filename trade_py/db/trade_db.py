@@ -2017,7 +2017,7 @@ class TradeDB:
         with self._conn_lock:
             cur = self._conn.execute(
                 "INSERT INTO event_log (topic, payload, parent_event_id, status, created_at) "
-                "VALUES (?, ?, ?, 'pending', CURRENT_TIMESTAMP)",
+                "VALUES (?, ?, ?, 'pending', datetime('now', 'localtime'))",
                 (topic, payload_json, parent_event_id),
             )
             self._conn.commit()
@@ -2030,7 +2030,7 @@ class TradeDB:
             self._conn.execute(
                 """
                 UPDATE event_log SET status=?, handler=?, error=?,
-                    elapsed_ms=?, processed_at=CURRENT_TIMESTAMP WHERE id=?
+                    elapsed_ms=?, processed_at=datetime('now', 'localtime') WHERE id=?
                 """,
                 (status, handler, error, elapsed_ms, id),
             )
@@ -2057,7 +2057,8 @@ class TradeDB:
                 UPDATE event_log
                 SET status='error',
                     handler=COALESCE(NULLIF(handler, ''), '<stale_cleanup>'),
-                    error=COALESCE(NULLIF(error, ''), ?)
+                    error=COALESCE(NULLIF(error, ''), ?),
+                    processed_at=datetime('now', 'localtime')
                 WHERE status='pending'
                   AND created_at < datetime('now', 'localtime', ?)
                 """,
