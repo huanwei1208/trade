@@ -300,6 +300,12 @@ th {
     linear-gradient(90deg, rgba(255, 255, 255, 0.02), transparent);
 }
 
+.dag-board {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+}
+
 .dag-svg {
   position: absolute;
   inset: 0;
@@ -352,6 +358,14 @@ th {
 .dag-node.selected {
   outline: 2px solid rgba(42, 157, 255, 0.92);
   outline-offset: 1px;
+}
+
+.dag-node.focused {
+  box-shadow: 0 18px 32px rgba(23, 79, 128, 0.32);
+}
+
+.dag-node.dimmed {
+  opacity: 0.48;
 }
 
 .dag-node-top {

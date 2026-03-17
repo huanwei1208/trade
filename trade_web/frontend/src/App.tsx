@@ -380,15 +380,14 @@ function buildDagLayout(
   }
   const levelKeys = Array.from(levelsMap.keys()).sort((a, b) => a - b);
   const orderByNode = new Map<string, number>();
-  for (const depth of levelKeys) {
-    const bucket = levelsMap.get(depth) || [];
+  const statusRank = { error: 0, running: 1, partial: 2, ok: 3, pending: 4, unknown: 5 } as Record<string, number>;
+  const sortBucket = (bucket: GraphNode[], relationMap: Map<string, Set<string>>) => {
     bucket.sort((a, b) => {
-      const aPred = Array.from(predecessors.get(a.key) || []);
-      const bPred = Array.from(predecessors.get(b.key) || []);
-      const aCenter = aPred.length ? aPred.reduce((sum, key) => sum + (orderByNode.get(key) ?? 0), 0) / aPred.length : 0;
-      const bCenter = bPred.length ? bPred.reduce((sum, key) => sum + (orderByNode.get(key) ?? 0), 0) / bPred.length : 0;
+      const aRel = Array.from(relationMap.get(a.key) || []);
+      const bRel = Array.from(relationMap.get(b.key) || []);
+      const aCenter = aRel.length ? aRel.reduce((sum, key) => sum + (orderByNode.get(key) ?? 0), 0) / aRel.length : 0;
+      const bCenter = bRel.length ? bRel.reduce((sum, key) => sum + (orderByNode.get(key) ?? 0), 0) / bRel.length : 0;
       if (aCenter !== bCenter) return aCenter - bCenter;
-      const statusRank = { error: 0, running: 1, partial: 2, ok: 3, pending: 4, unknown: 5 } as Record<string, number>;
       const diff = (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9);
       if (diff !== 0) return diff;
       if (focusDagIds && (a.dagId || b.dagId)) {
@@ -400,9 +399,37 @@ function buildDagLayout(
       return a.label.localeCompare(b.label);
     });
     bucket.forEach((node, index) => {
-      node.x = padX + depth * (nodeWidth + colGap);
-      node.y = padY + index * ((node.kind === "topic" ? topicHeight : nodeHeight) + rowGap);
       orderByNode.set(node.key, index);
+    });
+  };
+  for (const depth of levelKeys) {
+    sortBucket(levelsMap.get(depth) || [], predecessors);
+  }
+  for (let sweep = 0; sweep < 3; sweep += 1) {
+    for (const depth of levelKeys.slice(1)) {
+      sortBucket(levelsMap.get(depth) || [], predecessors);
+    }
+    for (const depth of [...levelKeys].reverse().slice(1)) {
+      sortBucket(levelsMap.get(depth) || [], successors);
+    }
+  }
+
+  const levelHeights = new Map<number, number>();
+  let maxContentHeight = 0;
+  for (const depth of levelKeys) {
+    const bucket = levelsMap.get(depth) || [];
+    const contentHeight = bucket.reduce((sum, node, index) => sum + node.height + (index > 0 ? rowGap : 0), 0);
+    levelHeights.set(depth, contentHeight);
+    maxContentHeight = Math.max(maxContentHeight, contentHeight);
+  }
+  for (const depth of levelKeys) {
+    const bucket = levelsMap.get(depth) || [];
+    const contentHeight = levelHeights.get(depth) || 0;
+    let cursorY = padY + Math.max(0, (maxContentHeight - contentHeight) / 2);
+    bucket.forEach((node) => {
+      node.x = padX + depth * (nodeWidth + colGap);
+      node.y = cursorY;
+      cursorY += node.height + rowGap;
       const override = overrides?.[node.key];
       if (override) {
         node.x = override.x;
@@ -417,9 +444,11 @@ function buildDagLayout(
     x: padX + depth * (nodeWidth + colGap),
     width: nodeWidth,
   }));
-  const maxRows = Math.max(...levelKeys.map((depth) => (levelsMap.get(depth) || []).length), 1);
-  const width = padX * 2 + Math.max(1, levels.length) * nodeWidth + Math.max(0, levels.length - 1) * colGap;
-  const height = padY * 2 + maxRows * nodeHeight + Math.max(0, maxRows - 1) * rowGap + 72;
+  const width = Math.max(
+    980,
+    padX * 2 + Math.max(1, levels.length) * nodeWidth + Math.max(0, levels.length - 1) * colGap,
+  );
+  const height = Math.max(420, padY * 2 + maxContentHeight + 72);
   const graphEdges: GraphEdge[] = edges
     .map((edge) => {
       const from = allNodes.find((node) => node.key === edge.from);
@@ -464,6 +493,8 @@ function App() {
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const refreshTimerRef = useRef<number | null>(null);
+  const flyoutTimerRef = useRef<number | null>(null);
+  const [pinnedDagKey, setPinnedDagKey] = useState<string>("");
 
   const t = (key: TranslationKey) => I18N[locale][key];
   const workflowRows: DagNode[] = workflowDetail?.nodes || [];
@@ -471,22 +502,9 @@ function App() {
     () => new Set(workflowRows.map((row) => Number(row.dag_id ?? row.id ?? 0)).filter(Boolean)),
     [workflowRows],
   );
-  const workflowGraphKey = useMemo(
-    () => `workflow:${selectedWorkflowId ?? "focus"}`,
-    [selectedWorkflowId],
-  );
   const globalGraphKey = useMemo(
     () => `global:${eventsPage?.as_of || "events"}`,
     [eventsPage?.as_of],
-  );
-  const workflowGraph = useMemo(
-    () => buildDagLayout(
-      workflowRows,
-      (eventsPage?.dag?.edges || []) as DagEdge[],
-      undefined,
-      graphOverrides[workflowGraphKey] || {},
-    ),
-    [workflowRows, eventsPage?.dag?.edges, graphOverrides, workflowGraphKey],
   );
   const globalGraph = useMemo(
     () => buildDagLayout(
@@ -497,7 +515,6 @@ function App() {
     ),
     [eventsPage?.dag?.nodes, eventsPage?.dag?.edges, focusDagIds, graphOverrides, globalGraphKey],
   );
-  const selectedWorkflowGraphNode = workflowGraph.nodes.find((node) => node.key === selectedDagKey) || null;
   const selectedGlobalGraphNode = globalGraph.nodes.find((node) => node.key === selectedDagKey) || null;
 
   useEffect(() => {
@@ -569,15 +586,57 @@ function App() {
   useEffect(() => {
     if (!workflowDetail?.nodes?.length) {
       setSelectedDagKey("");
+      setPinnedDagKey("");
       return;
     }
     const preferred = workflowDetail.nodes.find((node: any) => String(node.status || "") === "error") || workflowDetail.nodes[0];
     setSelectedDagKey(`task:${preferred.dag_id ?? preferred.id ?? preferred.job_name}`);
+    setPinnedDagKey("");
   }, [workflowDetail?.root_event_id]);
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+    if (flyoutTimerRef.current) {
+      window.clearTimeout(flyoutTimerRef.current);
+    }
+  }, []);
 
   function pushToast(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(""), 2400);
+  }
+
+  function clearFlyoutTimer() {
+    if (flyoutTimerRef.current) {
+      window.clearTimeout(flyoutTimerRef.current);
+      flyoutTimerRef.current = null;
+    }
+  }
+
+  function openDagFlyout(nodeKey: string) {
+    clearFlyoutTimer();
+    setSelectedDagKey(nodeKey);
+  }
+
+  function scheduleDagFlyoutClose() {
+    clearFlyoutTimer();
+    if (pinnedDagKey) return;
+    flyoutTimerRef.current = window.setTimeout(() => {
+      setSelectedDagKey("");
+    }, 140);
+  }
+
+  function togglePinnedFlyout(nodeKey: string) {
+    clearFlyoutTimer();
+    setPinnedDagKey((current) => {
+      if (current === nodeKey) {
+        return "";
+      }
+      setSelectedDagKey(nodeKey);
+      return nodeKey;
+    });
   }
 
   async function loadReport() {
@@ -938,6 +997,10 @@ function App() {
       onSelect?: (key: string) => void;
       flyout?: ReactNode;
       onNodeMove?: (nodeKey: string, x: number, y: number) => void;
+      onHoverStart?: (key: string) => void;
+      onHoverEnd?: () => void;
+      onPin?: (key: string) => void;
+      focusDagIds?: Set<number>;
     },
   ) {
     if (!layout.nodes.length) return <div className="empty">{t("noData")}</div>;
@@ -965,15 +1028,16 @@ function App() {
 
     return (
       <div className="dag-shell">
-        <div className="dag-canvas" style={{ width: `${layout.width}px`, height: `${layout.height}px` }}>
-          <div className="dag-level-header">
+        <div className="dag-canvas">
+          <div className="dag-board" style={{ width: `${layout.width}px`, height: `${layout.height}px` }}>
+            <div className="dag-level-header">
             {layout.levels.map((level) => (
               <div key={`level-${level.depth}`} className="dag-level-pill" style={{ left: `${level.x}px` }}>
                 {level.label}
               </div>
             ))}
-          </div>
-          <svg className="dag-svg" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none">
+            </div>
+            <svg className="dag-svg" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none">
             {layout.edges.map((edge) => {
               const midX = edge.x1 + Math.max(32, (edge.x2 - edge.x1) / 2);
               const path = `M ${edge.x1} ${edge.y1} C ${midX} ${edge.y1}, ${midX} ${edge.y2}, ${edge.x2} ${edge.y2}`;
@@ -985,25 +1049,42 @@ function App() {
                 />
               );
             })}
-          </svg>
-          {layout.nodes.map((node) => (
-            <button
-              type="button"
-              key={node.key}
-              className={`dag-node ${node.kind} ${statusClass(node.status)} ${options?.selectedKey === node.key ? "selected" : ""}`}
-              style={{ left: `${node.x}px`, top: `${node.y}px`, width: `${node.width}px`, height: `${node.height}px` }}
-              onClick={() => options?.onSelect?.(node.key)}
-              onMouseDown={(event) => startDrag(event, node)}
-            >
-              <div className="dag-node-top">
-                <span className="dag-node-title">{node.label}</span>
-                <span className={`pill ${statusClass(node.status)}`}>{node.status}</span>
-              </div>
-              <div className="dag-node-subtitle">{shortText(node.subtitle, 54)}</div>
-              <div className={`dag-node-detail ${node.status === "error" ? "error-text" : ""}`}>{shortText(node.detail || "-", 96)}</div>
-            </button>
-          ))}
-          {options?.flyout}
+            </svg>
+            {layout.nodes.map((node) => {
+              const isFocused = node.dagId && options?.focusDagIds?.size ? options.focusDagIds.has(node.dagId) : false;
+              const shouldDim = options?.focusDagIds?.size && node.kind === "task" && !isFocused;
+              return (
+                <button
+                  type="button"
+                  key={node.key}
+                  className={[
+                    "dag-node",
+                    node.kind,
+                    statusClass(node.status),
+                    options?.selectedKey === node.key ? "selected" : "",
+                    isFocused ? "focused" : "",
+                    shouldDim ? "dimmed" : "",
+                  ].filter(Boolean).join(" ")}
+                  style={{ left: `${node.x}px`, top: `${node.y}px`, width: `${node.width}px`, height: `${node.height}px` }}
+                  onClick={() => {
+                    options?.onSelect?.(node.key);
+                    options?.onPin?.(node.key);
+                  }}
+                  onMouseDown={(event) => startDrag(event, node)}
+                  onMouseEnter={() => options?.onHoverStart?.(node.key)}
+                  onMouseLeave={() => options?.onHoverEnd?.()}
+                >
+                  <div className="dag-node-top">
+                    <span className="dag-node-title">{node.label}</span>
+                    <span className={`pill ${statusClass(node.status)}`}>{node.status}</span>
+                  </div>
+                  <div className="dag-node-subtitle">{shortText(node.subtitle, 54)}</div>
+                  <div className={`dag-node-detail ${node.status === "error" ? "error-text" : ""}`}>{shortText(node.detail || "-", 96)}</div>
+                </button>
+              );
+            })}
+            {options?.flyout}
+          </div>
         </div>
       </div>
     );
@@ -1016,9 +1097,12 @@ function App() {
     options?: { rootEventId?: number; graphKey?: string; readOnly?: boolean },
   ) {
     if (!node) return null;
+    const flyoutWidth = 308;
     const row = rows.find((item) => `task:${item.dag_id ?? item.id ?? item.job_name}` === node.key);
+    const preferredLeft = node.x + node.width + 18;
+    const flippedLeft = Math.max(16, node.x - flyoutWidth - 18);
     const flyoutStyle = {
-      left: `${Math.min(layout.width - 320, node.x + node.width + 18)}px`,
+      left: `${preferredLeft + flyoutWidth > layout.width ? flippedLeft : preferredLeft}px`,
       top: `${Math.max(16, node.y)}px`,
     };
     if (!row) {
@@ -1035,7 +1119,12 @@ function App() {
     const upstream = rows.filter((item) => String(item.emits || "") && String(item.emits || "") === String(row.source || ""));
     const downstream = rows.filter((item) => String(item.source || "") && String(item.source || "") === String(row.emits || ""));
     return (
-      <div className="dag-flyout" style={flyoutStyle}>
+      <div
+        className="dag-flyout"
+        style={flyoutStyle}
+        onMouseEnter={() => clearFlyoutTimer()}
+        onMouseLeave={() => scheduleDagFlyoutClose()}
+      >
         <div className="list-stack">
           <div className="list-card flyout-card">
             <div className="stat-label">{t("nodeDetail")}</div>
@@ -1174,14 +1263,23 @@ function App() {
         </section>
 
         <section className="panel wide">
-          <div className="panel-title">{t("workflowDag")}</div>
+          <div className="panel-title">{t("globalDag")}</div>
           <div className="muted-line">{focusTitle}</div>
-          {loading.workflow ? <div className="empty">{t("loading")}</div> : renderDagGraph(workflowGraph, {
-            graphKey: workflowGraphKey,
+          {renderDagGraph(globalGraph, {
+            graphKey: globalGraphKey,
             selectedKey: selectedDagKey,
             onSelect: setSelectedDagKey,
-            onNodeMove: (nodeKey, x, y) => updateGraphNodePosition(workflowGraphKey, nodeKey, x, y),
-            flyout: renderNodeFlyout(workflowGraph, selectedWorkflowGraphNode, workflowRows, { rootEventId: selectedWorkflow?.root_event_id }),
+            onHoverStart: openDagFlyout,
+            onHoverEnd: scheduleDagFlyoutClose,
+            onPin: togglePinnedFlyout,
+            onNodeMove: (nodeKey, x, y) => updateGraphNodePosition(globalGraphKey, nodeKey, x, y),
+            focusDagIds,
+            flyout: renderNodeFlyout(
+              globalGraph,
+              selectedGlobalGraphNode,
+              (eventsPage.dag?.nodes || []) as DagNode[],
+              { rootEventId: selectedWorkflow?.root_event_id, readOnly: false },
+            ),
           })}
         </section>
 
@@ -1239,22 +1337,6 @@ function App() {
               )) : <div className="empty">{t("noData")}</div>}
             </div>
           </div>
-        </section>
-
-        <section className="panel wide">
-          <div className="panel-title">{t("globalDag")}</div>
-          {renderDagGraph(globalGraph, {
-            graphKey: globalGraphKey,
-            selectedKey: selectedDagKey,
-            onSelect: setSelectedDagKey,
-            onNodeMove: (nodeKey, x, y) => updateGraphNodePosition(globalGraphKey, nodeKey, x, y),
-            flyout: renderNodeFlyout(
-              globalGraph,
-              selectedGlobalGraphNode,
-              (eventsPage.dag?.nodes || []) as DagNode[],
-              { rootEventId: selectedWorkflow?.root_event_id, readOnly: true },
-            ),
-          })}
         </section>
 
         <section className="panel-grid">
