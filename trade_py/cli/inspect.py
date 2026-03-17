@@ -11,7 +11,7 @@ _DATA_ROOT = str(default_data_root())
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade inspect",
-        description="统一查看入口：dag / calendar / agenda / kg / factors / models / events",
+        description="统一查看入口：dag / calendar / agenda / kg / factors / models / events / health",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -43,7 +43,11 @@ def make_parser() -> argparse.ArgumentParser:
     p_events.add_argument("--data-root", default=_DATA_ROOT)
     p_events.add_argument("--limit", type=int, default=20)
 
-    p_hive = sub.add_parser("hive", description="查看数据蜂巢状态")
+    p_health = sub.add_parser("health", description="查看数据健康状态")
+    p_health.add_argument("--data-root", default=_DATA_ROOT)
+    p_health.add_argument("--sample-limit", type=int, default=8)
+
+    p_hive = sub.add_parser("hive", description="查看数据健康状态（兼容别名）")
     p_hive.add_argument("--data-root", default=_DATA_ROOT)
     p_hive.add_argument("--sample-limit", type=int, default=8)
 
@@ -86,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "events":
         return event_cli.main(["list", "--data-root", args.data_root, "--limit", str(args.limit)])
 
-    if args.command == "hive":
+    if args.command in {"health", "hive"}:
         from trade_py.utils.data_inspector import get_data_status
 
         status = get_data_status(args.data_root, sample_limit=args.sample_limit)
@@ -96,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         sentiment = status.get("sentiment", {})
         events = status.get("events", {})
         instruments = status.get("instruments", {})
-        print("data_hive:")
+        print("data_health:")
         print(
             f"  kline: max_date={kline.get('max_date')} symbols={kline.get('symbols')} "
             f"coverage={coverage.get('coverage_pct')}% missing={coverage.get('missing_symbols')}"

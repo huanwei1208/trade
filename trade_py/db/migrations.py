@@ -34,6 +34,8 @@ def _col_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
 # Version 6: learned KG review schema enhancements
 # Version 7: intraday realtime DAG rows
 # Version 8: calendar/planned-event DAG rows
+# Version 9: daily evaluation DAG rows
+# Version 10: UI snapshot cache + remove legacy brief DAG/settings
 
 MIGRATIONS: list[tuple[int, str]] = [
     (2, "DROP TABLE IF EXISTS macro_events;"),
@@ -433,6 +435,38 @@ def _migrate_v9(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v10(conn: sqlite3.Connection) -> None:
+    """Create UI snapshot cache and remove legacy brief/report DAG artifacts."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS ui_snapshots (
+            snapshot_key    TEXT NOT NULL,
+            scope           TEXT NOT NULL DEFAULT 'default',
+            signature       TEXT NOT NULL,
+            payload_json    TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'ok',
+            built_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at      TIMESTAMP,
+            build_ms        INTEGER NOT NULL DEFAULT 0,
+            producer        TEXT NOT NULL DEFAULT 'web',
+            PRIMARY KEY (snapshot_key, scope)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ui_snapshots_expiry
+            ON ui_snapshots(expires_at);
+    """)
+    if _table_exists(conn, "pipeline_dag"):
+        conn.execute(
+            """
+            DELETE FROM pipeline_dag
+            WHERE job_name='morning_brief'
+               OR source='gate.report'
+               OR emits='report.morning_brief'
+            """
+        )
+    if _table_exists(conn, "settings"):
+        conn.execute("DELETE FROM settings WHERE key='scheduler.brief_time'")
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -533,4 +567,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v9 applied")
         except Exception as exc:
             logger.error("Migration v9 failed: %s", exc)
+            raise
+
+    # ── v10: UI snapshots + remove legacy brief DAG/settings ────────────────
+    if 10 not in applied:
+        logger.info("Applying DB migration v10 (UI snapshots / remove brief DAG)")
+        try:
+            _migrate_v10(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (10)")
+            conn.commit()
+            logger.info("Migration v10 applied")
+        except Exception as exc:
+            logger.error("Migration v10 failed: %s", exc)
             raise

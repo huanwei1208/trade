@@ -70,11 +70,14 @@ def test_intelligence_clients():
     assert len(h) == 16
 
 
-def test_report():
-    from trade_py.report.morning_brief import generate
-    from trade_py.report.report_generator import ReportGenerator
-    from trade_py.report.decision_journal import DecisionJournal
-    from trade_py.report.scheduler import register_jobs
+def test_runtime_imports():
+    from trade_py.report.scheduler import register_schedule
+    from trade_py.report.event_pipeline import run_event_pipeline
+    from trade_web.app import create_app
+
+    assert callable(register_schedule)
+    assert callable(run_event_pipeline)
+    assert callable(create_app)
 
 
 def test_signals():

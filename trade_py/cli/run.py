@@ -16,7 +16,6 @@ _TARGET_TOPICS = {
     "realtime": "gate.intraday",
     "pre-market": "gate.pre_market",
     "signal-am": "gate.signal_am",
-    "report": "gate.report",
     "market-close": "gate.market_close",
     "evening": "gate.evening",
     "event-extract": "gate.event_extract",
@@ -29,7 +28,7 @@ _TARGET_TOPICS = {
 }
 
 _WORKFLOWS = {
-    "open": ["morning", "pre-market", "signal-am", "report"],
+    "open": ["morning", "pre-market", "signal-am"],
     "close": ["evening", "event-extract", "evaluate_daily", "market-close"],
     "sync": ["calendar_sync", "planned_event_sync", "agenda", "evaluate_daily"],
 }

@@ -3,7 +3,7 @@
 DAG Stages:
   FETCH:   kline_update, cross_asset_fetch, market_index, fund_flow_update,
            northbound, sentiment_pipeline, sector_refresh, fundamental, macro
-  COMPUTE: window_score, morning_brief, event_pipeline, event_backfill,
+  COMPUTE: window_score, event_pipeline, event_backfill,
            build_features, build_labels
   TRAIN:   model_train  (writes to model_registry; inference is a separate service)
 """
@@ -222,12 +222,6 @@ def _job_window_score(data_root: str) -> str:
     return f"全市场评分完成: {len(scores)} symbols"
 
 
-def _job_morning_brief(data_root: str) -> str:
-    from trade_py.report.morning_brief import generate
-    path = generate(data_root)
-    return f"晨报已生成: {path}"
-
-
 def _job_event_pipeline(data_root: str) -> str:
     from trade_py.event import sync_events
     return sync_events(data_root).format()
@@ -367,10 +361,6 @@ JOB_REGISTRY: dict[str, JobDef] = {
     "realtime_compute": JobDef(
         "realtime_compute", _job_realtime_compute, "盘中分钟因子计算",
         ["weekday intraday"], "compute", ["signal", "intraday"],
-    ),
-    "morning_brief": JobDef(
-        "morning_brief", _job_morning_brief, "晨报生成",
-        ["daily 07:45"], "compute", ["report"],
     ),
     "event_pipeline": JobDef(
         "event_pipeline", _job_event_pipeline, "事件提取+KG传导",

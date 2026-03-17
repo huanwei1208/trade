@@ -84,7 +84,6 @@ _DEFAULT_SETTINGS: list[tuple[str, str, str, str, str]] = [
     ("backtest.min_positions",   "15",      "int",    "backtest",  "最小持仓数"),
     ("signal.window_act_threshold",   "80", "int",    "signal",    "出手窗口质量分 cutoff"),
     ("signal.window_watch_threshold", "60", "int",    "signal",    "观察窗口质量分 cutoff"),
-    ("scheduler.brief_time",     "09:10",   "string", "scheduler", "晨报生成时间"),
     ("scheduler.scan_interval",  "5",       "int",    "scheduler", "盘中扫描间隔（分钟）"),
     ("kline.start",              "2024-01-01", "string", "market_data", "K线默认起始日期"),
     ("index.start_date",         "2024-01-01", "string", "market_data", "指数/板块默认起始日期"),
@@ -457,6 +456,22 @@ class TradeDB:
                 ON backup_snapshots(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_backup_snapshots_status
                 ON backup_snapshots(status, created_at DESC);
+
+            -- UI snapshot cache
+            CREATE TABLE IF NOT EXISTS ui_snapshots (
+                snapshot_key    TEXT NOT NULL,
+                scope           TEXT NOT NULL DEFAULT 'default',
+                signature       TEXT NOT NULL,
+                payload_json    TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'ok',
+                built_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at      TIMESTAMP,
+                build_ms        INTEGER NOT NULL DEFAULT 0,
+                producer        TEXT NOT NULL DEFAULT 'web',
+                PRIMARY KEY (snapshot_key, scope)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ui_snapshots_expiry
+                ON ui_snapshots(expires_at);
 
             -- CFG: pipeline_dag
             CREATE TABLE IF NOT EXISTS pipeline_dag (
@@ -852,6 +867,7 @@ class TradeDB:
 
     def _seed_defaults(self) -> None:
         cur = self._conn.cursor()
+        cur.execute("DELETE FROM settings WHERE key IN ('scheduler.brief_time')")
         for key, value, vtype, category, label in _DEFAULT_SETTINGS:
             cur.execute(
                 "INSERT OR IGNORE INTO settings (key, value, value_type, category, label) "
@@ -2461,6 +2477,14 @@ class TradeDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def pipeline_dag_get(self, dag_id: int) -> dict[str, Any] | None:
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT * FROM pipeline_dag WHERE id=? LIMIT 1",
+                (int(dag_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
     def pipeline_dag_set_enabled(self, dag_id: int, enabled: bool) -> None:
         self._conn.execute(
             "UPDATE pipeline_dag SET enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -2475,6 +2499,75 @@ class TradeDB:
         )
         self._conn.commit()
         return cur.rowcount
+
+    # ── UI snapshot cache ─────────────────────────────────────────────────────
+
+    def ui_snapshot_get(self, snapshot_key: str, scope: str = "default") -> dict[str, Any] | None:
+        with self._conn_lock:
+            row = self._conn.execute(
+                """
+                SELECT snapshot_key, scope, signature, payload_json, status,
+                       built_at, expires_at, build_ms, producer
+                FROM ui_snapshots
+                WHERE snapshot_key=? AND scope=?
+                LIMIT 1
+                """,
+                (snapshot_key, scope),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        payload_json = data.get("payload_json")
+        if isinstance(payload_json, str):
+            try:
+                data["payload_json"] = json.loads(payload_json)
+            except Exception:
+                data["payload_json"] = {}
+        return data
+
+    def ui_snapshot_upsert(
+        self,
+        snapshot_key: str,
+        signature: str,
+        payload: dict[str, Any],
+        *,
+        scope: str = "default",
+        ttl_seconds: int | None = None,
+        status: str = "ok",
+        build_ms: int = 0,
+        producer: str = "web",
+    ) -> None:
+        expires_at = None
+        if ttl_seconds and ttl_seconds > 0:
+            expires_at = (datetime.now() + timedelta(seconds=int(ttl_seconds))).isoformat(sep=" ", timespec="seconds")
+        with self._conn_lock:
+            self._conn.execute(
+                """
+                INSERT INTO ui_snapshots
+                    (snapshot_key, scope, signature, payload_json, status,
+                     built_at, expires_at, build_ms, producer)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
+                ON CONFLICT(snapshot_key, scope) DO UPDATE SET
+                    signature=excluded.signature,
+                    payload_json=excluded.payload_json,
+                    status=excluded.status,
+                    built_at=CURRENT_TIMESTAMP,
+                    expires_at=excluded.expires_at,
+                    build_ms=excluded.build_ms,
+                    producer=excluded.producer
+                """,
+                (
+                    snapshot_key,
+                    scope,
+                    signature,
+                    json.dumps(payload, ensure_ascii=False),
+                    status,
+                    expires_at,
+                    int(build_ms),
+                    producer,
+                ),
+            )
+            self._conn.commit()
 
     # ── Model Registry ─────────────────────────────────────────────────────────
 

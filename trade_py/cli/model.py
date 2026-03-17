@@ -316,24 +316,6 @@ def _cmd_nlp_train(args: argparse.Namespace) -> int:
         return 1
 
 
-def _cmd_model_report(args: argparse.Namespace) -> int:
-    from trade_py.analysis.feature_builder import FeatureBuilder
-    from trade_py.analysis.model_trainer import PropagationModel
-    from trade_py.report.report_generator import ReportGenerator
-
-    sector = args.sector or "SW_Unknown"
-    event = _make_event(args)
-    feat_row = FeatureBuilder(Path(args.data_root)).build(event, args.symbol, sector)
-    if feat_row is None:
-        logger.error("Cannot build features for %s", args.symbol)
-        return 1
-    model = PropagationModel(Path(args.data_root))
-    model.load()
-    gen = ReportGenerator(model)
-    print(gen.format_markdown(gen.generate(event, args.symbol, feat_row.features, sector=sector)))
-    return 0
-
-
 def make_parser() -> argparse.ArgumentParser:
     from trade_py.cli import epilog_from_subparsers
 
@@ -464,8 +446,6 @@ def make_parser() -> argparse.ArgumentParser:
     for name, desc, example in [
         ("predict", "预测股票对事件的反应",
          "trade model predict --symbol 600000.SH --event-type policy_easing --magnitude 0.8"),
-        ("report",  "生成决策报告 (Markdown)",
-         "trade model report --symbol 600000.SH --event-type policy_easing --magnitude 0.8"),
     ]:
         p = sub.add_parser(name, description=desc, epilog=example,
                            formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -511,5 +491,4 @@ def main(argv: list[str] | None = None) -> int:
         "sync-factors":   _cmd_sync_factors,
         "sync-signals":   _cmd_sync_signals,
         "predict":        _cmd_predict,
-        "report":         _cmd_model_report,
     }.get(args.command, lambda _: 1)(args)

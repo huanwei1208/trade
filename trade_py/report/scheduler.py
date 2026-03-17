@@ -80,7 +80,6 @@ def register_schedule(bus: EventBus, db: "TradeDB") -> None:
     schedule.every(1).minutes.do(_publish_due_agenda)
     schedule.every().day.at("07:05").do(_guarded(Topic.GATE_PRE_MARKET))
     schedule.every().day.at("07:35").do(_guarded(Topic.GATE_SIGNAL_AM))
-    schedule.every().day.at("07:45").do(_guarded(Topic.GATE_REPORT))
     schedule.every().day.at("15:15").do(_guarded(Topic.GATE_MARKET_CLOSE))
     schedule.every().day.at("22:00").do(_p(Topic.GATE_EVENING))
     schedule.every().day.at("22:30").do(_p(Topic.GATE_EVENT_EXTRACT))

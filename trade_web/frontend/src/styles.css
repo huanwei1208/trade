@@ -175,6 +175,10 @@ textarea {
   gap: 12px;
 }
 
+.inline-actions {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
 .button-card {
   text-align: left;
 }
@@ -260,6 +264,30 @@ th {
 
 .error-text {
   color: var(--err);
+}
+
+.muted-line {
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.node-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.node-actions {
+  margin-top: 12px;
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-row:hover {
+  background: rgba(42, 157, 255, 0.08);
 }
 
 .toast {

@@ -35,7 +35,6 @@ class Topic:
     GATE_INTRADAY         = "gate.intraday"          # every 1min during market session
     GATE_PRE_MARKET       = "gate.pre_market"         # 07:05
     GATE_SIGNAL_AM        = "gate.signal_am"          # 07:35
-    GATE_REPORT           = "gate.report"             # 07:45
     GATE_MARKET_CLOSE     = "gate.market_close"       # 15:15
     GATE_EVENING          = "gate.evening"            # 22:00
     GATE_EVENT_EXTRACT    = "gate.event_extract"      # 22:30
@@ -54,7 +53,6 @@ class Topic:
     INDEX_SYNCED          = "data.index.synced"
     SENTIMENT_SYNCED      = "data.sentiment.synced"
     WINDOW_SCORE_UPDATED  = "signal.window.updated"
-    MORNING_BRIEF_READY   = "report.morning_brief"
     FEATURES_BUILT        = "model.features.built"
     LABELS_BUILT          = "model.labels.built"
     MODEL_TRAINED         = "model.trained"
@@ -65,7 +63,7 @@ class Topic:
 
     # All gate topics (for dry-run iteration)
     ALL_GATES = [
-        GATE_MORNING, GATE_INTRADAY, GATE_PRE_MARKET, GATE_SIGNAL_AM, GATE_REPORT,
+        GATE_MORNING, GATE_INTRADAY, GATE_PRE_MARKET, GATE_SIGNAL_AM,
         GATE_MARKET_CLOSE, GATE_EVENING, GATE_EVENT_EXTRACT, GATE_EVALUATE_DAILY,
         GATE_SECTOR_WEEKLY, GATE_FUND_WEEKLY, GATE_MACRO_WEEKLY,
         GATE_MODEL_WEEKLY,
@@ -102,6 +100,10 @@ class EventBus:
 
     def subscribe(self, topic: str, handler: Callable[[Event], None]) -> None:
         """Register a handler for a topic. Handlers run asynchronously."""
+        new_name = getattr(handler, "__qualname__", repr(handler))
+        for existing in self._subs[topic]:
+            if getattr(existing, "__qualname__", repr(existing)) == new_name:
+                return
         self._subs[topic].append(handler)
 
     def publish(self, topic: str, payload: dict | None = None,
@@ -329,6 +331,52 @@ def bootstrap_from_dag(db: "TradeDB", data_root: str) -> "EventBus":
     bus.subscribe(Topic.AGENDA_DUE, _make_agenda_handler(db, data_root))
     logger.info("bootstrap_from_dag: subscribed %d handlers from pipeline_dag", len(rows))
     return bus
+
+
+def dispatch_dag_row(
+    db: "TradeDB",
+    bus: "EventBus",
+    data_root: str,
+    row: dict,
+    payload: dict | None = None,
+    *,
+    parent_event_id: int | None = None,
+) -> Event:
+    """Dispatch a single DAG node as if its source topic just arrived.
+
+    This is used by the Web console to replay a failed node and allow downstream
+    emits to continue automatically.
+    """
+    if not row or not row.get("enabled"):
+        raise ValueError("DAG row is missing or disabled")
+    payload = dict(payload or {})
+    event_id = db.event_log_insert(
+        str(row.get("source") or ""),
+        json.dumps(payload, ensure_ascii=False),
+        parent_event_id,
+    )
+    event = Event(
+        id=event_id,
+        topic=str(row.get("source") or ""),
+        payload=payload,
+        parent_event_id=parent_event_id,
+        created_at=datetime.now(timezone.utc),
+        bus=bus,
+    )
+    handler = _make_dag_handler(
+        db,
+        job_name=str(row.get("job_name") or ""),
+        emits=str(row.get("emits") or "") or None,
+        stage=str(row.get("stage") or "compute"),
+        data_root=data_root,
+    )
+    bus._mark_handler_started(event.id)
+    try:
+        bus._pool.submit(bus._run_handler, handler, event)
+    except Exception:
+        bus._mark_handler_finished(event.id)
+        raise
+    return event
 
 
 # ── Singleton accessor ─────────────────────────────────────────────────────────
