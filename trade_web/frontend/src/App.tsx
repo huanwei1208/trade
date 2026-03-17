@@ -714,6 +714,17 @@ function App() {
     await loadReport();
   }
 
+  async function runDagNode(dagId: number, mode: "self" | "upstream" | "downstream" | "full" = "self") {
+    await apiFetch(`/api/dag/${dagId}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, payload: {} }),
+    });
+    pushToast(`run: ${dagId} · ${mode}`);
+    await loadEvents();
+    await loadReport();
+  }
+
   function updateGraphNodePosition(graphKey: string, nodeKey: string, x: number, y: number) {
     setGraphOverrides((prev) => ({
       ...prev,
@@ -1012,10 +1023,14 @@ function App() {
       const startX = node.x;
       const startY = node.y;
       const move = (moveEvent: MouseEvent) => {
+        const nextX = startX + moveEvent.clientX - originX;
+        const nextY = startY + moveEvent.clientY - originY;
+        const clampedX = Math.max(12, Math.min(layout.width - node.width - 12, nextX));
+        const clampedY = Math.max(52, Math.min(layout.height - node.height - 16, nextY));
         options.onNodeMove?.(
           node.key,
-          startX + moveEvent.clientX - originX,
-          startY + moveEvent.clientY - originY,
+          clampedX,
+          clampedY,
         );
       };
       const up = () => {
@@ -1094,7 +1109,7 @@ function App() {
     layout: DagLayout,
     node: GraphNode | null,
     rows: DagNode[],
-    options?: { rootEventId?: number; graphKey?: string; readOnly?: boolean },
+    options?: { rootEventId?: number; graphKey?: string; readOnly?: boolean; workflowNodeIds?: Set<number> },
   ) {
     if (!node) return null;
     const flyoutWidth = 308;
@@ -1118,6 +1133,7 @@ function App() {
     }
     const upstream = rows.filter((item) => String(item.emits || "") && String(item.emits || "") === String(row.source || ""));
     const downstream = rows.filter((item) => String(item.source || "") && String(item.source || "") === String(row.emits || ""));
+    const inWorkflow = row.dag_id && options?.workflowNodeIds?.has(Number(row.dag_id));
     return (
       <div
         className="dag-flyout"
@@ -1143,12 +1159,40 @@ function App() {
               <div><span className="stat-label">{t("counts")}</span><span>{row.recent_ok_count ?? 0} ok / {row.recent_error_count ?? 0} err</span></div>
               <div><span className="stat-label">emits</span><span>{row.emits || "-"}</span></div>
             </div>
-            {options?.rootEventId && row.dag_id && !options?.readOnly ? (
+            {row.dag_id && !options?.readOnly ? (
               <div className="node-actions">
-                <button type="button" onClick={() => void rerunNode(options.rootEventId!, row.dag_id!, "self")}>{t("rerun")}</button>
-                <button type="button" onClick={() => void rerunNode(options.rootEventId!, row.dag_id!, "upstream")}>{t("rerunUpstream")}</button>
-                <button type="button" onClick={() => void rerunNode(options.rootEventId!, row.dag_id!, "downstream")}>{t("rerunDownstream")}</button>
-                <button type="button" onClick={() => void rerunNode(options.rootEventId!, row.dag_id!, "full")}>{t("rerunFull")}</button>
+                <button
+                  type="button"
+                  onClick={() => inWorkflow && options?.rootEventId
+                    ? void rerunNode(options.rootEventId, row.dag_id!, "self")
+                    : void runDagNode(row.dag_id!, "self")}
+                >
+                  {t("rerun")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => inWorkflow && options?.rootEventId
+                    ? void rerunNode(options.rootEventId, row.dag_id!, "upstream")
+                    : void runDagNode(row.dag_id!, "upstream")}
+                >
+                  {t("rerunUpstream")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => inWorkflow && options?.rootEventId
+                    ? void rerunNode(options.rootEventId, row.dag_id!, "downstream")
+                    : void runDagNode(row.dag_id!, "downstream")}
+                >
+                  {t("rerunDownstream")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => inWorkflow && options?.rootEventId
+                    ? void rerunNode(options.rootEventId, row.dag_id!, "full")
+                    : void runDagNode(row.dag_id!, "full")}
+                >
+                  {t("rerunFull")}
+                </button>
               </div>
             ) : null}
           </div>
@@ -1175,6 +1219,9 @@ function App() {
     const selectedWorkflow = workflowDetail || eventsPage.focus || null;
     const workflowFailedNodes = workflowRows.filter((row) => ["error", "partial"].includes(String(row.status || "")));
     const failureList = workflowFailedNodes.length ? workflowFailedNodes : (eventsPage.failed_nodes || []);
+    const workflowNodeIds = new Set(
+      workflowRows.map((row) => Number(row.dag_id ?? row.id ?? 0)).filter((value) => value > 0),
+    );
     const focusTitle = selectedWorkflow
       ? `${selectedWorkflow.title || selectedWorkflow.topic || "workflow"} #${selectedWorkflow.root_event_id || "-"}`
       : t("focusWorkflow");
@@ -1278,7 +1325,7 @@ function App() {
               globalGraph,
               selectedGlobalGraphNode,
               (eventsPage.dag?.nodes || []) as DagNode[],
-              { rootEventId: selectedWorkflow?.root_event_id, readOnly: false },
+              { rootEventId: selectedWorkflow?.root_event_id, readOnly: false, workflowNodeIds },
             ),
           })}
         </section>

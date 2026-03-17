@@ -591,6 +591,34 @@ def create_app():
         preferred.sort(key=lambda node_id: (_depth(node_id), node_id))
         return int(preferred[0]) if preferred else dag_id
 
+    def _pick_root_replay_node(nodes: list[dict[str, Any]], dag_id: int) -> int:
+        predecessors, _ = _workflow_graph(nodes)
+        ancestors = _collect_ancestors(dag_id, predecessors)
+        if not ancestors:
+            return dag_id
+        node_ids = set(ancestors)
+        node_ids.add(dag_id)
+
+        def _depth(node_id: int) -> int:
+            depth = 0
+            frontier = [node_id]
+            seen: set[int] = set()
+            while frontier:
+                nxt: list[int] = []
+                for current in frontier:
+                    if current in seen:
+                        continue
+                    seen.add(current)
+                    parents = predecessors.get(current) or []
+                    if parents:
+                        nxt.extend(parents)
+                if nxt:
+                    depth += 1
+                frontier = nxt
+            return depth
+
+        return min(node_ids, key=lambda node_id: (_depth(node_id), node_id))
+
     def _report_page_payload() -> dict[str, Any]:
         db = _db()
         gate = db.quality_gate_get() or {}
@@ -798,6 +826,55 @@ def create_app():
     async def disable_dag(dag_id: int):
         _db().pipeline_dag_set_enabled(dag_id, False)
         return {"id": dag_id, "enabled": False}
+
+    @app.post("/api/dag/{dag_id}/run")
+    async def run_dag_node(dag_id: int, req: dict = Body(...)):
+        from trade_py.bus import bootstrap_from_dag, dispatch_dag_row, get_bus
+
+        mode = str(req.get("mode") or "self").strip().lower()
+        if mode not in {"self", "upstream", "downstream", "full"}:
+            raise HTTPException(status_code=400, detail="mode must be one of self, upstream, downstream, full")
+        payload = req.get("payload") or {}
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="payload must be a JSON object")
+        db = _db()
+        dag_row = db.pipeline_dag_get(dag_id)
+        if not dag_row:
+            raise HTTPException(status_code=404, detail="dag row not found")
+        if not bool(dag_row.get("enabled")):
+            raise HTTPException(status_code=409, detail="dag row is disabled")
+        runtime_nodes = db.pipeline_dag_runtime(recent_limit=240).get("nodes", [])
+        target_dag_id = dag_id
+        if mode == "upstream":
+            target_dag_id = _pick_upstream_replay_node(runtime_nodes, dag_id)
+        elif mode == "full":
+            target_dag_id = _pick_root_replay_node(runtime_nodes, dag_id)
+        target_row = db.pipeline_dag_get(target_dag_id) or dag_row
+        payload = dict(payload)
+        payload["_dispatch"] = {
+            "dag_id": dag_id,
+            "target_dag_id": target_dag_id,
+            "mode": mode,
+        }
+        bus = get_bus(db)
+        bootstrap_from_dag(db, data_root)
+        event = dispatch_dag_row(
+            db,
+            bus,
+            data_root,
+            target_row,
+            payload,
+            parent_event_id=None,
+        )
+        return {
+            "accepted": True,
+            "mode": mode,
+            "dag_id": dag_id,
+            "target_dag_id": int(target_row.get("id") or dag_id),
+            "job_name": target_row.get("job_name"),
+            "event_id": event.id,
+            "topic": target_row.get("source"),
+        }
 
     # ── API: trigger event ────────────────────────────────────────────────────
 
