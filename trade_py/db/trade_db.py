@@ -21,6 +21,7 @@ from trade_py.db.migrations import run_migrations
 from trade_py.utils.a_share_symbols import infer_a_share_suffix
 
 logger = logging.getLogger(__name__)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ── Instruments helpers ────────────────────────────────────────────────────────
 
@@ -114,6 +115,24 @@ _DEFAULT_SETTINGS: list[tuple[str, str, str, str, str]] = [
     ("hooks.notify_on",   "failure,success", "string", "hooks", "触发推送的事件"),
 ]
 
+_CONFIG_JSON_SEEDS: list[tuple[str, str, str, str]] = [
+    ("config.defaults", "config/defaults.json", "config", "历史默认配置"),
+    ("catalog.feeds.backfill_priority", "config/feeds/backfill_priority.json", "catalog", "回补优先级目录"),
+    ("catalog.feeds.china_public", "config/feeds/china_public.json", "catalog", "中国公开 feed 目录"),
+    ("catalog.feeds.gdelt", "config/feeds/gdelt.json", "catalog", "GDELT 频道目录"),
+    ("catalog.feeds.global_public", "config/feeds/global_public.json", "catalog", "全球公开 feed 目录"),
+    ("catalog.feeds.premium", "config/feeds/premium.json", "catalog", "付费 feed 目录"),
+    ("catalog.feeds.rss", "config/feeds/rss.json", "catalog", "RSS feed 目录"),
+]
+
+_CONFIG_TEXT_SEEDS: list[tuple[str, str, str, str]] = [
+    ("config.module.market_data", "config/modules/market_data.yaml", "config", "市场数据模块配置"),
+    ("config.module.security", "config/modules/security.yaml", "config", "安全模块配置"),
+    ("config.module.sentiment", "config/modules/sentiment.yaml", "config", "情绪模块配置"),
+    ("config.module.storage", "config/modules/storage.yaml", "config", "存储模块配置"),
+    ("config.resource.sentiment_dict", "config/sentiment_dict.txt", "config", "情绪词典"),
+]
+
 
 def _infer_market(code: str) -> int:
     suffix = infer_a_share_suffix(code)
@@ -194,6 +213,26 @@ def _json_loads_safe(value: Any, default: Any = None) -> Any:
         return json.loads(text)
     except Exception:
         return default
+
+
+def _read_repo_json(rel_path: str) -> Any:
+    path = _REPO_ROOT / rel_path
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _read_repo_text(rel_path: str) -> str | None:
+    path = _REPO_ROOT / rel_path
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return None
 
 
 def _find_db_path(data_root: Path) -> Path:
@@ -874,6 +913,24 @@ class TradeDB:
                 "VALUES (?, ?, ?, ?, ?)",
                 (key, value, vtype, category, label),
             )
+        for key, rel_path, category, label in _CONFIG_JSON_SEEDS:
+            payload = _read_repo_json(rel_path)
+            if payload is None:
+                continue
+            cur.execute(
+                "INSERT OR IGNORE INTO settings (key, value, value_type, category, label) "
+                "VALUES (?, ?, 'json', ?, ?)",
+                (key, json.dumps(payload, ensure_ascii=False), category, label),
+            )
+        for key, rel_path, category, label in _CONFIG_TEXT_SEEDS:
+            payload = _read_repo_text(rel_path)
+            if payload is None:
+                continue
+            cur.execute(
+                "INSERT OR IGNORE INTO settings (key, value, value_type, category, label) "
+                "VALUES (?, ?, 'string', ?, ?)",
+                (key, payload, category, label),
+            )
         self._conn.commit()
 
     # ── Settings CRUD ──────────────────────────────────────────────────────────
@@ -886,13 +943,43 @@ class TradeDB:
             return default
         return self._cast(row["value"], row["value_type"])
 
-    def set(self, key: str, value: Any) -> None:
+    def get_json(self, key: str, default: Any = None) -> Any:
+        value = self.get(key, default)
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, str):
+            return _json_loads_safe(value, default)
+        return default if value is None else value
+
+    def set(self, key: str, value: Any, *, value_type: str | None = None,
+            category: str = "general", label: str | None = None) -> None:
+        if value_type is None:
+            if isinstance(value, bool):
+                value_type = "bool"
+            elif isinstance(value, int) and not isinstance(value, bool):
+                value_type = "int"
+            elif isinstance(value, float):
+                value_type = "float"
+            elif isinstance(value, (dict, list)):
+                value_type = "json"
+            else:
+                value_type = "string"
+        if value_type == "json":
+            stored = json.dumps(value, ensure_ascii=False)
+        elif value_type == "bool":
+            stored = "1" if bool(value) else "0"
+        else:
+            stored = str(value)
         self._conn.execute(
-            "INSERT INTO settings (key, value, value_type, category, updated_at) "
-            "VALUES (?, ?, 'string', 'general', CURRENT_TIMESTAMP) "
+            "INSERT INTO settings (key, value, value_type, category, label, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT(key) DO UPDATE SET "
-            "value = excluded.value, updated_at = CURRENT_TIMESTAMP",
-            (key, str(value)),
+            "value = excluded.value, "
+            "value_type = excluded.value_type, "
+            "category = excluded.category, "
+            "label = COALESCE(excluded.label, settings.label), "
+            "updated_at = CURRENT_TIMESTAMP",
+            (key, stored, value_type, category, label),
         )
         self._conn.commit()
 
@@ -3555,4 +3642,6 @@ class TradeDB:
             return float(value)
         if vtype == "bool":
             return value.lower() in ("1", "true", "yes")
+        if vtype == "json":
+            return _json_loads_safe(value, value)
         return value

@@ -212,8 +212,6 @@ class TushareProClient:
                 is_rate_limit = classification == "rate_limit"
                 if classification == "auth":
                     raise TushareAuthError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
-                if classification == "rate_limit":
-                    raise TushareRateLimitError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
                 if classification == "permission":
                     raise TusharePermissionError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
                 if classification == "invalid_request":

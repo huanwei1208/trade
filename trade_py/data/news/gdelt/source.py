@@ -18,6 +18,7 @@ from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
 
 from trade_py.data.source import RawRecord
+from trade_py.infra.settings.catalogs import load_catalog_payload
 from trade_py.utils.scoring import meta_score
 
 logger = logging.getLogger(__name__)
@@ -39,9 +40,9 @@ class _Channel:
 
 def _load_channels(selection: str = "auto") -> list[_Channel]:
     cfg = _channels_config_path()
-    if not cfg.exists():
+    payload = load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")
+    if payload is None:
         return []
-    payload = json.loads(cfg.read_text(encoding="utf-8"))
     raw_channels = payload.get("channels", []) if isinstance(payload, dict) else []
     req = None
     if selection.strip().lower() not in {"", "auto"}:

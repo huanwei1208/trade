@@ -6,7 +6,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from trade_py.infra.settings.context import resolve_repo_path
+from trade_py.db.trade_db import TradeDB
+from trade_py.infra.settings.context import default_data_root, resolve_repo_path
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -41,18 +42,29 @@ def _load_yaml_override() -> dict[str, Any]:
     return payload
 
 
+def _load_defaults_from_db() -> dict[str, Any]:
+    data_root = os.environ.get("TRADE_DATA_ROOT", "").strip()
+    resolved_root = Path(data_root).expanduser() if data_root else default_data_root()
+    try:
+        payload = TradeDB(resolved_root).get_json("config.defaults", None)
+    except Exception:
+        payload = None
+    return payload if isinstance(payload, dict) else {}
+
+
 @lru_cache(maxsize=1)
 def load_defaults(path: str | Path | None = None) -> dict[str, Any]:
-    target = Path(path) if path is not None else resolve_repo_path("config/defaults.json")
-    defaults: dict[str, Any] = {}
-    if not target.exists():
-        defaults = {}
-    else:
-        try:
-            payload = json.loads(target.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            payload = {}
-        if isinstance(payload, dict):
-            defaults = payload
+    defaults = _load_defaults_from_db()
+    if not defaults:
+        target = Path(path) if path is not None else resolve_repo_path("config/defaults.json")
+        if not target.exists():
+            defaults = {}
+        else:
+            try:
+                payload = json.loads(target.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                payload = {}
+            if isinstance(payload, dict):
+                defaults = payload
     override = _load_yaml_override()
     return _deep_merge(defaults, override)

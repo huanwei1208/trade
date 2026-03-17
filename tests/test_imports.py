@@ -74,10 +74,16 @@ def test_intelligence_clients():
 def test_runtime_imports():
     from trade_py.app.runtime.scheduler import register_schedule
     from trade_py.app.pipelines.event_pipeline import run_event_pipeline
+    from trade_py.domain.kg import learn_kg_candidates
+    from trade_py.domain.factors import score_watchlist
+    from trade_py.domain.events import sync_events
     from trade_web import create_app
 
     assert callable(register_schedule)
     assert callable(run_event_pipeline)
+    assert callable(learn_kg_candidates)
+    assert callable(score_watchlist)
+    assert callable(sync_events)
     assert callable(create_app)
 
 

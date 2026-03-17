@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from trade_py.infra.settings.catalogs import load_catalog_payload
 from trade_py.utils.scoring import meta_score
 
 logger = logging.getLogger(__name__)
@@ -50,9 +51,9 @@ def _normalize_feed(feed: dict, catalog_name: str) -> dict:
 
 
 def _load_catalog(path: Path) -> list[dict]:
-    if not path.exists():
+    payload = load_catalog_payload(f"catalog.feeds.{path.stem}", str(path.relative_to(Path(__file__).resolve().parents[4])))
+    if payload is None:
         return []
-    payload = json.loads(path.read_text(encoding="utf-8"))
     feeds = payload.get("feeds", []) if isinstance(payload, dict) else payload
     if not isinstance(feeds, list):
         logger.warning("RSS feed config has unexpected shape: %s", path)

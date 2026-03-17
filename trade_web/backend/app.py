@@ -630,12 +630,13 @@ def create_app():
             top_symbols = [
                 dict(row) for row in db._conn.execute(
                     """
-                    SELECT symbol,
+                    SELECT ep.symbol,
                            COUNT(*) AS propagation_count,
-                           ROUND(AVG(kg_score), 4) AS avg_kg_score,
-                           MAX(event_date) AS latest_event_date
-                    FROM event_propagations
-                    GROUP BY symbol
+                           ROUND(AVG(ep.kg_score), 4) AS avg_kg_score,
+                           MAX(me.event_date) AS latest_event_date
+                    FROM event_propagations ep
+                    LEFT JOIN market_events me ON me.event_id = ep.event_id
+                    GROUP BY ep.symbol
                     ORDER BY propagation_count DESC, avg_kg_score DESC
                     LIMIT 12
                     """
