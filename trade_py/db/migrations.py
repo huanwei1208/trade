@@ -404,6 +404,35 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v9(conn: sqlite3.Connection) -> None:
+    """Seed daily evaluation DAG rows for scheduler-driven quality gate refresh."""
+    if not _table_exists(conn, "pipeline_dag"):
+        return
+    rows = [
+        ("compute", "gate.evaluate_daily", "evaluate_daily", None, 1, "日常全链路评估"),
+    ]
+    for stage, source, job_name, emits, enabled, description in rows:
+        exists = conn.execute(
+            """
+            SELECT 1 FROM pipeline_dag
+            WHERE stage=? AND source=? AND job_name=?
+            LIMIT 1
+            """,
+            (stage, source, job_name),
+        ).fetchone()
+        if exists:
+            continue
+        conn.execute(
+            """
+            INSERT INTO pipeline_dag
+                (stage, source, job_name, emits, enabled, description)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (stage, source, job_name, emits, enabled, description),
+        )
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -492,4 +521,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v8 applied")
         except Exception as exc:
             logger.error("Migration v8 failed: %s", exc)
+            raise
+
+    # ── v9: daily evaluation DAG rows ───────────────────────────────────────
+    if 9 not in applied:
+        logger.info("Applying DB migration v9 (daily evaluation DAG)")
+        try:
+            _migrate_v9(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (9)")
+            conn.commit()
+            logger.info("Migration v9 applied")
+        except Exception as exc:
+            logger.error("Migration v9 failed: %s", exc)
             raise

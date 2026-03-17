@@ -228,6 +228,17 @@ def _job_event_backfill(data_root: str) -> str:
     return backfill_events(data_root)
 
 
+def _job_evaluate_daily(data_root: str) -> str:
+    from trade_py.evaluation.service import evaluate_daily
+
+    outcome = evaluate_daily(
+        data_root,
+        eval_date=date.today().isoformat(),
+        use_cache=False,
+    )
+    return outcome.summary
+
+
 def _job_build_features(data_root: str) -> str:
     """Build feature matrix from event_propagations + signals + instruments."""
     from trade_py.analysis.propagation_runtime import (
@@ -358,6 +369,10 @@ JOB_REGISTRY: dict[str, JobDef] = {
     "event_backfill": JobDef(
         "event_backfill", _job_event_backfill, "回填超额收益",
         ["daily 15:35"], "compute", ["event"],
+    ),
+    "evaluate_daily": JobDef(
+        "evaluate_daily", _job_evaluate_daily, "日常全链路评估",
+        ["daily 22:45"], "compute", ["evaluate"],
     ),
     "build_features": JobDef(
         "build_features", _job_build_features, "特征矩阵构建",

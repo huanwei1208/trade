@@ -13,7 +13,7 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -1705,8 +1705,14 @@ class TradeDB:
                 ON CONFLICT(planned_event_id, phase, run_at, trigger_topic, job_name) DO UPDATE SET
                     payload_json=excluded.payload_json,
                     priority=excluded.priority,
-                    status=excluded.status,
-                    result_summary=excluded.result_summary,
+                    status=CASE
+                        WHEN agenda_queue.status IN ('done', 'running', 'queued', 'error', 'skipped') THEN agenda_queue.status
+                        ELSE excluded.status
+                    END,
+                    result_summary=CASE
+                        WHEN agenda_queue.status IN ('done', 'running', 'queued', 'error', 'skipped') THEN agenda_queue.result_summary
+                        ELSE excluded.result_summary
+                    END,
                     updated_at=CURRENT_TIMESTAMP
                 """,
                 payload,
@@ -1734,13 +1740,21 @@ class TradeDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def agenda_queue_claim_due(self, as_of: str | datetime | None = None, limit: int = 20) -> list[dict]:
+    def agenda_queue_claim_due(
+        self,
+        as_of: str | datetime | None = None,
+        limit: int = 20,
+        *,
+        job_limits: dict[str, int] | None = None,
+        oversample_factor: int = 5,
+    ) -> list[dict]:
         if as_of is None:
             as_of_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         elif isinstance(as_of, datetime):
             as_of_str = as_of.strftime("%Y-%m-%d %H:%M:%S")
         else:
             as_of_str = str(as_of)
+        query_limit = max(1, int(limit)) * max(1, int(oversample_factor))
         with self._conn_lock:
             rows = self._conn.execute(
                 """
@@ -1751,11 +1765,28 @@ class TradeDB:
                 ORDER BY aq.priority ASC, aq.run_at ASC, aq.agenda_id ASC
                 LIMIT ?
                 """,
-                (as_of_str, max(1, int(limit))),
+                (as_of_str, query_limit),
             ).fetchall()
             if not rows:
                 return []
-            ids = [int(row["agenda_id"]) for row in rows]
+            selected: list[dict] = []
+            counts: dict[str, int] = {}
+            normalized_limits = {
+                str(name or "").strip(): max(0, int(value))
+                for name, value in (job_limits or {}).items()
+            }
+            for row in rows:
+                job_name = str(row["job_name"] or row["trigger_topic"] or "").strip()
+                cap = normalized_limits.get(job_name)
+                if cap is not None and counts.get(job_name, 0) >= cap:
+                    continue
+                selected.append(dict(row))
+                counts[job_name] = counts.get(job_name, 0) + 1
+                if len(selected) >= max(1, int(limit)):
+                    break
+            if not selected:
+                return []
+            ids = [int(row["agenda_id"]) for row in selected]
             self._conn.executemany(
                 """
                 UPDATE agenda_queue
@@ -1766,7 +1797,7 @@ class TradeDB:
                 [(agenda_id,) for agenda_id in ids],
             )
             self._conn.commit()
-        return [dict(r) for r in rows]
+        return selected
 
     def agenda_queue_recent(
         self,
@@ -1797,6 +1828,42 @@ class TradeDB:
                 [*params, max(1, int(limit))],
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def agenda_queue_expire_stale(
+        self,
+        *,
+        as_of: str | datetime | None = None,
+        phases: tuple[str, ...] = ("pre", "live"),
+        grace_minutes: int = 120,
+    ) -> int:
+        if as_of is None:
+            as_of_dt = datetime.now()
+        elif isinstance(as_of, datetime):
+            as_of_dt = as_of
+        else:
+            as_of_dt = datetime.fromisoformat(str(as_of))
+        cutoff = (as_of_dt - timedelta(minutes=max(1, int(grace_minutes)))).strftime("%Y-%m-%d %H:%M:%S")
+        placeholders = ",".join("?" for _ in phases)
+        params: list[Any] = [
+            "expired stale agenda",
+            cutoff,
+            *[str(phase) for phase in phases],
+        ]
+        with self._conn_lock:
+            cur = self._conn.execute(
+                f"""
+                UPDATE agenda_queue
+                SET status='skipped',
+                    result_summary=COALESCE(result_summary, ?),
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE status IN ('pending', 'queued', 'running')
+                  AND run_at < ?
+                  AND phase IN ({placeholders})
+                """,
+                params,
+            )
+            self._conn.commit()
+            return int(cur.rowcount or 0)
 
     def agenda_queue_update_status(
         self,

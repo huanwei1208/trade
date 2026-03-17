@@ -83,6 +83,10 @@ class TushareTransientError(TushareError):
     """Retryable network-style failure."""
 
 
+class TushareRateLimitError(TushareError):
+    """Provider-side rate limit or quota throttling."""
+
+
 @dataclass(frozen=True)
 class TushareClientConfig:
     token: str
@@ -208,6 +212,8 @@ class TushareProClient:
                 is_rate_limit = classification == "rate_limit"
                 if classification == "auth":
                     raise TushareAuthError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
+                if classification == "rate_limit":
+                    raise TushareRateLimitError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
                 if classification == "permission":
                     raise TusharePermissionError(f"tushare endpoint {endpoint!r} failed: {exc}") from exc
                 if classification == "invalid_request":

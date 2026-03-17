@@ -208,7 +208,14 @@ class TushareIntradayFetcher:
         chunk_size: int = 50,
         asset: str = "E",
     ) -> IntradaySyncSummary:
-        from trade_py.data.market.tushare_client import TushareAuthError, get_pro_api
+        from trade_py.data.market.tushare_client import (
+            TushareAuthError,
+            TushareError,
+            TusharePermissionError,
+            TushareRateLimitError,
+            TushareTransientError,
+            get_pro_api,
+        )
 
         ts_codes = _normalize_ts_codes(symbols)
         if not ts_codes:
@@ -243,9 +250,9 @@ class TushareIntradayFetcher:
                     continue
                 for symbol, frame in parsed.groupby("symbol", sort=False):
                     grouped[symbol].append(frame.copy())
-        except TushareAuthError as exc:
+        except (TushareAuthError, TushareRateLimitError, TusharePermissionError, TushareTransientError, TushareError) as exc:
             provider = "akshare_spot"
-            degraded_reason = f"tushare auth fallback: {exc}"
+            degraded_reason = f"tushare fallback: {exc}"
             logger.warning("intraday sync fallback to akshare spot: %s", exc)
             try:
                 grouped, rows_fetched = self._fetch_akshare_spot_fallback(

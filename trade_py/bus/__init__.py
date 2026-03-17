@@ -38,6 +38,7 @@ class Topic:
     GATE_MARKET_CLOSE     = "gate.market_close"       # 15:15
     GATE_EVENING          = "gate.evening"            # 22:00
     GATE_EVENT_EXTRACT    = "gate.event_extract"      # 22:30
+    GATE_EVALUATE_DAILY   = "gate.evaluate_daily"     # 22:45
     GATE_SECTOR_WEEKLY    = "gate.sector_weekly"      # Sat 07:30
     GATE_FUND_WEEKLY      = "gate.fundamental_weekly" # Sat 08:00
     GATE_MACRO_WEEKLY     = "gate.macro_weekly"       # Sun 08:00
@@ -64,7 +65,7 @@ class Topic:
     # All gate topics (for dry-run iteration)
     ALL_GATES = [
         GATE_MORNING, GATE_INTRADAY, GATE_PRE_MARKET, GATE_SIGNAL_AM, GATE_REPORT,
-        GATE_MARKET_CLOSE, GATE_EVENING, GATE_EVENT_EXTRACT,
+        GATE_MARKET_CLOSE, GATE_EVENING, GATE_EVENT_EXTRACT, GATE_EVALUATE_DAILY,
         GATE_SECTOR_WEEKLY, GATE_FUND_WEEKLY, GATE_MACRO_WEEKLY,
         GATE_MODEL_WEEKLY,
     ]

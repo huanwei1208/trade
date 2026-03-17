@@ -20,6 +20,8 @@ _TARGET_TOPICS = {
     "market-close": "gate.market_close",
     "evening": "gate.evening",
     "event-extract": "gate.event_extract",
+    "evaluate": "gate.evaluate_daily",
+    "daily-eval": "gate.evaluate_daily",
     "sector-weekly": "gate.sector_weekly",
     "fundamental-weekly": "gate.fundamental_weekly",
     "macro-weekly": "gate.macro_weekly",
@@ -28,8 +30,8 @@ _TARGET_TOPICS = {
 
 _WORKFLOWS = {
     "open": ["morning", "pre-market", "signal-am", "report"],
-    "close": ["market-close", "evening", "event-extract"],
-    "sync": ["calendar_sync", "planned_event_sync"],
+    "close": ["market-close", "evening", "event-extract", "evaluate_daily"],
+    "sync": ["calendar_sync", "planned_event_sync", "agenda", "evaluate_daily"],
 }
 
 
@@ -46,6 +48,7 @@ def make_parser() -> argparse.ArgumentParser:
             "  trade run open\n"
             "  trade run close\n"
             "  trade run sync\n"
+            "  trade run evaluate\n"
             "  trade run calendar_sync\n"
             "  trade run planned_event_sync\n"
             "  trade run all"

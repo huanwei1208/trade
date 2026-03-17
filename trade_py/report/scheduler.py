@@ -19,6 +19,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_AGENDA_JOB_LIMITS = {
+    "realtime_quote_sync": 1,
+    "realtime_compute": 1,
+    "planned_event_realize": 6,
+    "event_pipeline": 2,
+}
+
 
 def _is_trading_day(db: "TradeDB", now: datetime | None = None, exchange: str = "SSE") -> bool:
     now = now or datetime.now()
@@ -44,7 +51,10 @@ def _market_session_open(db: "TradeDB", now: datetime | None = None) -> bool:
 
 
 def drain_due_agenda(bus: EventBus, db: "TradeDB", *, limit: int = 20) -> int:
-    rows = db.agenda_queue_claim_due(limit=limit)
+    expired = db.agenda_queue_expire_stale(grace_minutes=120)
+    if expired:
+        logger.info("Expired %d stale agenda items before dispatch", expired)
+    rows = db.agenda_queue_claim_due(limit=limit, job_limits=_AGENDA_JOB_LIMITS)
     if not rows:
         return 0
     logger.info("Dispatching %d due agenda items", len(rows))
@@ -74,6 +84,7 @@ def register_schedule(bus: EventBus, db: "TradeDB") -> None:
     schedule.every().day.at("15:15").do(_guarded(Topic.GATE_MARKET_CLOSE))
     schedule.every().day.at("22:00").do(_p(Topic.GATE_EVENING))
     schedule.every().day.at("22:30").do(_p(Topic.GATE_EVENT_EXTRACT))
+    schedule.every().day.at("22:45").do(_p(Topic.GATE_EVALUATE_DAILY))
     schedule.every().saturday.at("07:30").do(_p(Topic.GATE_SECTOR_WEEKLY))
     schedule.every().saturday.at("08:00").do(_p(Topic.GATE_FUND_WEEKLY))
     schedule.every().sunday.at("08:00").do(_p(Topic.GATE_MACRO_WEEKLY))
