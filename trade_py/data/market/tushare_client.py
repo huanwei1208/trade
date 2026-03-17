@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import pandas as pd
 
 from trade_py.db.settings_db import SettingsDB
+from trade_py.infra.settings import load_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +275,19 @@ def get_pro_api(data_root: str | Path = "data") -> TushareProClient:
 def _load_client_config(data_root: str | Path) -> TushareClientConfig:
     data_root_str = str(Path(data_root))
     settings = SettingsDB(data_root_str)
-    token = str(settings.get("tushare_token", "") or os.environ.get("TUSHARE_TOKEN", "")).strip()
+    defaults = load_defaults()
+    defaults_token = (
+        defaults.get("tushare_token")
+        or (defaults.get("tushare") or {}).get("token")
+        or (defaults.get("providers") or {}).get("tushare_token")
+        or ((defaults.get("providers") or {}).get("tushare") or {}).get("token")
+    )
+    token = str(
+        settings.get("tushare_token", "")
+        or os.environ.get("TUSHARE_TOKEN", "")
+        or defaults_token
+        or ""
+    ).strip()
     http_url = str(settings.get("tushare.http_url", "") or "").strip()
     min_interval_sec = _coerce_float(settings.get("tushare.min_interval_sec", _DEFAULT_MIN_INTERVAL_SEC), _DEFAULT_MIN_INTERVAL_SEC)
     minute_budget = _coerce_int(settings.get("tushare.minute_budget", _DEFAULT_MINUTE_BUDGET), _DEFAULT_MINUTE_BUDGET)

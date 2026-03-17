@@ -165,10 +165,19 @@ class TradingCalendarService:
     def __init__(self, data_root: str | Path = "data") -> None:
         self.data_root = str(data_root)
         self._db = TradeDB(data_root)
-        self._pro = get_pro_api(data_root)
+        self._pro = None
 
     def close(self) -> None:
         self._db.close()
+
+    def _pro_api(self):
+        if self._pro is not None:
+            return self._pro
+        try:
+            self._pro = get_pro_api(self.data_root)
+        except RuntimeError as exc:
+            raise TushareAuthError(str(exc)) from exc
+        return self._pro
 
     def _default_calendar_range(self) -> tuple[date, date]:
         today = date.today()
@@ -233,7 +242,7 @@ class TradingCalendarService:
         fallback_reasons: list[str] = []
         for exchange in exchanges:
             try:
-                raw = self._pro.call("trade_cal", exchange=str(exchange).upper(), start_date=start_ts, end_date=end_ts)
+                raw = self._pro_api().call("trade_cal", exchange=str(exchange).upper(), start_date=start_ts, end_date=end_ts)
             except TushareAuthError as exc:
                 fallback_used = True
                 fallback_reasons.append(f"{exchange}: auth fallback")
@@ -366,7 +375,7 @@ class TradingCalendarService:
         total_rows = 0
         payload: list[dict[str, Any]] = []
         for chunk_start, chunk_end in _month_ranges(start, end):
-            raw = self._pro.call(
+            raw = self._pro_api().call(
                 "eco_cal",
                 start_date=_tushare_date(chunk_start),
                 end_date=_tushare_date(chunk_end),
@@ -435,7 +444,7 @@ class TradingCalendarService:
         payload: list[dict[str, Any]] = []
         total_rows = 0
         for symbol in symbol_list:
-            raw = self._pro.call(
+            raw = self._pro_api().call(
                 "disclosure_date",
                 ts_code=symbol,
                 start_date=_tushare_date(start),

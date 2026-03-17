@@ -20,6 +20,7 @@ def make_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     from trade_py.db.trade_db import TradeDB
+    from trade_py.data.market.tushare_client import _load_client_config
 
     args = make_parser().parse_args(argv or [])
     db = TradeDB(args.data_root)
@@ -41,8 +42,10 @@ def main(argv: list[str] | None = None) -> int:
         end_date=(date.today() + timedelta(days=7)).isoformat(),
         limit=args.limit,
     )
+    tushare_cfg = _load_client_config(args.data_root)
 
     print(f"日期: {today}")
+    print(f"Tushare token: {'已配置' if tushare_cfg.token else '未配置'}")
     if gate:
         print(f"质量门禁: {gate.get('status')}  ({gate.get('eval_date')})")
         if gate.get("reason_summary"):

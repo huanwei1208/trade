@@ -33,6 +33,10 @@ _WORKFLOWS = {
     "sync": ["calendar_sync", "planned_event_sync", "agenda", "evaluate_daily"],
 }
 
+_OPTIONAL_WORKFLOW_STEPS = {
+    "sync": {"calendar_sync", "planned_event_sync"},
+}
+
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -122,10 +126,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if target in _WORKFLOWS:
+        failures: list[tuple[str, int]] = []
         for name in _WORKFLOWS[target]:
             rc = _run_one(name)
             if rc != 0:
+                if name in _OPTIONAL_WORKFLOW_STEPS.get(target, set()):
+                    logger.warning("workflow %s optional step %s failed with rc=%s; continuing", target, name, rc)
+                    failures.append((name, rc))
+                    continue
                 return rc
+        if failures:
+            print("workflow completed with optional failures: " + ", ".join(f"{name}(rc={rc})" for name, rc in failures))
         return 0
 
     return _run_one(target)
