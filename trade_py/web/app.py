@@ -1,7 +1,7 @@
-"""FastAPI application — DAG Web UI + Online Inference Service.
+"""FastAPI application — TradeDB Web API + UI host.
 
 Routes:
-  GET  /                     → index.html (console)
+  GET  /                     → web app shell (React dist or legacy console)
   GET  /api/dag              → pipeline_dag table (stage-grouped)
   GET  /api/dag/runtime      → DAG runtime state + latest runs/errors
   POST /api/dag/{id}/enable  → enable a DAG node
@@ -16,6 +16,7 @@ Routes:
   GET  /api/status           → service health + quality gate + agenda + backups
   GET  /api/calendar         → trading calendar + planned events
   GET  /api/agenda           → recent agenda queue
+  GET  /api/data-health      → data freshness / coverage snapshot
   GET  /api/backups          → backup snapshots
   POST /predict              → online inference endpoint
 """
@@ -508,9 +509,17 @@ def create_app():
 
     # ── Static files ──────────────────────────────────────────────────────────
 
-    static_dir = Path(__file__).parent / "static"
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    repo_root = Path(__file__).resolve().parents[2]
+    legacy_static_dir = Path(__file__).parent / "static"
+    dist_dir = Path(
+        os.environ.get("TRADE_WEB_DIST", str(repo_root / "trade_web" / "frontend" / "dist"))
+    )
+    static_dir = dist_dir if (dist_dir / "index.html").exists() else legacy_static_dir
+    assets_dir = dist_dir / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+    if legacy_static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(legacy_static_dir)), name="static")
 
     @app.get("/", include_in_schema=False)
     async def index():
@@ -681,6 +690,10 @@ def create_app():
             return cached
         payload = _data_hive_payload()
         return _cache_set("hive", signature=signature, payload=payload)
+
+    @app.get("/api/data-health")
+    async def get_data_health():
+        return await get_hive()
 
     @app.get("/api/events/stream")
     async def stream_events(after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):

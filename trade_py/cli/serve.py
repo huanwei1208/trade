@@ -1,4 +1,4 @@
-"""trade serve — DAG Web UI + Online Inference Service.
+"""trade serve — TradeDB Web API + UI host.
 
 Starts a single FastAPI server on the given port.
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 
 from trade_py.config import default_data_root
 
@@ -34,6 +35,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", default=_DATA_ROOT, help="数据根目录")
     parser.add_argument("--port", type=int, default=8080, help="监听端口（默认 8080）")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址（默认 0.0.0.0）")
+    parser.add_argument("--web-dist", default="", help="前端构建目录（默认 trade_web/frontend/dist，存在时优先）")
     parser.add_argument("--reload", action="store_true", help="开发模式：文件变更时自动重载")
     return parser
 
@@ -50,12 +52,18 @@ def main(argv: list[str] | None = None) -> int:
     # Pass data_root to the app via environment variable
     import os
     os.environ["TRADE_DATA_ROOT"] = args.data_root
+    if args.web_dist:
+        os.environ["TRADE_WEB_DIST"] = args.web_dist
+    else:
+        default_dist = Path(__file__).resolve().parents[2] / "trade_web" / "frontend" / "dist"
+        if default_dist.exists():
+            os.environ["TRADE_WEB_DIST"] = str(default_dist)
 
     logger.info("Starting trade serve on %s:%d  data_root=%s",
                 args.host, args.port, args.data_root)
 
     uvicorn.run(
-        "trade_py.web.app:create_app",
+        "trade_web.app:create_app",
         factory=True,
         host=args.host,
         port=args.port,
