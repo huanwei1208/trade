@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         reload=args.reload,
         log_level="info",
+        timeout_graceful_shutdown=3,
     )
     return 0
 

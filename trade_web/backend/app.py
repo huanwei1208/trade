@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import Lock
@@ -111,7 +112,16 @@ def create_app():
         raise ImportError("fastapi required: uv add fastapi uvicorn")
 
     data_root = os.environ.get("TRADE_DATA_ROOT", "data")
-    app = FastAPI(title="TradeDB Console", version="1.0")
+    shutdown_event = asyncio.Event()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            shutdown_event.set()
+
+    app = FastAPI(title="TradeDB Console", version="1.0", lifespan=lifespan)
 
     # Lazy-init inference service
     from trade_web.backend.inference import InferenceService
@@ -1040,6 +1050,8 @@ def create_app():
             last_id = max(0, int(after_id))
             try:
                 while True:
+                    if shutdown_event.is_set():
+                        break
                     if await request.is_disconnected():
                         break
                     rows = _db().event_log_since(after_id=last_id, limit=limit)
@@ -1071,6 +1083,8 @@ def create_app():
             last_signature = ""
             try:
                 while True:
+                    if shutdown_event.is_set():
+                        break
                     if await request.is_disconnected():
                         break
                     signature = _payload_signature(scope_name)
