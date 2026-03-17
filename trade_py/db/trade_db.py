@@ -102,6 +102,7 @@ _DEFAULT_SETTINGS: list[tuple[str, str, str, str, str]] = [
     ("storage.google_drive_retry_count", "2", "int", "storage", "Google Drive retry count"),
     ("storage.backup_remote_dir", "trade-backups", "string", "storage", "备份远端目录"),
     ("sentiment.start",          "2024-01-01", "string", "market_data", "情绪数据默认起始日期"),
+    ("sentiment.scheduler_semantic_mode", "base", "string", "market_data", "调度情绪流水线语义模式"),
     ("sentiment.settle_window_days", "7", "int", "market_data", "情绪数据稳定窗口（天）"),
     ("event.min_magnitude",      "0.4",   "float",  "market_data", "事件提取最低强度"),
     ("event.sync_window_days",   "7",     "int",    "market_data", "事件补齐窗口（天）"),

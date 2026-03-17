@@ -32,8 +32,18 @@ class JobDef:
 
 def _job_sentiment_pipeline(data_root: str) -> str:
     from trade_py.cli._sentiment import main as sentiment_main
-    sentiment_main(["--fetch-mode", "incremental", "--data-root", data_root])
-    return "情绪流水线完成"
+    from trade_py.db.trade_db import TradeDB
+
+    db = TradeDB(data_root)
+    semantic_mode = str(db.get("sentiment.scheduler_semantic_mode", "base") or "base").strip().lower()
+    if semantic_mode not in {"base", "hybrid", "llm"}:
+        semantic_mode = "base"
+    sentiment_main([
+        "--fetch-mode", "incremental",
+        "--data-root", data_root,
+        "--semantic-mode", semantic_mode,
+    ])
+    return f"情绪流水线完成: semantic_mode={semantic_mode}"
 
 
 def _job_cross_asset(data_root: str) -> str:
@@ -334,7 +344,7 @@ JOB_REGISTRY: dict[str, JobDef] = {
         ["daily 15:20"], "fetch", ["market"],
     ),
     "sentiment_pipeline": JobDef(
-        "sentiment_pipeline", _job_sentiment_pipeline, "LLM情绪流水线",
+        "sentiment_pipeline", _job_sentiment_pipeline, "情绪流水线",
         ["daily 22:00"], "fetch", ["nlp"],
     ),
     "sector_refresh": JobDef(
