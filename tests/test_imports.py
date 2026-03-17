@@ -4,7 +4,7 @@ import pytest
 
 
 def test_config():
-    from trade_py.config import get_config_context, default_data_root
+    from trade_py.infra.settings import get_config_context, default_data_root
     ctx = get_config_context()
     assert ctx.repo_root.exists()
     assert not hasattr(ctx, "python_root"), "python_root should have been removed"
@@ -23,12 +23,13 @@ def test_utils():
 
 def test_meta():
     from trade_py.meta.records.raw import RawRecord
-    from trade_py.meta.records.silver import SilverRecord
-    from trade_py.meta.records.gold import GoldRecord
-    from trade_py.meta.feed.config import FeedConfig
-    from trade_py.meta.schema.pipeline import INGEST_RUNS, COVERAGE, ENRICHMENT_STATUS
+    from trade_py.meta.feed import FeedScore
+    from trade_py.meta.schema.meta_store import FEED_SCORES, SOURCE_CONFIGS
 
-    assert "CREATE TABLE" in INGEST_RUNS.upper()
+    assert RawRecord is not None
+    assert FeedScore is not None
+    assert "CREATE TABLE" in FEED_SCORES.upper()
+    assert "CREATE TABLE" in SOURCE_CONFIGS.upper()
 
 
 def test_data_source():
@@ -40,7 +41,7 @@ def test_data_registry():
     from trade_py.data.registry import list_sources
     sources = list_sources()
     assert "rss" in sources
-    assert "gdelt" in sources
+    assert "tushare_news" in sources
 
 
 def test_data_market_imports():
@@ -71,9 +72,9 @@ def test_intelligence_clients():
 
 
 def test_runtime_imports():
-    from trade_py.report.scheduler import register_schedule
-    from trade_py.report.event_pipeline import run_event_pipeline
-    from trade_web.app import create_app
+    from trade_py.app.runtime.scheduler import register_schedule
+    from trade_py.app.pipelines.event_pipeline import run_event_pipeline
+    from trade_web import create_app
 
     assert callable(register_schedule)
     assert callable(run_event_pipeline)

@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 from trade_py.db.trade_db import TradeDB
 from trade_py.evaluation.service import (
     EvalOutcome,

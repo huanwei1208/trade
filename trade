@@ -33,7 +33,6 @@ print_help() {
   echo "  ./trade evaluate <args>    评估层与质量门禁"
   echo "  ./trade kg <args>          Learned KG 候选边学习 / 审核 / 上线"
   echo "  ./trade start <args>       启动 EventBus daemon"
-  echo "  ./trade serve <args>       启动 Web UI / 在线服务"
   echo ""
   echo "开发命令:"
   echo "  ./trade doctor             检查 cmake/gcc/uv 环境"
@@ -158,12 +157,6 @@ cmd_removed() {
   echo "$1 已移除。请使用 ./trade status、./trade inspect 或 ./trade web。"
 }
 
-cmd_deprecated_redirect() {
-  local old="$1"; shift
-  echo "提示: '$old' 是兼容别名，请改用: ./trade $*"
-  main "$@"
-}
-
 cmd_py() {
   if [ $# -lt 1 ]; then
     echo "Usage: ./trade py <domain> [args...]"
@@ -222,18 +215,7 @@ main() {
     evaluate) cmd_trade_py_domain evaluate "$@" ;;
     kg) cmd_trade_py_domain kg "$@" ;;
     start) cmd_trade_py_domain_allow_empty start "$@" ;;
-    serve|web) cmd_trade_py_domain_allow_empty serve "$@" ;;
-    today|check|overview) cmd_deprecated_redirect "$sub" status "$@" ;;
-    console|dashboard) cmd_deprecated_redirect "$sub" web "$@" ;;
-    dag|pipeline) cmd_deprecated_redirect "$sub" inspect dag "$@" ;;
-    calendar) cmd_deprecated_redirect "$sub" inspect calendar "$@" ;;
-    events) cmd_deprecated_redirect "$sub" inspect events "$@" ;;
-    hive|health) cmd_deprecated_redirect "$sub" inspect health "$@" ;;
-    workflows|workflow) cmd_deprecated_redirect "$sub" inspect workflows "$@" ;;
-    factors) cmd_deprecated_redirect "$sub" inspect factors "$@" ;;
-    models) cmd_deprecated_redirect "$sub" inspect models "$@" ;;
-    backups) cmd_deprecated_redirect "$sub" inspect backups "$@" ;;
-    sentiment) cmd_deprecated_redirect "$sub" data sentiment "$@" ;;
+    web) cmd_trade_py_domain_allow_empty web "$@" ;;
     brief|report|schedule) cmd_removed "$sub" ;;
     py) cmd_py "$@" ;;
     ui) cmd_removed "$sub" ;;
@@ -241,7 +223,7 @@ main() {
     help|-h|--help) print_help ;;
     *)
       echo "错误：未知命令 '$sub'"
-      echo "可用顶层命令: run | status | inspect | web | backup | sync | open | close | morning | intraday | evening | agenda | data | model | factor | account | event | evaluate | kg | start | serve | cli | py | doctor | setup-python | configure | build | test | help"
+      echo "可用顶层命令: run | status | inspect | web | backup | sync | open | close | morning | intraday | evening | agenda | data | model | factor | account | event | evaluate | kg | start | cli | py | doctor | setup-python | configure | build | test | help"
       echo "运行 './trade help' 查看详细用法"
       exit 1
       ;;

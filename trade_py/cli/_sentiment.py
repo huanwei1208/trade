@@ -17,8 +17,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from trade_py.config import default_data_root, resolve_repo_path
-from trade_py.config.defaults import load_defaults
+from trade_py.infra.settings import default_data_root, resolve_repo_path, load_defaults
 from trade_py.data.pipeline.paths import bronze_path, bronze_root
 from trade_py.db.settings_db import SettingsDB
 

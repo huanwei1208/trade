@@ -15,7 +15,7 @@ def _setup_logging(verbose: bool = False) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from trade_py.cli import data, model, account, event, start, serve, kg, evaluate, factor, run, status, inspect, backup
+    from trade_py.cli import data, model, account, event, start, web, kg, evaluate, factor, run, status, inspect, backup
 
     domains = [
         ("run",     run),
@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         ("evaluate", evaluate),
         ("kg",      kg),
         ("start",   start),
-        ("serve",   serve),
+        ("web",     web),
     ]
     domain_lines = "\n".join(
         f"  {name:<10}  {mod.make_parser().description}"

@@ -1,12 +1,12 @@
-"""Runtime configuration context and defaults for trade_py."""
+"""Runtime configuration context and defaults for TradeDB."""
 
-from trade_py.config.context import (
+from trade_py.infra.settings.context import (
     ConfigContext,
     default_data_root,
     get_config_context,
     resolve_repo_path,
 )
-from trade_py.config.defaults import load_defaults
+from trade_py.infra.settings.defaults import load_defaults
 
 __all__ = [
     "ConfigContext",

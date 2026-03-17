@@ -5,7 +5,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 from trade_py.signals.window_scorer import score_watchlist
 
 logger = logging.getLogger(__name__)

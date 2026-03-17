@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 
 
 def make_parser() -> argparse.ArgumentParser:

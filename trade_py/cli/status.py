@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, timedelta
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 
 _DATA_ROOT = str(default_data_root())
 

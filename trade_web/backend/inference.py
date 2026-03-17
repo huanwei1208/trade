@@ -1,9 +1,4 @@
-"""Online inference service for the TradeDB web layer.
-
-This module lives under ``trade_web`` so the web-facing runtime is no longer
-anchored to ``trade_py.web``. The legacy import path remains as a compatibility
-shim.
-"""
+"""Online inference service for the TradeDB web backend."""
 from __future__ import annotations
 
 import json

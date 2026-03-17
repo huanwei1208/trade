@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import date
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 from trade_py.jobs import JOB_REGISTRY, run_job
 
 logger = logging.getLogger(__name__)
@@ -353,7 +353,7 @@ def _cmd_rebuild(args: argparse.Namespace) -> int:
 
 
 def _cmd_add(args: argparse.Namespace) -> int:
-    from trade_py.report.event_pipeline import run_event_pipeline_for
+    from trade_py.app.pipelines.event_pipeline import run_event_pipeline_for
 
     event_date = args.date or date.today().isoformat()
     entity_id = args.entity or "market"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 from trade_py.jobs import JOB_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     from trade_py.cli import start as start_cli
     from trade_py.bus import get_bus, bootstrap_from_dag
     from trade_py.db.trade_db import TradeDB
-    from trade_py.report.scheduler import drain_due_agenda
+    from trade_py.app.runtime.scheduler import drain_due_agenda
 
     args = make_parser().parse_args(argv or [])
     TradeDB(args.data_root).job_runs_mark_stale_by_policy()

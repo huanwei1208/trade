@@ -1,0 +1,13 @@
+# TradeDB optional override config
+# 这个文件默认可以不存在。需要本地覆盖时，复制成 config/trade.yaml 后再修改。
+
+data_root: "data"
+
+# 示例：
+# tushare_token: "${TUSHARE_TOKEN}"
+# web:
+#   host: "0.0.0.0"
+#   port: 8080
+# sentiment:
+#   rss_fetch_timeout_sec: 8
+#   rss_max_workers: 6

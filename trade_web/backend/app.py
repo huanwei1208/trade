@@ -109,7 +109,7 @@ def create_app():
     app = FastAPI(title="TradeDB Console", version="1.0")
 
     # Lazy-init inference service
-    from trade_web.inference import InferenceService
+    from trade_web.backend.inference import InferenceService
     _inference = InferenceService(data_root)
     _payload_cache: dict[str, dict[str, Any]] = {}
     _payload_cache_lock = Lock()

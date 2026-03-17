@@ -508,7 +508,7 @@ def sync_signal_predictions(data_root: str, date_str: str | None = None) -> tupl
     if not symbols:
         return target_date, 0
 
-    from trade_web.inference import InferenceService
+    from trade_web import InferenceService
 
     service = InferenceService(data_root)
     preds = service.predict(symbols, target_date)

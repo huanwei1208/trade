@@ -15,7 +15,7 @@ import pandas as pd
 
 from trade_py.analysis.propagation_runtime import FEATURE_COLS
 from trade_py.analysis.sentiment_ic import compute_ic
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 from trade_py.db.pipeline_db import PipelineDb
 from trade_py.db.trade_db import TradeDB
 

@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 from trade_py.db.trade_db import TradeDB
 
 logger = logging.getLogger(__name__)

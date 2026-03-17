@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from trade_py.config import default_data_root, load_defaults
+from trade_py.infra.settings import default_data_root, load_defaults
 from trade_py.data.market.cross_asset import fetch_all, fetch_btc, fetch_fx_cnh, fetch_gold
 from trade_py.data.market.kline import KlineSyncOptions, KlineSyncService
 from trade_py.db.settings_db import SettingsDB

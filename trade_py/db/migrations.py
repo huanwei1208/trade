@@ -261,7 +261,6 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
             ("compute", "gate.market_close",     "window_score",   "signal.window.updated",  1, "收盘后全市场评分"),
             ("compute", "data.sentiment.synced", "event_pipeline", None,                     1, "情绪→事件级联"),
             ("compute", "gate.event_extract",    "event_pipeline", None,                     1, "事件提取"),
-            ("compute", "gate.report",           "morning_brief",  "report.morning_brief",   1, "晨报生成"),
             ("compute", "gate.model_weekly",     "build_features", "model.features.built",   1, "特征构建"),
             ("compute", "model.features.built",  "build_labels",   "model.labels.built",     1, "标签构建"),
             # STAGE: train

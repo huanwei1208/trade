@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 from trade_py.data.account.repository import AccountRepository
 from trade_py.data.account.service import AccountService
 from trade_py.db.trade_db import TradeDB

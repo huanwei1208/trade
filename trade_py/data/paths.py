@@ -10,7 +10,6 @@ Standard layout (post-migration):
   ├── events/
   ├── models/
   ├── knowledge_graph/
-  ├── briefs/
   └── .db/
       ├── trade.db
       ├── pipeline.duckdb

@@ -6,7 +6,7 @@ a generic JSON webhook based on URL pattern.
 
 Usage::
 
-    from trade_py.report.notify import dispatch
+    from trade_py.infra.notify import dispatch
     dispatch("success", "kline_update", "K线同步: 500 symbols, 123456 行", data_root)
 """
 from __future__ import annotations

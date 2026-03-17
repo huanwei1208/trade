@@ -1,11 +1,11 @@
-"""trade serve — TradeDB Web API + UI host.
+"""trade web — TradeDB Web API + UI host.
 
 Starts a single FastAPI server on the given port.
 
 Usage:
-  trade serve                   # start on default port 8080
-  trade serve --port 9000       # custom port
-  trade serve --data-root /path # custom data root
+  trade web                   # start on default port 8080
+  trade web --port 9000       # custom port
+  trade web --data-root /path # custom data root
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +22,14 @@ _DATA_ROOT = str(default_data_root())
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="trade serve",
+        prog="trade web",
         description="启动 DAG Web UI + 在线推理服务 (FastAPI)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例:\n"
-            "  trade serve                    # http://localhost:8080\n"
-            "  trade serve --port 9000\n"
-            "  trade serve --reload           # 开发模式（文件变更自动重载）\n"
+            "  trade web                      # http://localhost:8080\n"
+            "  trade web --port 9000\n"
+            "  trade web --reload             # 开发模式（文件变更自动重载）\n"
         ),
     )
     parser.add_argument("--data-root", default=_DATA_ROOT, help="数据根目录")
@@ -59,11 +59,11 @@ def main(argv: list[str] | None = None) -> int:
         if default_dist.exists():
             os.environ["TRADE_WEB_DIST"] = str(default_dist)
 
-    logger.info("Starting trade serve on %s:%d  data_root=%s",
+    logger.info("Starting trade web on %s:%d  data_root=%s",
                 args.host, args.port, args.data_root)
 
     uvicorn.run(
-        "trade_web.app:create_app",
+        "trade_web:create_app",
         factory=True,
         host=args.host,
         port=args.port,

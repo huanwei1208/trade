@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from trade_py.analysis.knowledge_graph import SectorGraph
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 
 
 def build_sector_graph(output: str | None = None) -> dict:

@@ -14,7 +14,7 @@ import argparse
 import logging
 import time
 
-from trade_py.config import default_data_root
+from trade_py.infra.settings import default_data_root
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from trade_py.db.trade_db import TradeDB
     from trade_py.bus import Topic, get_bus, bootstrap_from_dag
-    from trade_py.report.scheduler import register_schedule
+    from trade_py.app.runtime.scheduler import register_schedule
     import schedule
 
     db = TradeDB(args.data_root)
