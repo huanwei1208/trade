@@ -1,6 +1,6 @@
 """GDELT news source: DataSource implementation for historical backfill.
 
-Reads channel config from config/feeds/gdelt.json and
+Reads channel config from DB-first settings (with file baseline fallback) and
 calls the GDELT v2 Doc API to fetch articles for a date range.
 """
 

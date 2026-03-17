@@ -66,5 +66,11 @@ def load_defaults(path: str | Path | None = None) -> dict[str, Any]:
                 payload = {}
             if isinstance(payload, dict):
                 defaults = payload
+                try:
+                    data_root = os.environ.get("TRADE_DATA_ROOT", "").strip()
+                    resolved_root = Path(data_root).expanduser() if data_root else default_data_root()
+                    TradeDB(resolved_root).set("config.defaults", defaults, value_type="json", category="config", label="历史默认配置")
+                except Exception:
+                    pass
     override = _load_yaml_override()
     return _deep_merge(defaults, override)

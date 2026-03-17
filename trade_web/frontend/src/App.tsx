@@ -1,7 +1,61 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Locale = "zh-CN" | "en";
 type PageKey = "report" | "events" | "kg";
+type GraphNodeKind = "task" | "topic";
+
+type DagNode = {
+  id?: number;
+  dag_id?: number;
+  job_name?: string;
+  stage?: string;
+  source?: string;
+  emits?: string;
+  status?: string;
+  error_detail?: string;
+  error?: string;
+  result_summary?: string;
+  recent_ok_count?: number;
+  recent_error_count?: number;
+  last_run?: { started_at?: string; completed_at?: string; result_summary?: string } | null;
+  last_source_event?: { created_at?: string; status?: string } | null;
+};
+
+type DagEdge = { from: string; to: string; kind?: string };
+
+type GraphNode = {
+  key: string;
+  kind: GraphNodeKind;
+  label: string;
+  subtitle: string;
+  status: string;
+  detail: string;
+  stage: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dagId?: number;
+};
+
+type GraphEdge = {
+  key: string;
+  from: string;
+  to: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  status: string;
+};
+
+type DagLayout = {
+  width: number;
+  height: number;
+  stages: Array<{ key: string; label: string; x: number; width: number }>;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+};
 
 type Dict = Record<string, string>;
 
@@ -36,6 +90,9 @@ const I18N: Record<Locale, Dict> = {
     runAgenda: "派发 Agenda",
     workflows: "工作流",
     dagRuntime: "DAG 运行态",
+    dagGraph: "DAG 视图",
+    workflowDag: "工作流 DAG",
+    globalDag: "全局 DAG",
     failedNodes: "失败节点",
     rerun: "重跑节点",
     source: "来源",
@@ -52,6 +109,18 @@ const I18N: Record<Locale, Dict> = {
     relationTypes: "边类型分布",
     snapshot: "快照",
     generatedAt: "生成时间",
+    nodeDetail: "节点详情",
+    latestRun: "最近运行",
+    upstream: "上游",
+    downstream: "下游",
+    counts: "统计",
+    noRootCause: "当前没有明显根因，最近工作流基本健康。",
+    dailyEvents: "每日事件流",
+    liveWorkflows: "运行中的工作流",
+    failedCount: "失败节点数",
+    agendaCount: "待执行 Agenda",
+    eventCount: "事件数",
+    focusHint: "点击 DAG 节点查看详情；失败节点可直接重跑并续跑下游。",
   },
   en: {
     title: "TradeDB",
@@ -83,6 +152,9 @@ const I18N: Record<Locale, Dict> = {
     runAgenda: "Run agenda",
     workflows: "Workflows",
     dagRuntime: "DAG runtime",
+    dagGraph: "DAG view",
+    workflowDag: "Workflow DAG",
+    globalDag: "Global DAG",
     failedNodes: "Failed nodes",
     rerun: "Rerun node",
     source: "Source",
@@ -99,6 +171,18 @@ const I18N: Record<Locale, Dict> = {
     relationTypes: "Relation types",
     snapshot: "Snapshot",
     generatedAt: "Generated at",
+    nodeDetail: "Node detail",
+    latestRun: "Latest run",
+    upstream: "Upstream",
+    downstream: "Downstream",
+    counts: "Counts",
+    noRootCause: "No major blocker right now. Recent workflows are mostly healthy.",
+    dailyEvents: "Daily event stream",
+    liveWorkflows: "Running workflows",
+    failedCount: "Failed nodes",
+    agendaCount: "Due agenda",
+    eventCount: "Event count",
+    focusHint: "Click a DAG node to inspect it; failed nodes can be rerun with downstream continuation.",
   },
 };
 
@@ -138,6 +222,167 @@ function shortText(value: unknown, limit = 120) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
+function slugStage(value: unknown) {
+  return String(value || "unknown").trim() || "unknown";
+}
+
+function buildDagLayout(rows: DagNode[], rawEdges: DagEdge[], focusDagIds?: Set<number>): DagLayout {
+  const nodeWidth = 220;
+  const nodeHeight = 96;
+  const colGap = 72;
+  const rowGap = 28;
+  const padX = 28;
+  const padY = 48;
+  const topicNodes = new Map<string, GraphNode>();
+  const taskNodes = new Map<string, GraphNode>();
+  const emittedByTopic = new Map<string, GraphNode[]>();
+  const stageOrder: string[] = [];
+
+  const pushStage = (stage: string) => {
+    if (!stageOrder.includes(stage)) stageOrder.push(stage);
+  };
+
+  for (const row of rows) {
+    const dagId = Number(row.dag_id ?? row.id ?? 0) || undefined;
+    const key = `task:${dagId ?? row.job_name ?? Math.random().toString(36)}`;
+    const stage = slugStage(row.stage);
+    pushStage(stage);
+    const taskNode: GraphNode = {
+      key,
+      kind: "task",
+      label: String(row.job_name || row.stage || "task"),
+      subtitle: `${row.stage || "-"} · ${row.source || "-"}`,
+      status: String(row.status || "unknown"),
+      detail: String(row.error_detail || row.error || row.result_summary || row.last_run?.result_summary || ""),
+      stage,
+      x: 0,
+      y: 0,
+      width: nodeWidth,
+      height: nodeHeight,
+      dagId,
+    };
+    taskNodes.set(key, taskNode);
+    if (row.emits) {
+      const topic = String(row.emits);
+      const current = emittedByTopic.get(topic) || [];
+      current.push(taskNode);
+      emittedByTopic.set(topic, current);
+    }
+  }
+
+  const edges: Array<{ from: string; to: string }> = [];
+  const edgeKeys = new Set<string>();
+  const addEdge = (from: string, to: string) => {
+    const key = `${from}->${to}`;
+    if (edgeKeys.has(key) || from === to) return;
+    edgeKeys.add(key);
+    edges.push({ from, to });
+  };
+
+  const findTaskNodeByJobName = (jobName: string) => {
+    for (const node of taskNodes.values()) {
+      if (node.label === jobName) return node;
+    }
+    return null;
+  };
+
+  for (const row of rows) {
+    const dagId = Number(row.dag_id ?? row.id ?? 0) || undefined;
+    const taskKey = `task:${dagId ?? row.job_name ?? "unknown"}`;
+    const sourceTopic = String(row.source || "");
+    if (sourceTopic) {
+      const upstream = emittedByTopic.get(sourceTopic) || [];
+      if (upstream.length) {
+        for (const node of upstream) addEdge(node.key, taskKey);
+      } else {
+        const topicKey = `topic:${sourceTopic}`;
+        if (!topicNodes.has(topicKey)) {
+          topicNodes.set(topicKey, {
+            key: topicKey,
+            kind: "topic",
+            label: sourceTopic,
+            subtitle: "trigger/topic",
+            status: String(row.last_source_event?.status || "pending"),
+            detail: "",
+            stage: "source",
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 64,
+            dagId: undefined,
+          });
+        }
+        pushStage("source");
+        addEdge(topicKey, taskKey);
+      }
+    }
+  }
+
+  for (const edge of rawEdges || []) {
+    if (edge.kind !== "source") continue;
+    const fromTask = findTaskNodeByJobName(String(edge.from || ""));
+    const toTask = findTaskNodeByJobName(String(edge.to || ""));
+    if (fromTask && toTask) addEdge(fromTask.key, toTask.key);
+  }
+
+  const allNodes = [...topicNodes.values(), ...taskNodes.values()];
+  if (!stageOrder.includes("source") && topicNodes.size) stageOrder.unshift("source");
+  const stages = stageOrder.map((stage, index) => ({
+    key: stage,
+    label: stage,
+    x: padX + index * (nodeWidth + colGap),
+    width: nodeWidth,
+  }));
+  const stageX = new Map(stages.map((stage) => [stage.key, stage.x]));
+  const stageBuckets = new Map<string, GraphNode[]>();
+  for (const node of allNodes) {
+    const bucket = stageBuckets.get(node.stage) || [];
+    bucket.push(node);
+    stageBuckets.set(node.stage, bucket);
+  }
+  for (const [stage, bucket] of stageBuckets.entries()) {
+    bucket.sort((a, b) => {
+      const statusRank = { error: 0, running: 1, partial: 2, ok: 3, pending: 4, unknown: 5 } as Record<string, number>;
+      const diff = (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9);
+      if (diff !== 0) return diff;
+      if (focusDagIds && (a.dagId || b.dagId)) {
+        const af = a.dagId && focusDagIds.has(a.dagId) ? -1 : 0;
+        const bf = b.dagId && focusDagIds.has(b.dagId) ? -1 : 0;
+        if (af !== bf) return af - bf;
+      }
+      return a.label.localeCompare(b.label);
+    });
+    bucket.forEach((node, index) => {
+      node.x = stageX.get(stage) || padX;
+      node.y = padY + index * (nodeHeight + rowGap);
+    });
+  }
+
+  const maxRows = Math.max(...Array.from(stageBuckets.values()).map((bucket) => bucket.length), 1);
+  const width = padX * 2 + stages.length * nodeWidth + Math.max(0, stages.length - 1) * colGap;
+  const height = padY * 2 + maxRows * nodeHeight + Math.max(0, maxRows - 1) * rowGap + 32;
+  const graphEdges: GraphEdge[] = edges
+    .map((edge) => {
+      const from = allNodes.find((node) => node.key === edge.from);
+      const to = allNodes.find((node) => node.key === edge.to);
+      if (!from || !to) return null;
+      const status = to.status === "error" || from.status === "error" ? "error" : (to.status === "running" || from.status === "running" ? "running" : "ok");
+      return {
+        key: `${edge.from}->${edge.to}`,
+        from: edge.from,
+        to: edge.to,
+        x1: from.x + from.width,
+        y1: from.y + from.height / 2,
+        x2: to.x,
+        y2: to.y + to.height / 2,
+        status,
+      };
+    })
+    .filter(Boolean) as GraphEdge[];
+
+  return { width, height, stages, nodes: allNodes, edges: graphEdges };
+}
+
 function App() {
   const [locale, setLocale] = useState<Locale>((localStorage.getItem("trade_locale") as Locale) || "zh-CN");
   const [page, setPage] = useState<PageKey>("report");
@@ -145,10 +390,28 @@ function App() {
   const [eventsPage, setEventsPage] = useState<any>(null);
   const [kgPage, setKgPage] = useState<any>(null);
   const [workflowDetail, setWorkflowDetail] = useState<any>(null);
+  const [selectedDagKey, setSelectedDagKey] = useState<string>("");
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState<Record<string, boolean>>({});
 
   const t = (key: TranslationKey) => I18N[locale][key];
+  const workflowRows: DagNode[] = workflowDetail?.nodes || [];
+  const focusDagIds = useMemo(
+    () => new Set(workflowRows.map((row) => Number(row.dag_id ?? row.id ?? 0)).filter(Boolean)),
+    [workflowRows],
+  );
+  const workflowGraph = useMemo(
+    () => buildDagLayout(workflowRows, (eventsPage?.dag?.edges || []) as DagEdge[]),
+    [workflowRows, eventsPage?.dag?.edges],
+  );
+  const globalGraph = useMemo(
+    () => buildDagLayout((eventsPage?.dag?.nodes || []) as DagNode[], (eventsPage?.dag?.edges || []) as DagEdge[], focusDagIds),
+    [eventsPage?.dag?.nodes, eventsPage?.dag?.edges, focusDagIds],
+  );
+  const selectedGraphNode =
+    workflowGraph.nodes.find((node) => node.key === selectedDagKey)
+    || globalGraph.nodes.find((node) => node.key === selectedDagKey)
+    || null;
 
   useEffect(() => {
     localStorage.setItem("trade_locale", locale);
@@ -165,6 +428,7 @@ function App() {
   }, [page]);
 
   useEffect(() => {
+    if (page !== "report" && page !== "events") return;
     const source = new EventSource("/api/events/stream");
     source.onmessage = (event) => {
       try {
@@ -178,8 +442,20 @@ function App() {
         // ignore malformed rows
       }
     };
+    source.onerror = () => {
+      source.close();
+    };
     return () => source.close();
-  }, []);
+  }, [page]);
+
+  useEffect(() => {
+    if (!workflowDetail?.nodes?.length) {
+      setSelectedDagKey("");
+      return;
+    }
+    const preferred = workflowDetail.nodes.find((node: any) => String(node.status || "") === "error") || workflowDetail.nodes[0];
+    setSelectedDagKey(`task:${preferred.dag_id ?? preferred.id ?? preferred.job_name}`);
+  }, [workflowDetail?.root_event_id]);
 
   function pushToast(message: string) {
     setToast(message);
@@ -345,7 +621,7 @@ function App() {
                   <div>{row.title || row.topic}</div>
                   <div className="error-text">{shortText(row.root_cause?.message || "-", 200)}</div>
                 </div>
-              )) : <div className="empty">{t("noData")}</div>}
+              )) : <div className="list-card">{t("noRootCause")}</div>}
             </div>
           </div>
         </section>
@@ -536,6 +812,108 @@ function App() {
     );
   }
 
+  function renderDagGraph(layout: DagLayout, options?: { interactive?: boolean; selectedKey?: string; onSelect?: (key: string) => void }) {
+    if (!layout.nodes.length) return <div className="empty">{t("noData")}</div>;
+    return (
+      <div className="dag-shell">
+        <div className="dag-stage-header">
+          {layout.stages.map((stage) => (
+            <div key={stage.key} className="dag-stage-pill">
+              {stage.label}
+            </div>
+          ))}
+        </div>
+        <div className="dag-canvas" style={{ width: `${layout.width}px`, height: `${layout.height}px` }}>
+          <svg className="dag-svg" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none">
+            {layout.edges.map((edge) => {
+              const midX = edge.x1 + Math.max(32, (edge.x2 - edge.x1) / 2);
+              const path = `M ${edge.x1} ${edge.y1} C ${midX} ${edge.y1}, ${midX} ${edge.y2}, ${edge.x2} ${edge.y2}`;
+              return (
+                <path
+                  key={edge.key}
+                  d={path}
+                  className={`dag-edge ${statusClass(edge.status)}`}
+                />
+              );
+            })}
+          </svg>
+          {layout.nodes.map((node) => (
+            <button
+              type="button"
+              key={node.key}
+              className={`dag-node ${node.kind} ${statusClass(node.status)} ${options?.selectedKey === node.key ? "selected" : ""}`}
+              style={{ left: `${node.x}px`, top: `${node.y}px`, width: `${node.width}px`, height: `${node.height}px` }}
+              onClick={() => options?.onSelect?.(node.key)}
+            >
+              <div className="dag-node-top">
+                <span className="dag-node-title">{node.label}</span>
+                <span className={`pill ${statusClass(node.status)}`}>{node.status}</span>
+              </div>
+              <div className="dag-node-subtitle">{shortText(node.subtitle, 54)}</div>
+              <div className={`dag-node-detail ${node.status === "error" ? "error-text" : ""}`}>{shortText(node.detail || "-", 96)}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderNodeDetail(node: GraphNode | null, rows: DagNode[], options?: { rootEventId?: number }) {
+    if (!node) return <div className="empty">{t("focusHint")}</div>;
+    const row = rows.find((item) => `task:${item.dag_id ?? item.id ?? item.job_name}` === node.key);
+    if (!row) {
+      return (
+        <div className="list-stack">
+          <div className="list-card">
+            <div className="panel-title">{node.label}</div>
+            <div className="muted-line">{node.subtitle}</div>
+            <div className="muted-line">{node.detail || "-"}</div>
+          </div>
+        </div>
+      );
+    }
+    const upstream = rows.filter((item) => String(item.emits || "") && String(item.emits || "") === String(row.source || ""));
+    const downstream = rows.filter((item) => String(item.source || "") && String(item.source || "") === String(row.emits || ""));
+    return (
+      <div className="list-stack">
+        <div className="list-card">
+          <div className="node-header">
+            <div>
+              <div className="panel-title">{row.job_name}</div>
+              <div className="muted-line">{row.stage} · {row.source || "-"}</div>
+            </div>
+            <span className={`pill ${statusClass(row.status)}`}>{row.status}</span>
+          </div>
+          <div className={`muted-line ${row.error || row.error_detail ? "error-text" : ""}`}>
+            {shortText(row.error || row.error_detail || row.result_summary || row.last_run?.result_summary || "-", 240)}
+          </div>
+          <div className="detail-metrics">
+            <div><span className="stat-label">{t("latestRun")}</span><span>{formatDateTime(row.last_run?.started_at || row.last_source_event?.created_at)}</span></div>
+            <div><span className="stat-label">{t("counts")}</span><span>{row.recent_ok_count ?? 0} ok / {row.recent_error_count ?? 0} err</span></div>
+            <div><span className="stat-label">emits</span><span>{row.emits || "-"}</span></div>
+          </div>
+          {options?.rootEventId && row.dag_id ? (
+            <div className="node-actions">
+              <button onClick={() => void rerunNode(options.rootEventId!, row.dag_id!)}>{t("rerun")}</button>
+            </div>
+          ) : null}
+        </div>
+        <div className="list-card">
+          <div className="panel-title">{t("upstream")}</div>
+          {(upstream.length ? upstream : [{ job_name: row.source || "-", stage: "topic", status: row.last_source_event?.status || "pending" }]).map((item: any, index: number) => (
+            <div key={`up-${index}`} className="muted-line">{item.job_name || item.source || item}</div>
+          ))}
+        </div>
+        <div className="list-card">
+          <div className="panel-title">{t("downstream")}</div>
+          {(downstream.length ? downstream : [{ job_name: row.emits || "-", stage: "topic", status: "pending" }]).map((item: any, index: number) => (
+            <div key={`down-${index}`} className="muted-line">{item.job_name || item.source || item}</div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   function renderEvents() {
     if (loading.events && !eventsPage) return <div className="empty">{t("loading")}</div>;
     if (!eventsPage) return <div className="empty">{t("noData")}</div>;
@@ -549,6 +927,28 @@ function App() {
             <button onClick={() => void runTarget("evening")}>{t("runEvening")}</button>
             <button onClick={() => void runTarget("agenda")}>{t("runAgenda")}</button>
           </div>
+        </section>
+
+        <section className="panel wide">
+          <div className="cards">
+            <div className="stat-card">
+              <div className="stat-label">{t("liveWorkflows")}</div>
+              <div className="stat-value">{(eventsPage.workflows || []).filter((row: any) => row.status === "running").length}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">{t("failedCount")}</div>
+              <div className="stat-value">{(eventsPage.failed_nodes || []).length}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">{t("agendaCount")}</div>
+              <div className="stat-value">{(eventsPage.due_agenda || []).length}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">{t("eventCount")}</div>
+              <div className="stat-value">{(eventsPage.today_events || []).length}</div>
+            </div>
+          </div>
+          <div className="muted-line">{t("focusHint")}</div>
         </section>
 
         <section className="panel-grid">
@@ -595,37 +995,76 @@ function App() {
         </section>
 
         <section className="panel wide">
-          <div className="panel-title">{t("focusWorkflow")}</div>
-          {loading.workflow ? <div className="empty">{t("loading")}</div> : renderWorkflowNodes()}
+          <div className="panel-title">{t("workflowDag")}</div>
+          <div className="split-grid">
+            <div>
+              {loading.workflow ? <div className="empty">{t("loading")}</div> : renderDagGraph(workflowGraph, {
+                interactive: true,
+                selectedKey: selectedDagKey,
+                onSelect: setSelectedDagKey,
+              })}
+            </div>
+            <div>
+              <div className="panel-title">{t("nodeDetail")}</div>
+              {renderNodeDetail(selectedGraphNode, workflowRows, { rootEventId: workflowDetail?.root_event_id })}
+            </div>
+          </div>
         </section>
 
         <section className="panel wide">
-          <div className="panel-title">{t("dagRuntime")}</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Job</th>
-                  <th>{t("stage")}</th>
-                  <th>{t("source")}</th>
-                  <th>{t("status")}</th>
-                  <th>Recent</th>
-                  <th>{t("error")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(eventsPage.dag?.nodes || []).map((row: any) => (
-                  <tr key={`dag-${row.id}`}>
-                    <td>{row.job_name}</td>
-                    <td>{row.stage}</td>
-                    <td>{row.source}</td>
-                    <td><span className={`pill ${statusClass(row.status)}`}>{row.status}</span></td>
-                    <td>{row.recent_ok_count ?? 0}/{(row.recent_ok_count ?? 0) + (row.recent_error_count ?? 0)}</td>
-                    <td>{shortText(row.error_detail, 120)}</td>
+          <div className="panel-title">{t("globalDag")}</div>
+          {renderDagGraph(globalGraph, {
+            interactive: true,
+            selectedKey: selectedDagKey,
+            onSelect: setSelectedDagKey,
+          })}
+        </section>
+
+        <section className="panel-grid">
+          <div className="panel">
+            <div className="panel-title">{t("failedNodes")}</div>
+            <div className="list-stack">
+              {(eventsPage.failed_nodes || []).length ? (eventsPage.failed_nodes || []).map((row: any) => (
+                <div key={`failed-detail-${row.id}`} className="list-card">
+                  <div className="node-header">
+                    <div>
+                      <div className="panel-title">{row.job_name}</div>
+                      <div className="muted-line">{row.source}</div>
+                    </div>
+                    <span className={`pill ${statusClass("error")}`}>error</span>
+                  </div>
+                  <div className="error-text">{shortText(row.error_detail, 220)}</div>
+                </div>
+              )) : <div className="empty">{t("noData")}</div>}
+            </div>
+          </div>
+          <div className="panel">
+            <div className="panel-title">{t("dailyEvents")}</div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Topic</th>
+                    <th>{t("status")}</th>
+                    <th>{t("error")}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {(eventsPage.recent_market_events || []).slice(0, 16).map((row: any) => (
+                    <tr key={`recent-market-${row.event_id || row.id}`}>
+                      <td>{row.event_date || formatDateTime(row.created_at)}</td>
+                      <td>{shortText(row.summary || row.event_type || row.title, 72)}</td>
+                      <td><span className={`pill ${statusClass(row.status || "ok")}`}>{row.status || "ok"}</span></td>
+                      <td>{shortText(row.error || "-", 90)}</td>
+                    </tr>
+                  ))}
+                  {!eventsPage.recent_market_events?.length && (
+                    <tr><td colSpan={4} className="empty">{t("noData")}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
 

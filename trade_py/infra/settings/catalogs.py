@@ -1,4 +1,9 @@
-"""DB-first access helpers for legacy catalog payloads."""
+"""DB-first access helpers for legacy catalog payloads.
+
+Runtime should read catalogs from DB settings.
+File fallbacks only exist as migration baselines and are opportunistically
+imported back into DB on first use if missing.
+"""
 
 from __future__ import annotations
 
@@ -19,9 +24,14 @@ def _active_data_root() -> Path:
 
 
 def load_catalog_payload(setting_key: str, fallback_path: str) -> Any:
-    """Load a structured catalog payload from DB settings, falling back to file."""
+    """Load a structured catalog payload from DB settings.
+
+    If the DB setting is absent, a repository file can be used once as a
+    migration baseline; the loaded payload is then persisted back into DB.
+    """
+    db = TradeDB(_active_data_root())
     try:
-        payload = TradeDB(_active_data_root()).get_json(setting_key, None)
+        payload = db.get_json(setting_key, None)
         if payload is not None:
             return payload
     except Exception:
@@ -30,6 +40,11 @@ def load_catalog_payload(setting_key: str, fallback_path: str) -> Any:
     if not target.exists():
         return None
     try:
-        return json.loads(target.read_text(encoding="utf-8"))
+        payload = json.loads(target.read_text(encoding="utf-8"))
     except Exception:
         return None
+    try:
+        db.set(setting_key, payload, value_type="json", category="catalog")
+    except Exception:
+        pass
+    return payload

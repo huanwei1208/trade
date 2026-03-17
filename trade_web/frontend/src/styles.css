@@ -246,6 +246,140 @@ th {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
+.dag-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.dag-stage-header {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dag-stage-pill {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: rgba(15, 23, 40, 0.88);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+}
+
+.dag-canvas {
+  position: relative;
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(36, 54, 84, 0.8);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 40, 0.92), rgba(9, 17, 31, 0.92)),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02), transparent);
+}
+
+.dag-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.dag-edge {
+  fill: none;
+  stroke-width: 3;
+  stroke: rgba(110, 132, 168, 0.55);
+}
+
+.dag-edge.ok {
+  stroke: rgba(105, 213, 155, 0.55);
+}
+
+.dag-edge.running {
+  stroke: rgba(118, 204, 255, 0.78);
+}
+
+.dag-edge.error {
+  stroke: rgba(244, 142, 162, 0.78);
+}
+
+.dag-node {
+  position: absolute;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(10, 16, 30, 0.96);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
+  text-align: left;
+}
+
+.dag-node.topic {
+  background: rgba(12, 19, 34, 0.92);
+}
+
+.dag-node.selected {
+  outline: 2px solid rgba(42, 157, 255, 0.92);
+  outline-offset: 1px;
+}
+
+.dag-node-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.dag-node-title {
+  font-size: 0.88rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.dag-node-subtitle,
+.dag-node-detail {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.dag-node.error,
+.dag-node.partial,
+.dag-node.ok,
+.dag-node.running {
+  border-width: 1px;
+}
+
+.dag-node.error {
+  border-color: rgba(244, 142, 162, 0.82);
+}
+
+.dag-node.partial {
+  border-color: rgba(248, 204, 99, 0.72);
+}
+
+.dag-node.ok {
+  border-color: rgba(105, 213, 155, 0.62);
+}
+
+.dag-node.running {
+  border-color: rgba(118, 204, 255, 0.7);
+}
+
+.detail-metrics {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-metrics > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
 .node-card.ok {
   border-color: rgba(58, 130, 87, 0.9);
 }

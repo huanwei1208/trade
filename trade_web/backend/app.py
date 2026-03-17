@@ -98,7 +98,7 @@ def _hive_status(*, lag_days: int | None = None, coverage_pct: float | None = No
 def create_app():
     """FastAPI app factory (used by uvicorn --factory)."""
     try:
-        from fastapi import Body, FastAPI, HTTPException
+        from fastapi import Body, FastAPI, HTTPException, Request
         from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
@@ -941,18 +941,23 @@ def create_app():
         )
 
     @app.get("/api/events/stream")
-    async def stream_events(after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):
+    async def stream_events(request: Request, after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):
         async def _gen():
             last_id = max(0, int(after_id))
-            while True:
-                rows = _db().event_log_since(after_id=last_id, limit=limit)
-                if rows:
-                    for row in rows:
-                        last_id = max(last_id, int(row.get("id") or 0))
-                        yield f"data: {json.dumps(row, ensure_ascii=False)}\n\n"
-                else:
-                    yield ": ping\n\n"
-                await asyncio.sleep(max(0.5, float(poll_seconds)))
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    rows = _db().event_log_since(after_id=last_id, limit=limit)
+                    if rows:
+                        for row in rows:
+                            last_id = max(last_id, int(row.get("id") or 0))
+                            yield f"data: {json.dumps(row, ensure_ascii=False)}\n\n"
+                    else:
+                        yield ": ping\n\n"
+                    await asyncio.sleep(max(0.5, float(poll_seconds)))
+            except asyncio.CancelledError:
+                return
 
         return StreamingResponse(
             _gen(),

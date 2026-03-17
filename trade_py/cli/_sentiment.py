@@ -1,7 +1,7 @@
 """Native implementation of `trade data sentiment` subcommand.
 
 Replaces python/scripts/run_sentiment.py — no sys.path manipulation,
-reads defaults from config/defaults.json, calls pipeline modules directly.
+reads defaults from DB-first settings, calls pipeline modules directly.
 """
 
 from __future__ import annotations
@@ -332,11 +332,11 @@ def _range_fetch_and_process_dates(
 
 
 # ---------------------------------------------------------------------------
-# Argument parser (reads defaults from config/defaults.json)
+# Argument parser (reads defaults from DB-first settings)
 # ---------------------------------------------------------------------------
 
 def _build_parser(argv: list[str]) -> tuple[argparse.Namespace, bool]:
-    """Parse sentiment args with defaults from config/defaults.json.
+    """Parse sentiment args with defaults from DB-first settings.
 
     Returns (args, fetch_mode_explicit).
     """
