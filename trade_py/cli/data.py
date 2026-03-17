@@ -660,7 +660,7 @@ def main(argv: list[str] | None = None) -> int:
         return _track_data_run(args.data_root, "cross_asset_fetch", _run_cross_asset)
 
     if args.command == "realtime":
-        from trade_py.analysis.intraday_runtime import compute_intraday_snapshot
+        from trade_py.domain.factors import compute_intraday_snapshot
         from trade_py.data.market.intraday import TushareIntradayFetcher
 
         if args.rt_cmd == "sync":

@@ -80,7 +80,7 @@ def _normalise_sector_token(token: str) -> str:
         return "SW_Unknown"
 
     try:
-        from trade_py.analysis.knowledge_graph import SW
+        from trade_py.domain.kg import SW
         from trade_py.data.market.index.tushare import _map_industry_to_sw
 
         sw_by_name = {sw.name.lower(): sw for sw in SW}
@@ -301,7 +301,7 @@ def _extract_events(silver: pd.DataFrame, min_magnitude: float = 0.4) -> list[di
 
 def _run_kg_propagation(events: list[dict], data_root: str) -> list[dict]:
     """Run KG propagation for all events. Returns event_propagations rows."""
-    from trade_py.analysis.knowledge_graph import SectorGraph
+    from trade_py.domain.kg import SectorGraph
     from trade_py.db.instruments_db import InstrumentsDB
 
     graph = SectorGraph.from_snapshot_or_db(data_root, merge_defaults=True, prefer_snapshot=True)

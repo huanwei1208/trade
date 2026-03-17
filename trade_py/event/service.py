@@ -243,7 +243,7 @@ def sync_events(
     if range_start > range_end:
         raise ValueError(f"start ({range_start}) > end ({range_end})")
 
-    from trade_py.analysis.knowledge_graph import SectorGraph
+    from trade_py.domain.kg import SectorGraph
 
     summary = EventSyncSummary()
     available_events = set(SectorGraph.from_db(data_root, merge_defaults=True).available_events())
