@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 RECENT_OPERATIONAL_DAYS = 3
 MATURED_RESEARCH_DAYS = 120
 LABEL_SETTLE_DAYS = 28
+MIN_SOURCE_IC_LOOKBACK_DAYS = 10
 
 
 @dataclass
@@ -571,8 +572,19 @@ def evaluate_sources(data_root: str = str(default_data_root()),
         silver = silver[(silver["date"] >= start_date) & (silver["date"] <= end_date)].copy()
         silver["source_name"] = silver["source"].fillna("unknown").astype(str)
         silver["event_magnitude"] = pd.to_numeric(silver["event_magnitude"], errors="coerce").fillna(0.0)
-    ic_payload = compute_ic(data_root=data_root, lookback=lookback_days, forward_days=5, by_source=True)
-    ic_by_source = ic_payload.get("by_source", {}) if isinstance(ic_payload, dict) else {}
+    ic_payload: dict[str, Any]
+    ic_by_source: dict[str, Any]
+    if lookback_days >= MIN_SOURCE_IC_LOOKBACK_DAYS:
+        ic_payload = compute_ic(data_root=data_root, lookback=lookback_days, forward_days=5, by_source=True)
+        ic_by_source = ic_payload.get("by_source", {}) if isinstance(ic_payload, dict) else {}
+    else:
+        # Operational gates only need recent source health and event yield; skip heavy IC scans.
+        ic_payload = {
+            "skipped": True,
+            "reason": f"lookback_days<{MIN_SOURCE_IC_LOOKBACK_DAYS}",
+            "lookback_days": lookback_days,
+        }
+        ic_by_source = {}
     matured_cutoff = (_parse_iso(target_date) - timedelta(days=7)).isoformat()
 
     health_by_name = {row["source_name"]: row for row in health_rows}

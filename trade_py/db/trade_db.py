@@ -1086,6 +1086,53 @@ class TradeDB:
             self._conn.commit()
             return cur.rowcount
 
+    def job_runs_mark_stale_by_policy(self) -> int:
+        policies = [
+            ("realtime_quote_sync", 0.25),
+            ("realtime_compute", 0.25),
+            ("planned_event_sync", 0.5),
+            ("planned_event_realize", 0.5),
+            ("evaluate_gate", 0.5),
+            ("evaluate_source", 2.0),
+            ("evaluate_daily", 2.0),
+            ("window_score", 1.0),
+            ("fund_flow_update", 1.0),
+            ("northbound", 1.0),
+            ("event_pipeline", 2.0),
+            ("sentiment_pipeline", 4.0),
+        ]
+        total = 0
+        with self._conn_lock:
+            for job_name, older_than_hours in policies:
+                cur = self._conn.execute(
+                    """
+                    UPDATE job_runs
+                    SET status = 'error',
+                        result_summary = CASE
+                            WHEN COALESCE(result_summary, '') = '' THEN ?
+                            ELSE result_summary
+                        END,
+                        message = CASE
+                            WHEN COALESCE(message, '') = '' THEN ?
+                            ELSE message
+                        END,
+                        completed_at = datetime('now', 'localtime'),
+                        finished_at = datetime('now', 'localtime')
+                    WHERE status = 'running'
+                      AND job_name = ?
+                      AND started_at < datetime('now', 'localtime', ?)
+                    """,
+                    (
+                        f"marked stale by policy after {older_than_hours:.2f}h",
+                        f"marked stale by policy after {older_than_hours:.2f}h",
+                        job_name,
+                        f"-{older_than_hours} hours",
+                    ),
+                )
+                total += int(cur.rowcount or 0)
+            self._conn.commit()
+        return total
+
     def job_runs_recent(self, limit: int = 50, stage: str | None = None) -> list[dict]:
         with self._conn_lock:
             if stage:
@@ -2000,6 +2047,23 @@ class TradeDB:
                     "SELECT * FROM event_log ORDER BY id DESC LIMIT ?", (limit,)
                 ).fetchall()
         return [dict(r) for r in rows]
+
+    def event_log_mark_stale(self, older_than_hours: float = 1.0, note: str | None = None) -> int:
+        summary = note or f"marked stale after {older_than_hours:.1f}h without completion"
+        with self._conn_lock:
+            cur = self._conn.execute(
+                """
+                UPDATE event_log
+                SET status='error',
+                    handler=COALESCE(NULLIF(handler, ''), '<stale_cleanup>'),
+                    error=COALESCE(NULLIF(error, ''), ?)
+                WHERE status='pending'
+                  AND created_at < datetime('now', 'localtime', ?)
+                """,
+                (summary, f"-{older_than_hours} hours"),
+            )
+            self._conn.commit()
+            return int(cur.rowcount or 0)
 
     def event_log_pending(self, topic: str | None = None, min_id: int | None = None) -> list[dict]:
         with self._conn_lock:

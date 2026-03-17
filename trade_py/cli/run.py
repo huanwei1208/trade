@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     from trade_py.report.scheduler import drain_due_agenda
 
     args = make_parser().parse_args(argv or [])
+    TradeDB(args.data_root).job_runs_mark_stale_by_policy()
     target = str(args.target).strip()
 
     def _run_one(name: str) -> int:
@@ -83,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
             min_event_id = (int(recent[0]["id"]) + 1) if recent else 1
             count = drain_due_agenda(bus, db, limit=args.limit)
             if count:
-                bus.wait_for_idle(min_event_id=min_event_id, timeout_sec=30.0)
+                bus.wait_for_idle(min_event_id=min_event_id, timeout_sec=300.0)
             bus.shutdown(wait=True)
             print(f"已派发 {count} 条到期 agenda")
             return 0
@@ -94,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                 "trigger", topic,
                 "--data-root", args.data_root,
                 "--payload", args.payload,
+                "--timeout-sec", "7200",
             ])
 
         if name in JOB_REGISTRY:
@@ -107,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
                 "trigger", name,
                 "--data-root", args.data_root,
                 "--payload", args.payload,
+                "--timeout-sec", "7200",
             ])
 
         logger.error("Unknown run target: %s", name)

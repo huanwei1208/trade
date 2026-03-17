@@ -117,6 +117,7 @@ def make_parser() -> argparse.ArgumentParser:
     p_trigger.add_argument("topic", help="事件 topic，如 gate.morning")
     p_trigger.add_argument("--data-root", default=_DATA_ROOT)
     p_trigger.add_argument("--payload", default="{}", help="JSON payload（默认 {}）")
+    p_trigger.add_argument("--timeout-sec", type=float, default=3600.0, help="等待级联收敛的最长秒数")
 
     # ── run ────────────────────────────────────────────────────────────────────
     p_run = sub.add_parser("run", description="直接执行单个 job（绕开 bus，同步调试）")
@@ -202,6 +203,8 @@ def _cmd_trigger(args: argparse.Namespace) -> int:
     from trade_py.bus import get_bus, bootstrap_from_dag
 
     db = TradeDB(args.data_root)
+    db.job_runs_mark_stale_by_policy()
+    db.event_log_mark_stale()
     bus = get_bus(db)
     bootstrap_from_dag(db, args.data_root)
 
@@ -212,7 +215,7 @@ def _cmd_trigger(args: argparse.Namespace) -> int:
 
     event = bus.publish(args.topic, payload)
     print(f"Published event_id={event.id}  topic={args.topic}")
-    idle = bus.wait_for_idle(min_event_id=event.id, timeout_sec=30.0)
+    idle = bus.wait_for_idle(min_event_id=event.id, timeout_sec=float(args.timeout_sec))
     if not idle:
         logger.warning("event trigger timeout waiting for cascade to settle topic=%s event_id=%s", args.topic, event.id)
     bus.shutdown(wait=True)
@@ -233,7 +236,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def _cmd_list(args: argparse.Namespace) -> int:
     from trade_py.db.trade_db import TradeDB
 
-    rows = TradeDB(args.data_root).event_log_recent(args.limit, args.topic)
+    db = TradeDB(args.data_root)
+    db.job_runs_mark_stale_by_policy()
+    db.event_log_mark_stale()
+    rows = db.event_log_recent(args.limit, args.topic)
     if not rows:
         print("无事件日志")
         return 0
@@ -252,7 +258,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
 def _cmd_runs(args: argparse.Namespace) -> int:
     from trade_py.db.trade_db import TradeDB
 
-    rows = TradeDB(args.data_root).job_runs_recent(args.limit, stage=args.stage)
+    db = TradeDB(args.data_root)
+    db.job_runs_mark_stale_by_policy()
+    db.event_log_mark_stale()
+    rows = db.job_runs_recent(args.limit, stage=args.stage)
     if not rows:
         print("暂无执行记录")
         return 0

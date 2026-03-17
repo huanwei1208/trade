@@ -23,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = make_parser().parse_args(argv or [])
     db = TradeDB(args.data_root)
+    stale_count = db.job_runs_mark_stale_by_policy()
+    stale_events = db.event_log_mark_stale()
     today = date.today().isoformat()
     gate = db.quality_gate_get()
     due = db.agenda_queue_due(limit=args.limit)
@@ -47,6 +49,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"原因: {gate.get('reason_summary')}")
     else:
         print("质量门禁: <暂无>")
+    if stale_count:
+        print(f"运行态修复: 已收敛 {stale_count} 条 stale jobs")
+    if stale_events:
+        print(f"事件态修复: 已收敛 {stale_events} 条 stale events")
 
     print(f"\n到期 agenda: {len(due)}")
     for row in due:
