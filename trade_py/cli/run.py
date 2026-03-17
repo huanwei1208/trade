@@ -30,7 +30,7 @@ _TARGET_TOPICS = {
 
 _WORKFLOWS = {
     "open": ["morning", "pre-market", "signal-am", "report"],
-    "close": ["market-close", "evening", "event-extract", "evaluate_daily"],
+    "close": ["evening", "event-extract", "evaluate_daily", "market-close"],
     "sync": ["calendar_sync", "planned_event_sync", "agenda", "evaluate_daily"],
 }
 
