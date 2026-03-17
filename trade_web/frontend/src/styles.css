@@ -251,13 +251,34 @@ th {
   gap: 14px;
 }
 
-.dag-stage-header {
+.history-grid {
+  grid-template-columns: 1.25fr 0.95fr;
+}
+
+.workflow-history-table {
+  min-height: 320px;
+}
+
+.badge-line {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
-.dag-stage-pill {
+.active-row {
+  background: rgba(42, 157, 255, 0.12);
+}
+
+.dag-level-header {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-height: 32px;
+  padding: 12px 14px 0;
+}
+
+.dag-level-pill {
   padding: 6px 10px;
   border-radius: 999px;
   border: 1px solid var(--line);
@@ -271,6 +292,7 @@ th {
 .dag-canvas {
   position: relative;
   overflow: auto;
+  min-height: 440px;
   border-radius: 16px;
   border: 1px solid rgba(36, 54, 84, 0.8);
   background:
@@ -314,6 +336,13 @@ th {
   background: rgba(10, 16, 30, 0.96);
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
   text-align: left;
+  cursor: grab;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.dag-node:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 28px rgba(0, 0, 0, 0.28);
 }
 
 .dag-node.topic {
@@ -368,6 +397,23 @@ th {
   border-color: rgba(118, 204, 255, 0.7);
 }
 
+.dag-flyout {
+  position: absolute;
+  z-index: 30;
+  width: 308px;
+  pointer-events: none;
+}
+
+.flyout-card {
+  backdrop-filter: blur(12px);
+  background: rgba(8, 14, 25, 0.94);
+  box-shadow: 0 22px 40px rgba(0, 0, 0, 0.34);
+}
+
+.dag-flyout .list-card {
+  pointer-events: auto;
+}
+
 .detail-metrics {
   display: grid;
   gap: 10px;
@@ -414,6 +460,12 @@ th {
 
 .node-actions {
   margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.node-actions button {
+  width: 100%;
 }
 
 .clickable-row {
@@ -422,6 +474,10 @@ th {
 
 .clickable-row:hover {
   background: rgba(42, 157, 255, 0.08);
+}
+
+.active-row:hover {
+  background: rgba(42, 157, 255, 0.16);
 }
 
 .toast {
@@ -440,6 +496,10 @@ th {
   .summary,
   .signal-columns,
   .split-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .history-grid {
     grid-template-columns: 1fr;
   }
 

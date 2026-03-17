@@ -514,6 +514,73 @@ def create_app():
             return None
         return db.event_workflow_detail(root_event_id)
 
+    def _workflow_graph(nodes: list[dict[str, Any]]) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+        by_emits: dict[str, list[int]] = {}
+        node_ids: set[int] = set()
+        for node in nodes:
+            dag_id = int(node.get("dag_id") or 0)
+            if dag_id <= 0:
+                continue
+            node_ids.add(dag_id)
+            emits = str(node.get("emits") or "").strip()
+            if emits:
+                by_emits.setdefault(emits, []).append(dag_id)
+        predecessors: dict[int, list[int]] = {}
+        successors: dict[int, list[int]] = {dag_id: [] for dag_id in node_ids}
+        for node in nodes:
+            dag_id = int(node.get("dag_id") or 0)
+            if dag_id <= 0:
+                continue
+            source = str(node.get("source") or "").strip()
+            preds = list(by_emits.get(source) or [])
+            predecessors[dag_id] = preds
+            for pred in preds:
+                successors.setdefault(pred, []).append(dag_id)
+        return predecessors, successors
+
+    def _collect_ancestors(start_id: int, predecessors: dict[int, list[int]]) -> set[int]:
+        seen: set[int] = set()
+        stack = list(predecessors.get(start_id) or [])
+        while stack:
+            current = int(stack.pop())
+            if current in seen:
+                continue
+            seen.add(current)
+            stack.extend(predecessors.get(current) or [])
+        return seen
+
+    def _pick_upstream_replay_node(nodes: list[dict[str, Any]], dag_id: int) -> int:
+        predecessors, _ = _workflow_graph(nodes)
+        ancestors = _collect_ancestors(dag_id, predecessors)
+        if not ancestors:
+            return dag_id
+        node_by_id = {int(node.get("dag_id") or 0): node for node in nodes}
+
+        def _depth(node_id: int) -> int:
+            depth = 0
+            frontier = [node_id]
+            seen: set[int] = set()
+            while frontier:
+                nxt: list[int] = []
+                for current in frontier:
+                    if current in seen:
+                        continue
+                    seen.add(current)
+                    parents = predecessors.get(current) or []
+                    if parents:
+                        nxt.extend(parents)
+                if nxt:
+                    depth += 1
+                frontier = nxt
+            return depth
+
+        preferred = [
+            node_id for node_id in ancestors
+            if str((node_by_id.get(node_id) or {}).get("status") or "") in {"error", "pending", "partial"}
+        ] or list(ancestors)
+        preferred.sort(key=lambda node_id: (_depth(node_id), node_id))
+        return int(preferred[0]) if preferred else dag_id
+
     def _report_page_payload() -> dict[str, Any]:
         db = _db()
         gate = db.quality_gate_get() or {}
@@ -586,7 +653,7 @@ def create_app():
     def _events_page_payload() -> dict[str, Any]:
         db = _db()
         today = date.today().isoformat()
-        workflows = db.event_workflow_recent(limit=14)
+        workflows = db.event_workflow_recent(limit=24)
         focus = _pick_workflow_focus(workflows, db)
         runtime = db.pipeline_dag_runtime(recent_limit=240)
         today_events = db.get_events(from_date=today, to_date=today, limit=200)
@@ -595,11 +662,11 @@ def create_app():
             to_date=today,
             limit=120,
         )
-        due_agenda = db.agenda_queue_due(limit=20)
+        due_agenda = db.agenda_queue_due(limit=24)
         planned_events = db.planned_events_list(
             start_date=today,
             end_date=(date.today() + timedelta(days=3)).isoformat(),
-            limit=30,
+            limit=40,
         )
         failed_nodes = [
             node for node in runtime.get("nodes", [])
@@ -794,6 +861,9 @@ def create_app():
         dag_id = int(req.get("dag_id") or req.get("node_id") or 0)
         if dag_id <= 0:
             raise HTTPException(status_code=400, detail="dag_id is required")
+        mode = str(req.get("mode") or "self").strip().lower()
+        if mode not in {"self", "upstream", "downstream", "full"}:
+            raise HTTPException(status_code=400, detail="mode must be one of self, upstream, downstream, full")
         db = _db()
         db.job_runs_mark_stale_by_policy()
         db.event_log_mark_stale()
@@ -820,24 +890,43 @@ def create_app():
             "root_event_id": root_event_id,
             "dag_id": dag_id,
             "job_name": node.get("job_name"),
+            "mode": mode,
         }
         bus = get_bus(db)
         bootstrap_from_dag(db, data_root)
+        target_row = dag_row
+        if mode == "full":
+            event = bus.publish(str(detail.get("topic") or ""), payload, parent_event_id=root_event_id)
+            return {
+                "accepted": True,
+                "mode": mode,
+                "root_event_id": root_event_id,
+                "dag_id": dag_id,
+                "job_name": node.get("job_name"),
+                "event_id": event.id,
+                "topic": detail.get("topic"),
+                "target_dag_id": dag_id,
+            }
+        if mode == "upstream":
+            upstream_dag_id = _pick_upstream_replay_node(detail.get("nodes") or [], dag_id)
+            target_row = db.pipeline_dag_get(upstream_dag_id) or dag_row
         event = dispatch_dag_row(
             db,
             bus,
             data_root,
-            dag_row,
+            target_row,
             payload,
             parent_event_id=root_event_id,
         )
         return {
             "accepted": True,
+            "mode": mode,
             "root_event_id": root_event_id,
             "dag_id": dag_id,
-            "job_name": dag_row.get("job_name"),
+            "target_dag_id": int(target_row.get("id") or dag_id),
+            "job_name": target_row.get("job_name"),
             "event_id": event.id,
-            "topic": dag_row.get("source"),
+            "topic": target_row.get("source"),
         }
 
     # ── API: job_runs ─────────────────────────────────────────────────────────
@@ -958,6 +1047,41 @@ def create_app():
                         for row in rows:
                             last_id = max(last_id, int(row.get("id") or 0))
                             yield f"data: {json.dumps(row, ensure_ascii=False)}\n\n"
+                    else:
+                        yield ": ping\n\n"
+                    await asyncio.sleep(max(0.5, float(poll_seconds)))
+            except asyncio.CancelledError:
+                return
+
+        return StreamingResponse(
+            _gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/runtime/stream")
+    async def stream_runtime(request: FastAPIRequest, scope: str = "report", poll_seconds: float = 2.0):
+        scope_name = "events-page" if str(scope).strip().lower() == "events" else "report-page"
+
+        async def _gen():
+            last_signature = ""
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    signature = _payload_signature(scope_name)
+                    if signature != last_signature:
+                        last_signature = signature
+                        payload = {
+                            "scope": scope_name,
+                            "signature": signature,
+                            "ts": datetime.now().isoformat(timespec="seconds"),
+                        }
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     else:
                         yield ": ping\n\n"
                     await asyncio.sleep(max(0.5, float(poll_seconds)))
