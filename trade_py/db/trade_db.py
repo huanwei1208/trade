@@ -3982,21 +3982,32 @@ class TradeDB:
     def recommendation_upsert(self, rec_id: str, as_of_date: str, symbol: str,
                                 action: str, conviction: str,
                                 score: float, risk: float, horizon_days: int,
-                                reasons: dict | list) -> None:
+                                reasons: dict | list,
+                                expected_return_5d: float | None = None,
+                                risk_5pct: float | None = None,
+                                position_weight: float | None = None,
+                                horizon_set: dict | None = None) -> None:
         with self._conn_lock:
             self._conn.execute(
                 "INSERT INTO Recommendation "
                 "(rec_id, as_of_date, symbol, action, conviction, score, risk, "
-                " horizon_days, reasons_json) "
-                "VALUES (?,?,?,?,?,?,?,?,?) "
+                " horizon_days, reasons_json, expected_return_5d, risk_5pct, "
+                " position_weight, horizon_set_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(as_of_date, symbol) DO UPDATE SET "
                 "rec_id=excluded.rec_id, action=excluded.action, "
                 "conviction=excluded.conviction, score=excluded.score, "
                 "risk=excluded.risk, horizon_days=excluded.horizon_days, "
                 "reasons_json=excluded.reasons_json, "
+                "expected_return_5d=excluded.expected_return_5d, "
+                "risk_5pct=excluded.risk_5pct, "
+                "position_weight=excluded.position_weight, "
+                "horizon_set_json=excluded.horizon_set_json, "
                 "created_at=CURRENT_TIMESTAMP",
                 (rec_id, as_of_date, symbol, action, conviction, score, risk,
-                 horizon_days, json.dumps(reasons, ensure_ascii=False)),
+                 horizon_days, json.dumps(reasons, ensure_ascii=False),
+                 expected_return_5d, risk_5pct, position_weight,
+                 json.dumps(horizon_set, ensure_ascii=False) if horizon_set is not None else None),
             )
             self._conn.commit()
 
@@ -4018,6 +4029,7 @@ class TradeDB:
         for row in rows:
             r = dict(row)
             r["reasons"] = _json_loads_safe(r.get("reasons_json"), [])
+            r["horizon_set"] = _json_loads_safe(r.get("horizon_set_json"), {})
             result.append(r)
         return result
 
@@ -4027,17 +4039,22 @@ class TradeDB:
                                      symbol: str, rec_id: str,
                                      top_evidence: list, data_fingerprint: str,
                                      belief_transition_id: str | None = None,
-                                     model_versions: dict | None = None) -> None:
+                                     model_versions: dict | None = None,
+                                     trust_json: dict | None = None,
+                                     narrative_text: str | None = None) -> None:
         with self._conn_lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO RecommendationTrace "
                 "(trace_id, as_of_date, symbol, rec_id, belief_transition_id, "
-                " top_evidence_json, model_versions_json, data_fingerprint) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                " top_evidence_json, model_versions_json, data_fingerprint, "
+                " trust_json, narrative_text) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (trace_id, as_of_date, symbol, rec_id, belief_transition_id,
                  json.dumps(top_evidence, ensure_ascii=False),
                  json.dumps(model_versions or {}, ensure_ascii=False),
-                 data_fingerprint),
+                 data_fingerprint,
+                 json.dumps(trust_json, ensure_ascii=False) if trust_json is not None else None,
+                 narrative_text),
             )
             self._conn.commit()
 
@@ -4131,6 +4148,34 @@ class TradeDB:
                 (as_of_date,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── EBRT: Source Reliability (Phase C) ────────────────────────────────────
+
+    def source_reliability_upsert(self, source_id: str,
+                                   reliability: float,
+                                   eval_date: str) -> None:
+        """Update reputation_score for a source in InfluenceSignal (most recent row)."""
+        with self._conn_lock:
+            self._conn.execute(
+                "UPDATE InfluenceSignal SET reputation_score=? "
+                "WHERE source_id=? AND published_at=("
+                "  SELECT MAX(published_at) FROM InfluenceSignal WHERE source_id=?"
+                ")",
+                (round(reliability, 6), source_id, source_id),
+            )
+            self._conn.commit()
+
+    def source_reliability_get(self, source_id: str) -> float:
+        """Return the most recent reputation_score for a source (default 0.5)."""
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT reputation_score FROM InfluenceSignal "
+                "WHERE source_id=? ORDER BY published_at DESC LIMIT 1",
+                (source_id,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return 0.5
+        return float(row[0])
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 

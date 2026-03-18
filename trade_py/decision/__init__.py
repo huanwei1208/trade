@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from trade_py.decision.rank import rank_symbols
-from trade_py.decision.explain import build_reasons, build_data_fingerprint
+from trade_py.decision.explain import (
+    build_reasons, build_data_fingerprint,
+    build_narrative_text, build_trace_trust_json,
+)
 
 if TYPE_CHECKING:
     from trade_py.db.trade_db import TradeDB
@@ -147,6 +150,10 @@ def produce_recommendations(
         # Build reasons
         reasons = build_reasons(symbol, today, item, db)
 
+        expected_return_5d = item.get("expected_return_5d")
+        risk_5pct = item.get("risk_5pct")
+        horizon_set = item.get("horizon_set")
+
         try:
             db.recommendation_upsert(
                 rec_id=rec_id,
@@ -158,10 +165,16 @@ def produce_recommendations(
                 risk=risk,
                 horizon_days=HORIZON_DAYS,
                 reasons=reasons,
+                expected_return_5d=expected_return_5d,
+                risk_5pct=risk_5pct,
+                horizon_set=horizon_set,
             )
         except Exception as exc:
             logger.warning("rec upsert failed for %s: %s", symbol, exc)
             continue
+
+        # Build narrative text
+        narrative = build_narrative_text(symbol, item, reasons)
 
         # Write trace
         trace_id = hashlib.md5(f"{today}:{symbol}:trace".encode()).hexdigest()
@@ -185,6 +198,7 @@ def produce_recommendations(
                 data_fingerprint=build_data_fingerprint(symbol, today),
                 belief_transition_id=transition_id,
                 model_versions={"belief": "v1", "rank": "three_factor"},
+                narrative_text=narrative,
             )
         except Exception as exc:
             logger.warning("trace upsert failed for %s: %s", symbol, exc)

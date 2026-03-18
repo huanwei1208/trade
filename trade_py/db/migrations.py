@@ -765,6 +765,46 @@ def _migrate_v13(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v14(conn: sqlite3.Connection) -> None:
+    """Multi-horizon belief fields + extended Recommendation/Trace columns.
+
+    Strategy:
+    - BeliefState.belief_vec_json is extended to carry mu_1d/5d/20d and
+      sigma_1d/5d/20d in-JSON; PK (as_of_date, symbol) unchanged.
+    - Recommendation gains expected_return_5d, risk_5pct, position_weight,
+      horizon_set_json.
+    - RecommendationTrace gains trust_json (7-component vector) and
+      narrative_text (Chinese explanation paragraph).
+    """
+    # Recommendation extended columns (safe to ignore if already present)
+    for col_def in [
+        "expected_return_5d REAL",
+        "risk_5pct REAL",
+        "position_weight REAL",
+        "horizon_set_json TEXT",
+    ]:
+        col_name = col_def.split()[0]
+        existing = [row[1] for row in conn.execute(
+            "PRAGMA table_info(Recommendation)"
+        ).fetchall()]
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE Recommendation ADD COLUMN {col_def}")
+
+    # RecommendationTrace extended columns
+    for col_def in [
+        "trust_json TEXT",
+        "narrative_text TEXT",
+    ]:
+        col_name = col_def.split()[0]
+        existing = [row[1] for row in conn.execute(
+            "PRAGMA table_info(RecommendationTrace)"
+        ).fetchall()]
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE RecommendationTrace ADD COLUMN {col_def}")
+
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -913,4 +953,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v13 applied")
         except Exception as exc:
             logger.error("Migration v13 failed: %s", exc)
+            raise
+
+    # ── v14: multi-horizon belief + extended Recommendation/Trace ────────────
+    if 14 not in applied:
+        logger.info("Applying DB migration v14 (multi-horizon belief + extended Recommendation/Trace)")
+        try:
+            _migrate_v14(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (14)")
+            conn.commit()
+            logger.info("Migration v14 applied")
+        except Exception as exc:
+            logger.error("Migration v14 failed: %s", exc)
             raise

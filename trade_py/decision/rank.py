@@ -80,17 +80,29 @@ def rank_symbols(
         if not symbol or symbol == "_MARKET_":
             continue
         bv = bs.get("belief_vec") or {}
-        mu = float(bv.get("mu", 0.0))
-        sigma = float(bv.get("sigma", 0.3))
+        # Use mu_5d (multi-horizon) as primary; fall back to legacy "mu"
+        mu_5d = float(bv.get("mu_5d", bv.get("mu", 0.0)))
+        mu_1d = float(bv.get("mu_1d", mu_5d * 0.3))
+        mu_20d = float(bv.get("mu_20d", mu_5d * 0.7))
+        sigma = float(bv.get("sigma_5d", bv.get("sigma", 0.3)))
 
         sig = signals.get(symbol, {})
         window_score = sig.get("window_score")
         event_kg_score = sig.get("event_kg_score")
         model_risk = float(sig.get("model_risk") or 0.0)
 
-        score = compute_score(mu, window_score, event_kg_score, model_risk)
+        score = compute_score(mu_5d, window_score, event_kg_score, model_risk)
         action = decide_action(score, model_risk, sigma)
         conviction = decide_conviction(score, sigma)
+
+        # Horizon set: probability-scaled expected returns by horizon
+        horizon_set = {
+            "1d": round(mu_1d, 4),
+            "5d": round(mu_5d, 4),
+            "20d": round(mu_20d, 4),
+        }
+        # risk_5pct: approximate 5th-percentile return = mu_5d - 1.645*sigma
+        risk_5pct = round(mu_5d - 1.645 * sigma, 4)
 
         ranked.append({
             "symbol": symbol,
@@ -98,10 +110,13 @@ def rank_symbols(
             "risk": round(model_risk, 4),
             "action": action,
             "conviction": conviction,
-            "belief_mu": round(mu, 4),
+            "belief_mu": round(mu_5d, 4),
             "belief_sigma": round(sigma, 4),
             "window_score": window_score,
             "event_kg_score": event_kg_score,
+            "expected_return_5d": round(mu_5d, 4),
+            "risk_5pct": risk_5pct,
+            "horizon_set": horizon_set,
         })
 
     return sorted(ranked, key=lambda x: x["score"], reverse=True)
