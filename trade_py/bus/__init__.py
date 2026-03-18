@@ -64,6 +64,10 @@ class Topic:
     EVENTS_EXTRACTED           = "events.extracted"
     SIGNALS_EVENTS_UPDATED     = "signals.events_updated"
 
+    # EBRT topics
+    BELIEF_UPDATED             = "belief.updated"
+    RECOMMEND_PRODUCED         = "recommend.produced"
+
     # Legacy aliases (kept for backward compat)
     SILVER_CREATED        = "data.sentiment.synced"
     MODEL_INFERRED        = "signal.model"

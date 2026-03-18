@@ -31,19 +31,19 @@ class JobDef:
 # ── FETCH jobs ─────────────────────────────────────────────────────────────────
 
 def _job_sentiment_pipeline(data_root: str, config: dict | None = None) -> str:
-    from trade_py.cli._sentiment import main as sentiment_main
+    from trade_py.engine import ingest_articles
     from trade_py.db.trade_db import TradeDB
 
     db = TradeDB(data_root)
     semantic_mode = str(db.get("sentiment.scheduler_semantic_mode", "base") or "base").strip().lower()
     if semantic_mode not in {"base", "hybrid", "llm"}:
         semantic_mode = "base"
-    sentiment_main([
-        "--fetch-mode", "incremental",
-        "--data-root", data_root,
-        "--semantic-mode", semantic_mode,
-    ])
-    return f"情绪流水线完成: semantic_mode={semantic_mode}"
+    result = ingest_articles(
+        "rss", data_root,
+        fetch_mode="incremental",
+        semantic_mode=semantic_mode,
+    )
+    return result.get("summary", f"情绪流水线完成: semantic_mode={semantic_mode}")
 
 
 def _job_cross_asset(data_root: str, config: dict | None = None) -> str:
@@ -347,8 +347,8 @@ def _job_sentiment_fetch(data_root: str, config: dict | None = None,
             + summary + useless_note
         )
 
-    # ── incremental / batch path ────────────────────────────────────────────
-    from trade_py.cli._sentiment import main as sentiment_main
+    # ── incremental / batch path via engine ─────────────────────────────────
+    from trade_py.engine import ingest_articles
 
     semantic_mode = str(
         cfg.get("semantic_mode") or
@@ -356,17 +356,14 @@ def _job_sentiment_fetch(data_root: str, config: dict | None = None,
     ).strip().lower()
     if semantic_mode not in {"base", "hybrid", "llm"}:
         semantic_mode = "base"
-    args = [
-        "--fetch-mode", fetch_mode,
-        "--data-root", data_root,
-        "--semantic-mode", semantic_mode,
-    ]
-    if date_from:
-        args.extend(["--date-from", date_from])
-    if date_to:
-        args.extend(["--date-to", date_to])
-    sentiment_main(args)
-    return f"情绪抓取完成: fetch_mode={fetch_mode} semantic_mode={semantic_mode}"
+    result = ingest_articles(
+        "rss", data_root,
+        fetch_mode=fetch_mode,
+        semantic_mode=semantic_mode,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return result.get("summary", f"情绪抓取完成: fetch_mode={fetch_mode} semantic_mode={semantic_mode}")
 
 
 def _job_sentiment_silver(data_root: str, config: dict | None = None,
@@ -404,6 +401,25 @@ def _job_kg_propagate(data_root: str, config: dict | None = None,
     """KG propagation: backfill actual returns for event propagations."""
     from trade_py.event import backfill_events
     return backfill_events(data_root)
+
+
+def _job_belief_update(data_root: str, config: dict | None = None) -> str:
+    """Run BeliefEngine: compute attention + residual update → BeliefState."""
+    from trade_py.engine import update_belief
+    today = date.today().isoformat()
+    result = update_belief(today, data_root)
+    updated = result.get("symbols_updated", 0)
+    errors = result.get("errors", 0)
+    return f"信念更新完成: {updated} 个标的, errors={errors}"
+
+
+def _job_recommend(data_root: str, config: dict | None = None) -> str:
+    """Produce Recommendation + RecommendationTrace from BeliefState."""
+    from trade_py.engine import produce_picks
+    today = date.today().isoformat()
+    recs = produce_picks(today, data_root)
+    buys = sum(1 for r in recs if r.get("action") == "buy")
+    return f"推荐决策完成: {len(recs)} 条, buy={buys}"
 
 
 # ── Registry ───────────────────────────────────────────────────────────────────
@@ -495,6 +511,15 @@ JOB_REGISTRY: dict[str, JobDef] = {
     "model_train": JobDef(
         "model_train", _job_model_train, "KG事件传播模型训练",
         ["sunday 09:10"], "train", ["model"],
+    ),
+    # EBRT: belief + recommendation
+    "belief_update": JobDef(
+        "belief_update", _job_belief_update, "信念状态更新（EBRT）",
+        [], "compute", ["belief", "ebrt"],
+    ),
+    "recommend": JobDef(
+        "recommend", _job_recommend, "推荐决策生成（EBRT）",
+        [], "compute", ["decision", "ebrt"],
     ),
     # Sentiment chain (split jobs)
     "sentiment_fetch": JobDef(

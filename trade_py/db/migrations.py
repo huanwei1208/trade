@@ -572,6 +572,199 @@ def _migrate_v11(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v13(conn: sqlite3.Connection) -> None:
+    """EBRT schema: 10 new tables for Evidence → Belief → Recommendation → Trust."""
+    conn.executescript("""
+        -- 1. ArticleEvent: Silver 行规范化（content_hash PK）
+        CREATE TABLE IF NOT EXISTS ArticleEvent (
+            article_id          TEXT PRIMARY KEY,
+            published_at        TEXT NOT NULL,
+            source_id           TEXT NOT NULL,
+            feed_name           TEXT,
+            url                 TEXT,
+            title               TEXT,
+            symbol              TEXT NOT NULL,
+            event_type          TEXT,
+            event_magnitude     REAL,
+            sentiment_score     REAL,
+            sentiment_label     TEXT,
+            policy_signal       INTEGER,
+            entity_density      REAL,
+            novelty_score       REAL,
+            noise_score         REAL,
+            extractor           TEXT NOT NULL,
+            extractor_conf      REAL NOT NULL,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_article_event_sym  ON ArticleEvent(symbol, published_at);
+        CREATE INDEX IF NOT EXISTS idx_article_event_src  ON ArticleEvent(source_id);
+
+        -- 2. InfluenceSignal: 信源影响力
+        CREATE TABLE IF NOT EXISTS InfluenceSignal (
+            influence_id        TEXT PRIMARY KEY,
+            source_id           TEXT NOT NULL,
+            actor_id            TEXT,
+            platform            TEXT,
+            published_at        TEXT NOT NULL,
+            topic_tags          TEXT,
+            reach_estimate      REAL,
+            reputation_score    REAL,
+            manipulation_risk   REAL,
+            cross_confirm_1h    REAL,
+            cross_confirm_24h   REAL,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_influence_source ON InfluenceSignal(source_id);
+        CREATE INDEX IF NOT EXISTS idx_influence_date   ON InfluenceSignal(published_at);
+
+        -- 3. Evidence: 规范化证据单元（symbol/day 粒度）
+        CREATE TABLE IF NOT EXISTS Evidence (
+            evidence_id         TEXT PRIMARY KEY,
+            as_of_date          TEXT NOT NULL,
+            symbol              TEXT NOT NULL,
+            evidence_type       TEXT NOT NULL,
+            payload_ref         TEXT NOT NULL,
+            strength            REAL NOT NULL,
+            direction           REAL NOT NULL,
+            reliability         REAL NOT NULL,
+            novelty             REAL NOT NULL,
+            noise_penalty       REAL NOT NULL,
+            influence_boost     REAL NOT NULL,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(as_of_date, symbol, evidence_type, payload_ref)
+        );
+        CREATE INDEX IF NOT EXISTS idx_evidence_date   ON Evidence(as_of_date);
+        CREATE INDEX IF NOT EXISTS idx_evidence_symbol ON Evidence(symbol, as_of_date);
+
+        -- 4. BeliefState: 每日每 symbol 的信念快照
+        CREATE TABLE IF NOT EXISTS BeliefState (
+            as_of_date          TEXT NOT NULL,
+            symbol              TEXT NOT NULL,
+            belief_vec_json     TEXT NOT NULL,
+            belief_version      TEXT NOT NULL,
+            confidence          REAL NOT NULL,
+            uncertainty         REAL NOT NULL,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(as_of_date, symbol)
+        );
+        CREATE INDEX IF NOT EXISTS idx_belief_date   ON BeliefState(as_of_date);
+        CREATE INDEX IF NOT EXISTS idx_belief_symbol ON BeliefState(symbol);
+
+        -- 5. AttentionScore: 注意力权重（可解释审计）
+        CREATE TABLE IF NOT EXISTS AttentionScore (
+            attention_id        TEXT PRIMARY KEY,
+            as_of_date          TEXT NOT NULL,
+            symbol              TEXT NOT NULL,
+            evidence_id         TEXT NOT NULL REFERENCES Evidence(evidence_id),
+            logit               REAL NOT NULL,
+            weight              REAL NOT NULL,
+            factors_json        TEXT NOT NULL,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_attention_date   ON AttentionScore(as_of_date, symbol);
+        CREATE INDEX IF NOT EXISTS idx_attention_evid   ON AttentionScore(evidence_id);
+
+        -- 6. BeliefTransition: 残差更新记录
+        CREATE TABLE IF NOT EXISTS BeliefTransition (
+            transition_id       TEXT PRIMARY KEY,
+            symbol              TEXT NOT NULL,
+            t_date              TEXT NOT NULL,
+            t1_date             TEXT NOT NULL,
+            prev_belief_ref     TEXT NOT NULL,
+            next_belief_ref     TEXT NOT NULL,
+            delta_vec_json      TEXT NOT NULL,
+            decay_lambda        REAL NOT NULL,
+            gain_eta            REAL NOT NULL,
+            conflict_score      REAL NOT NULL,
+            attention_set_id    TEXT NOT NULL,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_transition_sym  ON BeliefTransition(symbol, t1_date);
+        CREATE INDEX IF NOT EXISTS idx_transition_date ON BeliefTransition(t1_date);
+
+        -- 7. Recommendation: 每日决策输出
+        CREATE TABLE IF NOT EXISTS Recommendation (
+            rec_id              TEXT PRIMARY KEY,
+            as_of_date          TEXT NOT NULL,
+            symbol              TEXT NOT NULL,
+            action              TEXT NOT NULL,
+            conviction          TEXT NOT NULL,
+            score               REAL NOT NULL,
+            risk                REAL NOT NULL,
+            horizon_days        INTEGER NOT NULL,
+            reasons_json        TEXT NOT NULL,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(as_of_date, symbol)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rec_date   ON Recommendation(as_of_date);
+        CREATE INDEX IF NOT EXISTS idx_rec_symbol ON Recommendation(symbol);
+        CREATE INDEX IF NOT EXISTS idx_rec_score  ON Recommendation(as_of_date, score DESC);
+
+        -- 8. QualityReport: Trust 合同
+        CREATE TABLE IF NOT EXISTS QualityReport (
+            eval_date           TEXT PRIMARY KEY,
+            operational_status  TEXT NOT NULL,
+            research_status     TEXT NOT NULL,
+            brier_score         REAL,
+            calibration_json    TEXT,
+            drift_mmd           REAL,
+            reasons_json        TEXT NOT NULL,
+            metrics_json        TEXT NOT NULL,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- 9. FreshnessStatus: 每数据集新鲜度
+        CREATE TABLE IF NOT EXISTS FreshnessStatus (
+            as_of_date          TEXT NOT NULL,
+            dataset             TEXT NOT NULL,
+            freshness_date      TEXT,
+            lag_days            INTEGER,
+            coverage_pct        REAL,
+            status              TEXT NOT NULL,
+            details_json        TEXT,
+            updated_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(as_of_date, dataset)
+        );
+        CREATE INDEX IF NOT EXISTS idx_freshness_date ON FreshnessStatus(as_of_date);
+
+        -- 10. RecommendationTrace: 端到端溯源
+        CREATE TABLE IF NOT EXISTS RecommendationTrace (
+            trace_id            TEXT PRIMARY KEY,
+            as_of_date          TEXT NOT NULL,
+            symbol              TEXT NOT NULL,
+            rec_id              TEXT NOT NULL REFERENCES Recommendation(rec_id),
+            belief_transition_id TEXT,
+            top_evidence_json   TEXT NOT NULL,
+            model_versions_json TEXT,
+            data_fingerprint    TEXT NOT NULL,
+            created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_trace_date   ON RecommendationTrace(as_of_date);
+        CREATE INDEX IF NOT EXISTS idx_trace_symbol ON RecommendationTrace(symbol);
+        CREATE INDEX IF NOT EXISTS idx_trace_rec    ON RecommendationTrace(rec_id);
+    """)
+
+    # Seed EBRT DAG rows (belief_update + recommend)
+    if _table_exists(conn, "pipeline_dag"):
+        new_dag_rows = [
+            ("compute", "sentiment.gold_done",   "belief_update", "belief.updated",    1, "信念状态更新"),
+            ("compute", "belief.updated",         "recommend",     "recommend.produced", 1, "推荐决策生成"),
+        ]
+        for stage, source, job_name, emits, enabled, description in new_dag_rows:
+            exists = conn.execute(
+                "SELECT 1 FROM pipeline_dag WHERE stage=? AND source=? AND job_name=? LIMIT 1",
+                (stage, source, job_name),
+            ).fetchone()
+            if not exists:
+                conn.execute(
+                    "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (stage, source, job_name, emits, enabled, description),
+                )
+
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -708,4 +901,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v12 applied")
         except Exception as exc:
             logger.error("Migration v12 failed: %s", exc)
+            raise
+
+    # ── v13: EBRT tables (Evidence → Belief → Recommendation → Trust) ───────
+    if 13 not in applied:
+        logger.info("Applying DB migration v13 (EBRT tables)")
+        try:
+            _migrate_v13(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (13)")
+            conn.commit()
+            logger.info("Migration v13 applied")
+        except Exception as exc:
+            logger.error("Migration v13 failed: %s", exc)
             raise
