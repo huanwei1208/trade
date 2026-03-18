@@ -10,7 +10,7 @@ from typing import Iterable
 
 from trade_py.db.event_db import EventType
 from trade_py.db.settings_db import SettingsDB
-from trade_py.app.pipelines.event_pipeline import (
+from trade_py.event.pipeline import (
     _extract_events,
     _read_silver_for_date,
     run_event_backfill,

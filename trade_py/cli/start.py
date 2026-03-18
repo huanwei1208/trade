@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from trade_py.db.trade_db import TradeDB
     from trade_py.bus import Topic, get_bus, bootstrap_from_dag
-    from trade_py.app.runtime.scheduler import register_schedule
+    from trade_py.bus.scheduler import register_schedule
     import schedule
 
     db = TradeDB(args.data_root)

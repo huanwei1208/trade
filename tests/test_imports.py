@@ -72,8 +72,8 @@ def test_intelligence_clients():
 
 
 def test_runtime_imports():
-    from trade_py.app.runtime.scheduler import register_schedule
-    from trade_py.app.pipelines.event_pipeline import run_event_pipeline
+    from trade_py.bus.scheduler import register_schedule
+    from trade_py.event.pipeline import run_event_pipeline
     from trade_py.domain.kg import learn_kg_candidates
     from trade_py.domain.factors import score_watchlist
     from trade_py.domain.events import sync_events
