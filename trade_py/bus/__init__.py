@@ -57,6 +57,13 @@ class Topic:
     LABELS_BUILT          = "model.labels.built"
     MODEL_TRAINED         = "model.trained"
 
+    # Sentiment chain topics (split from data.sentiment.synced)
+    SENTIMENT_FETCHED          = "sentiment.fetched"
+    SENTIMENT_SILVER_DONE      = "sentiment.silver_done"
+    SENTIMENT_GOLD_DONE        = "sentiment.gold_done"
+    EVENTS_EXTRACTED           = "events.extracted"
+    SIGNALS_EVENTS_UPDATED     = "signals.events_updated"
+
     # Legacy aliases (kept for backward compat)
     SILVER_CREATED        = "data.sentiment.synced"
     MODEL_INFERRED        = "signal.model"
@@ -208,7 +215,10 @@ def _make_dag_handler(
         t0 = _time.time()
         run_id = db.job_run_start(job_name, stage=stage, trigger_event_id=event.id)
         try:
-            result = run_job(job_name, data_root)
+            payload_dict = dict(event.payload or {})
+            df = str(payload_dict.get("date_from") or "").strip() or None
+            dt = str(payload_dict.get("date_to") or "").strip() or None
+            result = run_job(job_name, data_root, date_from=df, date_to=dt)
             elapsed = int((_time.time() - t0) * 1000)
             db.job_run_finish(run_id, "ok", result_summary=result, elapsed_ms=elapsed)
             logger.info("dag done: job=%s result=%s", job_name, result)

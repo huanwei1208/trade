@@ -36,6 +36,7 @@ def _col_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
 # Version 8: calendar/planned-event DAG rows
 # Version 9: daily evaluation DAG rows
 # Version 10: UI snapshot cache + remove legacy brief DAG/settings
+# Version 12: disable legacy sentiment_pipeline + event_pipeline DAG rows
 
 MIGRATIONS: list[tuple[int, str]] = [
     (2, "DROP TABLE IF EXISTS macro_events;"),
@@ -466,6 +467,111 @@ def _migrate_v10(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v12(conn: sqlite3.Connection) -> None:
+    """Disable legacy sentiment_pipeline and event_pipeline DAG rows.
+
+    The v11 migration added split replacement rows:
+      sentiment_fetch → sentiment_silver → sentiment_gold (replacing sentiment_pipeline)
+      event_extract → kg_propagate (replacing both event_pipeline rows)
+    Keeping the old rows active creates duplicate paths in the DAG view.
+    """
+    if not _table_exists(conn, "pipeline_dag"):
+        return
+    # Disable old monolithic sentiment_pipeline that listens on gate.evening
+    conn.execute(
+        "UPDATE pipeline_dag SET enabled=0 WHERE job_name='sentiment_pipeline'"
+    )
+    # Disable both old event_pipeline rows (data.sentiment.synced and gate.event_extract)
+    conn.execute(
+        "UPDATE pipeline_dag SET enabled=0 WHERE job_name='event_pipeline'"
+    )
+    conn.commit()
+
+
+def _migrate_v11(conn: sqlite3.Connection) -> None:
+    """Extend pipeline_dag with config_json, sync_source, sync_dataset, mode columns."""
+    # Add new columns
+    for ddl in [
+        "ALTER TABLE pipeline_dag ADD COLUMN config_json TEXT DEFAULT '{}'",
+        "ALTER TABLE pipeline_dag ADD COLUMN sync_source TEXT",
+        "ALTER TABLE pipeline_dag ADD COLUMN sync_dataset TEXT",
+        "ALTER TABLE pipeline_dag ADD COLUMN mode TEXT DEFAULT 'batch'",
+    ]:
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+    # Populate sync_source/sync_dataset hints for known jobs
+    sync_map = {
+        "kline_update":     ("tushare_kline", "daily"),
+        "fund_flow_update": ("tushare_fundflow", "daily"),
+        "sentiment_fetch":  ("sentiment", "bronze"),
+        "sentiment_silver": ("sentiment", "silver"),
+        "sentiment_gold":   ("sentiment", "gold"),
+        "sentiment_pipeline": ("sentiment", "gold"),
+        "event_extract":    ("events", "market_events"),
+        "event_pipeline":   ("events", "market_events"),
+        "fundamental":      ("tushare_fina", "indicator"),
+        "macro":            ("tushare_macro", "shibor"),
+    }
+    for job_name, (src, ds) in sync_map.items():
+        try:
+            conn.execute(
+                "UPDATE pipeline_dag SET sync_source=?, sync_dataset=? "
+                "WHERE job_name=? AND (sync_source IS NULL OR sync_source='')",
+                (src, ds, job_name),
+            )
+        except Exception:
+            pass
+
+    # Set mode for streaming/both nodes
+    streaming_jobs = ["realtime_quote_sync", "realtime_compute"]
+    both_jobs = ["sentiment_fetch", "sentiment_silver", "window_score"]
+    for job in streaming_jobs:
+        try:
+            conn.execute(
+                "UPDATE pipeline_dag SET mode='streaming' WHERE job_name=? AND mode='batch'",
+                (job,),
+            )
+        except Exception:
+            pass
+    for job in both_jobs:
+        try:
+            conn.execute(
+                "UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'",
+                (job,),
+            )
+        except Exception:
+            pass
+
+    # Add new split job rows for sentiment + event chains (if not already present)
+    if not _table_exists(conn, "pipeline_dag"):
+        conn.commit()
+        return
+    new_rows = [
+        # Sentiment chain (split from sentiment_pipeline)
+        ("fetch", "gate.evening", "sentiment_fetch", "sentiment.fetched", 1, "情绪抓取（增量）"),
+        ("fetch", "sentiment.fetched", "sentiment_silver", "sentiment.silver_done", 1, "情绪评分 Silver"),
+        ("fetch", "sentiment.silver_done", "sentiment_gold", "sentiment.gold_done", 1, "情绪聚合 Gold"),
+        # Event chain (split from event_pipeline)
+        ("compute", "sentiment.gold_done", "event_extract", "events.extracted", 1, "事件提取"),
+        ("compute", "events.extracted", "kg_propagate", "signals.events_updated", 1, "KG 传导"),
+    ]
+    for stage, source, job_name, emits, enabled, description in new_rows:
+        exists = conn.execute(
+            "SELECT 1 FROM pipeline_dag WHERE stage=? AND source=? AND job_name=? LIMIT 1",
+            (stage, source, job_name),
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description) "
+                "VALUES (?,?,?,?,?,?)",
+                (stage, source, job_name, emits, enabled, description),
+            )
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -578,4 +684,28 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v10 applied")
         except Exception as exc:
             logger.error("Migration v10 failed: %s", exc)
+            raise
+
+    # ── v11: pipeline_dag extended columns + split job rows ────────────────
+    if 11 not in applied:
+        logger.info("Applying DB migration v11 (pipeline_dag extensions)")
+        try:
+            _migrate_v11(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (11)")
+            conn.commit()
+            logger.info("Migration v11 applied")
+        except Exception as exc:
+            logger.error("Migration v11 failed: %s", exc)
+            raise
+
+    # ── v12: disable legacy sentiment_pipeline + event_pipeline DAG rows ───
+    if 12 not in applied:
+        logger.info("Applying DB migration v12 (disable legacy split DAG rows)")
+        try:
+            _migrate_v12(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (12)")
+            conn.commit()
+            logger.info("Migration v12 applied")
+        except Exception as exc:
+            logger.error("Migration v12 failed: %s", exc)
             raise

@@ -166,6 +166,79 @@ def _fetch_gdelt_channel(channel: _Channel, since: date, until: date,
     return records, diag
 
 
+def scan_bronze_channel_offsets(data_root) -> dict[str, datetime]:
+    """Scan all bronze/gdelt parquets and return max published_at per channel name.
+
+    Channel name is the value in the `source` column (e.g. 'GDELT_CN_MACRO').
+    Used to bootstrap per-channel cursor when no sync_state entry exists yet.
+    """
+    import pandas as pd
+    from pathlib import Path as _Path
+    from trade_py.data.pipeline.paths import bronze_root
+
+    root = bronze_root(data_root) / "gdelt"
+    offsets: dict[str, datetime] = {}
+    if not root.exists():
+        return offsets
+    for p in root.rglob("*.parquet"):
+        try:
+            df = pd.read_parquet(p, columns=["source", "published_at"])
+            for ch, grp in df.groupby("source"):
+                ts = pd.to_datetime(grp["published_at"], utc=True).max()
+                if pd.notna(ts):
+                    dt = ts.to_pydatetime()
+                    existing = offsets.get(str(ch))
+                    if existing is None or dt > existing:
+                        offsets[str(ch)] = dt
+        except Exception:
+            continue
+    return offsets
+
+
+def channel_daily_stats(data_root) -> list[dict]:
+    """Return per-(channel, date) article counts from bronze/gdelt.
+
+    Each entry: {channel, date, articles, avg_per_day, useless}.
+    useless=True when the channel averages < 2 articles/day — good signal
+    that the channel query returns nothing relevant and can be disabled.
+    """
+    import pandas as pd
+    from trade_py.data.pipeline.paths import bronze_root
+
+    root = bronze_root(data_root) / "gdelt"
+    frames = []
+    if not root.exists():
+        return []
+    for p in root.rglob("*.parquet"):
+        try:
+            df = pd.read_parquet(p, columns=["source", "published_at"])
+            df["date"] = pd.to_datetime(df["published_at"], utc=True).dt.date.astype(str)
+            frames.append(df[["source", "date"]])
+        except Exception:
+            continue
+    if not frames:
+        return []
+    combined = pd.concat(frames, ignore_index=True)
+    counts = (
+        combined.groupby(["source", "date"])
+        .size()
+        .reset_index(name="articles")
+        .sort_values(["source", "date"])
+    )
+    avg = counts.groupby("source")["articles"].mean().round(1)
+    result = []
+    for _, row in counts.iterrows():
+        ch = str(row["source"])
+        result.append({
+            "channel": ch,
+            "date": row["date"],
+            "articles": int(row["articles"]),
+            "avg_per_day": float(avg[ch]),
+            "useless": float(avg[ch]) < 2.0,
+        })
+    return result
+
+
 class GdeltSource:
     """Fetches historical news articles from GDELT v2 API."""
 
@@ -209,17 +282,17 @@ class GdeltSource:
                 if progress_cb:
                     progress_cb(f"[gdelt] waiting 3s before next channel…")
                 time.sleep(3)   # avoid consecutive requests triggering 429
-            if ch.kind == "gdelt":
-                arts, diag = _fetch_gdelt_channel(
-                    ch, since=since_date, until=until_date,
-                    max_records=self._max_records,
-                    progress_cb=progress_cb,
-                )
-                if progress_cb:
-                    n_skip = sum(1 for r in arts
-                                 if known_hashes and r.content_hash in known_hashes)
-                    progress_cb(f"[gdelt] {ch.name}: {len(arts)} articles"
-                                + (f", {n_skip} already in bronze" if n_skip else ""))
+            # if ch.kind == "gdelt":
+            #     arts, diag = _fetch_gdelt_channel(
+            #         ch, since=since_date, until=until_date,
+            #         max_records=self._max_records,
+            #         progress_cb=progress_cb,
+            #     )
+            #     if progress_cb:
+            #         n_skip = sum(1 for r in arts
+            #                      if known_hashes and r.content_hash in known_hashes)
+            #         progress_cb(f"[gdelt] {ch.name}: {len(arts)} articles"
+            #                     + (f", {n_skip} already in bronze" if n_skip else ""))
             else:
                 diag = {"channel": ch.name, "type": ch.kind,
                         "error": f"unsupported: {ch.kind}", "fetched": 0}
@@ -241,6 +314,148 @@ class GdeltSource:
             "total_articles": len(uniq),
         }
         return uniq, summary
+
+    def fetch_streaming(self, data_root, db, *,
+                        until: datetime | None = None,
+                        progress_cb=None) -> dict:
+        """Incremental per-channel fetch driven by per-channel timestamp cursors.
+
+        For each active channel:
+          1. Read last-fetched timestamp from sync_state (cursor.last_ts).
+             If none, bootstrap from the latest published_at in bronze for
+             that channel; if bronze is also empty, default to yesterday.
+          2. Fetch articles from GDELT covering [since_date, today].
+          3. Filter in-memory to keep only articles with published_at > last_ts.
+          4. Deduplicate against known hashes already in bronze for that channel.
+          5. Append new articles to the per-date bronze parquets.
+          6. Advance the cursor to max(new published_at).
+
+        Returns:
+          {
+            "channels": [{channel, new_articles, fetched_total, offset_before,
+                          error}, …],
+            "new_articles": int,          # total across all channels
+            "stats": channel_daily_stats  # full per-(channel,date) breakdown
+          }
+        """
+        import pandas as pd
+        from datetime import timedelta
+        from trade_py.data.pipeline.paths import bronze_path, bronze_root
+        from trade_py.data.pipeline.ingest import _record_to_row
+
+        now = until or datetime.now(timezone.utc)
+        channels = _load_channels(self._selection)
+        if not channels:
+            return {"channels": [], "new_articles": 0, "stats": []}
+
+        # Bootstrap offsets from bronze for channels with no sync_state yet.
+        bronze_offsets = scan_bronze_channel_offsets(data_root)
+        # Precompute known hashes per channel from all bronze files (one scan).
+        channel_hashes: dict[str, set[str]] = {}
+        gdelt_root = bronze_root(data_root) / "gdelt"
+        if gdelt_root.exists():
+            for p in gdelt_root.rglob("*.parquet"):
+                try:
+                    df = pd.read_parquet(p, columns=["source", "content_hash"])
+                    for ch_name, grp in df.groupby("source"):
+                        channel_hashes.setdefault(str(ch_name), set()).update(
+                            grp["content_hash"].dropna()
+                        )
+                except Exception:
+                    continue
+
+        total_new = 0
+        channel_results = []
+
+        for ch_idx, ch in enumerate(channels):
+            # ── 1. Resolve offset ──────────────────────────────────────────
+            cursor = db.sync_state_get_cursor("gdelt_channel", ch.name)
+            last_ts: datetime | None = None
+            if cursor.get("last_ts"):
+                try:
+                    last_ts = datetime.fromisoformat(cursor["last_ts"])
+                    if last_ts.tzinfo is None:
+                        last_ts = last_ts.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
+            if last_ts is None:
+                last_ts = bronze_offsets.get(ch.name)
+            if last_ts is None:
+                last_ts = (now - timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+
+            since_date = last_ts.date()
+            until_date = now.date()
+
+            if progress_cb:
+                progress_cb(
+                    f"[streaming] {ch.name}: {since_date}→{until_date}"
+                    f" (cursor {last_ts.strftime('%Y-%m-%dT%H:%M')})"
+                )
+
+            # ── 2. Fetch ────────────────────────────────────────────────────
+            if ch_idx > 0:
+                time.sleep(3)   # rate-limit guard between channels
+            arts, diag = _fetch_gdelt_channel(
+                ch, since=since_date, until=until_date,
+                max_records=self._max_records,
+                progress_cb=progress_cb,
+            )
+
+            # ── 3+4. Timestamp filter + dedup ───────────────────────────────
+            known = channel_hashes.get(ch.name, set())
+            new_arts = [
+                r for r in arts
+                if r.published_at > last_ts and r.content_hash not in known
+            ]
+
+            # ── 5. Write to bronze (grouped by published date) ──────────────
+            if new_arts:
+                by_date: dict[date, list] = {}
+                for r in new_arts:
+                    by_date.setdefault(r.published_at.date(), []).append(r)
+
+                for d, recs in by_date.items():
+                    dest = bronze_path(data_root, "gdelt", d)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    new_df = pd.DataFrame([_record_to_row(r) for r in recs])
+                    if dest.exists():
+                        existing = pd.read_parquet(dest)
+                        combined = pd.concat([existing, new_df], ignore_index=True)
+                        combined = combined.drop_duplicates(
+                            subset=["content_hash"], keep="last"
+                        )
+                    else:
+                        combined = new_df
+                    combined.to_parquet(dest, index=False)
+
+                # ── 6. Advance cursor ────────────────────────────────────────
+                new_offset = max(r.published_at for r in new_arts)
+                db.sync_state_set(
+                    "gdelt_channel", ch.name, "",
+                    last_date=new_offset.date(),
+                    cursor={"last_ts": new_offset.isoformat()},
+                )
+                # Update local hash cache so later channels see correct state
+                channel_hashes.setdefault(ch.name, set()).update(
+                    r.content_hash for r in new_arts
+                )
+
+            total_new += len(new_arts)
+            channel_results.append({
+                "channel": ch.name,
+                "new_articles": len(new_arts),
+                "fetched_total": diag.get("fetched", 0),
+                "offset_before": last_ts.isoformat(),
+                "error": diag.get("error", ""),
+            })
+
+        return {
+            "channels": channel_results,
+            "new_articles": total_new,
+            "stats": channel_daily_stats(data_root),
+        }
 
     def health_check(self) -> dict:
         channels = _load_channels(self._selection)

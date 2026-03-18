@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class JobDef:
     name: str
-    fn: Callable[[str], str]   # (data_root) -> summary_str
+    fn: Callable[..., str]   # (data_root, config?, date_from?, date_to?) -> summary_str
     desc: str
     schedule: list[str]        # e.g. ["daily 07:00", "saturday 07:30"]
     stage: str = "fetch"       # fetch | compute | train
@@ -30,7 +30,7 @@ class JobDef:
 
 # ── FETCH jobs ─────────────────────────────────────────────────────────────────
 
-def _job_sentiment_pipeline(data_root: str) -> str:
+def _job_sentiment_pipeline(data_root: str, config: dict | None = None) -> str:
     from trade_py.cli._sentiment import main as sentiment_main
     from trade_py.db.trade_db import TradeDB
 
@@ -46,13 +46,13 @@ def _job_sentiment_pipeline(data_root: str) -> str:
     return f"情绪流水线完成: semantic_mode={semantic_mode}"
 
 
-def _job_cross_asset(data_root: str) -> str:
+def _job_cross_asset(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.cross_asset import fetch_all
     fetch_all(data_root)
     return "跨资产数据同步完成"
 
 
-def _job_calendar_sync(data_root: str) -> str:
+def _job_calendar_sync(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.calendar import TradingCalendarService
 
     today = date.today()
@@ -71,7 +71,7 @@ def _job_calendar_sync(data_root: str) -> str:
     )
 
 
-def _job_planned_event_sync(data_root: str) -> str:
+def _job_planned_event_sync(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.calendar import TradingCalendarService
 
     today = date.today()
@@ -92,7 +92,7 @@ def _job_planned_event_sync(data_root: str) -> str:
     )
 
 
-def _job_planned_event_realize(data_root: str) -> str:
+def _job_planned_event_realize(data_root: str, config: dict | None = None) -> str:
     from trade_py.event import realize_planned_events
 
     return realize_planned_events(data_root)
@@ -109,17 +109,23 @@ def _job_realtime_symbols(data_root: str, limit: int = 50) -> list[str]:
     return [str(row.get("symbol") or "").strip().upper() for row in rows if str(row.get("symbol") or "").strip()]
 
 
-def _job_kline(data_root: str) -> str:
+def _job_kline(data_root: str, config: dict | None = None,
+               date_from: str | None = None, date_to: str | None = None) -> str:
     from trade_py.data.market.kline import KlineSyncOptions, KlineSyncService
     service = KlineSyncService(data_root)
-    summary = service.sync(KlineSyncOptions(mode="incremental"))
+    opts_kwargs: dict = {"mode": "incremental"}
+    if date_from:
+        opts_kwargs["start_date"] = date_from
+    if date_to:
+        opts_kwargs["end_date"] = date_to
+    summary = service.sync(KlineSyncOptions(**opts_kwargs))
     return (
         f"K线同步: mode={summary.sync_mode} api_calls={summary.api_calls if summary.api_calls is not None else '-'} "
         f"{summary.total_symbols} symbols, {summary.total_rows} 行"
     )
 
 
-def _job_realtime_quote_sync(data_root: str) -> str:
+def _job_realtime_quote_sync(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.intraday import TushareIntradayFetcher
 
     symbols = _job_realtime_symbols(data_root, limit=50)
@@ -138,7 +144,7 @@ def _job_realtime_quote_sync(data_root: str) -> str:
     )
 
 
-def _job_realtime_compute(data_root: str) -> str:
+def _job_realtime_compute(data_root: str, config: dict | None = None) -> str:
     from trade_py.domain.factors import compute_intraday_snapshot
 
     symbols = _job_realtime_symbols(data_root, limit=50)
@@ -156,7 +162,7 @@ def _job_realtime_compute(data_root: str) -> str:
     )
 
 
-def _job_market_index(data_root: str) -> str:
+def _job_market_index(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.index import IndexFetcher
     fetcher = IndexFetcher(data_root)
     fetcher.fetch_all()
@@ -164,7 +170,7 @@ def _job_market_index(data_root: str) -> str:
     return "指数/板块日线同步完成"
 
 
-def _job_fund_flow(data_root: str) -> str:
+def _job_fund_flow(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.fund_flow import FundFlowFetcher
     from trade_py.db.trade_db import TradeDB
 
@@ -177,14 +183,14 @@ def _job_fund_flow(data_root: str) -> str:
     return f"资金流向: {len(symbols)} symbols"
 
 
-def _job_northbound(data_root: str) -> str:
+def _job_northbound(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.northbound import NorthboundFetcher
     fetcher = NorthboundFetcher(data_root)
     df = fetcher.fetch_and_save()
     return f"北向资金同步: {len(df)} 行"
 
 
-def _job_fundamental(data_root: str) -> str:
+def _job_fundamental(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.fundamental import FundamentalFetcher
     from trade_py.db.trade_db import TradeDB
 
@@ -195,7 +201,7 @@ def _job_fundamental(data_root: str) -> str:
     return f"基本面数据同步: {len(symbols)} symbols"
 
 
-def _job_macro(data_root: str) -> str:
+def _job_macro(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.macro import MacroFetcher
     fetcher = MacroFetcher(data_root)
     datasets = ["gdp", "cpi", "ppi", "pmi"]
@@ -207,7 +213,7 @@ def _job_macro(data_root: str) -> str:
     return f"宏观数据同步完成: {', '.join(datasets)}"
 
 
-def _job_sector_refresh(data_root: str) -> str:
+def _job_sector_refresh(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.index import IndexFetcher
     fetcher = IndexFetcher(data_root)
     updated = fetcher.refresh_sector_members()
@@ -216,23 +222,29 @@ def _job_sector_refresh(data_root: str) -> str:
 
 # ── COMPUTE jobs ───────────────────────────────────────────────────────────────
 
-def _job_window_score(data_root: str) -> str:
+def _job_window_score(data_root: str, config: dict | None = None) -> str:
     from trade_py.domain.factors import score_universe
     scores = score_universe(data_root)
     return f"全市场评分完成: {len(scores)} symbols"
 
 
-def _job_event_pipeline(data_root: str) -> str:
+def _job_event_pipeline(data_root: str, config: dict | None = None,
+                         date_from: str | None = None, date_to: str | None = None) -> str:
     from trade_py.event import sync_events
-    return sync_events(data_root).format()
+    kwargs: dict = {}
+    if date_from:
+        kwargs["start"] = date_from
+    if date_to:
+        kwargs["end"] = date_to
+    return sync_events(data_root, **kwargs).format()
 
 
-def _job_event_backfill(data_root: str) -> str:
+def _job_event_backfill(data_root: str, config: dict | None = None) -> str:
     from trade_py.event import backfill_events
     return backfill_events(data_root)
 
 
-def _job_evaluate_daily(data_root: str) -> str:
+def _job_evaluate_daily(data_root: str, config: dict | None = None) -> str:
     from trade_py.evaluation.service import evaluate_daily
 
     outcome = evaluate_daily(
@@ -243,7 +255,7 @@ def _job_evaluate_daily(data_root: str) -> str:
     return outcome.summary
 
 
-def _job_build_features(data_root: str) -> str:
+def _job_build_features(data_root: str, config: dict | None = None) -> str:
     """Build feature matrix from event_propagations + signals + instruments."""
     from trade_py.analysis.propagation_runtime import (
         build_training_feature_frame,
@@ -263,14 +275,14 @@ def _job_build_features(data_root: str) -> str:
     return f"特征构建完成: {len(df)} 条传播记录, {labeled} 条有标签"
 
 
-def _job_build_labels(data_root: str) -> str:
+def _job_build_labels(data_root: str, config: dict | None = None) -> str:
     """Ensure event_propagations.actual_return_5d/20d are filled via backfill."""
     from trade_py.event import backfill_events
     result = backfill_events(data_root)
     return f"标签构建完成: {result}"
 
 
-def _job_model_train(data_root: str) -> str:
+def _job_model_train(data_root: str, config: dict | None = None) -> str:
     """Train propagation models and register candidates in model_registry."""
     from trade_py.analysis.propagation_training import train_models
 
@@ -295,6 +307,103 @@ def _job_model_train(data_root: str) -> str:
         else:
             summaries.append(f"{row['target_name']}[{row['backend']}/{state}]")
     return "模型训练完成: " + "; ".join(summaries)
+
+
+def _job_sentiment_fetch(data_root: str, config: dict | None = None,
+                         date_from: str | None = None, date_to: str | None = None) -> str:
+    """Fetch raw news to Bronze layer.
+
+    fetch_mode:
+      "incremental" (default) — existing batch path via sentiment CLI.
+      "streaming"             — per-channel incremental fetch driven by
+                                per-channel timestamp cursors stored in sync_state.
+    """
+    from trade_py.db.trade_db import TradeDB
+
+    cfg = config or {}
+    db = TradeDB(data_root)
+    fetch_mode = str(cfg.get("fetch_mode", "incremental")).strip()
+
+    if fetch_mode == "streaming":
+        from trade_py.data.news.gdelt.source import GdeltSource
+        src = GdeltSource()
+        result = src.fetch_streaming(
+            data_root, db,
+            progress_cb=lambda msg: logger.info(msg),
+        )
+        ch_lines = []
+        for r in result["channels"]:
+            tag = f"[{r['new_articles']}新]"
+            err = f" ⚠{r['error']}" if r["error"] else ""
+            ch_lines.append(f"  {r['channel']}: {tag}{err}")
+        # Identify useless channels from stats
+        useless = sorted({
+            s["channel"] for s in result["stats"] if s["useless"]
+        })
+        summary = "\n".join(ch_lines) if ch_lines else "  (无活跃频道)"
+        useless_note = f"\n无效频道(avg<2/day): {', '.join(useless)}" if useless else ""
+        return (
+            f"streaming 抓取完成: 新增 {result['new_articles']} 篇\n"
+            + summary + useless_note
+        )
+
+    # ── incremental / batch path ────────────────────────────────────────────
+    from trade_py.cli._sentiment import main as sentiment_main
+
+    semantic_mode = str(
+        cfg.get("semantic_mode") or
+        db.get("sentiment.scheduler_semantic_mode", "base") or "base"
+    ).strip().lower()
+    if semantic_mode not in {"base", "hybrid", "llm"}:
+        semantic_mode = "base"
+    args = [
+        "--fetch-mode", fetch_mode,
+        "--data-root", data_root,
+        "--semantic-mode", semantic_mode,
+    ]
+    if date_from:
+        args.extend(["--date-from", date_from])
+    if date_to:
+        args.extend(["--date-to", date_to])
+    sentiment_main(args)
+    return f"情绪抓取完成: fetch_mode={fetch_mode} semantic_mode={semantic_mode}"
+
+
+def _job_sentiment_silver(data_root: str, config: dict | None = None,
+                           date_from: str | None = None, date_to: str | None = None) -> str:
+    """Bronze → Silver: per-article sentiment scoring (checkpoint)."""
+    from pathlib import Path
+    silver_root = Path(data_root) / "sentiment" / "silver"
+    files = list(silver_root.rglob("*.parquet")) if silver_root.exists() else []
+    return f"情绪 Silver 检查: {len(files)} 个 parquet 文件"
+
+
+def _job_sentiment_gold(data_root: str, config: dict | None = None,
+                         date_from: str | None = None, date_to: str | None = None) -> str:
+    """Silver → Gold: per-symbol/date aggregation (checkpoint)."""
+    from pathlib import Path
+    gold_root = Path(data_root) / "sentiment" / "gold"
+    files = list(gold_root.rglob("*.parquet")) if gold_root.exists() else []
+    return f"情绪 Gold 检查: {len(files)} 个 parquet 文件"
+
+
+def _job_event_extract(data_root: str, config: dict | None = None,
+                        date_from: str | None = None, date_to: str | None = None) -> str:
+    """Extract market events from gold sentiment data."""
+    from trade_py.event import sync_events
+    kwargs: dict = {}
+    if date_from:
+        kwargs["start"] = date_from
+    if date_to:
+        kwargs["end"] = date_to
+    return sync_events(data_root, **kwargs).format()
+
+
+def _job_kg_propagate(data_root: str, config: dict | None = None,
+                       date_from: str | None = None, date_to: str | None = None) -> str:
+    """KG propagation: backfill actual returns for event propagations."""
+    from trade_py.event import backfill_events
+    return backfill_events(data_root)
 
 
 # ── Registry ───────────────────────────────────────────────────────────────────
@@ -387,12 +496,58 @@ JOB_REGISTRY: dict[str, JobDef] = {
         "model_train", _job_model_train, "KG事件传播模型训练",
         ["sunday 09:10"], "train", ["model"],
     ),
+    # Sentiment chain (split jobs)
+    "sentiment_fetch": JobDef(
+        "sentiment_fetch", _job_sentiment_fetch, "情绪抓取（增量/流式）",
+        ["daily 22:00"], "fetch", ["nlp"],
+    ),
+    "sentiment_silver": JobDef(
+        "sentiment_silver", _job_sentiment_silver, "情绪 Silver 评分",
+        [], "fetch", ["nlp"],
+    ),
+    "sentiment_gold": JobDef(
+        "sentiment_gold", _job_sentiment_gold, "情绪 Gold 聚合",
+        [], "fetch", ["nlp"],
+    ),
+    "event_extract": JobDef(
+        "event_extract", _job_event_extract, "事件提取",
+        ["daily 22:30"], "compute", ["event"],
+    ),
+    "kg_propagate": JobDef(
+        "kg_propagate", _job_kg_propagate, "KG 传导",
+        [], "compute", ["event"],
+    ),
 }
 
 
-def run_job(name: str, data_root: str) -> str:
+def run_job(name: str, data_root: str,
+            config: dict | None = None,
+            date_from: str | None = None,
+            date_to: str | None = None) -> str:
     """Execute a single job by name and return the summary string."""
+    import json as _json
     job_def = JOB_REGISTRY.get(name)
     if job_def is None:
         raise ValueError(f"Unknown job: {name!r}. Available: {sorted(JOB_REGISTRY)}")
-    return job_def.fn(data_root)
+    # Load config from pipeline_dag if not provided
+    if config is None:
+        try:
+            from trade_py.db.trade_db import TradeDB
+            db = TradeDB(data_root)
+            dag_meta = db.pipeline_dag_get_by_job(name)
+            if dag_meta:
+                config = _json.loads(dag_meta.get("config_json") or "{}")
+        except Exception:
+            config = {}
+    cfg = config or {}
+    import inspect as _inspect
+    sig = _inspect.signature(job_def.fn)
+    params = set(sig.parameters.keys())
+    kwargs: dict = {}
+    if "config" in params:
+        kwargs["config"] = cfg
+    if "date_from" in params and date_from is not None:
+        kwargs["date_from"] = date_from
+    if "date_to" in params and date_to is not None:
+        kwargs["date_to"] = date_to
+    return job_def.fn(data_root, **kwargs)

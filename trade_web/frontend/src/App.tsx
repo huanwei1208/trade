@@ -1,10 +1,94 @@
-import * as dagre from "dagre";
+import ELK from "elkjs/lib/elk.bundled.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 
 type Locale = "zh-CN" | "en";
-type PageKey = "report" | "events" | "kg";
+type PageKey = "today" | "picks" | "pipeline";
+type EventsViewKey = "market" | "dag";
 type GraphNodeKind = "task" | "topic";
+
+type SignalPick = {
+  symbol?: string;
+  name?: string;
+  status?: "new" | "continued";
+  adj_score?: number;
+  model_score?: number;
+  window_score?: number;
+  event_kg_score?: number;
+  net_sentiment?: number;
+  event_type?: string;
+  model_risk?: number;
+  industry?: number;
+  date?: string;
+};
+
+type TodayPage = {
+  as_of?: string;
+  pipeline_health?: {
+    total: number;
+    ok: number;
+    error: number;
+    running: number;
+    status: string;
+  };
+  top_picks?: SignalPick[];
+  dropped_picks?: { symbol: string }[];
+  gate_status?: string;
+  gate_reason?: string;
+  kline_last_date?: string;
+  error_nodes?: Array<{ job_name?: string; status?: string }>;
+  recent_runs?: Array<{ job_name?: string; status?: string; started_at?: string; result_summary?: string }>;
+};
+
+type SignalsPage = {
+  as_of?: string;
+  picks?: SignalPick[];
+  dropped?: { symbol: string }[];
+  total?: number;
+};
+
+type KlineBar = {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+type KlineData = {
+  symbol?: string;
+  name?: string;
+  ohlcv?: KlineBar[];
+  indicators?: {
+    rsi_14?: number;
+    vol_ratio?: number;
+    dist_52w_low?: number;
+  };
+  prediction?: {
+    predicted_return_5d?: number;
+    predicted_return_20d?: number;
+    model_risk?: number;
+    confidence?: string;
+  };
+  recommendation?: {
+    conviction?: string;
+    bullish_dims?: number;
+    reasons?: string[];
+    hist_event_stats?: {
+      event_type?: string;
+      hist_count?: number;
+      hist_ret_5d_avg?: number | null;
+    };
+  };
+  event_markers?: Array<{ date: string; event_type: string; magnitude: number; kg_score: number }>;
+  latest_signal?: {
+    model_score?: number;
+    window_score?: number;
+    event_kg_score?: number;
+    net_sentiment?: number;
+  };
+};
 
 type DagNode = {
   id?: number;
@@ -14,13 +98,20 @@ type DagNode = {
   source?: string;
   emits?: string;
   status?: string;
+  enabled?: number;
+  sync_source?: string;
+  sync_dataset?: string;
+  config_json?: string;
+  mode?: string;
   error_detail?: string;
   error?: string;
   result_summary?: string;
   recent_ok_count?: number;
   recent_error_count?: number;
-  last_run?: { started_at?: string; completed_at?: string; result_summary?: string } | null;
+  last_run?: { id?: number; started_at?: string; completed_at?: string; result_summary?: string; elapsed_ms?: number | null; status?: string } | null;
   last_source_event?: { created_at?: string; status?: string } | null;
+  job_run?: { started_at?: string; completed_at?: string; result_summary?: string; status?: string } | null;
+  source_event?: { topic?: string; status?: string; payload_json?: Record<string, any>; created_at?: string } | null;
 };
 
 type DagEdge = { from: string; to: string; kind?: string };
@@ -49,6 +140,7 @@ type GraphEdge = {
   x2: number;
   y2: number;
   status: string;
+  points?: Array<{ x: number; y: number }>;
 };
 
 type DagLayout = {
@@ -66,9 +158,29 @@ type Dict = Record<string, string>;
 const I18N: Record<Locale, Dict> = {
   "zh-CN": {
     title: "TradeDB",
-    subtitle: "报表 / 事件 / KG 运行台",
+    subtitle: "今日 / 选股 / 流水线",
     language: "语言",
     refresh: "刷新",
+    today: "今日",
+    picks: "选股",
+    pipeline: "流水线",
+    topPicks: "今日推荐",
+    droppedPicks: "跌出推荐",
+    newTag: "新",
+    continuedTag: "持续",
+    klineDays: "K线日期",
+    modelScore: "模型分",
+    windowScore: "窗口分",
+    kgScore: "事件分",
+    conviction: "确信度",
+    reasons: "推荐理由",
+    configNode: "配置节点",
+    backfillNode: "回补",
+    execTime: "执行时间",
+    dataDate: "数据日期",
+    saveConfig: "保存配置",
+    confirmBackfill: "确认回补",
+    cancel: "取消",
     report: "报表",
     events: "事件",
     kg: "KG",
@@ -120,6 +232,11 @@ const I18N: Record<Locale, Dict> = {
     snapshot: "快照",
     generatedAt: "生成时间",
     nodeDetail: "节点详情",
+    execution: "执行信息",
+    replayLineage: "重跑链路",
+    sourceEvent: "源事件",
+    selectNode: "选择一个节点",
+    selectNodeHint: "点击 DAG 节点后，可在这里查看详情、错误摘要和重跑操作。",
     latestRun: "最近运行",
     upstream: "上游",
     downstream: "下游",
@@ -133,12 +250,41 @@ const I18N: Record<Locale, Dict> = {
     focusHint: "点击 DAG 节点查看详情；失败节点可直接重跑并续跑下游。",
     restoreState: "页面状态已自动恢复",
     dragHint: "节点可拖拽调整位置，布局会保存在本地。",
+    liveStatus: "实时状态",
+    connected: "已连接",
+    disconnected: "已断开",
+    connecting: "连接中",
+    lastUpdate: "最后刷新",
+    runtimeProgress: "运行进度",
+    marketView: "行情 / 事件",
+    dagView: "DAG",
+    autoLayout: "自动排版",
   },
   en: {
     title: "TradeDB",
-    subtitle: "Report / Events / KG console",
+    subtitle: "Today / Picks / Pipeline",
     language: "Language",
     refresh: "Refresh",
+    today: "Today",
+    picks: "Picks",
+    pipeline: "Pipeline",
+    topPicks: "Top Picks",
+    droppedPicks: "Dropped Picks",
+    newTag: "New",
+    continuedTag: "Cont.",
+    klineDays: "K-line Date",
+    modelScore: "Model",
+    windowScore: "Window",
+    kgScore: "KG",
+    conviction: "Conviction",
+    reasons: "Reasons",
+    configNode: "Config Node",
+    backfillNode: "Backfill",
+    execTime: "Exec Time",
+    dataDate: "Data Date",
+    saveConfig: "Save Config",
+    confirmBackfill: "Confirm Backfill",
+    cancel: "Cancel",
     report: "Report",
     events: "Events",
     kg: "KG",
@@ -190,6 +336,11 @@ const I18N: Record<Locale, Dict> = {
     snapshot: "Snapshot",
     generatedAt: "Generated at",
     nodeDetail: "Node detail",
+    execution: "Execution",
+    replayLineage: "Replay lineage",
+    sourceEvent: "Source event",
+    selectNode: "Select a node",
+    selectNodeHint: "Click a DAG node to inspect details, error summary, and replay actions here.",
     latestRun: "Latest run",
     upstream: "Upstream",
     downstream: "Downstream",
@@ -203,16 +354,27 @@ const I18N: Record<Locale, Dict> = {
     focusHint: "Click a DAG node to inspect it; failed nodes can be rerun with downstream continuation.",
     restoreState: "Page state was restored automatically",
     dragHint: "Nodes are draggable; the layout is saved locally.",
+    liveStatus: "Live status",
+    connected: "Connected",
+    disconnected: "Disconnected",
+    connecting: "Connecting",
+    lastUpdate: "Last update",
+    runtimeProgress: "Runtime progress",
+    marketView: "Market / Events",
+    dagView: "DAG",
+    autoLayout: "Auto layout",
   },
 };
 
 type TranslationKey = keyof (typeof I18N)["zh-CN"];
 
 const PAGES: Array<{ key: PageKey; label: TranslationKey }> = [
-  { key: "report", label: "report" },
-  { key: "events", label: "events" },
-  { key: "kg", label: "kg" },
+  { key: "today", label: "today" },
+  { key: "picks", label: "picks" },
+  { key: "pipeline", label: "pipeline" },
 ];
+
+const ELK_LAYOUT = new ELK();
 
 function statusClass(status: unknown) {
   const value = String(status || "unknown").toLowerCase();
@@ -256,16 +418,32 @@ function stageTitle(value: unknown) {
     .join(" ");
 }
 
-function buildDagLayout(
+function estimateNodeBox(parts: Array<string | undefined>, kind: GraphNodeKind) {
+  const content = parts.filter(Boolean).join(" ");
+  const longest = Math.max(...parts.map((part) => String(part || "").length), 0);
+  const total = content.length;
+  const width = Math.max(
+    kind === "topic" ? 208 : 232,
+    Math.min(kind === "topic" ? 280 : 348, 180 + longest * 4.6),
+  );
+  const charsPerLine = Math.max(20, Math.floor((width - 44) / 7));
+  const estimatedLines = Math.max(
+    kind === "topic" ? 2 : 3,
+    Math.ceil(total / charsPerLine),
+  );
+  const height = Math.max(
+    kind === "topic" ? 72 : 108,
+    Math.min(kind === "topic" ? 132 : 180, 56 + estimatedLines * 18),
+  );
+  return { width, height };
+}
+
+async function buildDagLayout(
   rows: DagNode[],
   rawEdges: DagEdge[],
   focusDagIds?: Set<number>,
   overrides?: PositionOverrideMap,
-): DagLayout {
-  const taskWidth = 232;
-  const taskHeight = 108;
-  const topicWidth = 208;
-  const topicHeight = 72;
+): Promise<DagLayout> {
   const padX = 36;
   const padY = 56;
   const topicNodes = new Map<string, GraphNode>();
@@ -278,6 +456,14 @@ function buildDagLayout(
     const dagId = Number(row.dag_id ?? row.id ?? 0) || undefined;
     const key = `task:${dagId ?? row.job_name ?? Math.random().toString(36)}`;
     const stage = slugStage(row.stage);
+    const taskBox = estimateNodeBox(
+      [
+        String(row.job_name || row.stage || "task"),
+        `${row.stage || "-"} · ${row.source || "-"}`,
+        String(row.error_detail || row.error || row.result_summary || row.last_run?.result_summary || ""),
+      ],
+      "task",
+    );
     const taskNode: GraphNode = {
       key,
       kind: "task",
@@ -288,8 +474,8 @@ function buildDagLayout(
       stage,
       x: 0,
       y: 0,
-      width: taskWidth,
-      height: taskHeight,
+      width: taskBox.width,
+      height: taskBox.height,
       dagId,
     };
     taskNodes.set(key, taskNode);
@@ -332,6 +518,10 @@ function buildDagLayout(
       } else {
         const topicKey = `topic:${sourceTopic}`;
         if (!topicNodes.has(topicKey)) {
+          const topicBox = estimateNodeBox(
+            [sourceTopic, "trigger/topic"],
+            "topic",
+          );
           topicNodes.set(topicKey, {
             key: topicKey,
             kind: "topic",
@@ -342,8 +532,8 @@ function buildDagLayout(
             stage: "source",
             x: 0,
             y: 0,
-            width: topicWidth,
-            height: topicHeight,
+            width: topicBox.width,
+            height: topicBox.height,
             dagId: undefined,
           });
           predecessors.set(topicKey, predecessors.get(topicKey) || new Set());
@@ -362,47 +552,76 @@ function buildDagLayout(
   }
 
   const allNodes = [...topicNodes.values(), ...taskNodes.values()];
-  const graph = new dagre.graphlib.Graph({ multigraph: false, compound: false });
-  graph.setGraph({
-    rankdir: "LR",
-    ranksep: 108,
-    nodesep: 34,
-    edgesep: 28,
-    marginx: padX,
-    marginy: padY,
-    ranker: "network-simplex",
-    acyclicer: "greedy",
-  });
-  graph.setDefaultEdgeLabel(() => ({}));
-
-  for (const node of allNodes) {
-    graph.setNode(node.key, {
+  const elkGraph = {
+    id: "root",
+    layoutOptions: {
+      "elk.algorithm": "layered",
+      "elk.direction": "RIGHT",
+      "elk.spacing.nodeNode": "42",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "124",
+      "elk.spacing.edgeNode": "28",
+      "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+      "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+      "elk.padding": `[top=${padY},left=${padX},bottom=${padY},right=${padX}]`,
+    },
+    children: allNodes.map((node) => ({
+      id: node.key,
       width: node.width,
       height: node.height,
-      kind: node.kind,
-      stage: node.stage,
-      label: node.label,
-      focused: Boolean(node.dagId && focusDagIds?.has(node.dagId)),
-    });
-  }
-  for (const edge of edges) {
-    graph.setEdge(edge.from, edge.to, { key: `${edge.from}->${edge.to}` });
-  }
+    })),
+    edges: edges.map((edge) => ({
+      id: `${edge.from}->${edge.to}`,
+      sources: [edge.from],
+      targets: [edge.to],
+    })),
+  };
+  const layoutGraph = await ELK_LAYOUT.layout(elkGraph as any);
+  const layoutNodes = new Map(
+    (layoutGraph.children || []).map((item: any) => [
+      String(item.id),
+      { x: Number(item.x || 0), y: Number(item.y || 0) },
+    ]),
+  );
+  const layoutEdges = new Map(
+    (layoutGraph.edges || []).map((item: any) => [
+      String(item.id),
+      item,
+    ]),
+  );
 
-  dagre.layout(graph);
+  const roots = allNodes
+    .filter((node) => (predecessors.get(node.key)?.size || 0) === 0)
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const depthByNode = new Map<string, number>();
+  const queue = [...roots.map((node) => node.key)];
+  for (const key of queue) depthByNode.set(key, 0);
+  while (queue.length) {
+    const current = queue.shift()!;
+    const currentDepth = depthByNode.get(current) || 0;
+    for (const next of successors.get(current) || []) {
+      const proposed = currentDepth + 1;
+      if ((depthByNode.get(next) ?? -1) < proposed) {
+        depthByNode.set(next, proposed);
+      }
+      queue.push(next);
+    }
+  }
+  for (const node of allNodes) {
+    if (!depthByNode.has(node.key)) depthByNode.set(node.key, 0);
+  }
 
   const levelsMap = new Map<number, GraphNode[]>();
   let maxRight = 0;
   let maxBottom = 0;
   for (const node of allNodes) {
-    const layoutNode = graph.node(node.key) as { x: number; y: number; rank?: number } | undefined;
+    const layoutNode = layoutNodes.get(node.key);
     const override = overrides?.[node.key];
-    node.x = override?.x ?? ((layoutNode?.x ?? padX) - node.width / 2);
-    node.y = override?.y ?? ((layoutNode?.y ?? padY) - node.height / 2);
-    const rank = Number(layoutNode?.rank ?? 0);
-    const bucket = levelsMap.get(rank) || [];
+    node.x = override?.x ?? (layoutNode?.x ?? padX);
+    node.y = override?.y ?? (layoutNode?.y ?? padY);
+    const depth = depthByNode.get(node.key) || 0;
+    const bucket = levelsMap.get(depth) || [];
     bucket.push(node);
-    levelsMap.set(rank, bucket);
+    levelsMap.set(depth, bucket);
     maxRight = Math.max(maxRight, node.x + node.width);
     maxBottom = Math.max(maxBottom, node.y + node.height);
   }
@@ -424,7 +643,7 @@ function buildDagLayout(
       depth,
       label,
       x: left,
-      width: Math.max(taskWidth, right - left),
+      width: Math.max(232, right - left),
     };
   });
 
@@ -436,6 +655,15 @@ function buildDagLayout(
       const to = allNodes.find((node) => node.key === edge.to);
       if (!from || !to) return null;
       const status = to.status === "error" || from.status === "error" ? "error" : (to.status === "running" || from.status === "running" ? "running" : "ok");
+      const edgeLayout = layoutEdges.get(`${edge.from}->${edge.to}`) as { sections?: Array<any> } | undefined;
+      const section = edgeLayout?.sections?.[0];
+      const points = section
+        ? [
+            section.startPoint,
+            ...(section.bendPoints || []),
+            section.endPoint,
+          ].map((point: any) => ({ x: Number(point.x || 0), y: Number(point.y || 0) }))
+        : undefined;
       return {
         key: `${edge.from}->${edge.to}`,
         from: edge.from,
@@ -445,6 +673,7 @@ function buildDagLayout(
         x2: to.x,
         y2: to.y + to.height / 2,
         status,
+        points,
       };
     })
     .filter(Boolean) as GraphEdge[];
@@ -454,12 +683,26 @@ function buildDagLayout(
 
 function App() {
   const [locale, setLocale] = useState<Locale>((localStorage.getItem("trade_locale") as Locale) || "zh-CN");
-  const [page, setPage] = useState<PageKey>((localStorage.getItem("trade_page") as PageKey) || "report");
-  const [reportPage, setReportPage] = useState<any>(null);
+  const [page, setPage] = useState<PageKey>((localStorage.getItem("trade_page") as PageKey) || "today");
   const [eventsPage, setEventsPage] = useState<any>(null);
-  const [kgPage, setKgPage] = useState<any>(null);
+  const [todayData, setTodayData] = useState<TodayPage | null>(null);
+  const [signalsData, setSignalsData] = useState<SignalsPage | null>(null);
+  const [signalsError, setSignalsError] = useState<string | null>(null);
+  const [pipelineHover, setPipelineHover] = useState<string | null>(null);
+  const [pipelineHoverPos, setPipelineHoverPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [klineData, setKlineData] = useState<KlineData | null>(null);
+  const [klineLoading, setKlineLoading] = useState(false);
+  const [configPanelDagId, setConfigPanelDagId] = useState<number | null>(null);
+  const [configPanelValue, setConfigPanelValue] = useState<string>("{}");
+  const [backfillDagId, setBackfillDagId] = useState<number | null>(null);
+  const [backfillFrom, setBackfillFrom] = useState<string>("");
+  const [backfillTo, setBackfillTo] = useState<string>("");
   const [workflowDetail, setWorkflowDetail] = useState<any>(null);
   const [selectedDagKey, setSelectedDagKey] = useState<string>("");
+  const [eventsView, setEventsView] = useState<EventsViewKey>(
+    (localStorage.getItem("trade_events_view") as EventsViewKey) || "market",
+  );
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<number | null>(() => {
     const raw = localStorage.getItem("trade_events_selected_workflow");
     return raw ? Number(raw) || null : null;
@@ -471,10 +714,20 @@ function App() {
       return {};
     }
   });
+  const [globalGraph, setGlobalGraph] = useState<DagLayout>({ width: 980, height: 420, levels: [], nodes: [], edges: [] });
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState<Record<string, boolean>>({});
+  const [streamState, setStreamState] = useState<{
+    scope: string;
+    status: "connecting" | "connected" | "disconnected";
+    lastUpdate: string | null;
+    sequence: number;
+  }>({ scope: "report", status: "connecting", lastUpdate: null, sequence: 0 });
+  const [streamRetryTick, setStreamRetryTick] = useState(0);
   const refreshTimerRef = useRef<number | null>(null);
+  const streamRetryTimerRef = useRef<number | null>(null);
   const flyoutTimerRef = useRef<number | null>(null);
+  const pipelineHoverTimerRef = useRef<number | null>(null);
   const [pinnedDagKey, setPinnedDagKey] = useState<string>("");
 
   const t = (key: TranslationKey) => I18N[locale][key];
@@ -487,15 +740,6 @@ function App() {
     () => `global:${eventsPage?.as_of || "events"}`,
     [eventsPage?.as_of],
   );
-  const globalGraph = useMemo(
-    () => buildDagLayout(
-      (eventsPage?.dag?.nodes || []) as DagNode[],
-      (eventsPage?.dag?.edges || []) as DagEdge[],
-      focusDagIds,
-      graphOverrides[globalGraphKey] || {},
-    ),
-    [eventsPage?.dag?.nodes, eventsPage?.dag?.edges, focusDagIds, graphOverrides, globalGraphKey],
-  );
   const selectedGlobalGraphNode = globalGraph.nodes.find((node) => node.key === selectedDagKey) || null;
 
   useEffect(() => {
@@ -505,6 +749,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("trade_page", page);
   }, [page]);
+
+  useEffect(() => {
+    localStorage.setItem("trade_events_view", eventsView);
+  }, [eventsView]);
 
   useEffect(() => {
     if (selectedWorkflowId != null) {
@@ -517,27 +765,55 @@ function App() {
   }, [graphOverrides]);
 
   useEffect(() => {
-    void loadReport();
+    let cancelled = false;
+    void buildDagLayout(
+      (eventsPage?.dag?.nodes || []) as DagNode[],
+      (eventsPage?.dag?.edges || []) as DagEdge[],
+      focusDagIds,
+      graphOverrides[globalGraphKey] || {},
+    ).then((layout) => {
+      if (!cancelled) setGlobalGraph(layout);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [eventsPage?.dag?.nodes, eventsPage?.dag?.edges, focusDagIds, graphOverrides, globalGraphKey]);
+
+  useEffect(() => {
+    void loadTodayData();
   }, []);
 
   useEffect(() => {
-    if (page === "report" && !reportPage) void loadReport();
-    if (page === "events" && !eventsPage) void loadEvents();
-    if (page === "kg" && !kgPage) void loadKG();
+    if (page === "today" && !todayData) void loadTodayData();
+    if (page === "picks" && !signalsData) void loadSignalsData();
+    if (page === "pipeline" && !eventsPage) void loadEvents();
   }, [page]);
 
   useEffect(() => {
-    if (page !== "report" && page !== "events") return;
-    const source = new EventSource(`/api/runtime/stream?scope=${page}`);
+    if (page !== "today" && page !== "pipeline") return;
+    const scope = page === "today" ? "report" : "events";
+    setStreamState((prev) => ({
+      scope,
+      status: "connecting",
+      lastUpdate: prev.scope === scope ? prev.lastUpdate : null,
+      sequence: prev.sequence,
+    }));
+    const source = new EventSource(`/api/runtime/stream?scope=${scope}`);
     source.onmessage = (event) => {
       try {
-        JSON.parse(event.data);
+        const payload = JSON.parse(event.data);
+        setStreamState((prev) => ({
+          scope,
+          status: "connected",
+          lastUpdate: String(payload?.ts || new Date().toISOString()),
+          sequence: prev.sequence + 1,
+        }));
         if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = window.setTimeout(() => {
-          if (page === "events") {
+          if (page === "pipeline") {
             void loadEvents();
           } else {
-            void loadReport();
+            void loadTodayData();
           }
         }, 350);
       } catch {
@@ -545,7 +821,18 @@ function App() {
       }
     };
     source.onerror = () => {
+      setStreamState((prev) => ({
+        ...prev,
+        scope,
+        status: "disconnected",
+      }));
       source.close();
+      if (streamRetryTimerRef.current) {
+        window.clearTimeout(streamRetryTimerRef.current);
+      }
+      streamRetryTimerRef.current = window.setTimeout(() => {
+        setStreamRetryTick((value) => value + 1);
+      }, 1500);
     };
     return () => {
       source.close();
@@ -553,11 +840,15 @@ function App() {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
       }
+      if (streamRetryTimerRef.current) {
+        window.clearTimeout(streamRetryTimerRef.current);
+        streamRetryTimerRef.current = null;
+      }
     };
-  }, [page]);
+  }, [page, streamRetryTick]);
 
   useEffect(() => {
-    if (page !== "events") return;
+    if (page !== "pipeline") return;
     const handle = window.setInterval(() => {
       void loadEvents();
     }, 15000);
@@ -578,6 +869,9 @@ function App() {
   useEffect(() => () => {
     if (refreshTimerRef.current) {
       window.clearTimeout(refreshTimerRef.current);
+    }
+    if (streamRetryTimerRef.current) {
+      window.clearTimeout(streamRetryTimerRef.current);
     }
     if (flyoutTimerRef.current) {
       window.clearTimeout(flyoutTimerRef.current);
@@ -620,15 +914,6 @@ function App() {
     });
   }
 
-  async function loadReport() {
-    setLoading((prev) => ({ ...prev, report: true }));
-    try {
-      setReportPage(await apiFetch("/api/report-page"));
-    } finally {
-      setLoading((prev) => ({ ...prev, report: false }));
-    }
-  }
-
   async function loadEvents() {
     setLoading((prev) => ({ ...prev, events: true }));
     try {
@@ -650,13 +935,71 @@ function App() {
     }
   }
 
-  async function loadKG() {
-    setLoading((prev) => ({ ...prev, kg: true }));
+  async function loadTodayData() {
+    setLoading((prev) => ({ ...prev, today: true }));
     try {
-      setKgPage(await apiFetch("/api/kg-page"));
+      const data = await apiFetch<TodayPage>("/api/today-page");
+      setTodayData(data);
     } finally {
-      setLoading((prev) => ({ ...prev, kg: false }));
+      setLoading((prev) => ({ ...prev, today: false }));
     }
+  }
+
+  async function loadSignalsData() {
+    setLoading((prev) => ({ ...prev, signals: true }));
+    setSignalsError(null);
+    try {
+      const data = await apiFetch<SignalsPage>("/api/signals-page");
+      setSignalsData(data);
+    } catch (err) {
+      setSignalsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading((prev) => ({ ...prev, signals: false }));
+    }
+  }
+
+  async function loadKlineData(symbol: string) {
+    setKlineLoading(true);
+    setSelectedSymbol(symbol);
+    try {
+      const data = await apiFetch<KlineData>(`/api/kline/${symbol}?days=60`);
+      setKlineData(data);
+    } finally {
+      setKlineLoading(false);
+    }
+  }
+
+  async function saveConfig(dagId: number) {
+    try {
+      const config = JSON.parse(configPanelValue);
+      await apiFetch(`/api/dag/${dagId}/config`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config }),
+      });
+      setConfigPanelDagId(null);
+      alert("配置已保存");
+    } catch (e) {
+      alert(`保存失败: ${e}`);
+    }
+  }
+
+  async function runBackfill(dagId: number) {
+    if (!backfillFrom || !backfillTo) {
+      alert("请选择日期范围");
+      return;
+    }
+    await apiFetch(`/api/dag/${dagId}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "self",
+        date_from: backfillFrom,
+        date_to: backfillTo,
+      }),
+    });
+    setBackfillDagId(null);
+    alert(`回补任务已提交: ${backfillFrom} ~ ${backfillTo}`);
   }
 
   async function loadWorkflowDetail(rootEventId: number, options?: { silent?: boolean }) {
@@ -680,8 +1023,8 @@ function App() {
       body: JSON.stringify({ target, payload: {}, limit: 10 }),
     });
     pushToast(`${t("runActions")}: ${target}`);
-    if (page === "events") void loadEvents();
-    if (page === "report") void loadReport();
+    if (page === "pipeline") void loadEvents();
+    if (page === "today") void loadTodayData();
   }
 
   async function rerunNode(rootEventId: number, dagId: number, mode: "self" | "upstream" | "downstream" | "full" = "self") {
@@ -692,7 +1035,7 @@ function App() {
     });
     pushToast(`${t("rerun")}: ${dagId} · ${mode}`);
     await loadEvents();
-    await loadReport();
+    await loadTodayData();
   }
 
   async function runDagNode(dagId: number, mode: "self" | "upstream" | "downstream" | "full" = "self") {
@@ -703,7 +1046,7 @@ function App() {
     });
     pushToast(`run: ${dagId} · ${mode}`);
     await loadEvents();
-    await loadReport();
+    await loadTodayData();
   }
 
   function updateGraphNodePosition(graphKey: string, nodeKey: string, x: number, y: number) {
@@ -716,10 +1059,52 @@ function App() {
     }));
   }
 
+  function resetGraphLayout(graphKey: string) {
+    setGraphOverrides((prev) => {
+      if (!(graphKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[graphKey];
+      return next;
+    });
+  }
+
   async function refreshCurrent() {
-    if (page === "report") return loadReport();
-    if (page === "events") return loadEvents();
-    return loadKG();
+    if (page === "today") return loadTodayData();
+    if (page === "picks") return loadSignalsData();
+    if (page === "pipeline") return loadEvents();
+    return loadTodayData();
+  }
+
+  function CandlestickChart({ bars }: { bars: KlineBar[] }) {
+    const last30 = bars.slice(-30);
+    if (!last30.length) return <div className="chart-empty">无K线数据</div>;
+    const width = 450, height = 180, padX = 20, padY = 10;
+    const highs = last30.map((b) => b.high).filter((v) => v > 0);
+    const lows = last30.map((b) => b.low).filter((v) => v > 0);
+    if (!highs.length) return null;
+    const maxH = Math.max(...highs);
+    const minL = Math.min(...lows);
+    const rangeH = maxH - minL || 1;
+    const scaleY = (v: number) => padY + ((maxH - v) / rangeH) * (height - padY * 2);
+    const barW = Math.max(2, Math.floor((width - padX * 2) / last30.length) - 1);
+    return (
+      <svg width={width} height={height} className="candlestick-chart">
+        {last30.map((bar, i) => {
+          const x = padX + i * ((width - padX * 2) / last30.length);
+          const isUp = bar.close >= bar.open;
+          const color = isUp ? "#22c55e" : "#ef4444";
+          const bodyTop = scaleY(Math.max(bar.open, bar.close));
+          const bodyBot = scaleY(Math.min(bar.open, bar.close));
+          const bodyH = Math.max(1, bodyBot - bodyTop);
+          return (
+            <g key={i}>
+              <line x1={x + barW / 2} y1={scaleY(bar.high)} x2={x + barW / 2} y2={scaleY(bar.low)} stroke={color} strokeWidth="1" />
+              <rect x={x} y={bodyTop} width={barW} height={bodyH} fill={color} opacity={0.85} />
+            </g>
+          );
+        })}
+      </svg>
+    );
   }
 
   function renderSignals(rows: any[], scoreKey: string) {
@@ -750,233 +1135,297 @@ function App() {
     );
   }
 
-  function renderReport() {
-    if (loading.report && !reportPage) return <div className="empty">{t("loading")}</div>;
-    if (!reportPage) return <div className="empty">{t("noData")}</div>;
-    const conclusion = reportPage.conclusion || {};
-    const progress = reportPage.progress || {};
-    const health = reportPage.data_health || {};
+  function renderToday() {
+    if (loading.today && !todayData) return <div className="empty">{t("loading")}</div>;
+    if (!todayData) return <div className="empty">{t("noData")}</div>;
+    const ph = todayData.pipeline_health;
+    const errorNodes = todayData.error_nodes || [];
+    const topPicks = todayData.top_picks || [];
+    const droppedPicks = todayData.dropped_picks || [];
+    const phStatus = ph ? (ph.error > 0 ? "error" : ph.running > 0 ? "running" : "ok") : "unknown";
+    const newCount = topPicks.filter(p => p.status === "new").length;
+
     return (
-      <div className="page">
-        <section className="panel wide">
-          <div className="panel-title">{t("reason")}</div>
-          <div className="summary">
-            <div className="summary-card">
-              <div className="stat-label">{t("overall")}</div>
-              <div className="stat-value">{conclusion.headline || "-"}</div>
-              <div className={`pill ${statusClass(conclusion.gate_status)}`}>{conclusion.gate_status || "-"}</div>
-            </div>
-            <div className="summary-card">
-              <div className="stat-label">{t("reason")}</div>
-              <div className="stat-value">{shortText(conclusion.reason_summary || "-")}</div>
-              <div className="muted-line">{(conclusion.reasons || []).slice(0, 3).map((item: any) => item.reason || item).join(" / ") || "-"}</div>
+      <div className="today-page">
+        {/* ── Stat strip ── */}
+        <div className="today-stat-strip">
+          <div className="today-stat">
+            <div className="today-stat-label">数据截至</div>
+            <div className="today-stat-value">{todayData.kline_last_date || "—"}</div>
+          </div>
+          <div className={`today-stat today-stat-${phStatus}`}>
+            <div className="today-stat-label">流水线</div>
+            <div className="today-stat-value">{ph ? `${ph.ok} / ${ph.total}` : "—"}</div>
+            <div className="today-stat-sub">
+              {ph?.error ? <span style={{ color: "var(--err)" }}>{ph.error} 失败</span> : "全部正常"}
             </div>
           </div>
-          <div className="cards">
-            <div className="stat-card">
-              <div className="stat-label">{t("operational")}</div>
-              <div className="stat-value">
-                <span className={`pill ${statusClass(conclusion.operational_status)}`}>{conclusion.operational_status || "-"}</span>
-              </div>
+          <div className="today-stat">
+            <div className="today-stat-label">质量门控</div>
+            <div className={`today-stat-value today-gate-${statusClass(todayData.gate_status || "unknown")}`}>
+              {todayData.gate_status || "—"}
             </div>
-            <div className="stat-card">
-              <div className="stat-label">{t("research")}</div>
-              <div className="stat-value">
-                <span className={`pill ${statusClass(conclusion.research_status)}`}>{conclusion.research_status || "-"}</span>
-              </div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">{t("workflowProgress")}</div>
-              <div className="stat-value">{progress.workflow_ok ?? 0}/{progress.workflow_total ?? 0}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">{t("agenda")}</div>
-              <div className="stat-value">{(reportPage.agenda || []).length}</div>
-            </div>
+            {todayData.gate_reason ? (
+              <div className="today-stat-sub">{shortText(todayData.gate_reason, 32)}</div>
+            ) : null}
           </div>
-        </section>
+          <div className="today-stat">
+            <div className="today-stat-label">今日推荐</div>
+            <div className="today-stat-value">{topPicks.length > 0 ? `${topPicks.length} 支` : "—"}</div>
+            <div className="today-stat-sub">{newCount > 0 ? `${newCount} 支新上榜` : "无新上榜"}</div>
+          </div>
+        </div>
 
-        <section className="panel-grid">
-          <div className="panel">
-            <div className="panel-title">{t("runActions")}</div>
-            <div className="flow-buttons">
-              <button className="button-card" onClick={() => void runTarget("sync")}>{t("runSync")}</button>
-              <button className="button-card" onClick={() => void runTarget("close")}>{t("runClose")}</button>
-              <button className="button-card" onClick={() => void runTarget("evening")}>{t("runEvening")}</button>
-              <button className="button-card" onClick={() => void runTarget("agenda")}>{t("runAgenda")}</button>
-            </div>
+        {/* ── Error alert ── */}
+        {errorNodes.length > 0 && (
+          <div className="today-alert-strip">
+            <span className="today-alert-label">⚠ 失败节点</span>
+            {errorNodes.map((node, idx) => (
+              <span key={idx} className="today-alert-node">{node.job_name || "unknown"}</span>
+            ))}
           </div>
-          <div className="panel">
-            <div className="panel-title">{t("rootCauses")}</div>
-            <div className="list-stack">
-              {(reportPage.root_causes || []).length ? (reportPage.root_causes || []).map((row: any) => (
-                <div key={row.root_event_id} className="list-card">
-                  <div className={`pill ${statusClass(row.status)}`}>{row.status}</div>
-                  <div>{row.title || row.topic}</div>
-                  <div className="error-text">{shortText(row.root_cause?.message || "-", 200)}</div>
-                </div>
-              )) : <div className="list-card">{t("noRootCause")}</div>}
-            </div>
-          </div>
-        </section>
+        )}
 
-        <section className="panel-grid">
-          <div className="panel">
-            <div className="panel-title">{t("modelSignals")}</div>
-            {renderSignals(reportPage.top_signals?.model_score || [], "model_score")}
+        {/* ── Top picks ── */}
+        <div className="today-picks-panel">
+          <div className="today-picks-header">
+            <span className="today-section-title">{t("topPicks")}</span>
+            <span className="today-section-date">{todayData.as_of || ""}</span>
+            <button type="button" className="today-picks-all-btn" onClick={() => setPage("picks")}>
+              查看全部 →
+            </button>
           </div>
-          <div className="panel">
-            <div className="panel-title">{t("kgSignals")}</div>
-            {renderSignals(reportPage.top_signals?.event_kg_score || [], "event_kg_score")}
-          </div>
-        </section>
+          {topPicks.length > 0 ? (
+            <div className="today-pick-list">
+              {topPicks.map((pick, idx) => {
+                const rawScore = pick.adj_score ?? pick.model_score ?? 0;
+                // normalise: adj_score can be 0-100 range, clamp bar to 100%
+                const barPct = Math.min(rawScore > 1 ? rawScore : rawScore * 100, 100);
+                return (
+                  <div
+                    key={idx}
+                    className="today-pick-card"
+                    onClick={() => {
+                      if (pick.symbol) { void loadKlineData(pick.symbol); setPage("picks"); }
+                    }}
+                  >
+                    <div className="today-pick-rank">#{idx + 1}</div>
+                    <div className="today-pick-badge-wrap">
+                      {pick.status === "new"
+                        ? <span className="badge-new">{t("newTag")}</span>
+                        : <span className="badge-continued">{t("continuedTag")}</span>}
+                    </div>
+                    <div className="today-pick-identity">
+                      <span className="today-pick-symbol">{pick.symbol}</span>
+                      <span className="today-pick-name">{pick.name || "—"}</span>
+                    </div>
+                    <div className="today-pick-bar-wrap">
+                      <div className="today-pick-bar">
+                        <div className="today-pick-bar-fill" style={{ width: `${barPct}%` }} />
+                      </div>
+                      <span className="today-pick-score">
+                        {rawScore > 1 ? rawScore.toFixed(1) : rawScore.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="today-pick-metrics">
+                      {pick.model_score != null && (
+                        <span className="today-pick-chip">
+                          模 {pick.model_score > 1 ? pick.model_score.toFixed(0) : pick.model_score.toFixed(2)}
+                        </span>
+                      )}
+                      {pick.window_score != null && (
+                        <span className="today-pick-chip">技 {Math.round(pick.window_score)}</span>
+                      )}
+                      {pick.net_sentiment != null && (
+                        <span className={`today-pick-chip ${pick.net_sentiment >= 0 ? "chip-pos" : "chip-neg"}`}>
+                          情 {pick.net_sentiment >= 0 ? "+" : ""}{pick.net_sentiment.toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="today-pick-detail-btn"
+                      onClick={e => {
+                        e.stopPropagation();
+                        if (pick.symbol) { void loadKlineData(pick.symbol); setPage("picks"); }
+                      }}
+                    >
+                      详情 →
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty">{t("noData")}</div>
+          )}
+          {droppedPicks.length > 0 && (
+            <div className="today-dropped">
+              <span className="today-dropped-label">今日跌出</span>
+              {droppedPicks.map((item, idx) => (
+                <span key={idx} className="badge-dropped">{item.symbol}</span>
+              ))}
+            </div>
+          )}
+        </div>
 
-        <section className="panel-grid">
-          <div className="panel">
-            <div className="panel-title">{t("todayEvents")}</div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Type</th>
-                    <th>Magnitude</th>
-                    <th>Summary</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(reportPage.today_events || []).slice(0, 12).map((row: any) => (
-                    <tr key={row.event_id}>
-                      <td>{row.event_date}</td>
-                      <td>{row.event_type}</td>
-                      <td>{row.magnitude}</td>
-                      <td>{shortText(row.summary, 90)}</td>
-                    </tr>
-                  ))}
-                  {!reportPage.today_events?.length && (
-                    <tr><td colSpan={4} className="empty">{t("noData")}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div className="panel">
-            <div className="panel-title">{t("plannedEvents")}</div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Type</th>
-                    <th>Importance</th>
-                    <th>Title</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(reportPage.planned_events || []).slice(0, 12).map((row: any) => (
-                    <tr key={row.planned_event_id}>
-                      <td>{formatDateTime(row.scheduled_at)}</td>
-                      <td>{row.event_type}</td>
-                      <td><span className={`pill ${statusClass(row.importance === "high" ? "running" : "partial")}`}>{row.importance}</span></td>
-                      <td>{shortText(row.title, 90)}</td>
-                    </tr>
-                  ))}
-                  {!reportPage.planned_events?.length && (
-                    <tr><td colSpan={4} className="empty">{t("noData")}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <section className="panel wide">
-          <div className="panel-title">{t("dataHealth")}</div>
-          <div className="cards">
-            <div className="stat-card">
-              <div className="stat-label">OK</div>
-              <div className="stat-value">{health.summary?.ok ?? 0}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Partial</div>
-              <div className="stat-value">{health.summary?.partial ?? 0}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Error</div>
-              <div className="stat-value">{health.summary?.error ?? 0}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">As Of</div>
-              <div className="stat-value">{health.as_of || "-"}</div>
-            </div>
-          </div>
-          <div className="split-grid">
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Dataset</th>
-                    <th>Status</th>
-                    <th>Freshness</th>
-                    <th>Coverage</th>
-                    <th>Lineage</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(health.datasets || []).slice(0, 10).map((row: any) => (
-                    <tr key={row.id}>
-                      <td>{row.name}</td>
-                      <td><span className={`pill ${statusClass(row.status)}`}>{row.status}</span></td>
-                      <td>{row.freshness_date || "-"}</td>
-                      <td>{row.coverage_pct == null ? "-" : `${Math.round(row.coverage_pct * 1000) / 10}%`}</td>
-                      <td>{shortText(row.lineage, 70)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="list-stack">
-              {(health.highlights || []).map((item: any, index: number) => (
-                <div key={`highlight-${index}`} className="list-card">
-                  <div className="stat-label">{item.kind}</div>
-                  <div>{item.title}</div>
-                  <div className="stat-value">{item.value}</div>
+        {/* ── Recent runs (compact, collapsed) ── */}
+        {(todayData.recent_runs || []).length > 0 && (
+          <details className="today-runs-details">
+            <summary className="today-runs-summary">
+              最近运行 ({(todayData.recent_runs || []).length})
+            </summary>
+            <div className="today-runs-list">
+              {(todayData.recent_runs || []).map((run, idx) => (
+                <div key={idx} className="today-run-row">
+                  <span className="today-run-job">{run.job_name || "—"}</span>
+                  <span className={`pill ${statusClass(run.status)}`} style={{ fontSize: "10px" }}>{run.status}</span>
+                  <span className="today-run-time">{formatDateTime(run.started_at)}</span>
+                  <span className="today-run-summary">{shortText(run.result_summary, 80)}</span>
                 </div>
               ))}
             </div>
-          </div>
-        </section>
+          </details>
+        )}
+      </div>
+    );
+  }
 
-        <section className="panel wide">
-          <div className="panel-title">{t("recentEvents")}</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Topic</th>
-                  <th>Status</th>
-                  <th>Created</th>
-                  <th>Error</th>
+  function renderPicks() {
+    if (loading.signals && !signalsData) return <div className="empty">{t("loading")}</div>;
+    if (signalsError) return (
+      <div className="empty" style={{ color: "var(--err)", whiteSpace: "pre-wrap", padding: "20px 24px" }}>
+        <strong>选股数据加载失败</strong><br />{signalsError}
+      </div>
+    );
+    if (!signalsData) return <div className="empty">{t("noData")}</div>;
+    const picks = signalsData.picks || [];
+    const conviction = klineData?.recommendation?.conviction || "";
+    return (
+      <div className="picks-layout">
+        <div className="picks-table-wrap">
+          <table className="picks-table">
+            <thead>
+              <tr>
+                <th>代码</th>
+                <th>名称</th>
+                <th>状态</th>
+                <th>综合分</th>
+                <th>{t("modelScore")}</th>
+                <th>{t("windowScore")}</th>
+                <th>{t("kgScore")}</th>
+                <th>情绪</th>
+                <th>事件</th>
+              </tr>
+            </thead>
+            <tbody>
+              {picks.map((pick, idx) => (
+                <tr
+                  key={idx}
+                  className={selectedSymbol === pick.symbol ? "selected" : ""}
+                  onClick={() => { if (pick.symbol) void loadKlineData(pick.symbol); }}
+                >
+                  <td style={{ fontWeight: 600, fontSize: "13px" }}>{pick.symbol || "-"}</td>
+                  <td>{pick.name || "-"}</td>
+                  <td>
+                    {pick.status === "new" ? (
+                      <span className="badge-new">{t("newTag")}</span>
+                    ) : (
+                      <span className="badge-continued">{t("continuedTag")}</span>
+                    )}
+                  </td>
+                  <td>{pick.adj_score != null ? pick.adj_score.toFixed(3) : "-"}</td>
+                  <td>{pick.model_score != null ? pick.model_score.toFixed(3) : "-"}</td>
+                  <td>{pick.window_score != null ? pick.window_score.toFixed(3) : "-"}</td>
+                  <td>{pick.event_kg_score != null ? pick.event_kg_score.toFixed(3) : "-"}</td>
+                  <td>{pick.net_sentiment != null ? pick.net_sentiment.toFixed(2) : "-"}</td>
+                  <td>{pick.event_type || "-"}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {(reportPage.recent_events || []).map((row: any) => (
-                  <tr key={row.id}>
-                    <td>{row.id}</td>
-                    <td>{row.topic}</td>
-                    <td><span className={`pill ${statusClass(row.status)}`}>{row.status}</span></td>
-                    <td>{formatDateTime(row.created_at)}</td>
-                    <td>{shortText(row.error, 90)}</td>
-                  </tr>
-                ))}
-                {!reportPage.recent_events?.length && (
-                  <tr><td colSpan={5} className="empty">{t("noData")}</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+              ))}
+              {!picks.length && (
+                <tr><td colSpan={9} className="empty">{t("noData")}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="picks-side-panel">
+          {!selectedSymbol ? (
+            <div style={{ color: "var(--muted)", fontSize: "13px", marginTop: 20, textAlign: "center" }}>
+              点击左侧表格行查看K线详情
+            </div>
+          ) : klineLoading ? (
+            <div style={{ color: "var(--muted)", fontSize: "13px", marginTop: 20, textAlign: "center" }}>{t("loading")}</div>
+          ) : klineData ? (
+            <>
+              <div className="kline-panel-header">
+                <span className="sym-name">{klineData.name || selectedSymbol}</span>
+                <span className="sym-code">{klineData.symbol || selectedSymbol}</span>
+              </div>
+              {klineData.ohlcv && klineData.ohlcv.length > 0 && (
+                <CandlestickChart bars={klineData.ohlcv} />
+              )}
+              {klineData.indicators && (
+                <div className="indicators-row">
+                  {klineData.indicators.rsi_14 != null && (
+                    <span className="ind-chip">RSI: {klineData.indicators.rsi_14.toFixed(1)}</span>
+                  )}
+                  {klineData.indicators.vol_ratio != null && (
+                    <span className="ind-chip">量比: {klineData.indicators.vol_ratio.toFixed(2)}</span>
+                  )}
+                  {klineData.indicators.dist_52w_low != null && (
+                    <span className="ind-chip">距52周低: {(klineData.indicators.dist_52w_low * 100).toFixed(1)}%</span>
+                  )}
+                </div>
+              )}
+              {klineData.recommendation && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: "12px", color: "var(--muted)" }}>{t("conviction")}:</span>
+                    <span className={`conviction-badge conviction-${conviction}`}>{conviction || "-"}</span>
+                  </div>
+                  {(klineData.recommendation.reasons || []).length > 0 && (
+                    <ul className="reasons-list">
+                      {(klineData.recommendation.reasons || []).map((reason, idx) => (
+                        <li key={idx}>{reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {klineData.recommendation.hist_event_stats && (
+                    <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 4 }}>
+                      历史{klineData.recommendation.hist_event_stats.event_type}事件:
+                      {" "}{klineData.recommendation.hist_event_stats.hist_count}次,
+                      5日均收益: {klineData.recommendation.hist_event_stats.hist_ret_5d_avg != null
+                        ? `+${klineData.recommendation.hist_event_stats.hist_ret_5d_avg.toFixed(1)}%`
+                        : "-"}
+                    </div>
+                  )}
+                </div>
+              )}
+              {klineData.prediction && (
+                <div style={{ marginTop: 12, fontSize: "12px" }}>
+                  <div style={{ color: "var(--muted)", marginBottom: 4 }}>预测</div>
+                  <div style={{ display: "flex", gap: 12 }}>
+                    {klineData.prediction.predicted_return_5d != null && (
+                      <span className="ind-chip">5日: {(klineData.prediction.predicted_return_5d * 100).toFixed(2)}%</span>
+                    )}
+                    {klineData.prediction.predicted_return_20d != null && (
+                      <span className="ind-chip">20日: {(klineData.prediction.predicted_return_20d * 100).toFixed(2)}%</span>
+                    )}
+                    {klineData.prediction.confidence && (
+                      <span className="ind-chip">置信: {klineData.prediction.confidence}</span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {klineData.latest_signal && (
+                <div style={{ marginTop: 12, fontSize: "11px", color: "var(--muted)" }}>
+                  <div>模型: {klineData.latest_signal.model_score?.toFixed(3) ?? "-"} | 窗口: {klineData.latest_signal.window_score?.toFixed(3) ?? "-"} | 事件: {klineData.latest_signal.event_kg_score?.toFixed(3) ?? "-"} | 情绪: {klineData.latest_signal.net_sentiment?.toFixed(2) ?? "-"}</div>
+                </div>
+              )}
+            </>
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -1037,8 +1486,12 @@ function App() {
             </div>
             <svg className="dag-svg" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none">
             {layout.edges.map((edge) => {
-              const midX = edge.x1 + Math.max(32, (edge.x2 - edge.x1) / 2);
-              const path = `M ${edge.x1} ${edge.y1} C ${midX} ${edge.y1}, ${midX} ${edge.y2}, ${edge.x2} ${edge.y2}`;
+              const path = edge.points?.length
+                ? edge.points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ")
+                : (() => {
+                    const midX = edge.x1 + Math.max(32, (edge.x2 - edge.x1) / 2);
+                    return `M ${edge.x1} ${edge.y1} C ${midX} ${edge.y1}, ${midX} ${edge.y2}, ${edge.x2} ${edge.y2}`;
+                  })();
               return (
                 <path
                   key={edge.key}
@@ -1136,8 +1589,6 @@ function App() {
         </div>
       );
     }
-    const upstream = rows.filter((item) => String(item.emits || "") && String(item.emits || "") === String(row.source || ""));
-    const downstream = rows.filter((item) => String(item.source || "") && String(item.source || "") === String(row.emits || ""));
     const inWorkflow = row.dag_id && options?.workflowNodeIds?.has(Number(row.dag_id));
     return (
       <div
@@ -1201,453 +1652,373 @@ function App() {
               </div>
             ) : null}
           </div>
-          <div className="list-card flyout-card">
-            <div className="panel-title">{t("upstream")}</div>
-            {(upstream.length ? upstream : [{ job_name: row.source || "-", stage: "topic", status: row.last_source_event?.status || "pending" }]).map((item: any, index: number) => (
-              <div key={`up-${index}`} className="muted-line">{item.job_name || item.source || item}</div>
-            ))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderNodeSidebar(
+    row: DagNode | null,
+    options?: { rootEventId?: number; workflowNodeIds?: Set<number>; workflow?: any | null },
+  ) {
+    if (!row || !row.dag_id) {
+      return (
+        <div className="list-card">
+          <div className="stat-label">{t("nodeDetail")}</div>
+          <div className="panel-title">{t("selectNode")}</div>
+          <div className="muted-line">{t("selectNodeHint")}</div>
+        </div>
+      );
+    }
+    const inWorkflow = Boolean(options?.workflowNodeIds?.has(Number(row.dag_id)));
+    const workflowReplay = options?.workflow?.payload_json?._replay || {};
+    const sourceDispatch = row.source_event?.payload_json?._dispatch || {};
+    const rootCause = shortText(
+      row.error
+      || row.error_detail
+      || row.job_run?.result_summary
+      || options?.workflow?.root_cause?.message
+      || options?.workflow?.root_cause?.error
+      || "-",
+      260,
+    );
+    const replaySummary = [
+      workflowReplay.mode ? `workflow:${workflowReplay.mode}` : "",
+      sourceDispatch.mode ? `source:${sourceDispatch.mode}` : "",
+      sourceDispatch.target_dag_id ? `target:${sourceDispatch.target_dag_id}` : "",
+    ].filter(Boolean).join(" · ");
+    return (
+      <div className="list-stack">
+        <div className="list-card">
+          <div className="stat-label">{t("nodeDetail")}</div>
+          <div className="node-header">
+            <div>
+              <div className="panel-title">{row.job_name}</div>
+              <div className="muted-line">{row.stage} · {row.source || "-"}</div>
+            </div>
+            <span className={`pill ${statusClass(row.status)}`}>{row.status || "-"}</span>
           </div>
-          <div className="list-card flyout-card">
-            <div className="panel-title">{t("downstream")}</div>
-            {(downstream.length ? downstream : [{ job_name: row.emits || "-", stage: "topic", status: "pending" }]).map((item: any, index: number) => (
-              <div key={`down-${index}`} className="muted-line">{item.job_name || item.source || item}</div>
-            ))}
+          <div className="detail-metrics">
+            <div><span className="stat-label">{t("latestRun")}</span><span>{formatDateTime(row.job_run?.started_at || row.last_run?.started_at || row.last_source_event?.created_at)}</span></div>
+            <div><span className="stat-label">{t("sourceEvent")}</span><span>{row.source_event?.topic || row.source || "-"}</span></div>
+            <div><span className="stat-label">emits</span><span>{row.emits || "-"}</span></div>
+          </div>
+        </div>
+        <div className="list-card">
+          <div className="stat-label">{t("rootCauses")}</div>
+          <div className={`muted-line ${rootCause !== "-" ? "error-text" : ""}`}>{rootCause}</div>
+        </div>
+        <div className="list-card">
+          <div className="stat-label">{t("execution")}</div>
+          <div className="muted-line">{shortText(row.job_run?.result_summary || row.last_run?.result_summary || "-", 220)}</div>
+          <div className="detail-metrics">
+            <div><span className="stat-label">{t("counts")}</span><span>{row.recent_ok_count ?? 0} ok / {row.recent_error_count ?? 0} err</span></div>
+            <div><span className="stat-label">{t("progress")}</span><span>{inWorkflow ? "workflow focus" : "global dag"}</span></div>
+          </div>
+        </div>
+        <div className="list-card">
+          <div className="stat-label">{t("replayLineage")}</div>
+          <div className="muted-line">{replaySummary || "-"}</div>
+        </div>
+        <div className="list-card">
+          <div className="node-actions">
+            <button
+              type="button"
+              onClick={() => inWorkflow && options?.rootEventId
+                ? void rerunNode(options.rootEventId, row.dag_id!, "self")
+                : void runDagNode(row.dag_id!, "self")}
+            >
+              {t("rerun")}
+            </button>
+            <button
+              type="button"
+              onClick={() => inWorkflow && options?.rootEventId
+                ? void rerunNode(options.rootEventId, row.dag_id!, "upstream")
+                : void runDagNode(row.dag_id!, "upstream")}
+            >
+              {t("rerunUpstream")}
+            </button>
+            <button
+              type="button"
+              onClick={() => inWorkflow && options?.rootEventId
+                ? void rerunNode(options.rootEventId, row.dag_id!, "downstream")
+                : void runDagNode(row.dag_id!, "downstream")}
+            >
+              {t("rerunDownstream")}
+            </button>
+            <button
+              type="button"
+              onClick={() => inWorkflow && options?.rootEventId
+                ? void rerunNode(options.rootEventId, row.dag_id!, "full")
+                : void runDagNode(row.dag_id!, "full")}
+            >
+              {t("rerunFull")}
+            </button>
           </div>
         </div>
       </div>
     );
   }
 
-  function renderEvents() {
+  function renderPipeline() {
     if (loading.events && !eventsPage) return <div className="empty">{t("loading")}</div>;
     if (!eventsPage) return <div className="empty">{t("noData")}</div>;
-    const selectedWorkflow = workflowDetail || eventsPage.focus || null;
-    const workflowFailedNodes = workflowRows.filter((row) => ["error", "partial"].includes(String(row.status || "")));
-    const failureList = workflowFailedNodes.length ? workflowFailedNodes : (eventsPage.failed_nodes || []);
-    const workflowNodeIds = new Set(
-      workflowRows.map((row) => Number(row.dag_id ?? row.id ?? 0)).filter((value) => value > 0),
+
+    const allNodes = (eventsPage?.dag?.nodes || []) as DagNode[];
+
+    // Deduplicate by job_name, keeping latest run, skip disabled
+    const dedupMap = new Map<string, DagNode>();
+    for (const n of allNodes) {
+      if (n.enabled === 0) continue;
+      const jn = String(n.job_name || "");
+      const existing = dedupMap.get(jn);
+      const nRunId = n.last_run?.id || 0;
+      const existRunId = existing?.last_run?.id || 0;
+      if (!existing || nRunId > existRunId) dedupMap.set(jn, n);
+    }
+
+    const fetchNodes = Array.from(dedupMap.values())
+      .filter((n) => n.stage === "fetch")
+      .sort((a, b) => (a.id || 0) - (b.id || 0));
+
+    const computeAllNodes = Array.from(dedupMap.values()).filter(
+      (n) => n.stage === "compute" || n.stage === "train",
     );
-    const focusTitle = selectedWorkflow
-      ? `${selectedWorkflow.title || selectedWorkflow.topic || "workflow"} #${selectedWorkflow.root_event_id || "-"}`
-      : t("focusWorkflow");
-    const focusRootCause = shortText(
-      selectedWorkflow?.root_cause?.message
-      || selectedWorkflow?.root_cause?.error
-      || failureList[0]?.error_detail
-      || "-",
-      220,
-    );
+
+    // Build compute→compute chains
+    const emitToJob = new Map<string, string>();
+    for (const n of computeAllNodes) {
+      if (n.emits) emitToJob.set(String(n.emits), String(n.job_name || ""));
+    }
+    const hasComputePred = new Set<string>();
+    for (const n of computeAllNodes) {
+      if (n.source && emitToJob.has(String(n.source))) {
+        hasComputePred.add(String(n.job_name || ""));
+      }
+    }
+    const jobToNext = new Map<string, string>();
+    for (const n of computeAllNodes) {
+      if (n.source && emitToJob.has(String(n.source))) {
+        const prev = emitToJob.get(String(n.source))!;
+        jobToNext.set(prev, String(n.job_name || ""));
+      }
+    }
+    const nodeByJob = new Map(computeAllNodes.map((n) => [String(n.job_name || ""), n]));
+    const visited = new Set<string>();
+    const chains: DagNode[][] = [];
+    const roots = computeAllNodes.filter((n) => !hasComputePred.has(String(n.job_name || "")));
+    for (const root of roots) {
+      const chain: DagNode[] = [];
+      let cur: string | undefined = String(root.job_name || "");
+      while (cur && !visited.has(cur) && nodeByJob.has(cur)) {
+        chain.push(nodeByJob.get(cur)!);
+        visited.add(cur);
+        cur = jobToNext.get(cur);
+      }
+      if (chain.length) chains.push(chain);
+    }
+
+    function fmtElapsed(ms?: number | null): string {
+      if (!ms) return "";
+      return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+    }
+
+    const hoveredNode = pipelineHover ? (dedupMap.get(pipelineHover) ?? null) : null;
+    const hoveredDagId = hoveredNode ? Number(hoveredNode.dag_id ?? hoveredNode.id ?? 0) || null : null;
+
+    function renderPanel(node: DagNode) {
+      const lr = node.last_run;
+      const dagId = Number(node.dag_id ?? node.id ?? 0) || null;
+      return (
+        <div className="pipeline-panel">
+          <div className="pipeline-panel-header">
+            <span className={`node-dot ${statusClass(node.status)}`} />
+            <span className="pipeline-panel-title">{node.job_name}</span>
+            <span className={`pill ${statusClass(node.status)}`}>{node.status}</span>
+          </div>
+          <div className="pipeline-panel-body">
+            {lr && (
+              <>
+                <div className="panel-kv">
+                  <span className="panel-label">运行时间</span>
+                  <span>{lr.started_at ? String(lr.started_at).slice(11, 19) : "—"}</span>
+                </div>
+                <div className="panel-kv">
+                  <span className="panel-label">耗时</span>
+                  <span>{fmtElapsed(lr.elapsed_ms) || "—"}</span>
+                </div>
+                {lr.result_summary && (
+                  <div className="panel-summary">{lr.result_summary}</div>
+                )}
+              </>
+            )}
+            {node.error_detail && (
+              <div className="panel-error">{node.error_detail}</div>
+            )}
+            {(node.sync_source || node.sync_dataset) && (
+              <div className="panel-kv">
+                <span className="panel-label">数据源</span>
+                <span className="muted-line">{[node.sync_source, node.sync_dataset].filter(Boolean).join(" / ")}</span>
+              </div>
+            )}
+            <div className="panel-kv">
+              <span className="panel-label">触发</span>
+              <span className="muted-line">{node.source || "—"}</span>
+            </div>
+          </div>
+          {dagId ? (
+            <div className="pipeline-panel-actions">
+              <button
+                type="button"
+                className="dag-node-quick-action"
+                onClick={() => void runDagNode(dagId, "self")}
+              >
+                ▶ 执行
+              </button>
+              <button
+                type="button"
+                className="btn-config"
+                onClick={() => {
+                  setConfigPanelDagId(dagId);
+                  setConfigPanelValue("{}");
+                }}
+              >
+                ⚙ 配置
+              </button>
+              <button
+                type="button"
+                className="btn-backfill"
+                onClick={() => {
+                  setBackfillDagId(dagId);
+                  setBackfillFrom("");
+                  setBackfillTo("");
+                }}
+              >
+                📅 回补
+              </button>
+            </div>
+          ) : null}
+          {configPanelDagId !== null && configPanelDagId === dagId && (
+            <div className="config-panel" style={{ margin: "8px 0 0" }}>
+              <textarea
+                value={configPanelValue}
+                onChange={(e) => setConfigPanelValue(e.target.value)}
+                rows={5}
+                className="config-textarea"
+              />
+              <div className="config-actions">
+                <button type="button" onClick={() => void saveConfig(configPanelDagId)}>{t("saveConfig")}</button>
+                <button type="button" onClick={() => setConfigPanelDagId(null)}>{t("cancel")}</button>
+              </div>
+            </div>
+          )}
+          {backfillDagId !== null && backfillDagId === dagId && (
+            <div className="backfill-panel" style={{ margin: "8px 0 0" }}>
+              <label>开始日期<input type="date" value={backfillFrom} onChange={(e) => setBackfillFrom(e.target.value)} /></label>
+              <label>结束日期<input type="date" value={backfillTo} onChange={(e) => setBackfillTo(e.target.value)} /></label>
+              <div className="config-actions">
+                <button type="button" onClick={() => void runBackfill(backfillDagId)}>{t("confirmBackfill")}</button>
+                <button type="button" onClick={() => setBackfillDagId(null)}>{t("cancel")}</button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     return (
-      <div className="page">
-        <section className="panel wide">
-          <div className="panel-title">{t("finalResults")}</div>
-          <div className="cards">
-            <div className="stat-card">
-              <div className="stat-label">{t("liveWorkflows")}</div>
-              <div className="stat-value">{(eventsPage.workflows || []).filter((row: any) => row.status === "running").length}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">{t("failedCount")}</div>
-              <div className="stat-value">{(eventsPage.failed_nodes || []).length}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">{t("agendaCount")}</div>
-              <div className="stat-value">{(eventsPage.due_agenda || []).length}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">{t("eventCount")}</div>
-              <div className="stat-value">{(eventsPage.today_events || []).length}</div>
-            </div>
-          </div>
-          <div className="muted-line">{t("restoreState")} · {t("dragHint")}</div>
-          <div className="split-grid">
-            <div className="table-wrap workflow-history-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Type</th>
-                    <th>{t("status")}</th>
-                    <th>Magnitude</th>
-                    <th>Summary</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(eventsPage.recent_market_events || []).slice(0, 12).map((row: any) => (
-                    <tr key={`recent-market-${row.event_id || row.id}`}>
-                      <td>{row.event_date || formatDateTime(row.created_at)}</td>
-                      <td>{row.event_type || row.title || "-"}</td>
-                      <td><span className={`pill ${statusClass(row.status || "ok")}`}>{row.status || "ok"}</span></td>
-                      <td>{row.magnitude ?? "-"}</td>
-                      <td>{shortText(row.summary || row.title, 88)}</td>
-                    </tr>
-                  ))}
-                  {!eventsPage.recent_market_events?.length && (
-                    <tr><td colSpan={5} className="empty">{t("noData")}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <div className="list-stack">
-              <div className="list-card">
-                <div className="stat-label">{t("focusWorkflow")}</div>
-                <div className="panel-title">{focusTitle}</div>
-                <div className="badge-line">
-                  <span className={`pill ${statusClass(selectedWorkflow?.status)}`}>{selectedWorkflow?.status || "-"}</span>
-                  <span className="muted-line">
-                    {selectedWorkflow?.progress?.completed ?? 0}/{selectedWorkflow?.progress?.total ?? 0}
-                  </span>
-                </div>
-                <div className="muted-line">
-                  {formatDateTime(selectedWorkflow?.created_at)} → {formatDateTime(selectedWorkflow?.processed_at)}
-                </div>
-              </div>
-              <div className="list-card">
-                <div className="stat-label">{t("rootCauses")}</div>
-                <div className={`muted-line ${focusRootCause !== "-" ? "error-text" : ""}`}>{focusRootCause}</div>
-              </div>
-              <div className="list-card">
-                <div className="stat-label">{t("focusHint")}</div>
-                <div className="muted-line">{t("dragHint")}</div>
-              </div>
-            </div>
-          </div>
-        </section>
+      <div className="pipeline-v2">
+        <div className="pipeline-v2-topbar">
+          <span className={`pill ${streamState.status === "connected" ? "ok" : streamState.status === "connecting" ? "running" : "error"}`}>
+            {streamState.status === "connected" ? "● 已连接" : streamState.status === "connecting" ? "○ 连接中" : "✕ 断开"}
+          </span>
+          {streamState.lastUpdate && (
+            <span className="muted-line">{formatDateTime(streamState.lastUpdate)}</span>
+          )}
+        </div>
 
-        <section className="panel wide">
-          <div className="panel-title">{t("globalDag")}</div>
-          <div className="muted-line">{focusTitle}</div>
-          {renderDagGraph(globalGraph, {
-            graphKey: globalGraphKey,
-            selectedKey: selectedDagKey,
-            onSelect: setSelectedDagKey,
-            onHoverStart: openDagFlyout,
-            onHoverEnd: scheduleDagFlyoutClose,
-            onPin: togglePinnedFlyout,
-            onNodeMove: (nodeKey, x, y) => updateGraphNodePosition(globalGraphKey, nodeKey, x, y),
-            focusDagIds,
-            onExecute: (node) => {
-              if (!node.dagId) return;
-              if (selectedWorkflow?.root_event_id && workflowNodeIds.has(node.dagId)) {
-                void rerunNode(selectedWorkflow.root_event_id, node.dagId, "self");
-                return;
-              }
-              void runDagNode(node.dagId, "self");
-            },
-            flyout: renderNodeFlyout(
-              globalGraph,
-              selectedGlobalGraphNode,
-              (eventsPage.dag?.nodes || []) as DagNode[],
-              { rootEventId: selectedWorkflow?.root_event_id, readOnly: false, workflowNodeIds },
-            ),
-          })}
-        </section>
-
-        <section className="panel-grid history-grid">
-          <div className="panel">
-            <div className="panel-title">{t("workflowHistory")}</div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Topic</th>
-                    <th>{t("status")}</th>
-                    <th>{t("progress")}</th>
-                    <th>Created</th>
-                    <th>Finished</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(eventsPage.workflows || []).map((row: any) => (
-                    <tr
-                      key={row.root_event_id}
-                      className={`clickable-row ${selectedWorkflow?.root_event_id === row.root_event_id ? "active-row" : ""}`}
-                      onClick={() => void loadWorkflowDetail(row.root_event_id)}
-                    >
-                      <td>{row.root_event_id}</td>
-                      <td>{row.title || row.topic}</td>
-                      <td><span className={`pill ${statusClass(row.status)}`}>{row.status}</span></td>
-                      <td>{row.progress?.completed ?? 0}/{row.progress?.total ?? 0}</td>
-                      <td>{formatDateTime(row.created_at)}</td>
-                      <td>{formatDateTime(row.processed_at)}</td>
-                    </tr>
-                  ))}
-                  {!eventsPage.workflows?.length && (
-                    <tr><td colSpan={6} className="empty">{t("noData")}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div className="panel">
-            <div className="panel-title">{t("failedNodes")}</div>
-            <div className="list-stack">
-              {failureList.length ? failureList.map((row: any) => (
-                <div key={`failed-${row.id || row.dag_id || row.job_name}`} className="list-card">
-                  <div className="node-header">
-                    <div>
-                      <div className="panel-title">{row.job_name}</div>
-                      <div className="muted-line">{row.source || row.stage || "-"}</div>
-                    </div>
-                    <span className={`pill ${statusClass(row.status || "error")}`}>{row.status || "error"}</span>
+        <div className="pipeline-v2-body">
+          {/* ── Fetch column ── */}
+          <div className="pipeline-fetch-col">
+            <div className="pipeline-col-title">获取层</div>
+            <div className="fetch-list">
+              {fetchNodes.map((node) => (
+                <div
+                  key={node.job_name}
+                  className={`fetch-item ${statusClass(node.status)}${pipelineHover === node.job_name ? " hovered" : ""}`}
+                  onMouseEnter={(e) => {
+                    if (pipelineHoverTimerRef.current) clearTimeout(pipelineHoverTimerRef.current);
+                    setPipelineHover(String(node.job_name || ""));
+                    setPipelineHoverPos({ x: e.clientX, y: e.clientY });
+                  }}
+                  onMouseLeave={() => {
+                    pipelineHoverTimerRef.current = window.setTimeout(() => setPipelineHover(null), 180);
+                  }}
+                >
+                  <div className="fetch-item-row">
+                    <span className={`node-dot ${statusClass(node.status)}`} />
+                    <span className="fetch-item-name">{node.job_name}</span>
+                    <span className="fetch-item-elapsed">{fmtElapsed(node.last_run?.elapsed_ms)}</span>
                   </div>
-                  <div className="error-text">{shortText(row.error_detail, 200)}</div>
-                </div>
-              )) : <div className="empty">{t("noData")}</div>}
-            </div>
-          </div>
-        </section>
-
-        <section className="panel-grid">
-          <div className="panel">
-            <div className="panel-title">{t("dailyEvents")}</div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Topic</th>
-                    <th>{t("status")}</th>
-                    <th>{t("error")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(eventsPage.recent_market_events || []).slice(0, 16).map((row: any) => (
-                    <tr key={`recent-market-${row.event_id || row.id}`}>
-                      <td>{row.event_date || formatDateTime(row.created_at)}</td>
-                      <td>{shortText(row.summary || row.event_type || row.title, 72)}</td>
-                      <td><span className={`pill ${statusClass(row.status || "ok")}`}>{row.status || "ok"}</span></td>
-                      <td>{shortText(row.error || "-", 90)}</td>
-                    </tr>
-                  ))}
-                  {!eventsPage.recent_market_events?.length && (
-                    <tr><td colSpan={4} className="empty">{t("noData")}</td></tr>
+                  {node.last_run?.result_summary && (
+                    <div className="fetch-item-summary">{shortText(node.last_run.result_summary, 58)}</div>
                   )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div className="panel">
-            <div className="panel-title">{t("todayEvents")}</div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Type</th>
-                    <th>Magnitude</th>
-                    <th>Summary</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(eventsPage.today_events || []).map((row: any) => (
-                    <tr key={row.event_id}>
-                      <td>{row.event_date}</td>
-                      <td>{row.event_type}</td>
-                      <td>{row.magnitude}</td>
-                      <td>{shortText(row.summary, 90)}</td>
-                    </tr>
-                  ))}
-                  {!eventsPage.today_events?.length && (
-                    <tr><td colSpan={4} className="empty">{t("noData")}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <div className="panel-title" style={{ marginTop: "14px" }}>{t("agenda")}</div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Run At</th>
-                    <th>Phase</th>
-                    <th>{t("status")}</th>
-                    <th>Title</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(eventsPage.due_agenda || []).map((row: any) => (
-                    <tr key={row.agenda_id}>
-                      <td>{formatDateTime(row.run_at)}</td>
-                      <td>{row.phase}</td>
-                      <td><span className={`pill ${statusClass(row.status)}`}>{row.status}</span></td>
-                      <td>{shortText(row.title, 90)}</td>
-                    </tr>
-                  ))}
-                  {!eventsPage.due_agenda?.length && (
-                    <tr><td colSpan={4} className="empty">{t("noData")}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <div className="panel-title" style={{ marginTop: "14px" }}>{t("plannedEvents")}</div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Type</th>
-                    <th>Importance</th>
-                    <th>Title</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(eventsPage.planned_events || []).slice(0, 12).map((row: any) => (
-                    <tr key={`planned-${row.planned_event_id}`}>
-                      <td>{formatDateTime(row.scheduled_at)}</td>
-                      <td>{row.event_type}</td>
-                      <td><span className={`pill ${statusClass(row.importance === "high" ? "running" : "partial")}`}>{row.importance}</span></td>
-                      <td>{shortText(row.title, 88)}</td>
-                    </tr>
-                  ))}
-                  {!eventsPage.planned_events?.length && (
-                    <tr><td colSpan={4} className="empty">{t("noData")}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-      </div>
-    );
-  }
-
-  function renderKG() {
-    if (loading.kg && !kgPage) return <div className="empty">{t("loading")}</div>;
-    if (!kgPage) return <div className="empty">{t("noData")}</div>;
-    return (
-      <div className="page">
-        <section className="panel wide">
-          <div className="panel-title">{t("activeGraph")}</div>
-          <div className="cards">
-            <div className="stat-card">
-              <div className="stat-label">{t("snapshot")}</div>
-              <div className="stat-value">{kgPage.snapshot?.version || "-"}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Nodes</div>
-              <div className="stat-value">{kgPage.snapshot?.node_count ?? 0}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Edges</div>
-              <div className="stat-value">{kgPage.snapshot?.edge_count ?? 0}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Event Map</div>
-              <div className="stat-value">{kgPage.snapshot?.event_map_count ?? 0}</div>
-            </div>
-          </div>
-          <div className="muted-line">{t("generatedAt")}: {formatDateTime(kgPage.snapshot?.generated_at)}</div>
-        </section>
-
-        <section className="panel-grid">
-          <div className="panel">
-            <div className="panel-title">{t("relationTypes")}</div>
-            <div className="list-stack">
-              {(kgPage.relation_types || []).map((row: any) => (
-                <div key={row.rel_type} className="list-card">
-                  <div className="stat-label">{row.rel_type}</div>
-                  <div className="stat-value">{row.relation_count}</div>
                 </div>
               ))}
-              {!kgPage.relation_types?.length && <div className="empty">{t("noData")}</div>}
             </div>
           </div>
-          <div className="panel">
-            <div className="panel-title">{t("topPropagation")}</div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Count</th>
-                    <th>Avg KG</th>
-                    <th>Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(kgPage.top_symbols || []).map((row: any) => (
-                    <tr key={row.symbol}>
-                      <td>{row.symbol}</td>
-                      <td>{row.propagation_count}</td>
-                      <td>{row.avg_kg_score}</td>
-                      <td>{row.latest_event_date}</td>
-                    </tr>
+
+          {/* ── Compute column ── */}
+          <div className="pipeline-compute-col">
+            <div className="pipeline-col-title">计算链路</div>
+            <div className="compute-chains">
+              {chains.map((chain, ci) => (
+                <div key={ci} className="compute-chain">
+                  {chain.map((node, ni) => (
+                    <div key={node.job_name} className="compute-chain-item">
+                      {ni > 0 && <span className="chain-arrow">→</span>}
+                      <div
+                        className={`compute-node-box ${statusClass(node.status)}${pipelineHover === node.job_name ? " hovered" : ""}`}
+                        onMouseEnter={(e) => {
+                          if (pipelineHoverTimerRef.current) clearTimeout(pipelineHoverTimerRef.current);
+                          setPipelineHover(String(node.job_name || ""));
+                          setPipelineHoverPos({ x: e.clientX, y: e.clientY });
+                        }}
+                        onMouseLeave={() => {
+                          pipelineHoverTimerRef.current = window.setTimeout(() => setPipelineHover(null), 180);
+                        }}
+                      >
+                        <div className="compute-node-top">
+                          <span className={`node-dot ${statusClass(node.status)}`} />
+                          <span className="compute-node-name">{node.job_name}</span>
+                          {node.stage === "train" && (
+                            <span className="compute-node-badge train">train</span>
+                          )}
+                        </div>
+                        {node.last_run?.elapsed_ms != null && (
+                          <div className="compute-node-elapsed">{fmtElapsed(node.last_run.elapsed_ms)}</div>
+                        )}
+                      </div>
+                    </div>
                   ))}
-                  {!kgPage.top_symbols?.length && (
-                    <tr><td colSpan={4} className="empty">{t("noData")}</td></tr>
-                  )}
-                </tbody>
-              </table>
+                </div>
+              ))}
             </div>
           </div>
-        </section>
 
-        <section className="panel wide">
-          <div className="panel-title">{t("activeRelations")}</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>From</th>
-                  <th>To</th>
-                  <th>Type</th>
-                  <th>Weight</th>
-                  <th>Confidence</th>
-                  <th>Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(kgPage.active_relations || []).map((row: any) => (
-                  <tr key={`rel-${row.id}`}>
-                    <td>{row.from_entity}</td>
-                    <td>{row.to_entity}</td>
-                    <td>{row.rel_type}</td>
-                    <td>{row.weight}</td>
-                    <td>{row.confidence}</td>
-                    <td>{row.source || "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {/* ── Hover panel (tooltip near cursor) ── */}
+          <div
+            className={`pipeline-panel-col${hoveredNode ? " visible" : ""}`}
+            style={{
+              left: Math.min(pipelineHoverPos.x + 16, window.innerWidth - 320),
+              top: Math.min(pipelineHoverPos.y + 8, window.innerHeight - 400),
+            }}
+            onMouseEnter={() => { if (pipelineHoverTimerRef.current) clearTimeout(pipelineHoverTimerRef.current); }}
+            onMouseLeave={() => { setPipelineHover(null); }}
+          >
+            {hoveredNode ? renderPanel(hoveredNode) : null}
           </div>
-        </section>
-
-        <section className="panel wide">
-          <div className="panel-title">{t("candidates")}</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>From</th>
-                  <th>To</th>
-                  <th>Type</th>
-                  <th>Weight</th>
-                  <th>Confidence</th>
-                  <th>Samples</th>
-                  <th>Source</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(kgPage.candidates || []).map((row: any) => (
-                  <tr key={`cand-${row.id}`}>
-                    <td>{row.from_entity}</td>
-                    <td>{row.to_entity}</td>
-                    <td>{row.rel_type}</td>
-                    <td>{row.weight}</td>
-                    <td>{row.confidence}</td>
-                    <td>{row.sample_count}</td>
-                    <td>{row.source || "-"}</td>
-                  </tr>
-                ))}
-                {!kgPage.candidates?.length && (
-                  <tr><td colSpan={7} className="empty">{t("noData")}</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        </div>
       </div>
     );
   }
@@ -1683,9 +2054,9 @@ function App() {
         ))}
       </nav>
 
-      {page === "report" && renderReport()}
-      {page === "events" && renderEvents()}
-      {page === "kg" && renderKG()}
+      {page === "today" && renderToday()}
+      {page === "picks" && renderPicks()}
+      {page === "pipeline" && renderPipeline()}
 
       {toast && <div className="toast">{toast}</div>}
     </div>

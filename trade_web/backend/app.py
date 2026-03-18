@@ -1,24 +1,29 @@
 """FastAPI application — TradeDB Web API + UI host.
 
 Routes:
-  GET  /                     → web app shell (React dist or legacy console)
-  GET  /api/dag              → pipeline_dag table (stage-grouped)
-  GET  /api/dag/runtime      → DAG runtime state + latest runs/errors
-  POST /api/dag/{id}/enable  → enable a DAG node
-  POST /api/dag/{id}/disable → disable a DAG node
-  POST /api/trigger          → publish event to bus
-  POST /api/run              → run a high-level workflow target
-  GET  /api/events           → event_log recent N entries
-  GET  /api/workflows        → recent workflow traces
-  GET  /api/workflows/{id}   → workflow detail
-  GET  /api/runs             → job_runs recent N entries
-  GET  /api/models           → model_registry list
-  GET  /api/status           → service health + quality gate + agenda + backups
-  GET  /api/calendar         → trading calendar + planned events
-  GET  /api/agenda           → recent agenda queue
-  GET  /api/data-health      → data freshness / coverage snapshot
-  GET  /api/backups          → backup snapshots
-  POST /predict              → online inference endpoint
+  GET  /                         → web app shell (React dist or legacy console)
+  GET  /api/dag                  → pipeline_dag table (stage-grouped)
+  GET  /api/dag/runtime          → DAG runtime state + latest runs/errors
+  POST /api/dag/{id}/enable      → enable a DAG node
+  POST /api/dag/{id}/disable     → disable a DAG node
+  PATCH /api/dag/{id}/config     → update config_json for a DAG node
+  POST /api/dag/{id}/run         → run a DAG node (supports date_from/date_to)
+  POST /api/trigger              → publish event to bus
+  POST /api/run                  → run a high-level workflow target
+  GET  /api/events               → event_log recent N entries
+  GET  /api/workflows            → recent workflow traces
+  GET  /api/workflows/{id}       → workflow detail
+  GET  /api/runs                 → job_runs recent N entries
+  GET  /api/models               → model_registry list
+  GET  /api/status               → service health + quality gate + agenda + backups
+  GET  /api/calendar             → trading calendar + planned events
+  GET  /api/agenda               → recent agenda queue
+  GET  /api/data-health          → data freshness / coverage snapshot
+  GET  /api/backups              → backup snapshots
+  GET  /api/today-page           → market snapshot + pipeline health + top 5 picks
+  GET  /api/signals-page         → top 50 picks with delta + reasons skeleton
+  GET  /api/kline/{symbol}       → OHLCV + indicators + event markers + recommendation
+  POST /predict                  → online inference endpoint
 """
 from __future__ import annotations
 
@@ -31,6 +36,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import Lock
+from threading import Thread
 from typing import Any
 
 try:  # pragma: no cover - optional at import time
@@ -211,6 +217,13 @@ def create_app():
             producer="trade_web",
         )
         return _cache_set(name, signature=signature, payload=payload)
+
+    async def _stream_wait(poll_seconds: float) -> bool:
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=max(0.25, float(poll_seconds)))
+            return True
+        except asyncio.TimeoutError:
+            return shutdown_event.is_set()
 
     def _light_health_snapshot(db, gate: dict[str, Any]) -> dict[str, Any]:
         metrics = gate.get("metrics_json") or {}
@@ -779,6 +792,76 @@ def create_app():
             "relation_types": rel_type_summary,
         }
 
+    def _today_page_payload() -> dict[str, Any]:
+        db = _db()
+        gate = db.quality_gate_get() or {}
+        runtime = db.pipeline_dag_runtime(recent_limit=200)
+
+        # Pipeline health summary
+        nodes = runtime.get("nodes", [])
+        ok_count = sum(1 for n in nodes if str(n.get("status") or "") == "ok")
+        error_count = sum(1 for n in nodes if str(n.get("status") or "") == "error")
+        running_count = sum(1 for n in nodes if str(n.get("status") or "") == "running")
+        total_count = len(nodes)
+
+        pipeline_health = {
+            "total": total_count,
+            "ok": ok_count,
+            "error": error_count,
+            "running": running_count,
+            "status": "ok" if error_count == 0 else ("partial" if ok_count > 0 else "error"),
+        }
+
+        # Top 5 picks with delta
+        picks_data = db.signal_recommend(limit=5)
+        top_picks = picks_data.get("picks", [])
+        dropped = picks_data.get("dropped", [])
+
+        # Recent job runs for pipeline context
+        recent_runs = db.job_runs_recent(limit=10)
+
+        # Kline sync state for market context
+        try:
+            kline_last = db.sync_state_get("tushare_kline", "daily", "")
+            kline_last_date = kline_last.isoformat() if kline_last is not None else ""
+        except Exception:
+            kline_last_date = ""
+
+        return {
+            "as_of": date.today().isoformat(),
+            "pipeline_health": pipeline_health,
+            "top_picks": top_picks,
+            "dropped_picks": dropped,
+            "kline_last_date": kline_last_date,
+            "gate_status": gate.get("status", "unknown"),
+            "gate_reason": gate.get("reason_summary", ""),
+            "recent_runs": recent_runs[:5],
+            "error_nodes": [n for n in nodes if str(n.get("status") or "") == "error"][:5],
+        }
+
+    def _signals_page_payload() -> dict[str, Any]:
+        db = _db()
+        recommend = db.signal_recommend(limit=50)
+        picks = recommend.get("picks", [])
+        dropped = recommend.get("dropped", [])
+
+        # Enrich each pick with instrument name
+        for pick in picks:
+            sym = str(pick.get("symbol") or "")
+            if sym:
+                try:
+                    instr = db.instrument_lookup(sym)
+                    pick["name"] = str(instr.get("name") or "") if instr else ""
+                except Exception:
+                    pick["name"] = ""
+
+        return {
+            "as_of": date.today().isoformat(),
+            "picks": picks,
+            "dropped": dropped,
+            "total": len(picks),
+        }
+
     # ── Static files ──────────────────────────────────────────────────────────
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -827,6 +910,21 @@ def create_app():
         _db().pipeline_dag_set_enabled(dag_id, False)
         return {"id": dag_id, "enabled": False}
 
+    @app.patch("/api/dag/{dag_id}/config")
+    async def update_dag_config(dag_id: int, req: dict = Body(...)):
+        """Update config_json for a pipeline_dag row."""
+        import json as _json
+        config_data = req.get("config") or {}
+        if not isinstance(config_data, dict):
+            raise HTTPException(status_code=400, detail="config must be a JSON object")
+        config_json = _json.dumps(config_data, ensure_ascii=False)
+        db = _db()
+        row = db.pipeline_dag_get(dag_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="dag row not found")
+        db.pipeline_dag_update_config(dag_id, config_json)
+        return {"id": dag_id, "config": config_data}
+
     @app.post("/api/dag/{dag_id}/run")
     async def run_dag_node(dag_id: int, req: dict = Body(...)):
         from trade_py.bus import bootstrap_from_dag, dispatch_dag_row, get_bus
@@ -837,6 +935,8 @@ def create_app():
         payload = req.get("payload") or {}
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="payload must be a JSON object")
+        date_from = str(req.get("date_from") or "").strip() or None
+        date_to = str(req.get("date_to") or "").strip() or None
         db = _db()
         dag_row = db.pipeline_dag_get(dag_id)
         if not dag_row:
@@ -851,6 +951,10 @@ def create_app():
             target_dag_id = _pick_root_replay_node(runtime_nodes, dag_id)
         target_row = db.pipeline_dag_get(target_dag_id) or dag_row
         payload = dict(payload)
+        if date_from:
+            payload["date_from"] = date_from
+        if date_to:
+            payload["date_to"] = date_to
         payload["_dispatch"] = {
             "dag_id": dag_id,
             "target_dag_id": target_dag_id,
@@ -895,7 +999,7 @@ def create_app():
         return {"event_id": event.id, "topic": topic}
 
     @app.post("/api/run")
-    async def run_target(background_tasks: FastAPIBackgroundTasks, req: dict = Body(...)):
+    async def run_target(req: dict = Body(...)):
         from trade_py.cli import run as run_cli
 
         target = str(req.get("target") or "").strip()
@@ -913,7 +1017,14 @@ def create_app():
             import json as _json
 
             argv += ["--payload", _json.dumps(payload, ensure_ascii=False)]
-        background_tasks.add_task(run_cli.main, argv)
+
+        def _run_workflow() -> None:
+            try:
+                run_cli.main(argv)
+            except Exception:
+                logger.exception("web-triggered workflow failed: %s", target)
+
+        Thread(target=_run_workflow, name=f"trade-web-run-{target}", daemon=True).start()
         return {"accepted": True, "target": target, "limit": limit}
 
     # ── API: event_log ────────────────────────────────────────────────────────
@@ -1129,7 +1240,10 @@ def create_app():
                 while True:
                     if shutdown_event.is_set():
                         break
-                    if await request.is_disconnected():
+                    try:
+                        if await request.is_disconnected():
+                            break
+                    except RuntimeError:
                         break
                     rows = _db().event_log_since(after_id=last_id, limit=limit)
                     if rows:
@@ -1138,8 +1252,11 @@ def create_app():
                             yield f"data: {json.dumps(row, ensure_ascii=False)}\n\n"
                     else:
                         yield ": ping\n\n"
-                    await asyncio.sleep(max(0.5, float(poll_seconds)))
+                    if await _stream_wait(poll_seconds):
+                        break
             except asyncio.CancelledError:
+                return
+            except RuntimeError:
                 return
 
         return StreamingResponse(
@@ -1162,7 +1279,10 @@ def create_app():
                 while True:
                     if shutdown_event.is_set():
                         break
-                    if await request.is_disconnected():
+                    try:
+                        if await request.is_disconnected():
+                            break
+                    except RuntimeError:
                         break
                     signature = _payload_signature(scope_name)
                     if signature != last_signature:
@@ -1175,8 +1295,11 @@ def create_app():
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     else:
                         yield ": ping\n\n"
-                    await asyncio.sleep(max(0.5, float(poll_seconds)))
+                    if await _stream_wait(poll_seconds):
+                        break
             except asyncio.CancelledError:
+                return
+            except RuntimeError:
                 return
 
         return StreamingResponse(
@@ -1232,5 +1355,245 @@ def create_app():
         """Hot-reload models from model_registry."""
         _inference.reload()
         return {"reloaded": True, "models": _inference.model_names}
+
+    # ── API: today-page ───────────────────────────────────────────────────────
+
+    @app.get("/api/today-page")
+    async def get_today_page():
+        sig = _payload_signature("today")
+        return _snapshot_get_or_build(
+            "today_page",
+            signature=sig,
+            ttl_seconds=120,
+            builder=_today_page_payload,
+        )
+
+    # ── API: signals-page ─────────────────────────────────────────────────────
+
+    @app.get("/api/signals-page")
+    async def get_signals_page():
+        sig = _payload_signature("signals")
+        return _snapshot_get_or_build(
+            "signals_page",
+            signature=sig,
+            ttl_seconds=300,
+            builder=_signals_page_payload,
+        )
+
+    # ── API: kline/{symbol} ───────────────────────────────────────────────────
+
+    @app.get("/api/kline/{symbol}")
+    async def get_kline(symbol: str, days: int = 60):
+        """Return OHLCV + indicators + event markers + recommendation context."""
+        import math
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+
+        db = _db()
+
+        # Get instrument name
+        try:
+            instr = db.instrument_lookup(symbol)
+            name = str(instr.get("name") or symbol) if instr else symbol
+        except Exception:
+            name = symbol
+
+        # Read kline data from parquet
+        ohlcv: list[dict] = []
+        try:
+            import pandas as pd
+            from pathlib import Path as _Path
+            kline_dir = _Path(data_root) / "market" / "kline"
+            # Convert symbol "600643.SH" → "600643_SH" for filename lookup
+            fname = symbol.replace(".", "_") + ".parquet"
+            sym_files = sorted(kline_dir.rglob(fname)) if kline_dir.exists() else []
+
+            if sym_files:
+                dfs = []
+                for f in sym_files[-4:]:  # last few month partition files
+                    try:
+                        df_part = pd.read_parquet(f)
+                        if "symbol" in df_part.columns:
+                            df_part = df_part[df_part["symbol"] == symbol]
+                        dfs.append(df_part)
+                    except Exception:
+                        pass
+                if dfs:
+                    df = pd.concat(dfs, ignore_index=True)
+                    date_col = "date" if "date" in df.columns else (
+                        "trade_date" if "trade_date" in df.columns else df.columns[0]
+                    )
+                    if date_col == "trade_date":
+                        df = df.rename(columns={"trade_date": "date"})
+                        date_col = "date"
+                    df = df.sort_values(date_col).tail(max(days, 60))
+                    for _, row_data in df.iterrows():
+                        try:
+                            ohlcv.append({
+                                "date": str(row_data.get("date") or ""),
+                                "open": float(row_data.get("open") or 0),
+                                "high": float(row_data.get("high") or 0),
+                                "low": float(row_data.get("low") or 0),
+                                "close": float(row_data.get("close") or 0),
+                                "volume": int(float(row_data.get("vol") or row_data.get("volume") or 0)),
+                            })
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # Compute technical indicators from ohlcv
+        indicators: dict[str, Any] = {}
+        if len(ohlcv) >= 14:
+            closes = [float(r["close"]) for r in ohlcv if float(r.get("close") or 0) > 0]
+            vols = [float(r["volume"]) for r in ohlcv if float(r.get("volume") or 0) > 0]
+            if len(closes) >= 14:
+                # RSI-14
+                gains, losses = [], []
+                for i in range(1, 15):
+                    delta = closes[-i] - closes[-i - 1] if i + 1 < len(closes) else 0
+                    (gains if delta > 0 else losses).append(abs(delta))
+                avg_gain = sum(gains) / 14 if gains else 0.001
+                avg_loss = sum(losses) / 14 if losses else 0.001
+                rs = avg_gain / avg_loss if avg_loss > 0 else 100
+                rsi = round(100 - 100 / (1 + rs), 1)
+                indicators["rsi_14"] = rsi
+            if len(vols) >= 20 and vols[-1] > 0:
+                vol_ma20 = sum(vols[-20:]) / 20
+                vol_ratio = round(vols[-1] / vol_ma20, 2) if vol_ma20 > 0 else 1.0
+                indicators["vol_ratio"] = vol_ratio
+            if len(closes) >= 52:
+                high_52w = max(closes[-252:] if len(closes) >= 252 else closes)
+                low_52w = min(closes[-252:] if len(closes) >= 252 else closes)
+                rng = high_52w - low_52w
+                dist = round((closes[-1] - low_52w) / rng, 3) if rng > 0 else 0.5
+                indicators["dist_52w_low"] = dist
+
+        # Get event markers for this symbol
+        event_markers: list[dict] = []
+        try:
+            with db._conn_lock:
+                ep_rows = db._conn.execute("""
+                    SELECT me.event_date, me.event_type, me.magnitude, ep.kg_score
+                    FROM event_propagations ep
+                    JOIN market_events me ON ep.event_id = me.event_id
+                    WHERE ep.symbol = ?
+                    ORDER BY me.event_date DESC
+                    LIMIT 20
+                """, (symbol,)).fetchall()
+            for row in ep_rows:
+                try:
+                    event_markers.append({
+                        "date": str(row[0] or ""),
+                        "event_type": str(row[1] or ""),
+                        "magnitude": float(row[2] or 0),
+                        "kg_score": float(row[3] or 0),
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Get latest signal
+        latest_signal: dict = {}
+        try:
+            with db._conn_lock:
+                sig_row = db._conn.execute("""
+                    WITH latest AS (SELECT symbol, MAX(date) AS max_date FROM signals WHERE symbol=? GROUP BY symbol)
+                    SELECT sc.*
+                    FROM signals sc JOIN latest ON sc.symbol=latest.symbol AND sc.date=latest.max_date
+                    LIMIT 1
+                """, (symbol,)).fetchone()
+            if sig_row:
+                latest_signal = dict(sig_row)
+        except Exception:
+            pass
+
+        # Prediction from inference service
+        prediction: dict = {}
+        try:
+            pred = _inference.predict(symbol)
+            if pred:
+                prediction = pred
+        except Exception:
+            pass
+
+        # Recommendation context
+        recommendation: dict = {}
+        try:
+            hist_ret_5d: float | None = None
+            hist_count = 0
+            event_type_str = ""
+            if event_markers:
+                top_event = event_markers[0]
+                event_type_str = top_event.get("event_type", "")
+                with db._conn_lock:
+                    hist_row = db._conn.execute("""
+                        SELECT COUNT(*) AS cnt, AVG(ep.actual_return_5d) AS ret5d
+                        FROM event_propagations ep
+                        JOIN market_events me ON ep.event_id = me.event_id
+                        WHERE ep.symbol = ?
+                        AND me.event_type = ?
+                        AND ep.actual_return_5d IS NOT NULL
+                    """, (symbol, event_type_str)).fetchone()
+                if hist_row:
+                    hist_count = int(hist_row[0] or 0)
+                    hist_ret_5d = float(hist_row[1]) * 100 if hist_row[1] is not None else None
+
+            rsi = float(indicators.get("rsi_14") or 50)
+            vol_ratio = float(indicators.get("vol_ratio") or 1.0)
+            net_sent = float(latest_signal.get("net_sentiment") or 0)
+
+            reasons: list[str] = []
+            if hist_count > 3 and hist_ret_5d is not None and hist_ret_5d > 1.5:
+                reasons.append(f"{event_type_str} 事件历史{hist_count}次均5日收益 +{hist_ret_5d:.1f}%")
+            if rsi < 45:
+                reasons.append(f"RSI {rsi:.0f}，接近超卖低位")
+            elif rsi < 55:
+                reasons.append(f"RSI {rsi:.0f}，中性偏低")
+            if vol_ratio < 0.8:
+                reasons.append(f"近期缩量（量比 {vol_ratio:.2f}），低位蓄势")
+            if net_sent > 0.2:
+                reasons.append(f"情绪偏正（{net_sent:.2f}）")
+            elif net_sent < -0.3:
+                reasons.append(f"情绪偏负（{net_sent:.2f}）")
+
+            model_score = float(latest_signal.get("model_score") or 0)
+            window_score = float(latest_signal.get("window_score") or 0)
+            bullish_dims = sum([
+                model_score > 0.5, window_score > 70, rsi < 50,
+                vol_ratio < 1.0, net_sent > 0,
+            ])
+
+            recommendation = {
+                "conviction": "高" if bullish_dims >= 3 else ("中" if bullish_dims >= 2 else "低"),
+                "bullish_dims": bullish_dims,
+                "reasons": reasons[:4],
+                "hist_event_stats": {
+                    "event_type": event_type_str,
+                    "hist_count": hist_count,
+                    "hist_ret_5d_avg": round(hist_ret_5d, 1) if hist_ret_5d is not None else None,
+                },
+            }
+        except Exception:
+            pass
+
+        return {
+            "symbol": symbol,
+            "name": name,
+            "ohlcv": ohlcv,
+            "event_markers": event_markers,
+            "indicators": indicators,
+            "prediction": prediction,
+            "recommendation": recommendation,
+            "latest_signal": {
+                "model_score": latest_signal.get("model_score"),
+                "window_score": latest_signal.get("window_score"),
+                "event_kg_score": latest_signal.get("event_kg_score"),
+                "net_sentiment": latest_signal.get("net_sentiment"),
+                "status": latest_signal.get("status"),
+            },
+        }
 
     return app

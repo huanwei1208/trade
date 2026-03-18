@@ -384,7 +384,7 @@ def _calibration_bins(pred: pd.Series, actual: pd.Series, bins: int = 10) -> lis
     except Exception:
         return []
     result: list[dict[str, Any]] = []
-    for bucket, grp in frame.groupby("bucket"):
+    for bucket, grp in frame.groupby("bucket", observed=False):
         result.append({
             "pred_low": float(bucket.left),
             "pred_high": float(bucket.right),
@@ -762,9 +762,9 @@ def _load_feature_frame(data_root: str, eval_date: str,
     return df
 
 
-def _model_feature_matrix(df: pd.DataFrame, feature_cols: list[str]) -> np.ndarray:
+def _model_feature_matrix(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
     available = [col for col in feature_cols if col in df.columns]
-    return df[available].fillna(0.0).to_numpy(dtype=np.float32)
+    return df[available].fillna(0.0).astype(np.float32)
 
 
 def _model_version(row: dict[str, Any]) -> str:

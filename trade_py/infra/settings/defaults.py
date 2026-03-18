@@ -55,22 +55,5 @@ def _load_defaults_from_db() -> dict[str, Any]:
 @lru_cache(maxsize=1)
 def load_defaults(path: str | Path | None = None) -> dict[str, Any]:
     defaults = _load_defaults_from_db()
-    if not defaults:
-        target = Path(path) if path is not None else resolve_repo_path("config/defaults.json")
-        if not target.exists():
-            defaults = {}
-        else:
-            try:
-                payload = json.loads(target.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                payload = {}
-            if isinstance(payload, dict):
-                defaults = payload
-                try:
-                    data_root = os.environ.get("TRADE_DATA_ROOT", "").strip()
-                    resolved_root = Path(data_root).expanduser() if data_root else default_data_root()
-                    TradeDB(resolved_root).set("config.defaults", defaults, value_type="json", category="config", label="历史默认配置")
-                except Exception:
-                    pass
     override = _load_yaml_override()
     return _deep_merge(defaults, override)

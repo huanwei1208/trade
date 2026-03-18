@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "dagre": "^0.8.5",
+    "elkjs": "^0.11.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

@@ -161,6 +161,7 @@ def _train_lgbm(
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=42,
+                verbose=-1,
             )
             model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(20, verbose=False)])
             pred = model.predict(X_val)
@@ -178,6 +179,7 @@ def _train_lgbm(
                 colsample_bytree=0.8,
                 class_weight="balanced",
                 random_state=42,
+                verbose=-1,
             )
             model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(20, verbose=False)])
             if len(np.unique(y_val)) >= 2:
@@ -192,6 +194,7 @@ def _train_lgbm(
             subsample=0.8,
             colsample_bytree=0.8,
             random_state=42,
+            verbose=-1,
         )
     else:
         final = lgb.LGBMClassifier(
@@ -203,6 +206,7 @@ def _train_lgbm(
             colsample_bytree=0.8,
             class_weight="balanced",
             random_state=42,
+            verbose=-1,
         )
     final.fit(X_all, y_all)
     metrics = {

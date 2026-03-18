@@ -50,3 +50,5 @@ _bmad/
 Testing/
 
 .venv
+node_modules/
+data/

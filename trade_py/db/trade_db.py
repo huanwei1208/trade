@@ -1144,6 +1144,145 @@ class TradeDB:
                               sector_limit: int = 3) -> list[dict]:
         return self.signal_suggest(limit, by, sector_limit)
 
+    def pipeline_dag_get_by_job(self, job_name: str) -> dict[str, Any] | None:
+        """Return the first pipeline_dag row for a given job_name."""
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT * FROM pipeline_dag WHERE job_name=? LIMIT 1",
+                (job_name,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def pipeline_dag_update_config(self, dag_id: int, config_json: str) -> None:
+        """Update config_json for a pipeline_dag row."""
+        with self._conn_lock:
+            self._conn.execute(
+                "UPDATE pipeline_dag SET config_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (config_json, dag_id),
+            )
+            self._conn.commit()
+
+    def signal_recommend(self, limit: int = 20) -> dict:
+        """Three-stage recommendation pipeline: recall → coarse rank → fine rank + delta."""
+        from datetime import date, timedelta
+
+        today = date.today().isoformat()
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+        # --- Recall ---
+        def _recall_by_col(col: str, top_n: int, threshold: float | None = None) -> list[dict]:
+            where = f"sc.{col} IS NOT NULL"
+            if threshold is not None:
+                where += f" AND sc.{col} >= {threshold}"
+            try:
+                rows = self._conn.execute(f"""
+                    WITH latest AS (
+                        SELECT symbol, MAX(date) AS max_date
+                        FROM signals WHERE {col} IS NOT NULL GROUP BY symbol
+                    )
+                    SELECT sc.date, sc.symbol, sc.model_score, sc.model_risk,
+                           sc.window_score, sc.event_kg_score, sc.event_type,
+                           sc.net_sentiment, sc.event_affected,
+                           COALESCE(i.industry, 255) AS industry
+                    FROM signals sc
+                    JOIN latest ON sc.symbol = latest.symbol AND sc.date = latest.max_date
+                    LEFT JOIN instruments i ON sc.symbol = i.symbol
+                    WHERE {where}
+                    ORDER BY sc.{col} DESC LIMIT ?
+                """, (top_n,)).fetchall()
+                return [dict(r) for r in rows]
+            except Exception:
+                return []
+
+        model_pool = _recall_by_col("model_score", 200, 0.5)
+        event_pool = _recall_by_col("event_kg_score", 300, 60.0)  # event_affected filtered below
+        tech_pool = _recall_by_col("window_score", 200, 70.0)
+
+        # watchlist
+        try:
+            watch_syms = [
+                r["symbol"] for r in self._conn.execute(
+                    "SELECT symbol FROM watchlist WHERE active=1"
+                ).fetchall()
+            ]
+        except Exception:
+            watch_syms = []
+
+        # Merge pools, deduplicate by symbol (first occurrence wins)
+        all_syms: dict[str, dict] = {}
+        for pool in [model_pool, event_pool, tech_pool]:
+            for r in pool:
+                all_syms.setdefault(str(r.get("symbol") or ""), r)
+        # Add watchlist symbols with fallback data
+        for sym in watch_syms:
+            if sym not in all_syms:
+                try:
+                    row = self._conn.execute("""
+                        WITH latest AS (
+                            SELECT symbol, MAX(date) AS max_date FROM signals GROUP BY symbol
+                        )
+                        SELECT sc.*, COALESCE(i.industry, 255) AS industry
+                        FROM signals sc
+                        JOIN latest ON sc.symbol = latest.symbol AND sc.date = latest.max_date
+                        LEFT JOIN instruments i ON sc.symbol = i.symbol
+                        WHERE sc.symbol = ? LIMIT 1
+                    """, (sym,)).fetchone()
+                    if row:
+                        all_syms[sym] = dict(row)
+                except Exception:
+                    pass
+
+        # --- Coarse rank (top 50): weighted score, filter strong neg sentiment ---
+        def _coarse_score(r: dict) -> float:
+            return (
+                0.4 * float(r.get("model_score") or 0.0)
+                + 0.3 * float(r.get("window_score") or 0.0) / 100.0
+                + 0.3 * float(r.get("event_kg_score") or 0.0) / 100.0
+            )
+
+        coarse = [r for r in all_syms.values() if float(r.get("net_sentiment") or 0.0) >= -0.5]
+        coarse.sort(key=_coarse_score, reverse=True)
+        coarse = coarse[:50]
+
+        # --- Delta: yesterday's top-50 symbols ---
+        try:
+            yest_syms = {
+                str(row["symbol"]) for row in self._conn.execute(
+                    "SELECT symbol FROM signals WHERE date=? "
+                    "ORDER BY COALESCE(model_score, 0) DESC LIMIT 50",
+                    (yesterday,)
+                ).fetchall()
+            }
+        except Exception:
+            yest_syms = set()
+
+        # --- Fine rank (top limit): risk penalty + sector diversity + delta bonus ---
+        fine: list[dict] = []
+        sector_count: dict[int, int] = {}
+        for r in coarse:
+            sector = int(r.get("industry") or 255)
+            if sector_count.get(sector, 0) >= 3:
+                continue
+            risk = float(r.get("model_risk") or 0.1)
+            base = _coarse_score(r)
+            adj_score = base * (1.0 - risk * 0.5)
+            sym = str(r.get("symbol") or "")
+            status = "new" if sym not in yest_syms else "continued"
+            if status == "new":
+                adj_score += 0.05
+            fine.append({**r, "adj_score": round(adj_score, 4), "status": status})
+            sector_count[sector] = sector_count.get(sector, 0) + 1
+            if len(fine) >= limit:
+                break
+
+        fine.sort(key=lambda x: float(x.get("adj_score") or 0.0), reverse=True)
+
+        # Dropped: yesterday's symbols not in today's fine list
+        fine_syms = {str(r.get("symbol") or "") for r in fine}
+        dropped = [{"symbol": s} for s in yest_syms if s not in fine_syms][:5]
+
+        return {"picks": fine, "dropped": dropped, "as_of": today}
+
     # ── Job run history ────────────────────────────────────────────────────────
 
     def job_run_start(self, job_name: str, stage: str | None = None,
@@ -1531,6 +1670,20 @@ class TradeDB:
             (source, dataset, symbol, last_date_str, row_count, cursor_str),
         )
         self._conn.commit()
+
+    def sync_state_get_cursor(self, source: str, dataset: str,
+                              symbol: str = "") -> dict:
+        """Get the cursor JSON dict for (source, dataset, symbol). Returns {} if none."""
+        row = self._conn.execute(
+            "SELECT cursor FROM sync_state WHERE source=? AND dataset=? AND symbol=?",
+            (source, dataset, symbol),
+        ).fetchone()
+        if row is None or not row[0]:
+            return {}
+        try:
+            return json.loads(row[0])
+        except (ValueError, TypeError):
+            return {}
 
     # Backward compat: watermark methods
     def get_watermark(self, source: str, dataset: str, symbol: str) -> Optional[date]:
@@ -2467,7 +2620,7 @@ class TradeDB:
         return result
 
     def pipeline_dag_runtime(self, recent_limit: int = 200) -> dict[str, Any]:
-        nodes = self.pipeline_dag_all(enabled_only=False)
+        nodes = self.pipeline_dag_all(enabled_only=True)
         with self._conn_lock:
             run_rows = self._conn.execute(
                 """

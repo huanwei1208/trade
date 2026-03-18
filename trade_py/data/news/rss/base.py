@@ -13,6 +13,16 @@ from trade_py.data.source import RawRecord
 from trade_py.data.news.rss.archive import fetch_archive_records, probe_archive_feed
 from trade_py.utils.html import clean_html
 
+# Errors that indicate a network-level failure (DNS, no route, etc.).
+# Retrying won't help — fail fast instead of burning the retry budget.
+_NO_RETRY_ERRNOS = frozenset({
+    -3,    # EAI_AGAIN: DNS temp failure (most common in firewalled envs)
+    -2,    # EAI_NONAME: DNS name not found
+    11001, # WSAHOST_NOT_FOUND (Windows)
+    111,   # ECONNREFUSED
+    113,   # EHOSTUNREACH / no route to host
+})
+
 CST = timezone(timedelta(hours=8))
 logger = logging.getLogger(__name__)
 
@@ -46,6 +56,16 @@ def _fetch_feed(feed_url: str, source_name: str,
                 break
             except Exception as e:
                 fetch_status["error"] = str(e)
+                errno = getattr(e, "errno", None) or getattr(
+                    getattr(e, "reason", None), "errno", None
+                )
+                if errno in _NO_RETRY_ERRNOS:
+                    logger.warning(
+                        "RSS %s: network unreachable (errno %s) — skipping retries",
+                        source_name, errno,
+                    )
+                    fetch_status["duration_ms"] = int((_time.perf_counter() - t0) * 1000)
+                    return [], fetch_status
                 if attempt < retries:
                     wait_sec = min(5.0, 1.25 * (attempt + 1))
                     logger.warning(
