@@ -1485,9 +1485,14 @@ details[open] .today-runs-summary::before { content: "▼ "; }
   padding: 7px 14px;
   background: var(--surface2, #1e2230);
   border: 1px solid var(--line);
+  border-radius: 8px 8px 0 0;
+  font-size: 12px;
+}
+/* When trust-gate-bar is standalone (no components below), restore radius */
+.trust-gate-wrap .trust-gate-bar:only-child,
+.trust-gate-bar:not(.trust-gate-wrap *) {
   border-radius: 8px;
   margin: 8px 0;
-  font-size: 12px;
 }
 
 .trust-gate-title {
@@ -1574,6 +1579,74 @@ details[open] .today-runs-summary::before { content: "▼ "; }
 .action-sell  { background: rgba(255, 80,  80,  0.18); color: #ff5050; }
 .action-watch { background: rgba(255, 180, 50,  0.18); color: #ffb432; }
 .action-avoid { background: rgba(150, 150, 150, 0.18); color: var(--muted); }
+
+/* ── EBRT Trust Gate — T* scalar + 7-component bars (Phase B) ─────────── */
+.trust-gate-wrap {
+  margin: 8px 0;
+}
+
+.trust-scalar-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.trust-components-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 5px 14px 8px;
+  background: var(--surface2, #1e2230);
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+}
+
+.trust-component-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 120px;
+  flex: 1;
+}
+
+.trust-comp-label {
+  font-size: 10px;
+  color: var(--muted);
+  width: 28px;
+  flex-shrink: 0;
+}
+
+.trust-comp-bar-bg {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.trust-comp-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.trust-comp-ok   { background: #28c864; }
+.trust-comp-warn { background: #ffb432; }
+.trust-comp-err  { background: #ff5050; }
+
+.trust-comp-val {
+  font-size: 10px;
+  color: var(--muted);
+  width: 26px;
+  text-align: right;
+  flex-shrink: 0;
+}
 
 /* ── EBRT Picks table — expanded belief row ─────────────────────────────── */
 .picks-ebrt-header th { font-size: 11px; }

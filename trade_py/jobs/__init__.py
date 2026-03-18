@@ -430,6 +430,19 @@ def _job_recommend(data_root: str, config: dict | None = None) -> str:
     return f"推荐决策完成: {len(recs)} 条, buy={buys}"
 
 
+def _job_reliability_update(data_root: str, config: dict | None = None) -> str:
+    """Update per-source reliability weights using Brier loss from T-5 recommendations."""
+    from trade_py.evaluation.service import _update_source_reliabilities
+    from trade_py.db.trade_db import TradeDB
+    today = date.today().isoformat()
+    db = TradeDB(data_root)
+    try:
+        n = _update_source_reliabilities(db, today)
+    finally:
+        db.close()
+    return f"信源可靠性更新完成: {n} 个信源"
+
+
 # ── Registry ───────────────────────────────────────────────────────────────────
 
 JOB_REGISTRY: dict[str, JobDef] = {
@@ -532,6 +545,10 @@ JOB_REGISTRY: dict[str, JobDef] = {
     "recommend": JobDef(
         "recommend", _job_recommend, "推荐决策生成（EBRT）",
         [], "compute", ["decision", "ebrt"],
+    ),
+    "reliability_update": JobDef(
+        "reliability_update", _job_reliability_update, "信源可靠性奖惩更新（EBRT）",
+        ["daily 15:40"], "compute", ["trust", "ebrt"],
     ),
     # Sentiment chain (split jobs)
     "sentiment_fetch": JobDef(

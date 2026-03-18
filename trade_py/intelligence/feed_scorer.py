@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -159,6 +160,61 @@ def score_all_sources(
         pass
 
     return scores
+
+
+def update_source_reliability(
+    source_id: str,
+    brier_loss: float,
+    lr: float = 0.1,
+    db: Any | None = None,
+    data_root: Path | None = None,
+) -> None:
+    """Exponential weight update for per-source reliability based on Brier loss.
+
+    w_new = w_old * exp(-lr * brier_loss), then normalized to [0, 1].
+
+    Args:
+        source_id: the source identifier (matches InfluenceSignal.source_id)
+        brier_loss: Brier score for this source's recent predictions
+        lr: learning rate (default 0.1)
+        db: optional TradeDB instance (if None, opens from data_root)
+        data_root: optional data root path (used if db is None)
+    """
+    import math
+    from trade_py.db.trade_db import TradeDB
+
+    if db is None and data_root is None:
+        return
+
+    owned = False
+    if db is None:
+        db = TradeDB(data_root)
+        owned = True
+
+    try:
+        current = db.source_reliability_get(source_id)
+        # Exponential update: w * exp(-lr * brier); brier in [0,1], lr in (0,1)
+        updated = current * math.exp(-lr * float(brier_loss))
+        # Clip to [0.01, 1.0] — never fully zero
+        updated = max(0.01, min(1.0, round(updated, 6)))
+        from datetime import date
+        db.source_reliability_upsert(source_id, updated, date.today().isoformat())
+    finally:
+        if owned:
+            db.close()
+
+
+def get_source_reliability(
+    source_id: str,
+    data_root: Path,
+) -> float:
+    """Get the current reliability score for a source."""
+    from trade_py.db.trade_db import TradeDB
+    db = TradeDB(data_root)
+    try:
+        return db.source_reliability_get(source_id)
+    finally:
+        db.close()
 
 
 def _write_influence_signals(data_root: Path, scores: list[FeedScore]) -> None:

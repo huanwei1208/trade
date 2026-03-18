@@ -38,6 +38,19 @@ def _conflict(direction_i: float, belief_mu: float) -> float:
     return abs(belief_mu) * abs(direction_i)
 
 
+def _get_source_reliability(source_id: str | None, db: Any | None) -> float:
+    """Look up current per-source reliability from InfluenceSignal (Phase C).
+
+    Returns default 0.5 if source_id is unknown or db is None.
+    """
+    if not source_id or db is None:
+        return 0.5
+    try:
+        return db.source_reliability_get(source_id)
+    except Exception:
+        return 0.5
+
+
 def compute_logits(
     evidence_list: list[dict[str, Any]],
     prior_belief: dict[str, float],
@@ -50,6 +63,7 @@ def compute_logits(
     xi: float = XI,
     rho: float = RHO,
     tau: float = TAU,
+    db: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Compute attention logits and softmax weights for each evidence item.
 
@@ -72,7 +86,12 @@ def compute_logits(
     for ev in evidence_list:
         m_i   = float(ev.get("strength", 0.0))
         d_i   = float(ev.get("direction", 0.0))
-        r_i   = float(ev.get("reliability", 0.5))
+        # Use dynamic per-source reliability if available (Phase C),
+        # blended with static evidence reliability
+        static_r = float(ev.get("reliability", 0.5))
+        source_id = ev.get("source_id")
+        dynamic_r = _get_source_reliability(source_id, db)
+        r_i = (static_r + dynamic_r) / 2.0  # blend static + dynamic
         n_i   = float(ev.get("novelty", 0.5))
         nu_i  = float(ev.get("noise_penalty", 0.0))
         u_i   = float(ev.get("influence_boost", 0.0))

@@ -859,12 +859,17 @@ def create_app():
             qr = db.quality_report_latest()
             if qr:
                 freshness = db.freshness_status_list(today_str)
+                metrics = qr.get("metrics") or {}
+                trust_vec = metrics.get("trust_vector") or {}
+                t_star = metrics.get("trust_scalar")
                 trust_gate = {
                     "operational_status": qr.get("operational_status", "unknown"),
                     "research_status": qr.get("research_status", "unknown"),
                     "brier_score": qr.get("brier_score"),
                     "drift_mmd": qr.get("drift_mmd"),
                     "eval_date": qr.get("eval_date", ""),
+                    "trust_scalar": t_star,
+                    "trust_components": trust_vec,
                     "freshness": [
                         {"dataset": f.get("dataset"), "lag_days": f.get("lag_days"),
                          "status": f.get("status")}

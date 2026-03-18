@@ -1301,6 +1301,188 @@ def _compute_drift_mmd(db: TradeDB, eval_date: str, lookback_days: int = 7) -> f
         return None
 
 
+def _compute_trust_vector(
+    db: TradeDB,
+    eval_date: str,
+    brier_score: float | None,
+    drift_mmd: float | None,
+) -> dict[str, float]:
+    """Compute 7-component Trust vector (EBRT_02 §Trust Vector).
+
+    Components:
+        T_fresh    = 1 - max(lag_days) / 7
+        T_evidence = mean(reliability) from Evidence for eval_date
+        T_model    = clip(rank_ic_5d / 0.05, 0, 1)
+        T_calib    = 1 - brier_score
+        T_drift    = 1 - clip(drift_mmd / 0.2, 0, 1)
+        T_ops      = 1 - pipeline_error_rate (from job_runs)
+        T_explain  = fraction of Recommendations with a RecommendationTrace
+    """
+    # T_fresh: freshness status lag
+    T_fresh = 0.5
+    try:
+        rows = db._conn.execute(
+            "SELECT lag_days FROM FreshnessStatus WHERE as_of_date=? AND lag_days IS NOT NULL",
+            (eval_date,),
+        ).fetchall()
+        if rows:
+            max_lag = max(float(r[0]) for r in rows)
+            T_fresh = max(0.0, 1.0 - max_lag / 7.0)
+        else:
+            T_fresh = 1.0  # no freshness data = assume ok
+    except Exception:
+        pass
+
+    # T_evidence: mean reliability from Evidence table
+    T_evidence = 0.5
+    try:
+        row = db._conn.execute(
+            "SELECT AVG(reliability) FROM Evidence WHERE as_of_date=?",
+            (eval_date,),
+        ).fetchone()
+        if row and row[0] is not None:
+            T_evidence = float(row[0])
+    except Exception:
+        pass
+
+    # T_model: rank_ic_5d / 0.05 clipped to [0,1]
+    T_model = 0.5
+    try:
+        rows = db.model_eval_list(eval_date=eval_date, model_name="kg_return_5d")
+        if rows:
+            rank_ic = rows[0].get("rank_ic")
+            if rank_ic is not None:
+                T_model = max(0.0, min(1.0, float(rank_ic) / 0.05))
+    except Exception:
+        pass
+
+    # T_calib: 1 - brier_score
+    T_calib = 0.5 if brier_score is None else max(0.0, 1.0 - float(brier_score))
+
+    # T_drift: 1 - clip(drift_mmd / 0.2, 0, 1)
+    T_drift = 0.5 if drift_mmd is None else max(0.0, 1.0 - min(1.0, float(drift_mmd) / 0.2))
+
+    # T_ops: 1 - error_rate from recent job_runs
+    T_ops = 1.0
+    try:
+        rows = db._conn.execute(
+            "SELECT status FROM job_runs WHERE started_at >= date(?, '-3 days')",
+            (eval_date,),
+        ).fetchall()
+        if rows:
+            errors = sum(1 for r in rows if str(r[0]) == "error")
+            T_ops = max(0.0, 1.0 - errors / len(rows))
+    except Exception:
+        pass
+
+    # T_explain: fraction of Recommendation rows that have a trace
+    T_explain = 0.5
+    try:
+        total = db._conn.execute(
+            "SELECT COUNT(*) FROM Recommendation WHERE as_of_date=?",
+            (eval_date,),
+        ).fetchone()[0]
+        traced = db._conn.execute(
+            "SELECT COUNT(DISTINCT rec_id) FROM RecommendationTrace WHERE as_of_date=?",
+            (eval_date,),
+        ).fetchone()[0]
+        if total and total > 0:
+            T_explain = float(traced) / float(total)
+    except Exception:
+        pass
+
+    return {
+        "fresh":    round(T_fresh, 4),
+        "evidence": round(T_evidence, 4),
+        "model":    round(T_model, 4),
+        "calib":    round(T_calib, 4),
+        "drift":    round(T_drift, 4),
+        "ops":      round(T_ops, 4),
+        "explain":  round(T_explain, 4),
+    }
+
+
+def _scalar_trust(trust_vec: dict[str, float]) -> float:
+    """Collapse 7-component vector to scalar T* via sigmoid of weighted sum.
+
+    Default weights (EBRT_02 spec, initial):
+        w = [1.0, 0.8, 1.0, 1.0, 0.8, 0.6, 0.4]  for [fresh, evidence, model, calib, drift, ops, explain]
+    """
+    import math
+    w = [1.0, 0.8, 1.0, 1.0, 0.8, 0.6, 0.4]
+    keys = ["fresh", "evidence", "model", "calib", "drift", "ops", "explain"]
+    phi = [float(trust_vec.get(k, 0.5)) for k in keys]
+    dot = sum(wi * pi for wi, pi in zip(w, phi))
+    # Center: max dot if all=1 is sum(w)=5.6; use (dot - 2.8) to centre sigmoid at 0.5
+    w_sum = sum(w)
+    centred = dot - w_sum / 2.0
+    t_star = 1.0 / (1.0 + math.exp(-centred))
+    return round(t_star, 4)
+
+
+def _update_source_reliabilities(db: TradeDB, eval_date: str,
+                                  lr: float = 0.1) -> int:
+    """Update per-source reliability weights using Brier loss from T-5 recommendations.
+
+    For each Recommendation from eval_date-5d, look up actual_return_5d from
+    event_propagations, compute Brier loss, and apply exponential weight update.
+
+    Returns number of sources updated.
+    """
+    from datetime import timedelta
+    t_minus_5 = (date.fromisoformat(eval_date) - timedelta(days=5)).isoformat()
+    recs = db.recommendation_list(t_minus_5)
+    if not recs:
+        return 0
+
+    source_losses: dict[str, list[float]] = {}
+    for r in recs:
+        sym = str(r.get("symbol") or "")
+        pred_score = float(r.get("score") or 0.5)
+        try:
+            ep = db._conn.execute(
+                "SELECT actual_return_5d FROM event_propagations ep "
+                "JOIN market_events me ON ep.event_id = me.event_id "
+                "WHERE ep.symbol=? AND me.event_date=? LIMIT 1",
+                (sym, t_minus_5),
+            ).fetchone()
+            if ep and ep[0] is not None:
+                actual_positive = 1.0 if float(ep[0]) > 0 else 0.0
+                brier = (pred_score - actual_positive) ** 2
+                # Try to get source_id from Evidence → InfluenceSignal for this symbol/date
+                ev_row = db._conn.execute(
+                    "SELECT e.evidence_id FROM Evidence e "
+                    "JOIN AttentionScore a ON a.evidence_id = e.evidence_id "
+                    "WHERE e.symbol=? AND e.as_of_date=? ORDER BY a.weight DESC LIMIT 1",
+                    (sym, t_minus_5),
+                ).fetchone()
+                if ev_row:
+                    # Get source from InfluenceSignal by reputation ranking
+                    src_row = db._conn.execute(
+                        "SELECT source_id FROM InfluenceSignal "
+                        "ORDER BY reputation_score DESC LIMIT 1"
+                    ).fetchone()
+                    if src_row:
+                        source_id = str(src_row[0])
+                        source_losses.setdefault(source_id, []).append(brier)
+        except Exception:
+            pass
+
+    updated = 0
+    for source_id, losses in source_losses.items():
+        if not losses:
+            continue
+        try:
+            from trade_py.intelligence.feed_scorer import update_source_reliability
+            mean_brier = sum(losses) / len(losses)
+            update_source_reliability(source_id, mean_brier, lr, db)
+            updated += 1
+        except Exception as exc:
+            logger.debug("source reliability update failed for %s: %s", source_id, exc)
+
+    return updated
+
+
 def _write_quality_report(db: TradeDB, eval_date: str, overall_status: str,
                            gate_outcome: "EvalOutcome",
                            model_outcome: "EvalOutcome") -> None:
@@ -1345,12 +1527,19 @@ def _write_quality_report(db: TradeDB, eval_date: str, overall_status: str,
     else:
         research_status = "blocked"
 
+    # Compute 7-component trust vector (EBRT_02)
+    trust_vec = _compute_trust_vector(db, eval_date, brier_score, drift_mmd)
+    t_star = _scalar_trust(trust_vec)
+    trust_vec["T_star"] = t_star
+
     metrics = {
         "operational_status": operational_status,
         "research_status": research_status,
         "brier_score": brier_score,
         "drift_mmd": drift_mmd,
         "cache_fingerprint": gate_metrics.get("cache_fingerprint", ""),
+        "trust_vector": trust_vec,
+        "trust_scalar": t_star,
     }
 
     db.quality_report_upsert(
@@ -1363,9 +1552,16 @@ def _write_quality_report(db: TradeDB, eval_date: str, overall_status: str,
         drift_mmd=drift_mmd,
     )
     logger.info(
-        "QualityReport written: %s op=%s research=%s brier=%s mmd=%s",
-        eval_date, operational_status, research_status, brier_score, drift_mmd
+        "QualityReport written: %s op=%s research=%s brier=%s mmd=%s T*=%.3f",
+        eval_date, operational_status, research_status, brier_score, drift_mmd, t_star
     )
+
+    # Update source reliabilities based on T-5 outcomes (Phase C)
+    try:
+        n_updated = _update_source_reliabilities(db, eval_date)
+        logger.info("Source reliabilities updated: %d sources", n_updated)
+    except Exception as exc:
+        logger.warning("Source reliability update failed: %s", exc)
 
 
 def evaluate_daily(data_root: str = str(default_data_root()),

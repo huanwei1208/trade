@@ -1220,25 +1220,55 @@ function App() {
           const opClass = opStatus === "ok" ? "trust-ok" : opStatus === "degraded" ? "trust-warn" : "trust-err";
           const resClass = resStatus === "ok" ? "trust-ok" : resStatus === "partial" ? "trust-warn" : "trust-err";
           const fresh = tg.freshness || [];
+          const tStar: number | null = (tg as any).trust_scalar ?? null;
+          const tComp: Record<string, number> = (tg as any).trust_components || {};
+          const tStarClass = tStar == null ? "" : tStar >= 0.7 ? "trust-ok" : tStar >= 0.5 ? "trust-warn" : "trust-err";
+          const compLabels: Record<string, string> = {
+            fresh: "新鲜", evidence: "证据", model: "模型",
+            calib: "校准", drift: "漂移", ops: "运营", explain: "解释",
+          };
           return (
-            <div className="trust-gate-bar">
-              <span className="trust-gate-title">Trust Gate</span>
-              <span className={`trust-badge ${opClass}`}>运营 {opStatus}</span>
-              <span className={`trust-badge ${resClass}`}>研究 {resStatus}</span>
-              {tg.brier_score != null && (
-                <span className="trust-metric">Brier: {tg.brier_score.toFixed(3)}</span>
-              )}
-              {tg.drift_mmd != null && (
-                <span className="trust-metric">Drift: {tg.drift_mmd.toFixed(3)}</span>
-              )}
-              {fresh.length > 0 && (
-                <span className="trust-freshness">
-                  {fresh.map(f => (
-                    <span key={f.dataset} className={`trust-fresh-item trust-fresh-${f.status || "unknown"}`}>
-                      {f.dataset} {f.lag_days != null ? `${f.lag_days}d` : "?"}
-                    </span>
-                  ))}
-                </span>
+            <div className="trust-gate-wrap">
+              <div className="trust-gate-bar">
+                <span className="trust-gate-title">Trust Gate</span>
+                {tStar != null && (
+                  <span className={`trust-scalar-badge ${tStarClass}`}>T*={tStar.toFixed(2)}</span>
+                )}
+                <span className={`trust-badge ${opClass}`}>运营 {opStatus}</span>
+                <span className={`trust-badge ${resClass}`}>研究 {resStatus}</span>
+                {tg.brier_score != null && (
+                  <span className="trust-metric">Brier: {tg.brier_score.toFixed(3)}</span>
+                )}
+                {tg.drift_mmd != null && (
+                  <span className="trust-metric">Drift: {tg.drift_mmd.toFixed(3)}</span>
+                )}
+                {fresh.length > 0 && (
+                  <span className="trust-freshness">
+                    {fresh.map(f => (
+                      <span key={f.dataset} className={`trust-fresh-item trust-fresh-${f.status || "unknown"}`}>
+                        {f.dataset} {f.lag_days != null ? `${f.lag_days}d` : "?"}
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </div>
+              {Object.keys(tComp).length > 0 && (
+                <div className="trust-components-row">
+                  {Object.entries(compLabels).map(([k, label]) => {
+                    const val = tComp[k] ?? 0;
+                    const pct = Math.round(val * 100);
+                    const cls = val >= 0.7 ? "trust-comp-ok" : val >= 0.5 ? "trust-comp-warn" : "trust-comp-err";
+                    return (
+                      <div key={k} className="trust-component-item">
+                        <span className="trust-comp-label">{label}</span>
+                        <div className="trust-comp-bar-bg">
+                          <div className={`trust-comp-bar-fill ${cls}`} style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="trust-comp-val">{val.toFixed(2)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           );
