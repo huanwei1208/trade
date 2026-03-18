@@ -281,7 +281,7 @@ def _cmd_candidates(args: argparse.Namespace) -> int:
 
 
 def _cmd_evaluate(args: argparse.Namespace) -> int:
-    from trade_py.domain.kg import SectorGraph
+    from trade_py.analysis.knowledge_graph import SectorGraph
 
     db = TradeDB(args.data_root)
     active_summary = db._conn.execute(
@@ -434,7 +434,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
         source_override=args.source,
     )
     if promoted:
-        from trade_py.domain.kg import SectorGraph
+        from trade_py.analysis.knowledge_graph import SectorGraph
 
         path = SectorGraph.build_active_snapshot(args.data_root, merge_defaults=True)
         db.kg_node_upsert_batch(SectorGraph.load(path).to_registry_rows())
@@ -469,7 +469,7 @@ def _cmd_disable(args: argparse.Namespace) -> int:
     db = TradeDB(args.data_root)
     changed = db.kg_relation_disable(args.from_entity, args.to_entity, args.rel_type)
     if changed:
-        from trade_py.domain.kg import SectorGraph
+        from trade_py.analysis.knowledge_graph import SectorGraph
 
         path = SectorGraph.build_active_snapshot(args.data_root, merge_defaults=True)
         db.kg_node_upsert_batch(SectorGraph.load(path).to_registry_rows())
@@ -500,7 +500,7 @@ def _cmd_nodes(args: argparse.Namespace) -> int:
 
 
 def _cmd_snapshot(args: argparse.Namespace) -> int:
-    from trade_py.domain.kg import SectorGraph
+    from trade_py.analysis.knowledge_graph import SectorGraph
 
     db = TradeDB(args.data_root)
     if args.build:

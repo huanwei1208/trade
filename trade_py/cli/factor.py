@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from trade_py.domain.factors import factor_metrics, factor_status
+from trade_py.analysis.factor_evaluation import factor_metrics, factor_status
 from trade_py.infra.settings import default_data_root
 
 

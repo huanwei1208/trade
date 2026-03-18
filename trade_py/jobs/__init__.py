@@ -145,7 +145,7 @@ def _job_realtime_quote_sync(data_root: str, config: dict | None = None) -> str:
 
 
 def _job_realtime_compute(data_root: str, config: dict | None = None) -> str:
-    from trade_py.domain.factors import compute_intraday_snapshot
+    from trade_py.analysis.intraday_runtime import compute_intraday_snapshot
 
     symbols = _job_realtime_symbols(data_root, limit=50)
     result = compute_intraday_snapshot(
@@ -223,7 +223,7 @@ def _job_sector_refresh(data_root: str, config: dict | None = None) -> str:
 # ── COMPUTE jobs ───────────────────────────────────────────────────────────────
 
 def _job_window_score(data_root: str, config: dict | None = None) -> str:
-    from trade_py.domain.factors import score_universe
+    from trade_py.signals.window_scorer import score_universe
     scores = score_universe(data_root)
     return f"全市场评分完成: {len(scores)} symbols"
 
