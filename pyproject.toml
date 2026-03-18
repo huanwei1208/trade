@@ -56,7 +56,7 @@ include = ["trade_py*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = ["engine", ".venv", "build", "dist", "config", "deployment"]
+norecursedirs = ["engine", ".venv", "build", "dist", "deployment"]
 
 [tool.uv]
 package = true

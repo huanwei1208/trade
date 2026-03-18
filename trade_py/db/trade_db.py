@@ -116,21 +116,21 @@ _DEFAULT_SETTINGS: list[tuple[str, str, str, str, str]] = [
 ]
 
 _CONFIG_JSON_SEEDS: list[tuple[str, str, str, str]] = [
-    ("config.defaults", "config/defaults.json", "config", "历史默认配置"),
-    ("catalog.feeds.backfill_priority", "config/feeds/backfill_priority.json", "catalog", "回补优先级目录"),
-    ("catalog.feeds.china_public", "config/feeds/china_public.json", "catalog", "中国公开 feed 目录"),
-    ("catalog.feeds.gdelt", "config/feeds/gdelt.json", "catalog", "GDELT 频道目录"),
-    ("catalog.feeds.global_public", "config/feeds/global_public.json", "catalog", "全球公开 feed 目录"),
-    ("catalog.feeds.premium", "config/feeds/premium.json", "catalog", "付费 feed 目录"),
-    ("catalog.feeds.rss", "config/feeds/rss.json", "catalog", "RSS feed 目录"),
+    ("config.defaults", "trade_py/infra/config/defaults.json", "config", "历史默认配置"),
+    ("catalog.feeds.backfill_priority", "trade_py/infra/config/feeds/backfill_priority.json", "catalog", "回补优先级目录"),
+    ("catalog.feeds.china_public", "trade_py/infra/config/feeds/china_public.json", "catalog", "中国公开 feed 目录"),
+    ("catalog.feeds.gdelt", "trade_py/infra/config/feeds/gdelt.json", "catalog", "GDELT 频道目录"),
+    ("catalog.feeds.global_public", "trade_py/infra/config/feeds/global_public.json", "catalog", "全球公开 feed 目录"),
+    ("catalog.feeds.premium", "trade_py/infra/config/feeds/premium.json", "catalog", "付费 feed 目录"),
+    ("catalog.feeds.rss", "trade_py/infra/config/feeds/rss.json", "catalog", "RSS feed 目录"),
 ]
 
 _CONFIG_TEXT_SEEDS: list[tuple[str, str, str, str]] = [
-    ("config.module.market_data", "config/modules/market_data.yaml", "config", "市场数据模块配置"),
-    ("config.module.security", "config/modules/security.yaml", "config", "安全模块配置"),
-    ("config.module.sentiment", "config/modules/sentiment.yaml", "config", "情绪模块配置"),
-    ("config.module.storage", "config/modules/storage.yaml", "config", "存储模块配置"),
-    ("config.resource.sentiment_dict", "config/sentiment_dict.txt", "config", "情绪词典"),
+    ("config.module.market_data", "trade_py/infra/config/modules/market_data.yaml", "config", "市场数据模块配置"),
+    ("config.module.security", "trade_py/infra/config/modules/security.yaml", "config", "安全模块配置"),
+    ("config.module.sentiment", "trade_py/infra/config/modules/sentiment.yaml", "config", "情绪模块配置"),
+    ("config.module.storage", "trade_py/infra/config/modules/storage.yaml", "config", "存储模块配置"),
+    ("config.resource.sentiment_dict", "trade_py/infra/config/sentiment_dict.txt", "config", "情绪词典"),
 ]
 
 
