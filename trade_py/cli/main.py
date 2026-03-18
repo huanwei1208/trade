@@ -16,8 +16,14 @@ def _setup_logging(verbose: bool = False) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     from trade_py.cli import data, model, account, event, start, web, kg, evaluate, factor, run, status, inspect, backup
+    from trade_py.cli import daily, ops, dev
 
     domains = [
+        # EBRT high-level commands (Phase 6)
+        ("daily",   daily),
+        ("ops",     ops),
+        ("dev",     dev),
+        # Legacy domains (kept as-is)
         ("run",     run),
         ("status",  status),
         ("inspect", inspect),

@@ -45,22 +45,23 @@
 - [x] 提交: feat(ebrt): Phase 4
 
 ### Phase 5 — UI 展示
-- [ ] /api/today-page 带 trust_gate
-- [ ] GET /api/belief/{symbol} 新端点
-- [ ] /api/kline 附加 belief_transition
-- [ ] Today Trust Gate 状态栏
-- [ ] Picks 展开 belief delta + top evidence
-- [ ] styles.css Trust badge + delta 可视化
+- [x] /api/today-page 带 trust_gate
+- [x] GET /api/belief/{symbol} 新端点
+- [x] /api/kline 附加 belief_overlay + ebrt_recommendation
+- [x] Today Trust Gate 状态栏
+- [x] Picks 展开 belief delta + top evidence（EBRT source 分支表头 + 展开行）
+- [x] styles.css Trust badge + delta 可视化
+- [x] KlineData 类型扩展 belief_overlay / ebrt_recommendation
 - [ ] 验证：serve 后浏览器可见 Trust Gate + belief delta
-- [ ] 提交: feat(ebrt): Phase 5
+- [x] 提交: feat(ebrt): Phase 5
 
 ### Phase 6 — Trust 加固 + 清理
-- [ ] QualityReport Brier + MMD 写入（evaluate_daily）
-- [ ] InfluenceSignal 写入（feed_scorer）
-- [ ] influence_score job（周级）
-- [ ] trade daily / trade ops / trade dev 命令族
+- [x] QualityReport Brier + MMD 写入（evaluate_daily）
+- [x] InfluenceSignal 写入（feed_scorer）
+- [x] influence_score job（周级）
+- [x] trade daily / trade ops / trade dev 命令族
 - [ ] 验证：QualityReport brier_score 字段存在
-- [ ] 提交: feat(ebrt): Phase 6
+- [x] 提交: feat(ebrt): Phase 6
 
 ---
 

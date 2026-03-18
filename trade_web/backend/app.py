@@ -20,9 +20,10 @@ Routes:
   GET  /api/agenda               → recent agenda queue
   GET  /api/data-health          → data freshness / coverage snapshot
   GET  /api/backups              → backup snapshots
-  GET  /api/today-page           → market snapshot + pipeline health + top 5 picks
-  GET  /api/signals-page         → top 50 picks with delta + reasons skeleton
-  GET  /api/kline/{symbol}       → OHLCV + indicators + event markers + recommendation
+  GET  /api/today-page           → market snapshot + pipeline health + trust_gate + top 5 picks
+  GET  /api/signals-page         → top 50 picks with belief delta + top evidence (EBRT)
+  GET  /api/belief/{symbol}      → BeliefState history + top AttentionScores (EBRT)
+  GET  /api/kline/{symbol}       → OHLCV + indicators + event markers + belief_overlay (EBRT)
   POST /predict                  → online inference endpoint
 """
 from __future__ import annotations
@@ -812,10 +813,66 @@ def create_app():
             "status": "ok" if error_count == 0 else ("partial" if ok_count > 0 else "error"),
         }
 
-        # Top 5 picks with delta
-        picks_data = db.signal_recommend(limit=5)
-        top_picks = picks_data.get("picks", [])
-        dropped = picks_data.get("dropped", [])
+        # EBRT: top picks from Recommendation table (with belief delta)
+        today_str = date.today().isoformat()
+        ebrt_recs: list[dict] = []
+        try:
+            recs = db.recommendation_list(today_str)
+            for r in recs[:5]:
+                sym = str(r.get("symbol") or "")
+                bv: dict = {}
+                belief_mu = 0.0
+                belief_sigma = 0.3
+                delta_mu = 0.0
+                try:
+                    bs = db.belief_state_get(today_str, sym)
+                    if bs:
+                        bv = bs.get("belief_vec") or {}
+                        belief_mu = float(bv.get("mu", 0.0))
+                        belief_sigma = float(bv.get("sigma", 0.3))
+                    bt = db.belief_transition_get(sym, today_str)
+                    if bt:
+                        delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0))
+                except Exception:
+                    pass
+                ebrt_recs.append({
+                    **r,
+                    "belief_mu": round(belief_mu, 4),
+                    "belief_sigma": round(belief_sigma, 4),
+                    "belief_delta_mu": round(delta_mu, 4),
+                })
+        except Exception:
+            pass
+
+        # Fall back to old signal_recommend if no EBRT recs
+        if not ebrt_recs:
+            picks_data = db.signal_recommend(limit=5)
+            top_picks = picks_data.get("picks", [])
+            dropped = picks_data.get("dropped", [])
+        else:
+            top_picks = ebrt_recs
+            dropped = []
+
+        # EBRT: Trust Gate from QualityReport
+        trust_gate: dict = {}
+        try:
+            qr = db.quality_report_latest()
+            if qr:
+                freshness = db.freshness_status_list(today_str)
+                trust_gate = {
+                    "operational_status": qr.get("operational_status", "unknown"),
+                    "research_status": qr.get("research_status", "unknown"),
+                    "brier_score": qr.get("brier_score"),
+                    "drift_mmd": qr.get("drift_mmd"),
+                    "eval_date": qr.get("eval_date", ""),
+                    "freshness": [
+                        {"dataset": f.get("dataset"), "lag_days": f.get("lag_days"),
+                         "status": f.get("status")}
+                        for f in freshness
+                    ],
+                }
+        except Exception:
+            pass
 
         # Recent job runs for pipeline context
         recent_runs = db.job_runs_recent(limit=10)
@@ -828,24 +885,79 @@ def create_app():
             kline_last_date = ""
 
         return {
-            "as_of": date.today().isoformat(),
+            "as_of": today_str,
             "pipeline_health": pipeline_health,
             "top_picks": top_picks,
             "dropped_picks": dropped,
             "kline_last_date": kline_last_date,
             "gate_status": gate.get("status", "unknown"),
             "gate_reason": gate.get("reason_summary", ""),
+            "trust_gate": trust_gate,
             "recent_runs": recent_runs[:5],
             "error_nodes": [n for n in nodes if str(n.get("status") or "") == "error"][:5],
         }
 
     def _signals_page_payload() -> dict[str, Any]:
         db = _db()
+        today_str = date.today().isoformat()
+
+        # EBRT: use Recommendation table if available
+        ebrt_recs = []
+        try:
+            ebrt_recs = db.recommendation_list(today_str)
+        except Exception:
+            pass
+
+        if ebrt_recs:
+            picks = []
+            for r in ebrt_recs[:50]:
+                sym = str(r.get("symbol") or "")
+                name = ""
+                belief_mu = 0.0
+                belief_sigma = 0.3
+                delta_mu = 0.0
+                top_evidence: list = []
+                try:
+                    instr = db.instrument_lookup(sym)
+                    name = str(instr.get("name") or "") if instr else ""
+                except Exception:
+                    pass
+                try:
+                    bs = db.belief_state_get(today_str, sym)
+                    if bs:
+                        bv = bs.get("belief_vec") or {}
+                        belief_mu = float(bv.get("mu", 0.0))
+                        belief_sigma = float(bv.get("sigma", 0.3))
+                    bt = db.belief_transition_get(sym, today_str)
+                    if bt:
+                        delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0))
+                    attn = db.attention_list(sym, today_str, top_n=3)
+                    top_evidence = [
+                        {"weight": a.get("weight"), "evidence_id": a.get("evidence_id")}
+                        for a in attn
+                    ]
+                except Exception:
+                    pass
+                picks.append({
+                    **r,
+                    "name": name,
+                    "belief_mu": round(belief_mu, 4),
+                    "belief_sigma": round(belief_sigma, 4),
+                    "belief_delta_mu": round(delta_mu, 4),
+                    "top_evidence": top_evidence,
+                })
+            return {
+                "as_of": today_str,
+                "picks": picks,
+                "dropped": [],
+                "total": len(picks),
+                "source": "ebrt",
+            }
+
+        # Fall back to old signal-based picks
         recommend = db.signal_recommend(limit=50)
         picks = recommend.get("picks", [])
         dropped = recommend.get("dropped", [])
-
-        # Enrich each pick with instrument name
         for pick in picks:
             sym = str(pick.get("symbol") or "")
             if sym:
@@ -854,12 +966,12 @@ def create_app():
                     pick["name"] = str(instr.get("name") or "") if instr else ""
                 except Exception:
                     pick["name"] = ""
-
         return {
-            "as_of": date.today().isoformat(),
+            "as_of": today_str,
             "picks": picks,
             "dropped": dropped,
             "total": len(picks),
+            "source": "signals",
         }
 
     # ── Static files ──────────────────────────────────────────────────────────
@@ -1356,6 +1468,104 @@ def create_app():
         _inference.reload()
         return {"reloaded": True, "models": _inference.model_names}
 
+    # ── API: belief/{symbol} (EBRT) ───────────────────────────────────────────
+
+    @app.get("/api/belief/{symbol}")
+    async def get_belief(symbol: str, days: int = 30):
+        """Return BeliefState history + top AttentionScores for a symbol."""
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+
+        db = _db()
+        today = date.today().isoformat()
+
+        # Belief history (last N days)
+        history: list[dict] = []
+        try:
+            cur = date.today()
+            from datetime import timedelta as _td
+            for _ in range(days):
+                row = db.belief_state_get(cur.isoformat(), symbol)
+                if row:
+                    bv = row.get("belief_vec") or {}
+                    bt = db.belief_transition_get(symbol, cur.isoformat())
+                    delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0)) if bt else 0.0
+                    history.append({
+                        "date": cur.isoformat(),
+                        "mu": float(bv.get("mu", 0.0)),
+                        "sigma": float(bv.get("sigma", 0.3)),
+                        "confidence": float(row.get("confidence") or 0.3),
+                        "uncertainty": float(row.get("uncertainty") or 0.3),
+                        "delta_mu": round(delta_mu, 4),
+                    })
+                cur -= _td(days=1)
+        except Exception:
+            pass
+
+        # Latest attention scores
+        top_attention: list[dict] = []
+        try:
+            attn_rows = db.attention_list(symbol, today, top_n=10)
+            for a in attn_rows:
+                ev_type = "unknown"
+                ev_direction = 0.0
+                try:
+                    row = db._conn.execute(
+                        "SELECT evidence_type, direction FROM Evidence WHERE evidence_id=?",
+                        (a.get("evidence_id", ""),),
+                    ).fetchone()
+                    if row:
+                        ev_type = row[0] or "unknown"
+                        ev_direction = float(row[1] or 0.0)
+                except Exception:
+                    pass
+                top_attention.append({
+                    "evidence_id": a.get("evidence_id"),
+                    "evidence_type": ev_type,
+                    "weight": float(a.get("weight") or 0.0),
+                    "logit": float(a.get("logit") or 0.0),
+                    "direction": round(ev_direction, 2),
+                })
+        except Exception:
+            pass
+
+        # Latest recommendation for this symbol
+        rec: dict = {}
+        try:
+            recs = db.recommendation_list(today)
+            for r in recs:
+                if r.get("symbol") == symbol:
+                    rec = r
+                    break
+        except Exception:
+            pass
+
+        # Latest belief state
+        latest_belief: dict = {}
+        try:
+            bs = db.belief_state_get(today, symbol)
+            if bs:
+                bv = bs.get("belief_vec") or {}
+                latest_belief = {
+                    "mu": float(bv.get("mu", 0.0)),
+                    "sigma": float(bv.get("sigma", 0.3)),
+                    "confidence": float(bs.get("confidence") or 0.3),
+                    "uncertainty": float(bs.get("uncertainty") or 0.3),
+                    "as_of_date": bs.get("as_of_date"),
+                }
+        except Exception:
+            pass
+
+        return {
+            "symbol": symbol,
+            "as_of": today,
+            "latest_belief": latest_belief,
+            "history": list(reversed(history)),
+            "top_attention": top_attention,
+            "recommendation": rec,
+        }
+
     # ── API: today-page ───────────────────────────────────────────────────────
 
     @app.get("/api/today-page")
@@ -1579,6 +1789,47 @@ def create_app():
         except Exception:
             pass
 
+        # EBRT: belief transition overlay for kline chart
+        belief_overlay: list[dict] = []
+        try:
+            from datetime import timedelta as _td2
+            cur2 = date.today()
+            for _ in range(days):
+                dstr = cur2.isoformat()
+                bs = db.belief_state_get(dstr, symbol)
+                if bs:
+                    bv = bs.get("belief_vec") or {}
+                    bt = db.belief_transition_get(symbol, dstr)
+                    delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0)) if bt else 0.0
+                    belief_overlay.append({
+                        "date": dstr,
+                        "mu": float(bv.get("mu", 0.0)),
+                        "sigma": float(bv.get("sigma", 0.3)),
+                        "delta_mu": round(delta_mu, 4),
+                    })
+                cur2 -= _td2(days=1)
+            belief_overlay = list(reversed(belief_overlay))
+        except Exception:
+            belief_overlay = []
+
+        # EBRT: latest Recommendation for this symbol
+        ebrt_rec: dict = {}
+        try:
+            today_str2 = date.today().isoformat()
+            recs2 = db.recommendation_list(today_str2)
+            for r2 in recs2:
+                if r2.get("symbol") == symbol:
+                    ebrt_rec = {
+                        "action": r2.get("action"),
+                        "conviction": r2.get("conviction"),
+                        "score": r2.get("score"),
+                        "risk": r2.get("risk"),
+                        "reasons": r2.get("reasons", []),
+                    }
+                    break
+        except Exception:
+            pass
+
         return {
             "symbol": symbol,
             "name": name,
@@ -1587,6 +1838,8 @@ def create_app():
             "indicators": indicators,
             "prediction": prediction,
             "recommendation": recommendation,
+            "ebrt_recommendation": ebrt_rec,
+            "belief_overlay": belief_overlay,
             "latest_signal": {
                 "model_score": latest_signal.get("model_score"),
                 "window_score": latest_signal.get("window_score"),

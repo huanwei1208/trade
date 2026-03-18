@@ -152,4 +152,61 @@ def score_all_sources(
     except Exception:
         pass
 
+    # Write InfluenceSignal records to TradeDB (EBRT Phase 6)
+    try:
+        _write_influence_signals(data_root, scores)
+    except Exception:
+        pass
+
     return scores
+
+
+def _write_influence_signals(data_root: Path, scores: list[FeedScore]) -> None:
+    """Write InfluenceSignal rows from FeedScore results.
+
+    reputation_score = reliability × uniqueness
+    cross_confirm_1h = signal_density (proxy for cross-source confirmation)
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    from trade_py.db.trade_db import TradeDB
+
+    if not scores:
+        return
+
+    db = TradeDB(data_root)
+    try:
+        published_at = datetime.now(timezone.utc).isoformat()
+        for score in scores:
+            reputation = round(
+                float(score.reliability) * float(score.uniqueness), 4
+            )
+            cross_confirm = round(float(score.signal_density), 4)
+            manipulation_risk = round(
+                max(0.0, 1.0 - float(score.uniqueness)), 4
+            )
+            influence_id = hashlib.md5(
+                f"{score.feed_name}:{published_at[:10]}".encode()
+            ).hexdigest()
+            with db._conn_lock:
+                db._conn.execute(
+                    "INSERT OR REPLACE INTO InfluenceSignal "
+                    "(influence_id, source_id, platform, published_at, "
+                    " reputation_score, manipulation_risk, "
+                    " cross_confirm_1h, cross_confirm_24h) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        influence_id,
+                        score.feed_name,
+                        "rss",
+                        published_at,
+                        reputation,
+                        manipulation_risk,
+                        cross_confirm,
+                        round(cross_confirm * 0.8, 4),
+                    ),
+                )
+                db._conn.commit()
+    finally:
+        db.close()

@@ -403,6 +403,14 @@ def _job_kg_propagate(data_root: str, config: dict | None = None,
     return backfill_events(data_root)
 
 
+def _job_influence_score(data_root: str, config: dict | None = None) -> str:
+    """Score all feed sources and write InfluenceSignal records (EBRT Trust layer)."""
+    from trade_py.intelligence.feed_scorer import score_all_sources
+    from pathlib import Path
+    scores = score_all_sources(Path(data_root))
+    return f"信源影响力评分完成: {len(scores)} 个信源"
+
+
 def _job_belief_update(data_root: str, config: dict | None = None) -> str:
     """Run BeliefEngine: compute attention + residual update → BeliefState."""
     from trade_py.engine import update_belief
@@ -512,7 +520,11 @@ JOB_REGISTRY: dict[str, JobDef] = {
         "model_train", _job_model_train, "KG事件传播模型训练",
         ["sunday 09:10"], "train", ["model"],
     ),
-    # EBRT: belief + recommendation
+    # EBRT: trust + belief + recommendation
+    "influence_score": JobDef(
+        "influence_score", _job_influence_score, "信源影响力评分（EBRT Trust）",
+        ["sunday 09:05"], "compute", ["trust", "ebrt"],
+    ),
     "belief_update": JobDef(
         "belief_update", _job_belief_update, "信念状态更新（EBRT）",
         [], "compute", ["belief", "ebrt"],

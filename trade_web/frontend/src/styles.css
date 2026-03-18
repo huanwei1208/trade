@@ -1475,3 +1475,137 @@ details[open] .today-runs-summary::before { content: "▼ "; }
   font-size: 11px;
   padding: 5px 6px;
 }
+
+/* ── EBRT Trust Gate ────────────────────────────────────────────────────── */
+.trust-gate-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 14px;
+  background: var(--surface2, #1e2230);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+.trust-gate-title {
+  font-weight: 600;
+  color: var(--muted);
+  margin-right: 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.trust-ok   { background: rgba(40, 200, 100, 0.15); color: #28c864; border: 1px solid rgba(40, 200, 100, 0.3); }
+.trust-warn { background: rgba(255, 180, 50,  0.15); color: #ffb432; border: 1px solid rgba(255, 180, 50,  0.3); }
+.trust-err  { background: rgba(255, 80,  80,  0.15); color: #ff5050; border: 1px solid rgba(255, 80,  80,  0.3); }
+
+.trust-metric {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 6px;
+  background: var(--surface, rgba(255,255,255,0.04));
+  border-radius: 6px;
+}
+
+.trust-freshness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.trust-fresh-item {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.trust-fresh-ok      { background: rgba(40, 200, 100, 0.10); color: #28c864; }
+.trust-fresh-partial { background: rgba(255, 180, 50,  0.10); color: #ffb432; }
+.trust-fresh-error   { background: rgba(255, 80,  80,  0.10); color: #ff5050; }
+.trust-fresh-unknown { background: rgba(150, 150, 150, 0.10); color: var(--muted); }
+
+/* ── EBRT pick card — belief row ────────────────────────────────────────── */
+.today-pick-belief {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.belief-mu-val { font-weight: 600; color: var(--fg); }
+.belief-delta-pos { color: #28c864; font-weight: 600; }
+.belief-delta-neg { color: #ff5050; font-weight: 600; }
+.belief-sigma-val { opacity: 0.7; }
+.belief-delta-bar {
+  height: 4px;
+  border-radius: 2px;
+  flex: 1;
+  max-width: 50px;
+  min-width: 20px;
+}
+.belief-delta-bar-pos { background: linear-gradient(90deg, rgba(40,200,100,0.2), #28c864); }
+.belief-delta-bar-neg { background: linear-gradient(90deg, rgba(255,80,80,0.2), #ff5050); }
+
+/* action/conviction chips in today-pick-card */
+.today-pick-action {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.action-buy   { background: rgba(40, 200, 100, 0.18); color: #28c864; }
+.action-sell  { background: rgba(255, 80,  80,  0.18); color: #ff5050; }
+.action-watch { background: rgba(255, 180, 50,  0.18); color: #ffb432; }
+.action-avoid { background: rgba(150, 150, 150, 0.18); color: var(--muted); }
+
+/* ── EBRT Picks table — expanded belief row ─────────────────────────────── */
+.picks-ebrt-header th { font-size: 11px; }
+
+tr.picks-belief-row td {
+  padding: 4px 10px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--surface2, rgba(255,255,255,0.02));
+}
+.picks-belief-summary {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.picks-evidence-list {
+  margin: 3px 0 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.picks-evidence-list li {
+  font-size: 10px;
+  color: var(--muted);
+}
+.picks-evidence-attn {
+  display: inline-block;
+  min-width: 26px;
+  text-align: right;
+  font-weight: 600;
+  color: #ffb432;
+  margin-right: 4px;
+}

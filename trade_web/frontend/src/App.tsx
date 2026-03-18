@@ -22,6 +22,29 @@ type SignalPick = {
   date?: string;
 };
 
+// ── EBRT types ──────────────────────────────────────────────────────────────
+
+type TrustGate = {
+  operational_status?: "ok" | "degraded" | "blocked" | string;
+  research_status?: "ok" | "partial" | "blocked" | string;
+  brier_score?: number | null;
+  drift_mmd?: number | null;
+  eval_date?: string;
+  freshness?: Array<{ dataset: string; lag_days?: number | null; status?: string }>;
+};
+
+type EBRTPick = SignalPick & {
+  action?: "buy" | "sell" | "watch" | "avoid" | string;
+  conviction?: "high" | "mid" | "low" | string;
+  score?: number;
+  risk?: number;
+  belief_mu?: number;
+  belief_sigma?: number;
+  belief_delta_mu?: number;
+  reasons?: Array<{ description: string; weight?: number; evidence_type?: string }>;
+  top_evidence?: Array<{ weight?: number; evidence_id?: string }>;
+};
+
 type TodayPage = {
   as_of?: string;
   pipeline_health?: {
@@ -31,20 +54,22 @@ type TodayPage = {
     running: number;
     status: string;
   };
-  top_picks?: SignalPick[];
+  top_picks?: (SignalPick | EBRTPick)[];
   dropped_picks?: { symbol: string }[];
   gate_status?: string;
   gate_reason?: string;
   kline_last_date?: string;
+  trust_gate?: TrustGate;
   error_nodes?: Array<{ job_name?: string; status?: string }>;
   recent_runs?: Array<{ job_name?: string; status?: string; started_at?: string; result_summary?: string }>;
 };
 
 type SignalsPage = {
   as_of?: string;
-  picks?: SignalPick[];
+  picks?: (SignalPick | EBRTPick)[];
   dropped?: { symbol: string }[];
   total?: number;
+  source?: "ebrt" | "signals";
 };
 
 type KlineBar = {
@@ -87,6 +112,17 @@ type KlineData = {
     window_score?: number;
     event_kg_score?: number;
     net_sentiment?: number;
+  };
+  belief_overlay?: Array<{ date: string; mu: number; sigma: number; delta_mu?: number | null }>;
+  ebrt_recommendation?: {
+    action?: string;
+    conviction?: string;
+    score?: number;
+    risk?: number;
+    belief_mu?: number;
+    belief_sigma?: number;
+    belief_delta_mu?: number | null;
+    reasons?: Array<{ description: string; weight?: number; evidence_type?: string }>;
   };
 };
 
@@ -1176,6 +1212,38 @@ function App() {
           </div>
         </div>
 
+        {/* ── EBRT Trust Gate ── */}
+        {todayData.trust_gate && (todayData.trust_gate.operational_status || todayData.trust_gate.research_status) && (() => {
+          const tg = todayData.trust_gate!;
+          const opStatus = tg.operational_status || "unknown";
+          const resStatus = tg.research_status || "unknown";
+          const opClass = opStatus === "ok" ? "trust-ok" : opStatus === "degraded" ? "trust-warn" : "trust-err";
+          const resClass = resStatus === "ok" ? "trust-ok" : resStatus === "partial" ? "trust-warn" : "trust-err";
+          const fresh = tg.freshness || [];
+          return (
+            <div className="trust-gate-bar">
+              <span className="trust-gate-title">Trust Gate</span>
+              <span className={`trust-badge ${opClass}`}>运营 {opStatus}</span>
+              <span className={`trust-badge ${resClass}`}>研究 {resStatus}</span>
+              {tg.brier_score != null && (
+                <span className="trust-metric">Brier: {tg.brier_score.toFixed(3)}</span>
+              )}
+              {tg.drift_mmd != null && (
+                <span className="trust-metric">Drift: {tg.drift_mmd.toFixed(3)}</span>
+              )}
+              {fresh.length > 0 && (
+                <span className="trust-freshness">
+                  {fresh.map(f => (
+                    <span key={f.dataset} className={`trust-fresh-item trust-fresh-${f.status || "unknown"}`}>
+                      {f.dataset} {f.lag_days != null ? `${f.lag_days}d` : "?"}
+                    </span>
+                  ))}
+                </span>
+              )}
+            </div>
+          );
+        })()}
+
         {/* ── Error alert ── */}
         {errorNodes.length > 0 && (
           <div className="today-alert-strip">
@@ -1198,9 +1266,12 @@ function App() {
           {topPicks.length > 0 ? (
             <div className="today-pick-list">
               {topPicks.map((pick, idx) => {
-                const rawScore = pick.adj_score ?? pick.model_score ?? 0;
-                // normalise: adj_score can be 0-100 range, clamp bar to 100%
+                const ep = pick as EBRTPick;
+                const isEbrt = ep.action != null || ep.belief_mu != null;
+                const rawScore = ep.score ?? pick.adj_score ?? pick.model_score ?? 0;
                 const barPct = Math.min(rawScore > 1 ? rawScore : rawScore * 100, 100);
+                const action = ep.action || "";
+                const dmu = ep.belief_delta_mu;
                 return (
                   <div
                     key={idx}
@@ -1211,9 +1282,13 @@ function App() {
                   >
                     <div className="today-pick-rank">#{idx + 1}</div>
                     <div className="today-pick-badge-wrap">
-                      {pick.status === "new"
-                        ? <span className="badge-new">{t("newTag")}</span>
-                        : <span className="badge-continued">{t("continuedTag")}</span>}
+                      {isEbrt && action ? (
+                        <span className={`today-pick-action action-${action}`}>{action}</span>
+                      ) : pick.status === "new" ? (
+                        <span className="badge-new">{t("newTag")}</span>
+                      ) : (
+                        <span className="badge-continued">{t("continuedTag")}</span>
+                      )}
                     </div>
                     <div className="today-pick-identity">
                       <span className="today-pick-symbol">{pick.symbol}</span>
@@ -1227,21 +1302,44 @@ function App() {
                         {rawScore > 1 ? rawScore.toFixed(1) : rawScore.toFixed(2)}
                       </span>
                     </div>
-                    <div className="today-pick-metrics">
-                      {pick.model_score != null && (
-                        <span className="today-pick-chip">
-                          模 {pick.model_score > 1 ? pick.model_score.toFixed(0) : pick.model_score.toFixed(2)}
-                        </span>
-                      )}
-                      {pick.window_score != null && (
-                        <span className="today-pick-chip">技 {Math.round(pick.window_score)}</span>
-                      )}
-                      {pick.net_sentiment != null && (
-                        <span className={`today-pick-chip ${pick.net_sentiment >= 0 ? "chip-pos" : "chip-neg"}`}>
-                          情 {pick.net_sentiment >= 0 ? "+" : ""}{pick.net_sentiment.toFixed(2)}
-                        </span>
-                      )}
-                    </div>
+                    {isEbrt && ep.belief_mu != null ? (
+                      <div className="today-pick-belief">
+                        <span className="belief-mu-val">μ {ep.belief_mu >= 0 ? "+" : ""}{ep.belief_mu.toFixed(3)}</span>
+                        {dmu != null && (
+                          <span className={dmu >= 0 ? "belief-delta-pos" : "belief-delta-neg"}>
+                            Δ{dmu >= 0 ? "+" : ""}{dmu.toFixed(3)}
+                          </span>
+                        )}
+                        {ep.belief_sigma != null && (
+                          <span className="belief-sigma-val">σ={ep.belief_sigma.toFixed(2)}</span>
+                        )}
+                        {ep.conviction && (
+                          <span className={`conviction-badge conviction-${ep.conviction}`}>{ep.conviction}</span>
+                        )}
+                        {dmu != null && (
+                          <div
+                            className={`belief-delta-bar ${dmu >= 0 ? "belief-delta-bar-pos" : "belief-delta-bar-neg"}`}
+                            style={{ width: `${Math.min(Math.abs(dmu) * 100, 50)}px` }}
+                          />
+                        )}
+                      </div>
+                    ) : (
+                      <div className="today-pick-metrics">
+                        {pick.model_score != null && (
+                          <span className="today-pick-chip">
+                            模 {pick.model_score > 1 ? pick.model_score.toFixed(0) : pick.model_score.toFixed(2)}
+                          </span>
+                        )}
+                        {pick.window_score != null && (
+                          <span className="today-pick-chip">技 {Math.round(pick.window_score)}</span>
+                        )}
+                        {pick.net_sentiment != null && (
+                          <span className={`today-pick-chip ${pick.net_sentiment >= 0 ? "chip-pos" : "chip-neg"}`}>
+                            情 {pick.net_sentiment >= 0 ? "+" : ""}{pick.net_sentiment.toFixed(2)}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <button
                       type="button"
                       className="today-pick-detail-btn"
@@ -1300,48 +1398,129 @@ function App() {
     );
     if (!signalsData) return <div className="empty">{t("noData")}</div>;
     const picks = signalsData.picks || [];
-    const conviction = klineData?.recommendation?.conviction || "";
+    const isEbrtSource = signalsData.source === "ebrt";
+    const conviction = klineData?.recommendation?.conviction || klineData?.ebrt_recommendation?.conviction || "";
     return (
       <div className="picks-layout">
         <div className="picks-table-wrap">
           <table className="picks-table">
             <thead>
-              <tr>
-                <th>代码</th>
-                <th>名称</th>
-                <th>状态</th>
-                <th>综合分</th>
-                <th>{t("modelScore")}</th>
-                <th>{t("windowScore")}</th>
-                <th>{t("kgScore")}</th>
-                <th>情绪</th>
-                <th>事件</th>
-              </tr>
+              {isEbrtSource ? (
+                <tr className="picks-ebrt-header">
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>操作</th>
+                  <th>确信度</th>
+                  <th>综合分</th>
+                  <th>信念 μ</th>
+                  <th>Δμ</th>
+                  <th>σ</th>
+                  <th>风险</th>
+                </tr>
+              ) : (
+                <tr>
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>状态</th>
+                  <th>综合分</th>
+                  <th>{t("modelScore")}</th>
+                  <th>{t("windowScore")}</th>
+                  <th>{t("kgScore")}</th>
+                  <th>情绪</th>
+                  <th>事件</th>
+                </tr>
+              )}
             </thead>
             <tbody>
-              {picks.map((pick, idx) => (
-                <tr
-                  key={idx}
-                  className={selectedSymbol === pick.symbol ? "selected" : ""}
-                  onClick={() => { if (pick.symbol) void loadKlineData(pick.symbol); }}
-                >
-                  <td style={{ fontWeight: 600, fontSize: "13px" }}>{pick.symbol || "-"}</td>
-                  <td>{pick.name || "-"}</td>
-                  <td>
-                    {pick.status === "new" ? (
-                      <span className="badge-new">{t("newTag")}</span>
-                    ) : (
-                      <span className="badge-continued">{t("continuedTag")}</span>
-                    )}
-                  </td>
-                  <td>{pick.adj_score != null ? pick.adj_score.toFixed(3) : "-"}</td>
-                  <td>{pick.model_score != null ? pick.model_score.toFixed(3) : "-"}</td>
-                  <td>{pick.window_score != null ? pick.window_score.toFixed(3) : "-"}</td>
-                  <td>{pick.event_kg_score != null ? pick.event_kg_score.toFixed(3) : "-"}</td>
-                  <td>{pick.net_sentiment != null ? pick.net_sentiment.toFixed(2) : "-"}</td>
-                  <td>{pick.event_type || "-"}</td>
-                </tr>
-              ))}
+              {picks.map((pick, idx) => {
+                const ep = pick as EBRTPick;
+                const isSelected = selectedSymbol === pick.symbol;
+                if (isEbrtSource) {
+                  const action = ep.action || "";
+                  const dmu = ep.belief_delta_mu;
+                  return [
+                    <tr
+                      key={`pick-${idx}`}
+                      className={isSelected ? "selected" : ""}
+                      onClick={() => { if (pick.symbol) void loadKlineData(pick.symbol); }}
+                    >
+                      <td style={{ fontWeight: 600, fontSize: "13px" }}>{pick.symbol || "-"}</td>
+                      <td>{pick.name || "-"}</td>
+                      <td><span className={`today-pick-action action-${action}`}>{action || "-"}</span></td>
+                      <td><span className={`conviction-badge conviction-${ep.conviction || ""}`}>{ep.conviction || "-"}</span></td>
+                      <td>{ep.score != null ? ep.score.toFixed(3) : "-"}</td>
+                      <td>
+                        {ep.belief_mu != null ? (
+                          <span className={ep.belief_mu >= 0 ? "belief-delta-pos" : "belief-delta-neg"}>
+                            {ep.belief_mu >= 0 ? "+" : ""}{ep.belief_mu.toFixed(3)}
+                          </span>
+                        ) : "-"}
+                      </td>
+                      <td>
+                        {dmu != null ? (
+                          <span className={dmu >= 0 ? "belief-delta-pos" : "belief-delta-neg"}>
+                            {dmu >= 0 ? "+" : ""}{dmu.toFixed(3)}
+                          </span>
+                        ) : "-"}
+                      </td>
+                      <td>{ep.belief_sigma != null ? ep.belief_sigma.toFixed(3) : "-"}</td>
+                      <td>{ep.risk != null ? ep.risk.toFixed(3) : "-"}</td>
+                    </tr>,
+                    isSelected && (ep.reasons?.length || ep.top_evidence?.length) ? (
+                      <tr key={`belief-${idx}`} className="picks-belief-row">
+                        <td colSpan={9}>
+                          {ep.reasons && ep.reasons.length > 0 && (
+                            <div className="picks-belief-summary">
+                              <span style={{ fontWeight: 600 }}>推荐理由:</span>
+                              <ul className="picks-evidence-list">
+                                {ep.reasons.slice(0, 3).map((r, ri) => (
+                                  <li key={ri}>{r.evidence_type && <span style={{ opacity: 0.6 }}>[{r.evidence_type}]</span>} {r.description}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {ep.top_evidence && ep.top_evidence.length > 0 && (
+                            <div className="picks-belief-summary" style={{ marginTop: 4 }}>
+                              <span style={{ fontWeight: 600 }}>Top Evidence:</span>
+                              <ul className="picks-evidence-list">
+                                {ep.top_evidence.slice(0, 3).map((e, ei) => (
+                                  <li key={ei}>
+                                    <span className="picks-evidence-attn">{e.weight != null ? e.weight.toFixed(3) : "-"}</span>
+                                    {e.evidence_id || "-"}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ) : null,
+                  ];
+                }
+                return (
+                  <tr
+                    key={idx}
+                    className={isSelected ? "selected" : ""}
+                    onClick={() => { if (pick.symbol) void loadKlineData(pick.symbol); }}
+                  >
+                    <td style={{ fontWeight: 600, fontSize: "13px" }}>{pick.symbol || "-"}</td>
+                    <td>{pick.name || "-"}</td>
+                    <td>
+                      {pick.status === "new" ? (
+                        <span className="badge-new">{t("newTag")}</span>
+                      ) : (
+                        <span className="badge-continued">{t("continuedTag")}</span>
+                      )}
+                    </td>
+                    <td>{pick.adj_score != null ? pick.adj_score.toFixed(3) : "-"}</td>
+                    <td>{pick.model_score != null ? pick.model_score.toFixed(3) : "-"}</td>
+                    <td>{pick.window_score != null ? pick.window_score.toFixed(3) : "-"}</td>
+                    <td>{pick.event_kg_score != null ? pick.event_kg_score.toFixed(3) : "-"}</td>
+                    <td>{pick.net_sentiment != null ? pick.net_sentiment.toFixed(2) : "-"}</td>
+                    <td>{pick.event_type || "-"}</td>
+                  </tr>
+                );
+              })}
               {!picks.length && (
                 <tr><td colSpan={9} className="empty">{t("noData")}</td></tr>
               )}
@@ -1378,7 +1557,46 @@ function App() {
                   )}
                 </div>
               )}
-              {klineData.recommendation && (
+              {klineData.ebrt_recommendation && (
+                <div style={{ marginTop: 10, padding: "8px 10px", background: "var(--surface2, rgba(255,255,255,0.03))", borderRadius: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                    {klineData.ebrt_recommendation.action && (
+                      <span className={`today-pick-action action-${klineData.ebrt_recommendation.action}`}>
+                        {klineData.ebrt_recommendation.action}
+                      </span>
+                    )}
+                    <span className={`conviction-badge conviction-${klineData.ebrt_recommendation.conviction || ""}`}>
+                      {klineData.ebrt_recommendation.conviction || "-"}
+                    </span>
+                    {klineData.ebrt_recommendation.score != null && (
+                      <span className="ind-chip">score: {klineData.ebrt_recommendation.score.toFixed(3)}</span>
+                    )}
+                    {klineData.ebrt_recommendation.risk != null && (
+                      <span className="ind-chip">risk: {klineData.ebrt_recommendation.risk.toFixed(3)}</span>
+                    )}
+                  </div>
+                  <div className="today-pick-belief" style={{ marginTop: 4 }}>
+                    {klineData.ebrt_recommendation.belief_mu != null && (
+                      <span className="belief-mu-val">μ {klineData.ebrt_recommendation.belief_mu >= 0 ? "+" : ""}{klineData.ebrt_recommendation.belief_mu.toFixed(3)}</span>
+                    )}
+                    {klineData.ebrt_recommendation.belief_delta_mu != null && (() => {
+                      const d = klineData.ebrt_recommendation!.belief_delta_mu!;
+                      return <span className={d >= 0 ? "belief-delta-pos" : "belief-delta-neg"}>Δ{d >= 0 ? "+" : ""}{d.toFixed(3)}</span>;
+                    })()}
+                    {klineData.ebrt_recommendation.belief_sigma != null && (
+                      <span className="belief-sigma-val">σ={klineData.ebrt_recommendation.belief_sigma.toFixed(2)}</span>
+                    )}
+                  </div>
+                  {(klineData.ebrt_recommendation.reasons || []).length > 0 && (
+                    <ul className="picks-evidence-list" style={{ marginTop: 6 }}>
+                      {(klineData.ebrt_recommendation.reasons || []).slice(0, 3).map((r, ri) => (
+                        <li key={ri}>{r.evidence_type && <span style={{ opacity: 0.6 }}>[{r.evidence_type}]</span>} {r.description}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+              {!klineData.ebrt_recommendation && klineData.recommendation && (
                 <div style={{ marginTop: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                     <span style={{ fontSize: "12px", color: "var(--muted)" }}>{t("conviction")}:</span>

@@ -33,6 +33,7 @@ class EvalOutcome:
     summary: str
     payload: dict[str, Any]
     exit_code: int = 0
+    gate_ok: bool = False
 
 
 def _cached_source_outcome(db: TradeDB, eval_date: str) -> EvalOutcome | None:
@@ -1188,6 +1189,185 @@ def evaluate_gate(data_root: str = str(default_data_root()),
     return EvalOutcome(status=status, summary=summary, payload={"eval_date": target_date, "status": status, "reasons": reasons, "metrics": metrics})
 
 
+def _compute_brier_from_recommendations(db: TradeDB, eval_date: str,
+                                         horizon_days: int = 5) -> float | None:
+    """Compute Brier score: compare Recommendation.score (T-5) vs actual return direction.
+
+    Uses Recommendation rows from eval_date - horizon_days, matched against
+    kline actual returns. Returns None if insufficient data.
+    """
+    try:
+        from datetime import timedelta
+        t_minus = (date.fromisoformat(eval_date) - timedelta(days=horizon_days)).isoformat()
+        recs = db.recommendation_list(t_minus)
+        if not recs:
+            return None
+
+        scores: list[float] = []
+        actuals: list[float] = []
+        for r in recs:
+            sym = str(r.get("symbol") or "")
+            pred_score = float(r.get("score") or 0.5)
+            try:
+                # Get actual close price at T-horizon and today
+                row = db._conn.execute("""
+                    SELECT AVG(close) as avg_close
+                    FROM (
+                        SELECT close FROM (
+                            SELECT date, close FROM signals WHERE symbol=?
+                            ORDER BY date DESC LIMIT ?
+                        ) LIMIT 3
+                    )
+                """, (sym, horizon_days + 5)).fetchone()
+                # Simpler: use event_propagations actual_return_5d if available
+                ep = db._conn.execute("""
+                    SELECT actual_return_5d FROM event_propagations ep
+                    JOIN market_events me ON ep.event_id = me.event_id
+                    WHERE ep.symbol=? AND me.event_date=?
+                    LIMIT 1
+                """, (sym, t_minus)).fetchone()
+                if ep and ep[0] is not None:
+                    actual_positive = 1.0 if float(ep[0]) > 0 else 0.0
+                    scores.append(pred_score)
+                    actuals.append(actual_positive)
+            except Exception:
+                pass
+
+        if len(scores) < 5:
+            return None
+
+        scores_s = pd.Series(scores)
+        actuals_s = pd.Series(actuals)
+        return _brier_score(scores_s, actuals_s)
+    except Exception as exc:
+        logger.debug("Brier computation failed: %s", exc)
+        return None
+
+
+def _compute_drift_mmd(db: TradeDB, eval_date: str, lookback_days: int = 7) -> float | None:
+    """Estimate distribution drift via simplified MMD proxy.
+
+    Compares the distribution of net_sentiment scores this week vs last week.
+    Returns a small value if stable, larger if drifted.
+    """
+    try:
+        from datetime import timedelta
+        end = date.fromisoformat(eval_date)
+        week1_end = end - timedelta(days=lookback_days)
+        week2_end = end - timedelta(days=2 * lookback_days)
+
+        week1_scores: list[float] = []
+        week2_scores: list[float] = []
+
+        for d_offset in range(lookback_days):
+            d = end - timedelta(days=d_offset)
+            gold_path = (
+                Path(db._data_root) / "sentiment" / "gold"
+                / f"{d.year:04d}" / f"{d.month:02d}"
+                / f"{d.isoformat()}.parquet"
+            )
+            if gold_path.exists():
+                try:
+                    df = pd.read_parquet(gold_path)
+                    if "net_sentiment" in df.columns:
+                        week1_scores.extend(df["net_sentiment"].dropna().tolist())
+                except Exception:
+                    pass
+        for d_offset in range(lookback_days):
+            d = week1_end - timedelta(days=d_offset)
+            gold_path = (
+                Path(db._data_root) / "sentiment" / "gold"
+                / f"{d.year:04d}" / f"{d.month:02d}"
+                / f"{d.isoformat()}.parquet"
+            )
+            if gold_path.exists():
+                try:
+                    df = pd.read_parquet(gold_path)
+                    if "net_sentiment" in df.columns:
+                        week2_scores.extend(df["net_sentiment"].dropna().tolist())
+                except Exception:
+                    pass
+
+        if not week1_scores or not week2_scores:
+            return None
+
+        s1 = pd.Series(week1_scores)
+        s2 = pd.Series(week2_scores)
+        # Proxy MMD: difference in means + std
+        mmd_proxy = abs(float(s1.mean()) - float(s2.mean())) + abs(float(s1.std()) - float(s2.std()))
+        return round(float(mmd_proxy), 4)
+    except Exception as exc:
+        logger.debug("MMD drift computation failed: %s", exc)
+        return None
+
+
+def _write_quality_report(db: TradeDB, eval_date: str, overall_status: str,
+                           gate_outcome: "EvalOutcome",
+                           model_outcome: "EvalOutcome") -> None:
+    """Write QualityReport row with Brier score, MMD drift, and trust gate status."""
+    gate_metrics = gate_outcome.payload.get("metrics", {}) if gate_outcome else {}
+    gate_reasons = gate_outcome.payload.get("reasons", []) if gate_outcome else []
+
+    # Operational status: based on data freshness and pipeline errors
+    op_status_raw = str(gate_metrics.get("operational_status") or overall_status)
+    if op_status_raw in ("ok",):
+        operational_status = "ok"
+    elif op_status_raw in ("partial", "degraded"):
+        operational_status = "degraded"
+    else:
+        operational_status = "blocked"
+
+    # Research status: based on model quality
+    model_rows = model_outcome.payload.get("rows", []) if model_outcome else []
+    best_brier: float | None = None
+    for mr in model_rows:
+        rb = mr.get("risk_brier_score")
+        if rb is not None:
+            best_brier = float(rb) if best_brier is None else min(best_brier, float(rb))
+
+    # Brier from Recommendation vs actual
+    rec_brier = _compute_brier_from_recommendations(db, eval_date)
+    brier_score = rec_brier if rec_brier is not None else best_brier
+
+    drift_mmd = _compute_drift_mmd(db, eval_date)
+
+    research_ok = (
+        (brier_score is None or brier_score < 0.35)
+        and (drift_mmd is None or drift_mmd < 0.1)
+    )
+    research_partial = (
+        brier_score is not None and brier_score < 0.35
+    ) or (drift_mmd is not None and drift_mmd < 0.2)
+    if research_ok:
+        research_status = "ok"
+    elif research_partial:
+        research_status = "partial"
+    else:
+        research_status = "blocked"
+
+    metrics = {
+        "operational_status": operational_status,
+        "research_status": research_status,
+        "brier_score": brier_score,
+        "drift_mmd": drift_mmd,
+        "cache_fingerprint": gate_metrics.get("cache_fingerprint", ""),
+    }
+
+    db.quality_report_upsert(
+        eval_date=eval_date,
+        operational_status=operational_status,
+        research_status=research_status,
+        reasons=gate_reasons,
+        metrics=metrics,
+        brier_score=brier_score,
+        drift_mmd=drift_mmd,
+    )
+    logger.info(
+        "QualityReport written: %s op=%s research=%s brier=%s mmd=%s",
+        eval_date, operational_status, research_status, brier_score, drift_mmd
+    )
+
+
 def evaluate_daily(data_root: str = str(default_data_root()),
                    eval_date: str | None = None,
                    lookback_days: int = 30,
@@ -1282,4 +1462,11 @@ def evaluate_daily(data_root: str = str(default_data_root()),
     status = gate_outcome.status
     if status == "ok" and any(out.status in {"partial", "blocked_by_dependency"} for out in [source_outcome, event_outcome, model_outcome]):
         status = "partial"
-    return EvalOutcome(status=status, summary=summary, payload=payload)
+
+    # EBRT: compute Brier score from Recommendation vs actual returns, write QualityReport
+    try:
+        _write_quality_report(db, target_date, status, gate_outcome, model_outcome)
+    except Exception as exc:
+        logger.warning("QualityReport write failed: %s", exc)
+
+    return EvalOutcome(status=status, summary=summary, payload=payload, gate_ok=(status == "ok"))
