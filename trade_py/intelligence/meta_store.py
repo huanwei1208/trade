@@ -11,8 +11,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trade_py.meta.feed.score import FeedScore
-from trade_py.meta.schema import meta_store as _ddl
+from trade_py.intelligence.feed_score import FeedScore
+from trade_py.intelligence import schema as _ddl
 
 
 def _sqlite_path(data_root: Path) -> Path:

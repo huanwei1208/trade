@@ -1,6 +1,6 @@
 """Backward-compatible re-exports — canonical definition is in trade_py.meta.records.raw."""
 
-from trade_py.meta.records.raw import RawRecord
+from trade_py.intelligence.raw_record import RawRecord
 from typing import Literal, Protocol, runtime_checkable
 from datetime import datetime
 

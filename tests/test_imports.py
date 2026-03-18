@@ -22,9 +22,9 @@ def test_utils():
 
 
 def test_meta():
-    from trade_py.meta.records.raw import RawRecord
-    from trade_py.meta.feed import FeedScore
-    from trade_py.meta.schema.meta_store import FEED_SCORES, SOURCE_CONFIGS
+    from trade_py.intelligence.raw_record import RawRecord
+    from trade_py.intelligence.feed_score import FeedScore
+    from trade_py.intelligence.schema import FEED_SCORES, SOURCE_CONFIGS
 
     assert RawRecord is not None
     assert FeedScore is not None

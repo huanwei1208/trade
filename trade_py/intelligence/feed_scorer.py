@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from trade_py.data.pipeline.paths import bronze_path, bronze_root
-from trade_py.meta.feed.score import FeedScore
+from trade_py.intelligence.feed_score import FeedScore
 
 
 def compute_feed_score(
@@ -146,7 +146,7 @@ def score_all_sources(
             pass
 
     try:
-        from trade_py.meta.store.duckdb_store import DuckDbMetaStore
+        from trade_py.intelligence.meta_store import DuckDbMetaStore
         with DuckDbMetaStore(data_root) as store:
             for score in scores:
                 store.upsert_feed_score(score)
