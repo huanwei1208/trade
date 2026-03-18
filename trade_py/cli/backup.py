@@ -33,7 +33,7 @@ def make_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from trade_py.backup import (
+    from scripts.backup import (
         backup_doctor,
         create_backup_snapshot,
         list_backup_snapshots,

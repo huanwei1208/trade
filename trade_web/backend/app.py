@@ -1266,7 +1266,7 @@ def create_app():
         today = date.today().isoformat()
         gate = db.quality_gate_get()
         try:
-            from trade_py.backup import backup_doctor
+            from scripts.backup import backup_doctor
             backup_health = backup_doctor(data_root)
         except Exception as exc:  # pragma: no cover - defensive web path
             logger.warning("backup doctor failed: %s", exc)
