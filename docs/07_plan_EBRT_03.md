@@ -1,6 +1,72 @@
-# ARCH_REFACTOR_01：架构全面重构计划
+# ARCH_REFACTOR_01 / EBRT_03：架构重构计划与进度跟踪
 
-> 版本：v1.0 | 日期：2026-03-19 | 作者：principal architect
+> 版本：v1.1 | 日期：2026-03-19 | 作者：principal architect
+>
+> ⚠️ **注意**：架构评估中部分行数来自 Explore agent，经实际核查后已修正：
+> - `evaluation/service.py`: 实际 **1,668 行**（非 70,982 行）
+> - `analysis/feature_builder.py`: 实际 **909 行**（非 40,021 行）
+> - `analysis/knowledge_graph.py`: 实际 **758 行**（非 34,724 行）
+> - `analysis/propagation_training.py`: 实际 **791 行**（非 29,693 行）
+>
+> ---
+>
+> ## 重构执行进度（2026-03-19）
+>
+> | 步骤 | 描述 | 提交 | 状态 |
+> |------|------|------|------|
+> | **Hotfix** | `propagation_runtime.py:511` 破损 import（`domain.models` → `trade_web.backend.inference`） | `84cde6f` | ✅ 完成 |
+> | **Phase 1** | `evaluation/service.py`（1,668 行）→ 7 个专责文件（utils/sources/events/models/gate/trust/service） | `84cde6f` | ✅ 完成 |
+> | **Phase 2** | `factors/` 包：从 `propagation_runtime.py` 拆出 6 职责 → 5 文件（definitions/technical/encoder/materializer/inference_bridge） + shim | `84cde6f` | ✅ 完成 |
+> | **Phase 3** | `trust/` 包 + `BeliefEngine.gain_eta` 动态化（读取 `trust_scalar` 替代二值 operational_status） | `1637a0a` | ✅ 完成 |
+> | **Phase 4** | DB 层按职责拆分（`trade_db.py` 4,192→2,422 行 + 3 mixin：ebrt_crud/signal_crud/kg_crud + `_utils.py`） | - | ✅ 完成 |
+> | **Phase 5** | 因子信任元数据（FactorMeta + composite_trust 反馈训练权重） | - | ⬜ 待开始 |
+> | **Phase 6** | C++ pybind11 binding（FeatureEngine + RiskMonitor） | - | ⬜ 低优先级 |
+>
+> ### Phase 1 详情：evaluation/ 拆分结果
+>
+> | 新文件 | 行数 | 职责 |
+> |--------|------|------|
+> | `evaluation/utils.py` | ~300 | 常量、EvalOutcome、cache helpers、日期工具、统计函数 |
+> | `evaluation/sources.py` | ~200 | `evaluate_sources()` + `_source_health_rows()` |
+> | `evaluation/events.py` | ~115 | `evaluate_events()` |
+> | `evaluation/models.py` | ~255 | `evaluate_models()` + dataset helpers |
+> | `evaluation/gate.py` | ~195 | `evaluate_gate()` |
+> | `evaluation/trust.py` | ~280 | `compute_trust_vector()`, `scalar_trust()`, `write_quality_report()` |
+> | `evaluation/service.py` | ~145 | `evaluate_daily()` + 全量 backward-compat re-exports |
+>
+> ### Phase 2 详情：factors/ 包结构
+>
+> | 新文件 | 行数 | 职责 |
+> |--------|------|------|
+> | `factors/definitions.py` | ~70 | FEATURE_COLS, FACTOR_DEFINITIONS, TECHNICAL_DEFAULTS |
+> | `factors/technical.py` | ~115 | RSI/MACD/KDJ/MA 计算 |
+> | `factors/encoder.py` | ~60 | 分类编码 + feature_maps 持久化 |
+> | `factors/materializer.py` | ~195 | 特征物化 + DB 写入 |
+> | `factors/inference_bridge.py` | ~40 | InferenceService 预测同步 |
+> | `analysis/propagation_runtime.py` | ~35 | 兼容 shim（全量 re-export） |
+>
+> ### Phase 3 详情：trust/ + Feedback 回路
+>
+> - `trust/__init__.py`：re-export `compute_trust_vector`, `scalar_trust`, `to_gain_eta`
+> - `trust/gate.py`：`to_gain_eta(trust_scalar=0.5, base_eta=0.15)` → `0.149`
+> - `belief/__init__.py`：读取 `QualityReport.metrics_json["trust_scalar"]` 动态设置 `trust_gate`
+>   - trust=1.0 → gain_eta=0.249；trust=0.5 → 0.149；trust=0.0 → 0.050
+>
+> ### Phase 4 详情：DB 层 Mixin 拆分结果
+>
+> | 新文件 | 行数 | 职责 |
+> |--------|------|------|
+> | `db/_utils.py` | 19 | `_json_loads_safe` 共享 helper |
+> | `db/ebrt_crud.py` | 412 | ArticleEvent/Evidence/BeliefState/AttentionScore/BeliefTransition/Recommendation/QualityReport/FreshnessStatus/InfluenceSignal |
+> | `db/signal_crud.py` | 838 | signals/factors/factor_registry/model_registry + 评估表（source_health/event_eval/model_eval/dataset_snapshots/quality_gate） |
+> | `db/kg_crud.py` | 584 | market_events/event_propagations + kg_nodes/kg_relations/kg_edge_candidates |
+> | `db/trade_db.py` | 2,422 | 连接管理 + schema/migrations + 核心基础表（settings/instruments/job_runs/event_log/pipeline_dag/trading_calendar/agenda/backup/sync_state） |
+>
+> - `TradeDB` 改为 `class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin)`
+> - 向后完全兼容（调用方代码零修改）：所有方法仍通过 `db.method_name()` 调用
+> - 24 个关键方法通过 smoke test 验证；33 个现有测试通过（4 个预存在失败无变化）
+>
+> ---
 
 ---
 
