@@ -64,14 +64,21 @@ class BeliefEngine:
         if not symbols:
             logger.info("belief_engine: no symbols with evidence for %s", today)
 
-        # Get trust gate from latest QualityReport
+        # Get trust gate from latest QualityReport (trust_scalar from Phase 3 TrustGate)
         trust_gate = _TRUST_GATE_DEFAULT
         drift = _DRIFT_DEFAULT
         try:
             qr = db.quality_report_latest()
             if qr:
-                trust_gate = 1.0 if qr.get("operational_status") == "ok" else 0.7
-                drift = float(qr.get("metrics", {}).get("drift_mmd") or 0.0)
+                metrics = qr.get("metrics") if isinstance(qr.get("metrics"), dict) else {}
+                trust_scalar = metrics.get("trust_scalar")
+                if trust_scalar is not None:
+                    # Use trust_scalar directly (range 0-1, already sigmoid-compressed)
+                    trust_gate = float(trust_scalar)
+                else:
+                    # Fallback: binary gate from operational_status
+                    trust_gate = 1.0 if qr.get("operational_status") == "ok" else 0.7
+                drift = float(metrics.get("drift_mmd") or 0.0)
         except Exception:
             pass
 
