@@ -19,7 +19,7 @@
 > | **Phase 2** | `factors/` 包：从 `propagation_runtime.py` 拆出 6 职责 → 5 文件（definitions/technical/encoder/materializer/inference_bridge） + shim | `84cde6f` | ✅ 完成 |
 > | **Phase 3** | `trust/` 包 + `BeliefEngine.gain_eta` 动态化（读取 `trust_scalar` 替代二值 operational_status） | `1637a0a` | ✅ 完成 |
 > | **Phase 4** | DB 层按职责拆分（`trade_db.py` 4,192→2,422 行 + 3 mixin：ebrt_crud/signal_crud/kg_crud + `_utils.py`） | - | ✅ 完成 |
-> | **Phase 5** | 因子信任元数据（FactorMeta + composite_trust 反馈训练权重） | - | ⬜ 待开始 |
+> | **Phase 5** | 因子信任元数据（FactorMeta + composite_trust + DB v15 migration + trust_update 周任务） | - | ✅ 完成 |
 > | **Phase 6** | C++ pybind11 binding（FeatureEngine + RiskMonitor） | - | ⬜ 低优先级 |
 >
 > ### Phase 1 详情：evaluation/ 拆分结果
@@ -65,6 +65,31 @@
 > - `TradeDB` 改为 `class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin)`
 > - 向后完全兼容（调用方代码零修改）：所有方法仍通过 `db.method_name()` 调用
 > - 24 个关键方法通过 smoke test 验证；33 个现有测试通过（4 个预存在失败无变化）
+>
+> ### Phase 5 详情：因子信任元数据
+>
+> | 新文件 | 行数 | 职责 |
+> |--------|------|------|
+> | `factors/registry.py` | ~140 | `FactorType` enum, `FactorMeta` dataclass（measurement/utility/staleness/composite_trust）, `FACTOR_REGISTRY`（32 因子静态注册）, `composite_trust_weights()`, `load_registry_from_db()` |
+> | `factors/trust_update.py` | ~200 | `compute_factor_ic(data_root, lookback_days=60)` — rolling rank IC per factor; `update_utility_trust()` — IC→utility_trust→写入 factor_registry |
+> | DB v15 migration | 15行 | `factor_registry` 增加 `utility_trust REAL DEFAULT 0.5` + `measurement_trust REAL DEFAULT 1.0` |
+>
+> **默认 measurement_trust（按因子类型）：**
+>
+> | FactorType | measurement_trust | 说明 |
+> |-----------|-------------------|------|
+> | TECHNICAL | 0.90 | Tushare OHLCV 可靠 |
+> | SENTIMENT | 0.70 | RSS 噪声较高 |
+> | EVENT | 0.80 | NLP 提取置信度 |
+> | GRAPH | 0.75 | KG 传播间接性 |
+> | WINDOW | 0.80 | Window scorer |
+> | INSTRUMENT | 1.00 | 参考数据 |
+>
+> **composite_trust = measurement × utility × staleness_decay**（staleness_decay = exp(-staleness_days/5)）
+>
+> **调用方更新：**
+> - `build_training_feature_frame()` 返回值从 `(df, maps)` 扩展为 `(df, maps, trust_weights)`
+> - `jobs/__init__.py:_job_build_features` + `cli/model.py:_cmd_build_features` 改用 `_trust` 接收第三值
 >
 > ---
 

@@ -265,7 +265,7 @@ def _job_build_features(data_root: str, config: dict | None = None) -> str:
     out_dir = Path(data_root) / "events"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "features.parquet"
-    df, maps = build_training_feature_frame(data_root)
+    df, maps, _trust = build_training_feature_frame(data_root)
     if df.empty:
         return "特征构建: 无事件传播数据，跳过"
 

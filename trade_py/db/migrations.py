@@ -805,6 +805,23 @@ def _migrate_v14(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v15(conn: sqlite3.Connection) -> None:
+    """Add utility_trust and measurement_trust columns to factor_registry.
+
+    utility_trust:    rolling 60-day rank IC → [0,1], updated weekly.
+    measurement_trust: source reliability prior, set by config.
+    """
+    for col, default in (
+        ("utility_trust",    "0.5"),
+        ("measurement_trust", "1.0"),
+    ):
+        if not _col_exists(conn, "factor_registry", col):
+            conn.execute(
+                f"ALTER TABLE factor_registry ADD COLUMN {col} REAL NOT NULL DEFAULT {default}"
+            )
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -965,4 +982,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v14 applied")
         except Exception as exc:
             logger.error("Migration v14 failed: %s", exc)
+            raise
+
+    # ── v15: factor_registry trust columns ────────────────────────────────────
+    if 15 not in applied:
+        logger.info("Applying DB migration v15 (factor_registry trust columns)")
+        try:
+            _migrate_v15(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (15)")
+            conn.commit()
+            logger.info("Migration v15 applied")
+        except Exception as exc:
+            logger.error("Migration v15 failed: %s", exc)
             raise

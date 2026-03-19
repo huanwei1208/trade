@@ -34,7 +34,7 @@ def _cmd_build_features(args: argparse.Namespace) -> int:
     from trade_py.analysis.propagation_runtime import build_training_feature_frame, save_feature_maps
 
     data_root = Path(args.data_root)
-    df, maps = build_training_feature_frame(args.data_root)
+    df, maps, _trust = build_training_feature_frame(args.data_root)
     if df.empty:
         logger.error("No features built — check event_propagations / signals / gold coverage")
         return 1

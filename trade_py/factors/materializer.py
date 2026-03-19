@@ -16,6 +16,7 @@ from trade_py.factors.definitions import (
 )
 from trade_py.factors.technical import merge_technical_factors
 from trade_py.factors.encoder import encode_with_maps, load_feature_maps, stable_code_map
+from trade_py.factors.registry import composite_trust_weights, load_registry_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +77,21 @@ def _fill_factor_defaults(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_training_feature_frame(data_root: str) -> tuple[pd.DataFrame, dict[str, dict[str, int]]]:
-    """Build feature matrix for training from event_propagations + signals + gold."""
+def build_training_feature_frame(
+    data_root: str,
+) -> tuple[pd.DataFrame, dict[str, dict[str, int]], dict[str, float]]:
+    """Build feature matrix for training from event_propagations + signals + gold.
+
+    Returns
+    -------
+    df : pd.DataFrame
+        Feature matrix with FEATURE_COLS + label columns.
+    maps : dict[str, dict[str, int]]
+        Categorical encoding maps (event_type, breadth).
+    trust_weights : dict[str, float]
+        composite_trust per factor (from factor_registry).  Use to down-weight
+        low-trust factors when constructing sample_weight or feature masks.
+    """
     db = TradeDB(data_root)
     rows = db._conn.execute(
         """
@@ -117,7 +131,15 @@ def build_training_feature_frame(data_root: str) -> tuple[pd.DataFrame, dict[str
     }
     df = encode_with_maps(df, maps)
     df = _fill_factor_defaults(df)
-    return df, maps
+
+    # Load composite trust weights from factor_registry
+    try:
+        reg = load_registry_from_db(db)
+        trust_weights = composite_trust_weights(reg)
+    except Exception:
+        trust_weights = composite_trust_weights()  # fallback to defaults
+
+    return df, maps, trust_weights
 
 
 def materialize_inference_factors(data_root: str,
