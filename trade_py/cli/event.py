@@ -353,7 +353,7 @@ def _cmd_rebuild(args: argparse.Namespace) -> int:
 
 
 def _cmd_add(args: argparse.Namespace) -> int:
-    from trade_py.app.pipelines.event_pipeline import run_event_pipeline_for
+    from trade_py.event.pipeline import run_event_pipeline_for
 
     event_date = args.date or date.today().isoformat()
     entity_id = args.entity or "market"

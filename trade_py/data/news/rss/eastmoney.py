@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from trade_py.data.news.rss.base import RssSource
-from trade_py.meta.records.raw import RawRecord
+from trade_py.intelligence.raw_record import RawRecord
 
 FEED_NAME = "EastMoney"
 FEED_PATH = "/eastmoney/report/macresearch"

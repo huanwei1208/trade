@@ -750,7 +750,7 @@ def create_app():
         }
 
     def _kg_page_payload() -> dict[str, Any]:
-        from trade_py.domain.kg import SectorGraph
+        from trade_py.analysis.knowledge_graph import SectorGraph
 
         db = _db()
         snapshot_path = SectorGraph.snapshot_path(data_root)

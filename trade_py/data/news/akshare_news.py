@@ -17,7 +17,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from trade_py.meta.records.raw import RawRecord
+from trade_py.intelligence.raw_record import RawRecord
 
 logger = logging.getLogger(__name__)
 
