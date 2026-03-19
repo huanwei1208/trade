@@ -432,7 +432,7 @@ def _job_recommend(data_root: str, config: dict | None = None) -> str:
 
 def _job_reliability_update(data_root: str, config: dict | None = None) -> str:
     """Update per-source reliability weights using Brier loss from T-5 recommendations."""
-    from trade_py.evaluation.service import _update_source_reliabilities
+    from trade_py.evaluation.trust import _update_source_reliabilities
     from trade_py.db.trade_db import TradeDB
     today = date.today().isoformat()
     db = TradeDB(data_root)

@@ -822,6 +822,30 @@ def _migrate_v15(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v16(conn: sqlite3.Connection) -> None:
+    """Seed EBRT downstream DAG rows: reliability_update + influence_score."""
+    if not _table_exists(conn, "pipeline_dag"):
+        return
+    new_dag_rows = [
+        # reliability_update: daily Brier-loss feedback after market close
+        ("compute", "gate.market_close", "reliability_update", None, 1, "信源可靠性奖惩更新（EBRT）"),
+        # influence_score: weekly influence graph recompute (Sunday model window)
+        ("compute", "gate.model_weekly",  "influence_score",   None, 1, "信源影响力评分（EBRT Trust）"),
+    ]
+    for stage, source, job_name, emits, enabled, description in new_dag_rows:
+        exists = conn.execute(
+            "SELECT 1 FROM pipeline_dag WHERE stage=? AND source=? AND job_name=? LIMIT 1",
+            (stage, source, job_name),
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description) "
+                "VALUES (?,?,?,?,?,?)",
+                (stage, source, job_name, emits or "", enabled, description),
+            )
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -994,4 +1018,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v15 applied")
         except Exception as exc:
             logger.error("Migration v15 failed: %s", exc)
+            raise
+
+    # ── v16: EBRT DAG rows (reliability_update + influence_score) ─────────────
+    if 16 not in applied:
+        logger.info("Applying DB migration v16 (EBRT reliability/influence DAG rows)")
+        try:
+            _migrate_v16(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (16)")
+            conn.commit()
+            logger.info("Migration v16 applied")
+        except Exception as exc:
+            logger.error("Migration v16 failed: %s", exc)
             raise
