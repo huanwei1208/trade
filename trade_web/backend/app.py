@@ -24,6 +24,10 @@ Routes:
   GET  /api/signals-page         → top 50 picks with belief delta + top evidence (EBRT)
   GET  /api/belief/{symbol}      → BeliefState history + top AttentionScores (EBRT)
   GET  /api/kline/{symbol}       → OHLCV + indicators + event markers + belief_overlay (EBRT)
+  GET  /api/state/{symbol}       → WorldState (regime labels, blockers, signals)
+  GET  /api/explain/{symbol}     → DecisionExplanation (4-layer, unified)
+  GET  /api/actions-page         → today's action candidates (WATCH/PROBE/ADD)
+  GET  /api/trust/overview       → portfolio-level trust summary
   POST /predict                  → online inference endpoint
 """
 from __future__ import annotations
@@ -133,6 +137,15 @@ def create_app():
     # Lazy-init inference service
     from trade_web.backend.inference import InferenceService
     _inference = InferenceService(data_root)
+
+    # Services layer (state-centered decision architecture)
+    from trade_py.services.state_service import StateService
+    from trade_py.services.decision_service import DecisionService
+    from trade_py.services.explanation_service import ExplanationService
+    _state_svc    = StateService(data_root)
+    _decision_svc = DecisionService(inference=_inference)
+    _explain_svc  = ExplanationService(_state_svc, _decision_svc, inference=_inference)
+
     _payload_cache: dict[str, dict[str, Any]] = {}
     _payload_cache_lock = Lock()
 
@@ -1595,6 +1608,117 @@ def create_app():
             builder=_signals_page_payload,
         )
 
+    # ── API: state/{symbol} ───────────────────────────────────────────────────
+
+    @app.get("/api/state/{symbol}")
+    async def get_state(symbol: str, date: str | None = None):
+        """Return WorldState for a symbol (regime labels, blockers, signals)."""
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+        try:
+            ws = _state_svc.build(symbol, as_of_date=date)
+            return ws.to_dict()
+        except Exception as exc:
+            logger.exception("get_state error for %s: %s", symbol, exc)
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    # ── API: explain/{symbol} ─────────────────────────────────────────────────
+
+    @app.get("/api/explain/{symbol}")
+    async def get_explain(symbol: str, date: str | None = None):
+        """Return full DecisionExplanation for a symbol (4-layer, unified)."""
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+        try:
+            exp = _explain_svc.explain(symbol, as_of_date=date)
+            return exp.to_dict()
+        except Exception as exc:
+            logger.exception("get_explain error for %s: %s", symbol, exc)
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    # ── API: actions-page ─────────────────────────────────────────────────────
+
+    @app.get("/api/actions-page")
+    async def get_actions_page():
+        """Return today's action candidates (WATCH / PROBE / ADD)."""
+        from trade_py.decision.action import DecisionAction
+
+        db = _db()
+        today_str = date.today().isoformat()
+
+        # Get the current EBRT picks as the candidate set
+        try:
+            picks = db.recommendation_list(today_str)
+        except Exception:
+            picks = []
+
+        results = []
+        for rec in picks[:50]:
+            sym = rec.get("symbol", "")
+            if not sym:
+                continue
+            try:
+                ws     = _state_svc.build(sym, as_of_date=today_str)
+                _, act = _decision_svc.decide(ws)
+                if act.action in (
+                    DecisionAction.WATCH, DecisionAction.PROBE,
+                    DecisionAction.ADD,   DecisionAction.REDUCE,
+                ):
+                    results.append({
+                        "symbol":       sym,
+                        "action":       act.action.value,
+                        "confidence":   act.confidence,
+                        "score":        round(act.score, 4),
+                        "risk":         round(act.risk, 4),
+                        "reason":       act.reason,
+                        "position_hint": act.position_hint,
+                        "state_summary": ws.state_summary,
+                    })
+            except Exception:
+                continue
+
+        results.sort(key=lambda x: (
+            {"ADD": 0, "PROBE": 1, "WATCH": 2, "REDUCE": 3}.get(x["action"], 9),
+            -x["score"],
+        ))
+        return {
+            "as_of":   today_str,
+            "total":   len(results),
+            "actions": results,
+        }
+
+    # ── API: trust/overview ───────────────────────────────────────────────────
+
+    @app.get("/api/trust/overview")
+    async def get_trust_overview():
+        """Return portfolio-level trust summary from QualityReport."""
+        db = _db()
+        today_str = date.today().isoformat()
+        try:
+            rows = db.quality_report_list(limit=7)
+        except Exception:
+            rows = []
+
+        trend = []
+        for row in rows:
+            metrics = row.get("metrics_json") or {}
+            trend.append({
+                "eval_date":    row.get("eval_date"),
+                "trust_scalar": round(float(metrics.get("trust_scalar") or 0.0), 4),
+                "coverage":     round(float(metrics.get("feature_coverage") or 0.0), 4),
+            })
+        trend.sort(key=lambda x: (x.get("eval_date") or ""))
+
+        latest = trend[-1] if trend else {}
+        return {
+            "as_of":         today_str,
+            "trust_scalar":  latest.get("trust_scalar"),
+            "coverage":      latest.get("coverage"),
+            "trend":         trend,
+        }
+
     # ── API: kline/{symbol} ───────────────────────────────────────────────────
 
     @app.get("/api/kline/{symbol}")
@@ -1728,7 +1852,7 @@ def create_app():
         # Prediction from inference service
         prediction: dict = {}
         try:
-            pred = _inference.predict(symbol)
+            pred = _inference.predict([symbol]).get(symbol) or {}
             if pred:
                 prediction = pred
         except Exception:

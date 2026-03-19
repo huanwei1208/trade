@@ -49,11 +49,12 @@ export CXX=/usr/bin/clang++-13
 
 ```bash
 ./trade setup-python
-./trade ui
+./trade web
 ```
 
-默认会启动 Streamlit：
-- 入口文件：`trade_py/ui/ui.py`
+默认会启动 FastAPI + uvicorn，监听 http://localhost:8080：
+- API 入口：`trade_web/backend/app.py`
+- 核心端点：`/api/today-page`、`/api/explain/{symbol}`、`/api/state/{symbol}`、`/api/actions-page`
 
 ## 5. 运行测试
 
