@@ -1,22 +1,27 @@
 """factors — structured factor layer for the EBRT pipeline.
 
 Public API:
-    FEATURE_COLS, FACTOR_DEFINITIONS, TECHNICAL_DEFAULTS, factor_registry_rows()
+    FEATURE_COLS, FEATURE_SCHEMA_VERSION, FACTOR_DEFINITIONS, factor_registry_rows()
     FactorType, FactorMeta, FACTOR_REGISTRY, composite_trust_weights()
+    FactorGroupResult — group builder result contract
     build_training_feature_frame(data_root) → (df, maps, trust_weights)
-    materialize_inference_factors(data_root, date_str)
+    materialize_inference_factors(data_root, date_str) → (date, n, cols, FreshnessReport)
     sync_signal_predictions(data_root, date_str)
     update_utility_trust(data_root, lookback_days=60)
     compute_factor_ic(data_root, lookback_days=60)
 """
+from __future__ import annotations
+
 from trade_py.factors.definitions import (  # noqa: F401
     FEATURE_COLS,
+    FEATURE_SCHEMA_VERSION,
     FACTOR_DEFINITIONS,
     FACTOR_TYPE_MAP,
     TECHNICAL_DEFAULTS,
     GOLD_DEFAULTS,
     factor_registry_rows,
 )
+from trade_py.factors.groups import FactorGroupResult  # noqa: F401
 from trade_py.factors.registry import (  # noqa: F401
     FactorType,
     FactorMeta,

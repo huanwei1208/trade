@@ -223,7 +223,7 @@ def _cmd_model_promote(args: argparse.Namespace) -> int:
 def _cmd_sync_factors(args: argparse.Namespace) -> int:
     from trade_py.analysis.propagation_runtime import materialize_inference_factors
 
-    target_date, symbols, feature_cols = materialize_inference_factors(args.data_root, args.date)
+    target_date, symbols, feature_cols, _freshness = materialize_inference_factors(args.data_root, args.date)
     if not target_date:
         logger.error("No signals found; cannot materialize factors")
         return 1

@@ -1,6 +1,10 @@
 """Factor definitions: column names, metadata, defaults."""
 from __future__ import annotations
 
+# Bump this string whenever FEATURE_COLS order or membership changes.
+# Python and C++ callers use this to detect schema drift.
+FEATURE_SCHEMA_VERSION: str = "v1"
+
 FEATURE_COLS: list[str] = [
     "hop", "kg_score", "magnitude", "confidence",
     "event_type_code", "breadth_code", "news_volume", "decay_factor", "max_hop",
