@@ -1925,75 +1925,6 @@ def create_app():
         except Exception:
             pass
 
-        # Prediction from inference service
-        prediction: dict = {}
-        try:
-            pred = _inference.predict([symbol]).get(symbol) or {}
-            if pred:
-                prediction = pred
-        except Exception:
-            pass
-
-        # Recommendation context
-        recommendation: dict = {}
-        try:
-            hist_ret_5d: float | None = None
-            hist_count = 0
-            event_type_str = ""
-            if event_markers:
-                top_event = event_markers[0]
-                event_type_str = top_event.get("event_type", "")
-                with db._conn_lock:
-                    hist_row = db._conn.execute("""
-                        SELECT COUNT(*) AS cnt, AVG(ep.actual_return_5d) AS ret5d
-                        FROM event_propagations ep
-                        JOIN market_events me ON ep.event_id = me.event_id
-                        WHERE ep.symbol = ?
-                        AND me.event_type = ?
-                        AND ep.actual_return_5d IS NOT NULL
-                    """, (symbol, event_type_str)).fetchone()
-                if hist_row:
-                    hist_count = int(hist_row[0] or 0)
-                    hist_ret_5d = float(hist_row[1]) * 100 if hist_row[1] is not None else None
-
-            rsi = float(indicators.get("rsi_14") or 50)
-            vol_ratio = float(indicators.get("vol_ratio") or 1.0)
-            net_sent = float(latest_signal.get("net_sentiment") or 0)
-
-            reasons: list[str] = []
-            if hist_count > 3 and hist_ret_5d is not None and hist_ret_5d > 1.5:
-                reasons.append(f"{event_type_str} 事件历史{hist_count}次均5日收益 +{hist_ret_5d:.1f}%")
-            if rsi < 45:
-                reasons.append(f"RSI {rsi:.0f}，接近超卖低位")
-            elif rsi < 55:
-                reasons.append(f"RSI {rsi:.0f}，中性偏低")
-            if vol_ratio < 0.8:
-                reasons.append(f"近期缩量（量比 {vol_ratio:.2f}），低位蓄势")
-            if net_sent > 0.2:
-                reasons.append(f"情绪偏正（{net_sent:.2f}）")
-            elif net_sent < -0.3:
-                reasons.append(f"情绪偏负（{net_sent:.2f}）")
-
-            model_score = float(latest_signal.get("model_score") or 0)
-            window_score = float(latest_signal.get("window_score") or 0)
-            bullish_dims = sum([
-                model_score > 0.5, window_score > 70, rsi < 50,
-                vol_ratio < 1.0, net_sent > 0,
-            ])
-
-            recommendation = {
-                "conviction": "高" if bullish_dims >= 3 else ("中" if bullish_dims >= 2 else "低"),
-                "bullish_dims": bullish_dims,
-                "reasons": reasons[:4],
-                "hist_event_stats": {
-                    "event_type": event_type_str,
-                    "hist_count": hist_count,
-                    "hist_ret_5d_avg": round(hist_ret_5d, 1) if hist_ret_5d is not None else None,
-                },
-            }
-        except Exception:
-            pass
-
         # EBRT: belief transition overlay for kline chart
         belief_overlay: list[dict] = []
         try:
@@ -2049,8 +1980,6 @@ def create_app():
             "ohlcv": ohlcv,
             "event_markers": event_markers,
             "indicators": indicators,
-            "prediction": prediction,
-            "recommendation": recommendation,
             "ebrt_recommendation": ebrt_rec,
             "belief_overlay": belief_overlay,
             "latest_signal": {
