@@ -1648,6 +1648,372 @@ details[open] .today-runs-summary::before { content: "▼ "; }
   flex-shrink: 0;
 }
 
+/* ===================== EBRT_06 Decision Workspace ===================== */
+
+/* ── Today page: decision header ── */
+.today-decision-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+
+.today-regime-pill {
+  display: inline-flex;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(42, 157, 255, 0.14);
+  color: var(--accent);
+  border: 1px solid rgba(42, 157, 255, 0.3);
+}
+
+.today-as-of {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 1;
+}
+
+/* ── Thesis block ── */
+.today-thesis {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.5;
+  padding: 6px 0;
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+  margin: 2px 0 4px;
+}
+
+/* ── Blocker strip ── */
+.today-blocker-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  background: rgba(95, 21, 37, 0.15);
+  border: 1px solid rgba(244, 142, 162, 0.25);
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+
+.today-blocker-label {
+  color: var(--err);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.today-blocker-item {
+  font-size: 11px;
+  background: rgba(244, 142, 162, 0.08);
+  border: 1px solid rgba(244, 142, 162, 0.2);
+  border-radius: 4px;
+  padding: 1px 7px;
+  color: var(--err);
+}
+
+/* ── Today action cards (EBRT_06 enriched picks) ── */
+.today-action-cards {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.today-action-card {
+  flex: 1;
+  min-width: 160px;
+  max-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: rgba(16, 25, 45, 0.88);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, transform 0.1s;
+  position: relative;
+}
+
+.today-action-card:hover {
+  background: rgba(42, 157, 255, 0.07);
+  border-color: rgba(42, 157, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.today-action-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+}
+
+.today-action-card-symbol {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.today-action-card-name {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.today-action-card-conf {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.today-action-card-thesis {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.today-action-card-inv {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.today-inv-chip {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(244, 142, 162, 0.08);
+  border: 1px solid rgba(244, 142, 162, 0.18);
+  color: var(--err);
+  white-space: nowrap;
+}
+
+.today-action-card-arrow {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ── Action chip (new unified style) ── */
+.action-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.action-chip-add    { background: rgba(40, 200, 100, 0.18); color: #28c864; border: 1px solid rgba(40,200,100,0.3); }
+.action-chip-probe  { background: rgba(42, 157, 255, 0.18); color: #2a9dff; border: 1px solid rgba(42,157,255,0.3); }
+.action-chip-watch  { background: rgba(255, 180, 50,  0.18); color: #ffb432; border: 1px solid rgba(255,180,50,0.3); }
+.action-chip-reduce { background: rgba(255, 140, 50,  0.18); color: #ff8c32; border: 1px solid rgba(255,140,50,0.3); }
+.action-chip-exit   { background: rgba(255, 80,  80,  0.18); color: #ff5050; border: 1px solid rgba(255,80,80,0.3); }
+.action-chip-no_action { background: rgba(150, 150, 150, 0.12); color: var(--muted); border: 1px solid var(--line); }
+
+/* ── Candidates page ── */
+.candidates-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cand-filter-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cand-filter-pill {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.cand-filter-pill.active {
+  background: rgba(42, 157, 255, 0.18);
+  color: var(--accent);
+  border-color: rgba(42, 157, 255, 0.5);
+}
+
+.cand-filter-pill:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.candidates-body {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 14px;
+  height: calc(100vh - 160px);
+}
+
+@media (max-width: 960px) {
+  .candidates-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Symbol page ── */
+.symbol-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.symbol-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+
+.symbol-back-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.symbol-back-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.symbol-header-sym {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.symbol-header-name {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.symbol-thesis {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+}
+
+.symbol-invalidators {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.symbol-body {
+  display: grid;
+  grid-template-columns: 60fr 40fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .symbol-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.symbol-chart-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.symbol-chart-svg {
+  display: block;
+  border-radius: 8px;
+  background: rgba(16, 25, 45, 0.85);
+  border: 1px solid var(--line);
+}
+
+.symbol-regime-labels {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+
+.symbol-explain-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: calc(100vh - 200px);
+}
+
+.symbol-section {
+  background: rgba(16, 25, 45, 0.85);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.symbol-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.symbol-evidence-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.symbol-evidence-dir {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.symbol-ev-pos { color: var(--ok); }
+.symbol-ev-neg { color: var(--err); }
+
+.symbol-evidence-text {
+  flex: 1;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.symbol-evidence-str {
+  font-size: 10px;
+  color: var(--muted);
+  min-width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
 /* ── EBRT Picks table — expanded belief row ─────────────────────────────── */
 .picks-ebrt-header th { font-size: 11px; }
 

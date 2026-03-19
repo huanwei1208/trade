@@ -902,10 +902,60 @@ def create_app():
         except Exception:
             kline_last_date = ""
 
+        # Decision-layer enrichment: add action/confidence/thesis to top picks
+        today_thesis = ""
+        blockers: list[str] = []
+        top_actions: list[dict] = []
+        try:
+            for pick in top_picks[:5]:
+                sym = str(pick.get("symbol") or "")
+                if not sym:
+                    continue
+                try:
+                    ws = _state_svc.build(sym, as_of_date=today_str)
+                    _, act = _decision_svc.decide(ws)
+                    enriched = {
+                        **pick,
+                        "action":        act.action.value,
+                        "confidence":    act.confidence,
+                        "thesis":        ws.state_summary,
+                        "trust_score":   round(ws.trust_score, 4),
+                        "trust_level":   "HIGH" if ws.trust_score > 0.70 else (
+                                          "MEDIUM" if ws.trust_score > 0.40 else "LOW"),
+                        "top_invalidators": act.invalidators[:2],
+                        "world_state_summary": ws.state_summary,
+                    }
+                    top_actions.append(enriched)
+                    # First ADD/PROBE becomes today's thesis
+                    if not today_thesis and act.action.value in ("ADD", "PROBE"):
+                        today_thesis = ws.state_summary
+                    # Collect blockers
+                    blockers.extend(ws.blockers[:1])
+                except Exception:
+                    top_actions.append(pick)
+            if not today_thesis and top_actions:
+                today_thesis = top_actions[0].get("world_state_summary", "")
+        except Exception:
+            top_actions = list(top_picks[:5])
+
+        # Market regime from trust gate
+        market_regime = "UNKNOWN"
+        try:
+            if trust_gate.get("research_status") == "ok":
+                market_regime = "OK"
+            elif trust_gate.get("operational_status") == "degraded":
+                market_regime = "DEGRADED"
+        except Exception:
+            pass
+
         return {
             "as_of": today_str,
+            "today_thesis": today_thesis,
+            "market_regime": market_regime,
+            "blockers": list(dict.fromkeys(blockers))[:4],
             "pipeline_health": pipeline_health,
             "top_picks": top_picks,
+            "top_actions": top_actions,
             "dropped_picks": dropped,
             "kline_last_date": kline_last_date,
             "gate_status": gate.get("status", "unknown"),
@@ -956,6 +1006,26 @@ def create_app():
                     ]
                 except Exception:
                     pass
+                    # Decision-layer enrichment (top 20 only — speed)
+                action_val = str(r.get("action") or "")
+                confidence_val = str(r.get("conviction") or "")
+                ws_summary = ""
+                top_inv: list[str] = []
+                trust_score_val = 0.5
+                trust_level_val = "MEDIUM"
+                if len(picks) < 20:
+                    try:
+                        ws = _state_svc.build(sym, as_of_date=today_str)
+                        _, act = _decision_svc.decide(ws)
+                        action_val    = act.action.value
+                        confidence_val = act.confidence
+                        ws_summary    = ws.state_summary
+                        top_inv       = act.invalidators[:2]
+                        trust_score_val = round(ws.trust_score, 4)
+                        trust_level_val = ("HIGH" if ws.trust_score > 0.70 else
+                                           "MEDIUM" if ws.trust_score > 0.40 else "LOW")
+                    except Exception:
+                        pass
                 picks.append({
                     **r,
                     "name": name,
@@ -963,6 +1033,12 @@ def create_app():
                     "belief_sigma": round(belief_sigma, 4),
                     "belief_delta_mu": round(delta_mu, 4),
                     "top_evidence": top_evidence,
+                    "action":               action_val,
+                    "confidence":           confidence_val,
+                    "world_state_summary":  ws_summary,
+                    "top_invalidators":     top_inv,
+                    "trust_score":          trust_score_val,
+                    "trust_level":          trust_level_val,
                 })
             return {
                 "as_of": today_str,
@@ -1959,6 +2035,14 @@ def create_app():
         except Exception:
             pass
 
+        # Decision explanation — primary truth source for Symbol page
+        explanation: dict = {}
+        try:
+            exp = _explain_svc.explain(symbol)
+            explanation = exp.to_summary_dict()
+        except Exception as exc:
+            logger.debug("kline explain failed for %s: %s", symbol, exc)
+
         return {
             "symbol": symbol,
             "name": name,
@@ -1976,6 +2060,7 @@ def create_app():
                 "net_sentiment": latest_signal.get("net_sentiment"),
                 "status": latest_signal.get("status"),
             },
+            "explanation": explanation,
         }
 
     return app

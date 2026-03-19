@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 
 type Locale = "zh-CN" | "en";
-type PageKey = "today" | "picks" | "pipeline";
+type PageKey = "today" | "candidates" | "symbol" | "ops";
 type EventsViewKey = "market" | "dag";
 type GraphNodeKind = "task" | "topic";
 
@@ -62,11 +62,16 @@ type TodayPage = {
   trust_gate?: TrustGate;
   error_nodes?: Array<{ job_name?: string; status?: string }>;
   recent_runs?: Array<{ job_name?: string; status?: string; started_at?: string; result_summary?: string }>;
+  // EBRT_06 enrichment
+  today_thesis?: string;
+  market_regime?: string;
+  blockers?: string[];
+  top_actions?: CandidateRow[];
 };
 
 type SignalsPage = {
   as_of?: string;
-  picks?: (SignalPick | EBRTPick)[];
+  picks?: CandidateRow[];
   dropped?: { symbol: string }[];
   total?: number;
   source?: "ebrt" | "signals";
@@ -89,12 +94,6 @@ type KlineData = {
     rsi_14?: number;
     vol_ratio?: number;
     dist_52w_low?: number;
-  };
-  prediction?: {
-    predicted_return_5d?: number;
-    predicted_return_20d?: number;
-    model_risk?: number;
-    confidence?: string;
   };
   recommendation?: {
     conviction?: string;
@@ -124,6 +123,65 @@ type KlineData = {
     belief_delta_mu?: number | null;
     reasons?: Array<{ description: string; weight?: number; evidence_type?: string }>;
   };
+  explanation?: DecisionExplanation;
+};
+
+// ── EBRT_06 types ────────────────────────────────────────────────────────────
+type EvidenceItem = {
+  source?: string;
+  direction?: string;
+  strength?: number;
+  description?: string;
+  weight?: number;
+};
+
+type DecisionExplanation = {
+  symbol?: string;
+  as_of?: string;
+  action?: string;
+  action_confidence?: number;
+  thesis?: string;
+  world_state_summary?: string;
+  state_rationale?: string;
+  trust?: {
+    trust_level?: string;
+    trust_scalar?: number;
+    trust_components?: Record<string, number>;
+  };
+  evidence_for?: EvidenceItem[];
+  evidence_against?: EvidenceItem[];
+  invalidators?: string[];
+  next_triggers?: string[];
+  scenario_summary?: string;
+  warnings?: string[];
+  data_quality_notes?: string[];
+  input_warnings?: string[];
+};
+
+type CandidateRow = {
+  symbol?: string;
+  name?: string;
+  action?: string;
+  confidence?: number;
+  score?: number;
+  risk?: number;
+  thesis?: string;
+  trust_score?: number;
+  trust_level?: string;
+  world_state_summary?: string;
+  top_invalidators?: string[];
+  // legacy fields kept for backward compat
+  status?: string;
+  adj_score?: number;
+  model_score?: number;
+  window_score?: number;
+  event_kg_score?: number;
+  net_sentiment?: number;
+  belief_mu?: number;
+  belief_sigma?: number;
+  belief_delta_mu?: number | null;
+  reasons?: Array<{ description: string; weight?: number; evidence_type?: string }>;
+  top_evidence?: Array<{ weight?: number; evidence_id?: string }>;
 };
 
 type DagNode = {
@@ -194,11 +252,14 @@ type Dict = Record<string, string>;
 const I18N: Record<Locale, Dict> = {
   "zh-CN": {
     title: "TradeDB",
-    subtitle: "今日 / 选股 / 流水线",
+    subtitle: "今日 / 候选 / 运营",
     language: "语言",
     refresh: "刷新",
     today: "今日",
     picks: "选股",
+    candidates: "候选",
+    ops: "运营",
+    symbol: "标的",
     pipeline: "流水线",
     topPicks: "今日推荐",
     droppedPicks: "跌出推荐",
@@ -262,7 +323,6 @@ const I18N: Record<Locale, Dict> = {
     focusWorkflow: "当前工作流",
     activeGraph: "当前图谱",
     activeRelations: "已上线边",
-    candidates: "候选边",
     topPropagation: "传播最多标的",
     relationTypes: "边类型分布",
     snapshot: "快照",
@@ -298,11 +358,14 @@ const I18N: Record<Locale, Dict> = {
   },
   en: {
     title: "TradeDB",
-    subtitle: "Today / Picks / Pipeline",
+    subtitle: "Today / Candidates / Ops",
     language: "Language",
     refresh: "Refresh",
     today: "Today",
     picks: "Picks",
+    candidates: "Candidates",
+    ops: "Ops",
+    symbol: "Symbol",
     pipeline: "Pipeline",
     topPicks: "Top Picks",
     droppedPicks: "Dropped Picks",
@@ -366,7 +429,6 @@ const I18N: Record<Locale, Dict> = {
     focusWorkflow: "Focused workflow",
     activeGraph: "Active graph",
     activeRelations: "Active relations",
-    candidates: "Candidate edges",
     topPropagation: "Top propagated symbols",
     relationTypes: "Relation types",
     snapshot: "Snapshot",
@@ -406,8 +468,8 @@ type TranslationKey = keyof (typeof I18N)["zh-CN"];
 
 const PAGES: Array<{ key: PageKey; label: TranslationKey }> = [
   { key: "today", label: "today" },
-  { key: "picks", label: "picks" },
-  { key: "pipeline", label: "pipeline" },
+  { key: "candidates", label: "candidates" },
+  { key: "ops", label: "ops" },
 ];
 
 const ELK_LAYOUT = new ELK();
@@ -719,7 +781,14 @@ async function buildDagLayout(
 
 function App() {
   const [locale, setLocale] = useState<Locale>((localStorage.getItem("trade_locale") as Locale) || "zh-CN");
-  const [page, setPage] = useState<PageKey>((localStorage.getItem("trade_page") as PageKey) || "today");
+  const [page, setPage] = useState<PageKey>(() => {
+    const stored = localStorage.getItem("trade_page") as PageKey;
+    // Migrate old page names after rename
+    if (stored === "picks" as string) return "candidates";
+    if (stored === "pipeline" as string) return "ops";
+    if (["today", "candidates", "ops"].includes(stored)) return stored;
+    return "today";
+  });
   const [eventsPage, setEventsPage] = useState<any>(null);
   const [todayData, setTodayData] = useState<TodayPage | null>(null);
   const [signalsData, setSignalsData] = useState<SignalsPage | null>(null);
@@ -729,6 +798,16 @@ function App() {
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [klineData, setKlineData] = useState<KlineData | null>(null);
   const [klineLoading, setKlineLoading] = useState(false);
+  // EBRT_06: symbol page navigation
+  const [symbolTarget, setSymbolTarget] = useState<string | null>(null);
+  const [symbolName, setSymbolName] = useState<string | null>(null);
+  const [symbolPrevPage, setSymbolPrevPage] = useState<"today" | "candidates">("today");
+  const [symbolKline, setSymbolKline] = useState<KlineData | null>(null);
+  const [symbolExplain, setSymbolExplain] = useState<DecisionExplanation | null>(null);
+  const [symbolLoading, setSymbolLoading] = useState(false);
+  // EBRT_06: candidates page
+  const [candidateFilter, setCandidateFilter] = useState<"ALL" | "ADD" | "PROBE" | "WATCH">("ALL");
+  const [candidateSidePick, setCandidateSidePick] = useState<CandidateRow | null>(null);
   const [configPanelDagId, setConfigPanelDagId] = useState<number | null>(null);
   const [configPanelValue, setConfigPanelValue] = useState<string>("{}");
   const [backfillDagId, setBackfillDagId] = useState<number | null>(null);
@@ -821,12 +900,12 @@ function App() {
 
   useEffect(() => {
     if (page === "today" && !todayData) void loadTodayData();
-    if (page === "picks" && !signalsData) void loadSignalsData();
-    if (page === "pipeline" && !eventsPage) void loadEvents();
+    if (page === "candidates" && !signalsData) void loadSignalsData();
+    if (page === "ops" && !eventsPage) void loadEvents();
   }, [page]);
 
   useEffect(() => {
-    if (page !== "today" && page !== "pipeline") return;
+    if (page !== "today" && page !== "ops") return;
     const scope = page === "today" ? "report" : "events";
     setStreamState((prev) => ({
       scope,
@@ -846,7 +925,7 @@ function App() {
         }));
         if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = window.setTimeout(() => {
-          if (page === "pipeline") {
+          if (page === "ops") {
             void loadEvents();
           } else {
             void loadTodayData();
@@ -884,7 +963,7 @@ function App() {
   }, [page, streamRetryTick]);
 
   useEffect(() => {
-    if (page !== "pipeline") return;
+    if (page !== "ops") return;
     const handle = window.setInterval(() => {
       void loadEvents();
     }, 15000);
@@ -1005,6 +1084,26 @@ function App() {
     }
   }
 
+  async function navigateSymbol(symbol: string, name: string | undefined, from: "today" | "candidates") {
+    setSymbolTarget(symbol);
+    setSymbolName(name || null);
+    setSymbolPrevPage(from);
+    setSymbolKline(null);
+    setSymbolExplain(null);
+    setSymbolLoading(true);
+    setPage("symbol");
+    try {
+      const [kline, explain] = await Promise.allSettled([
+        apiFetch<KlineData>(`/api/kline/${symbol}?days=90`),
+        apiFetch<DecisionExplanation>(`/api/explain/${symbol}`),
+      ]);
+      if (kline.status === "fulfilled") setSymbolKline(kline.value);
+      if (explain.status === "fulfilled") setSymbolExplain(explain.value);
+    } finally {
+      setSymbolLoading(false);
+    }
+  }
+
   async function saveConfig(dagId: number) {
     try {
       const config = JSON.parse(configPanelValue);
@@ -1059,7 +1158,7 @@ function App() {
       body: JSON.stringify({ target, payload: {}, limit: 10 }),
     });
     pushToast(`${t("runActions")}: ${target}`);
-    if (page === "pipeline") void loadEvents();
+    if (page === "ops") void loadEvents();
     if (page === "today") void loadTodayData();
   }
 
@@ -1106,8 +1205,9 @@ function App() {
 
   async function refreshCurrent() {
     if (page === "today") return loadTodayData();
-    if (page === "picks") return loadSignalsData();
-    if (page === "pipeline") return loadEvents();
+    if (page === "candidates") return loadSignalsData();
+    if (page === "ops") return loadEvents();
+    if (page === "symbol" && symbolTarget) return navigateSymbol(symbolTarget, symbolName || undefined, symbolPrevPage);
     return loadTodayData();
   }
 
@@ -1177,12 +1277,45 @@ function App() {
     const ph = todayData.pipeline_health;
     const errorNodes = todayData.error_nodes || [];
     const topPicks = todayData.top_picks || [];
+    const topActions = todayData.top_actions || [];
     const droppedPicks = todayData.dropped_picks || [];
     const phStatus = ph ? (ph.error > 0 ? "error" : ph.running > 0 ? "running" : "ok") : "unknown";
     const newCount = topPicks.filter(p => p.status === "new").length;
+    const blockers = todayData.blockers || [];
+    const thesis = todayData.today_thesis || "";
+    const regime = todayData.market_regime || "";
+    const tg = todayData.trust_gate;
+    const tStar: number | null = (tg as any)?.trust_scalar ?? null;
+    const tStarClass = tStar == null ? "" : tStar >= 0.7 ? "trust-ok" : tStar >= 0.5 ? "trust-warn" : "trust-err";
 
     return (
       <div className="today-page">
+        {/* ── Decision header row ── */}
+        <div className="today-decision-header">
+          {regime && (
+            <span className="today-regime-pill">{regime}</span>
+          )}
+          {tStar != null && (
+            <span className={`trust-scalar-badge ${tStarClass}`}>T*={tStar.toFixed(2)}</span>
+          )}
+          <span className="today-as-of">{todayData.as_of || ""}</span>
+        </div>
+
+        {/* ── Thesis ── */}
+        {thesis && (
+          <div className="today-thesis">{thesis}</div>
+        )}
+
+        {/* ── Blockers strip ── */}
+        {blockers.length > 0 && (
+          <div className="today-blocker-strip">
+            <span className="today-blocker-label">⚠ 阻断</span>
+            {blockers.map((b, i) => (
+              <span key={i} className="today-blocker-item">{b}</span>
+            ))}
+          </div>
+        )}
+
         {/* ── Stat strip ── */}
         <div className="today-stat-strip">
           <div className="today-stat">
@@ -1284,16 +1417,58 @@ function App() {
           </div>
         )}
 
-        {/* ── Top picks ── */}
+        {/* ── Action cards (EBRT_06 enriched) or legacy picks ── */}
         <div className="today-picks-panel">
           <div className="today-picks-header">
             <span className="today-section-title">{t("topPicks")}</span>
             <span className="today-section-date">{todayData.as_of || ""}</span>
-            <button type="button" className="today-picks-all-btn" onClick={() => setPage("picks")}>
+            <button type="button" className="today-picks-all-btn" onClick={() => setPage("candidates")}>
               查看全部 →
             </button>
           </div>
-          {topPicks.length > 0 ? (
+          {topActions.length > 0 ? (
+            /* EBRT_06 enriched action cards */
+            <div className="today-action-cards">
+              {topActions.map((pick, idx) => {
+                const action = pick.action || "";
+                const conf = pick.confidence ?? 0;
+                const trust = pick.trust_score ?? 0;
+                const trustCls = trust >= 0.7 ? "trust-ok" : trust >= 0.5 ? "trust-warn" : "trust-err";
+                return (
+                  <div
+                    key={idx}
+                    className="today-action-card"
+                    onClick={() => pick.symbol && void navigateSymbol(pick.symbol, pick.name, "today")}
+                  >
+                    <div className="today-action-card-top">
+                      <span className={`action-chip action-chip-${action.toLowerCase()}`}>{action || "—"}</span>
+                      <span className={`trust-badge ${trustCls}`} style={{ fontSize: "10px" }}>T*={trust.toFixed(2)}</span>
+                    </div>
+                    <div className="today-action-card-symbol">{pick.symbol}</div>
+                    <div className="today-action-card-name">{pick.name || "—"}</div>
+                    <div className="today-action-card-conf">
+                      <div className="today-pick-bar" style={{ flex: 1 }}>
+                        <div className="today-pick-bar-fill" style={{ width: `${Math.round(conf * 100)}%` }} />
+                      </div>
+                      <span style={{ fontSize: "11px", color: "var(--muted)", minWidth: 32 }}>{Math.round(conf * 100)}%</span>
+                    </div>
+                    {pick.thesis && (
+                      <div className="today-action-card-thesis">{shortText(pick.thesis, 60)}</div>
+                    )}
+                    {(pick.top_invalidators || []).length > 0 && (
+                      <div className="today-action-card-inv">
+                        {(pick.top_invalidators || []).map((inv, ii) => (
+                          <span key={ii} className="today-inv-chip">{inv}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="today-action-card-arrow">→</div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : topPicks.length > 0 ? (
+            /* Legacy pick list */
             <div className="today-pick-list">
               {topPicks.map((pick, idx) => {
                 const ep = pick as EBRTPick;
@@ -1307,7 +1482,7 @@ function App() {
                     key={idx}
                     className="today-pick-card"
                     onClick={() => {
-                      if (pick.symbol) { void loadKlineData(pick.symbol); setPage("picks"); }
+                      if (pick.symbol) void navigateSymbol(pick.symbol, pick.name, "today");
                     }}
                   >
                     <div className="today-pick-rank">#{idx + 1}</div>
@@ -1343,15 +1518,6 @@ function App() {
                         {ep.belief_sigma != null && (
                           <span className="belief-sigma-val">σ={ep.belief_sigma.toFixed(2)}</span>
                         )}
-                        {ep.conviction && (
-                          <span className={`conviction-badge conviction-${ep.conviction}`}>{ep.conviction}</span>
-                        )}
-                        {dmu != null && (
-                          <div
-                            className={`belief-delta-bar ${dmu >= 0 ? "belief-delta-bar-pos" : "belief-delta-bar-neg"}`}
-                            style={{ width: `${Math.min(Math.abs(dmu) * 100, 50)}px` }}
-                          />
-                        )}
                       </div>
                     ) : (
                       <div className="today-pick-metrics">
@@ -1375,7 +1541,7 @@ function App() {
                       className="today-pick-detail-btn"
                       onClick={e => {
                         e.stopPropagation();
-                        if (pick.symbol) { void loadKlineData(pick.symbol); setPage("picks"); }
+                        if (pick.symbol) void navigateSymbol(pick.symbol, pick.name, "today");
                       }}
                     >
                       详情 →
@@ -1419,6 +1585,502 @@ function App() {
     );
   }
 
+  function renderCandidates() {
+    if (loading.signals && !signalsData) return <div className="empty">{t("loading")}</div>;
+    if (signalsError) return (
+      <div className="empty" style={{ color: "var(--err)", whiteSpace: "pre-wrap", padding: "20px 24px" }}>
+        <strong>候选数据加载失败</strong><br />{signalsError}
+      </div>
+    );
+    if (!signalsData) return <div className="empty">{t("noData")}</div>;
+    const allPicks: CandidateRow[] = signalsData.picks || [];
+    const isEbrtSource = signalsData.source === "ebrt";
+    // EBRT_06: action filter
+    const FILTER_ACTIONS = ["ALL", "ADD", "PROBE", "WATCH"] as const;
+    const visiblePicks = candidateFilter === "ALL"
+      ? allPicks
+      : allPicks.filter(p => (p.action || "").toUpperCase() === candidateFilter);
+    const hasEnrichedAction = allPicks.some(p => p.action);
+    const sidePick = candidateSidePick;
+
+    return (
+      <div className="candidates-layout">
+        {/* ── Action filter pills ── */}
+        {hasEnrichedAction && (
+          <div className="cand-filter-row">
+            {FILTER_ACTIONS.map(f => (
+              <button
+                key={f}
+                type="button"
+                className={`cand-filter-pill${candidateFilter === f ? " active" : ""}`}
+                onClick={() => setCandidateFilter(f)}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="candidates-body">
+          {/* ── Table ── */}
+          <div className="picks-table-wrap">
+            <table className="picks-table">
+              <thead>
+                <tr className="picks-ebrt-header">
+                  <th>代码</th>
+                  <th>名称</th>
+                  <th>操作</th>
+                  <th>确信度</th>
+                  <th>Trust</th>
+                  <th>论点</th>
+                  <th>否决因子</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visiblePicks.map((pick, idx) => {
+                  const action = pick.action || (pick as EBRTPick).action || "";
+                  const conf = pick.confidence ?? 0;
+                  const trust = pick.trust_score ?? 0;
+                  const trustCls = trust >= 0.7 ? "trust-ok" : trust >= 0.5 ? "trust-warn" : "trust-err";
+                  const isSelected = candidateSidePick?.symbol === pick.symbol;
+                  return (
+                    <tr
+                      key={idx}
+                      className={`clickable-row${isSelected ? " selected" : ""}`}
+                      onClick={() => setCandidateSidePick(isSelected ? null : pick)}
+                    >
+                      <td style={{ fontWeight: 600, fontSize: "13px" }}>{pick.symbol || "-"}</td>
+                      <td>{pick.name || "-"}</td>
+                      <td>
+                        {action ? (
+                          <span className={`action-chip action-chip-${action.toLowerCase()}`}>{action}</span>
+                        ) : (pick as EBRTPick).conviction ? (
+                          <span className={`conviction-badge conviction-${(pick as EBRTPick).conviction || ""}`}>
+                            {(pick as EBRTPick).conviction}
+                          </span>
+                        ) : pick.status === "new" ? (
+                          <span className="badge-new">{t("newTag")}</span>
+                        ) : "-"}
+                      </td>
+                      <td>
+                        {conf > 0 ? (
+                          <span style={{ fontSize: "12px" }}>{Math.round(conf * 100)}%</span>
+                        ) : (pick as EBRTPick).score != null ? (
+                          <span style={{ fontSize: "12px" }}>{(pick as EBRTPick).score!.toFixed(3)}</span>
+                        ) : "-"}
+                      </td>
+                      <td>
+                        {trust > 0 ? (
+                          <span className={`trust-badge ${trustCls}`} style={{ fontSize: "10px" }}>{trust.toFixed(2)}</span>
+                        ) : "-"}
+                      </td>
+                      <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "11px", color: "var(--muted)" }}>
+                        {shortText(pick.thesis || pick.world_state_summary || (pick as EBRTPick).belief_mu != null ? `μ=${(pick as EBRTPick).belief_mu?.toFixed(3)}` : "", 60)}
+                      </td>
+                      <td style={{ fontSize: "11px", color: "var(--muted)" }}>
+                        {(pick.top_invalidators || []).slice(0, 2).join(", ") || "-"}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!visiblePicks.length && (
+                  <tr><td colSpan={7} className="empty">{t("noData")}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* ── Side panel ── */}
+          <div className="picks-side-panel">
+            {!sidePick ? (
+              <div style={{ color: "var(--muted)", fontSize: "13px", marginTop: 20, textAlign: "center" }}>
+                点击左侧表格行查看摘要
+              </div>
+            ) : (
+              <div>
+                <div className="kline-panel-header">
+                  <span className="sym-name">{sidePick.name || sidePick.symbol}</span>
+                  <span className="sym-code">{sidePick.symbol}</span>
+                </div>
+                {sidePick.action && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 0", flexWrap: "wrap" }}>
+                    <span className={`action-chip action-chip-${(sidePick.action || "").toLowerCase()}`}>{sidePick.action}</span>
+                    {sidePick.confidence != null && (
+                      <span className="ind-chip">确信度 {Math.round(sidePick.confidence * 100)}%</span>
+                    )}
+                    {sidePick.trust_score != null && (() => {
+                      const t2 = sidePick.trust_score!;
+                      const cls = t2 >= 0.7 ? "trust-ok" : t2 >= 0.5 ? "trust-warn" : "trust-err";
+                      return <span className={`trust-badge ${cls}`} style={{ fontSize: "11px" }}>T*={t2.toFixed(2)}</span>;
+                    })()}
+                  </div>
+                )}
+                {sidePick.thesis && (
+                  <div style={{ fontSize: "12px", color: "var(--muted)", margin: "6px 0", lineHeight: 1.5 }}>
+                    {sidePick.thesis}
+                  </div>
+                )}
+                {(sidePick.top_invalidators || []).length > 0 && (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: "10px", textTransform: "uppercase", color: "var(--muted)", marginBottom: 3 }}>否决因子</div>
+                    {(sidePick.top_invalidators || []).map((inv, i) => (
+                      <div key={i} style={{ fontSize: "11px", padding: "2px 0" }}>• {inv}</div>
+                    ))}
+                  </div>
+                )}
+                {sidePick.world_state_summary && (
+                  <div style={{ marginTop: 8, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
+                    {sidePick.world_state_summary}
+                  </div>
+                )}
+                {/* Legacy belief fields */}
+                {(sidePick as EBRTPick).belief_mu != null && (
+                  <div className="today-pick-belief" style={{ marginTop: 8 }}>
+                    <span className="belief-mu-val">μ {(sidePick as EBRTPick).belief_mu! >= 0 ? "+" : ""}{(sidePick as EBRTPick).belief_mu!.toFixed(3)}</span>
+                    {(sidePick as EBRTPick).belief_delta_mu != null && (() => {
+                      const d = (sidePick as EBRTPick).belief_delta_mu!;
+                      return <span className={d! >= 0 ? "belief-delta-pos" : "belief-delta-neg"}>Δ{d! >= 0 ? "+" : ""}{d!.toFixed(3)}</span>;
+                    })()}
+                    {(sidePick as EBRTPick).belief_sigma != null && (
+                      <span className="belief-sigma-val">σ={(sidePick as EBRTPick).belief_sigma!.toFixed(2)}</span>
+                    )}
+                  </div>
+                )}
+                {sidePick.symbol && (
+                  <button
+                    type="button"
+                    style={{ marginTop: 12, width: "100%" }}
+                    onClick={() => void navigateSymbol(sidePick.symbol!, sidePick.name, "candidates")}
+                  >
+                    完整详情 →
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSymbol() {
+    const sym = symbolTarget;
+    if (!sym) return <div className="empty">{t("noData")}</div>;
+    const kline = symbolKline;
+    const explain = symbolExplain;
+    const action = explain?.action || kline?.ebrt_recommendation?.action || "";
+    const conf = explain?.action_confidence ?? 0;
+    const trust = explain?.trust;
+    const trustScalar = trust?.trust_scalar ?? 0;
+    const trustLevel = trust?.trust_level || "";
+    const trustCls = trustScalar >= 0.7 ? "trust-ok" : trustScalar >= 0.5 ? "trust-warn" : "trust-err";
+    const ohlcv = kline?.ohlcv || [];
+    const eventMarkers = kline?.event_markers || [];
+    const beliefOverlay = kline?.belief_overlay || [];
+    const invalidators = explain?.invalidators || [];
+    const evidenceFor = explain?.evidence_for || [];
+    const evidenceAgainst = explain?.evidence_against || [];
+    const asOf = explain?.as_of || kline?.ebrt_recommendation ? "" : "";
+
+    // SVG chart dimensions
+    const chartW = 560, mainH = 200, volH = 48, padX = 16, padYMain = 8;
+    const bars = ohlcv.slice(-60);
+    const barW = bars.length ? Math.max(2, Math.floor((chartW - padX * 2) / bars.length) - 1) : 6;
+    const highs = bars.map(b => b.high).filter(v => v > 0);
+    const lows = bars.map(b => b.low).filter(v => v > 0);
+    const vols = bars.map(b => b.volume || 0);
+    const maxH = highs.length ? Math.max(...highs) : 1;
+    const minL = lows.length ? Math.min(...lows) : 0;
+    const rangeH = maxH - minL || 1;
+    const maxVol = vols.length ? Math.max(...vols, 1) : 1;
+    const scaleY = (v: number) => padYMain + ((maxH - v) / rangeH) * (mainH - padYMain * 2);
+    const scaleX = (i: number) => padX + i * ((chartW - padX * 2) / Math.max(bars.length - 1, 1));
+
+    // Belief overlay
+    const muPoints = beliefOverlay.map((b, i) => `${scaleX(i)},${scaleY(b.mu)}`).join(" ");
+    const sigmaPath = beliefOverlay.length > 1
+      ? `M ${beliefOverlay.map((b, i) => `${scaleX(i)},${scaleY(b.mu + b.sigma)}`).join(" L ")} L ${[...beliefOverlay].reverse().map((b, i) => `${scaleX(beliefOverlay.length - 1 - i)},${scaleY(b.mu - b.sigma)}`).join(" L ")} Z`
+      : "";
+
+    // Decision zone color
+    const zoneFill = action === "ADD" ? "rgba(40, 200, 100, 0.07)"
+      : (action === "PROBE" || action === "WATCH") ? "rgba(255, 180, 50, 0.07)"
+      : "transparent";
+
+    // Event marker date → bar index map
+    const dateToIdx = new Map(bars.map((b, i) => [b.date, i]));
+
+    return (
+      <div className="symbol-page">
+        {/* ── Header ── */}
+        <div className="symbol-header">
+          <button
+            type="button"
+            className="symbol-back-btn"
+            onClick={() => setPage(symbolPrevPage)}
+          >
+            ← 返回
+          </button>
+          <span className="symbol-header-sym">{sym}</span>
+          {symbolName && <span className="symbol-header-name">{symbolName}</span>}
+          {action && (
+            <span className={`action-chip action-chip-${action.toLowerCase()}`}>{action}</span>
+          )}
+          {conf > 0 && <span className="ind-chip">{Math.round(conf * 100)}%</span>}
+          {trustScalar > 0 && (
+            <span className={`trust-badge ${trustCls}`}>{trustLevel || "T*"} {trustScalar.toFixed(2)}</span>
+          )}
+          {symbolLoading && <span style={{ color: "var(--muted)", fontSize: "12px" }}>加载中…</span>}
+        </div>
+
+        {/* ── Thesis ── */}
+        {explain?.thesis && (
+          <div className="symbol-thesis">{explain.thesis}</div>
+        )}
+
+        {/* ── Invalidators ── */}
+        {invalidators.length > 0 && (
+          <div className="symbol-invalidators">
+            {invalidators.map((inv, i) => (
+              <span key={i} className="today-inv-chip">• {inv}</span>
+            ))}
+          </div>
+        )}
+
+        {/* ── Body: chart + explanation ── */}
+        <div className="symbol-body">
+          {/* ── Chart ── */}
+          <div className="symbol-chart-col">
+            {/* Regime labels */}
+            {explain?.world_state_summary && (
+              <div className="symbol-regime-labels">{explain.world_state_summary}</div>
+            )}
+            {bars.length > 0 ? (
+              <svg
+                width={chartW}
+                height={mainH + volH + 12}
+                className="symbol-chart-svg"
+                viewBox={`0 0 ${chartW} ${mainH + volH + 12}`}
+                style={{ width: "100%", height: "auto" }}
+              >
+                {/* Decision zone background */}
+                {zoneFill !== "transparent" && (
+                  <rect x={padX} y={padYMain} width={chartW - padX * 2} height={mainH - padYMain * 2} fill={zoneFill} />
+                )}
+
+                {/* Sigma band */}
+                {sigmaPath && (
+                  <path d={sigmaPath} fill="rgba(42, 157, 255, 0.08)" stroke="none" />
+                )}
+
+                {/* Candlesticks */}
+                {bars.map((bar, i) => {
+                  const x = padX + i * ((chartW - padX * 2) / bars.length);
+                  const isUp = bar.close >= bar.open;
+                  const color = isUp ? "#22c55e" : "#ef4444";
+                  const bodyTop = scaleY(Math.max(bar.open, bar.close));
+                  const bodyBot = scaleY(Math.min(bar.open, bar.close));
+                  const bodyHeight = Math.max(1, bodyBot - bodyTop);
+                  return (
+                    <g key={i}>
+                      <line x1={x + barW / 2} y1={scaleY(bar.high)} x2={x + barW / 2} y2={scaleY(bar.low)} stroke={color} strokeWidth="1" />
+                      <rect x={x} y={bodyTop} width={barW} height={bodyHeight} fill={color} opacity={0.85} />
+                    </g>
+                  );
+                })}
+
+                {/* Belief mu line */}
+                {beliefOverlay.length > 1 && (
+                  <polyline
+                    points={muPoints}
+                    fill="none"
+                    stroke="rgba(42, 157, 255, 0.85)"
+                    strokeWidth="1.5"
+                    strokeDasharray="4 2"
+                  />
+                )}
+
+                {/* Event markers */}
+                {eventMarkers.map((em, i) => {
+                  const idx = dateToIdx.get(em.date);
+                  if (idx == null) return null;
+                  const x = padX + idx * ((chartW - padX * 2) / bars.length) + barW / 2;
+                  const isPos = em.magnitude > 0;
+                  const isNeg = em.magnitude < 0;
+                  const markerY = isPos ? scaleY(bars[idx]?.high || maxH) - 10 : scaleY(bars[idx]?.low || minL) + 14;
+                  return (
+                    <text
+                      key={i}
+                      x={x}
+                      y={markerY}
+                      textAnchor="middle"
+                      fontSize="11"
+                      fill={isPos ? "#22c55e" : isNeg ? "#ef4444" : "var(--muted)"}
+                    >
+                      {isPos ? "△" : isNeg ? "▽" : "○"}
+                    </text>
+                  );
+                })}
+
+                {/* Trust badge in corner */}
+                {trustScalar > 0 && (
+                  <>
+                    <rect x={chartW - 62} y={4} width={58} height={18} rx={4} fill="rgba(0,0,0,0.55)" />
+                    <text x={chartW - 33} y={16} textAnchor="middle" fontSize="10" fill={trustScalar >= 0.7 ? "#28c864" : trustScalar >= 0.5 ? "#ffb432" : "#ff5050"}>
+                      T*={trustScalar.toFixed(2)}
+                    </text>
+                  </>
+                )}
+
+                {/* Volume sub-panel */}
+                {vols.some(v => v > 0) && bars.map((bar, i) => {
+                  const x = padX + i * ((chartW - padX * 2) / bars.length);
+                  const volBarH = Math.max(1, (bar.volume / maxVol) * (volH - 4));
+                  const isUp = bar.close >= bar.open;
+                  return (
+                    <rect
+                      key={`vol-${i}`}
+                      x={x}
+                      y={mainH + 8 + (volH - 4 - volBarH)}
+                      width={barW}
+                      height={volBarH}
+                      fill={isUp ? "rgba(34, 197, 94, 0.45)" : "rgba(239, 68, 68, 0.45)"}
+                    />
+                  );
+                })}
+              </svg>
+            ) : symbolLoading ? (
+              <div className="chart-empty">{t("loading")}</div>
+            ) : (
+              <div className="chart-empty">无K线数据</div>
+            )}
+
+            {/* Indicators row */}
+            {kline?.indicators && (
+              <div className="indicators-row" style={{ marginTop: 6 }}>
+                {kline.indicators.rsi_14 != null && (
+                  <span className="ind-chip">RSI {kline.indicators.rsi_14.toFixed(1)}</span>
+                )}
+                {kline.indicators.vol_ratio != null && (
+                  <span className="ind-chip">量比 {kline.indicators.vol_ratio.toFixed(2)}</span>
+                )}
+                {kline.indicators.dist_52w_low != null && (
+                  <span className="ind-chip">距52低 {(kline.indicators.dist_52w_low * 100).toFixed(1)}%</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ── Explanation panel ── */}
+          <div className="symbol-explain-col">
+            {/* Evidence For */}
+            {evidenceFor.length > 0 && (
+              <div className="symbol-section">
+                <div className="symbol-section-title" style={{ color: "var(--ok)" }}>支持证据</div>
+                {evidenceFor.slice(0, 4).map((e, i) => (
+                  <div key={i} className="symbol-evidence-item">
+                    <span className="symbol-evidence-dir symbol-ev-pos">▲</span>
+                    <span className="symbol-evidence-text">{e.description || e.source || "-"}</span>
+                    {e.strength != null && (
+                      <span className="symbol-evidence-str">{e.strength.toFixed(2)}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Evidence Against */}
+            {evidenceAgainst.length > 0 && (
+              <div className="symbol-section">
+                <div className="symbol-section-title" style={{ color: "var(--err)" }}>反向证据</div>
+                {evidenceAgainst.slice(0, 4).map((e, i) => (
+                  <div key={i} className="symbol-evidence-item">
+                    <span className="symbol-evidence-dir symbol-ev-neg">▼</span>
+                    <span className="symbol-evidence-text">{e.description || e.source || "-"}</span>
+                    {e.strength != null && (
+                      <span className="symbol-evidence-str">{e.strength.toFixed(2)}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Scenario */}
+            {explain?.scenario_summary && (
+              <div className="symbol-section">
+                <div className="symbol-section-title">情景摘要</div>
+                <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: 1.5 }}>
+                  {explain.scenario_summary}
+                </div>
+              </div>
+            )}
+
+            {/* Next Triggers */}
+            {(explain?.next_triggers || []).length > 0 && (
+              <div className="symbol-section">
+                <div className="symbol-section-title">下一触发点</div>
+                {(explain?.next_triggers || []).map((t2, i) => (
+                  <div key={i} style={{ fontSize: "11px", color: "var(--muted)", padding: "2px 0" }}>• {t2}</div>
+                ))}
+              </div>
+            )}
+
+            {/* Warnings / Data Quality */}
+            {((explain?.warnings || []).length > 0 || (explain?.data_quality_notes || []).length > 0) && (
+              <div className="symbol-section">
+                <div className="symbol-section-title" style={{ color: "var(--warn)" }}>数据/警告</div>
+                {[...(explain?.warnings || []), ...(explain?.data_quality_notes || [])].map((w, i) => (
+                  <div key={i} style={{ fontSize: "11px", color: "var(--warn)", padding: "2px 0" }}>⚠ {w}</div>
+                ))}
+              </div>
+            )}
+
+            {/* Blockers / Invalidators */}
+            {invalidators.length > 0 && (
+              <div className="symbol-section">
+                <div className="symbol-section-title" style={{ color: "var(--err)" }}>否决因子</div>
+                {invalidators.map((inv, i) => (
+                  <div key={i} style={{ fontSize: "11px", color: "var(--err)", padding: "2px 0" }}>✕ {inv}</div>
+                ))}
+              </div>
+            )}
+
+            {/* Trust components */}
+            {trust?.trust_components && Object.keys(trust.trust_components).length > 0 && (
+              <div className="symbol-section">
+                <div className="symbol-section-title">Trust 分量</div>
+                <div className="trust-gate-wrap" style={{ margin: 0 }}>
+                  <div className="trust-components-row" style={{ borderRadius: 8, border: "1px solid var(--line)", borderTop: "none" }}>
+                    {Object.entries(trust.trust_components).map(([k, v]) => {
+                      const cls = v >= 0.7 ? "trust-comp-ok" : v >= 0.5 ? "trust-comp-warn" : "trust-comp-err";
+                      return (
+                        <div key={k} className="trust-component-item">
+                          <span className="trust-comp-label">{k}</span>
+                          <div className="trust-comp-bar-bg">
+                            <div className={`trust-comp-bar-fill ${cls}`} style={{ width: `${Math.round(v * 100)}%` }} />
+                          </div>
+                          <span className="trust-comp-val">{v.toFixed(2)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* No explanation fallback */}
+            {!explain && !symbolLoading && (
+              <div style={{ color: "var(--muted)", fontSize: "12px", marginTop: 20, textAlign: "center" }}>
+                暂无解释数据
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Legacy renderPicks kept for internal kline side-panel in old flows
   function renderPicks() {
     if (loading.signals && !signalsData) return <div className="empty">{t("loading")}</div>;
     if (signalsError) return (
@@ -1547,7 +2209,7 @@ function App() {
                     <td>{pick.window_score != null ? pick.window_score.toFixed(3) : "-"}</td>
                     <td>{pick.event_kg_score != null ? pick.event_kg_score.toFixed(3) : "-"}</td>
                     <td>{pick.net_sentiment != null ? pick.net_sentiment.toFixed(2) : "-"}</td>
-                    <td>{pick.event_type || "-"}</td>
+                    <td>{(pick as any).event_type || "-"}</td>
                   </tr>
                 );
               })}
@@ -1650,18 +2312,12 @@ function App() {
                   )}
                 </div>
               )}
-              {klineData.prediction && (
+              {(klineData as any).prediction && (
                 <div style={{ marginTop: 12, fontSize: "12px" }}>
-                  <div style={{ color: "var(--muted)", marginBottom: 4 }}>预测</div>
+                  <div style={{ color: "var(--muted)", marginBottom: 4 }}>预测 (legacy)</div>
                   <div style={{ display: "flex", gap: 12 }}>
-                    {klineData.prediction.predicted_return_5d != null && (
-                      <span className="ind-chip">5日: {(klineData.prediction.predicted_return_5d * 100).toFixed(2)}%</span>
-                    )}
-                    {klineData.prediction.predicted_return_20d != null && (
-                      <span className="ind-chip">20日: {(klineData.prediction.predicted_return_20d * 100).toFixed(2)}%</span>
-                    )}
-                    {klineData.prediction.confidence && (
-                      <span className="ind-chip">置信: {klineData.prediction.confidence}</span>
+                    {(klineData as any).prediction.predicted_return_5d != null && (
+                      <span className="ind-chip">5日: {((klineData as any).prediction.predicted_return_5d * 100).toFixed(2)}%</span>
                     )}
                   </div>
                 </div>
@@ -2008,7 +2664,7 @@ function App() {
     );
   }
 
-  function renderPipeline() {
+  function renderOps() {
     if (loading.events && !eventsPage) return <div className="empty">{t("loading")}</div>;
     if (!eventsPage) return <div className="empty">{t("noData")}</div>;
 
@@ -2303,8 +2959,9 @@ function App() {
       </nav>
 
       {page === "today" && renderToday()}
-      {page === "picks" && renderPicks()}
-      {page === "pipeline" && renderPipeline()}
+      {page === "candidates" && renderCandidates()}
+      {page === "symbol" && renderSymbol()}
+      {page === "ops" && renderOps()}
 
       {toast && <div className="toast">{toast}</div>}
     </div>
