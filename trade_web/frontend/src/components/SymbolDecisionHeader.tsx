@@ -2,7 +2,7 @@ import type { DecisionExplanation, KlineResponse, WorldState } from "../lib/api"
 import { formatCompactNumber, formatConfidence, formatDate, formatPercent, formatScore } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { classNames } from "../lib/ui";
-import { getConclusionModeText, getGateStatusText } from "../lib/statusText";
+import { getConclusionModeText } from "../lib/statusText";
 import { ActionChip } from "./ActionChip";
 import { StatusPill } from "./StatusPill";
 import { TrustBadge } from "./TrustBadge";
@@ -23,8 +23,7 @@ export function SymbolDecisionHeader({ symbol, kline, explanation, state, onBack
     global_blocked: Boolean(state?.blockers?.length || explanation?.warnings?.length || explanation?.input_warnings?.length),
     blockers: state?.blockers || explanation?.warnings || [],
   });
-  const chartReadiness = getGateStatusText(locale, kline?.ohlcv?.length ? "ok" : "missing");
-  const modelInputReadiness = getGateStatusText(locale, explanation?.input_warnings?.length ? "partial" : "ok");
+  const visibleInvalidators = (explanation?.invalidators || []).filter((item) => !item.startsWith("resolve:missing_datasets:"));
 
   // Derive price/return/volume from kline ohlcv
   const bars = kline?.ohlcv || [];
@@ -98,8 +97,6 @@ export function SymbolDecisionHeader({ symbol, kline, explanation, state, onBack
 
       <div className="symbol-header__footer">
         <div className="symbol-header__readiness">
-          <StatusPill label={`${t("symbol.chartReadiness")} · ${chartReadiness.label}`} tone={chartReadiness.tone} subtle />
-          <StatusPill label={`${t("symbol.modelInputs")} · ${modelInputReadiness.label}`} tone={modelInputReadiness.tone} subtle />
           <StatusPill label={`${t("symbol.conclusionMode")} · ${conclusionMode.label}`} tone={conclusionMode.tone} subtle />
         </div>
         <div className="symbol-header__actions">
@@ -111,7 +108,7 @@ export function SymbolDecisionHeader({ symbol, kline, explanation, state, onBack
           </button>
         </div>
         <div className="symbol-header__invalidators">
-          {(explanation?.invalidators || []).slice(0, 3).map((item) => (
+          {visibleInvalidators.slice(0, 3).map((item) => (
             <span className="tag-chip tag-chip--negative" key={item}>
               {item}
             </span>

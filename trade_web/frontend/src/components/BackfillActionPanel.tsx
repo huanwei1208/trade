@@ -1,6 +1,7 @@
 import type { ReplayPlanPayload } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { getDatasetText, getImpactText } from "../lib/statusText";
 
 type BackfillActionPanelProps = {
   dataset: string;
@@ -22,6 +23,8 @@ type BackfillActionPanelProps = {
 };
 
 export function BackfillActionPanel({
+  dataset,
+  selectedDate,
   rangeFrom,
   rangeTo,
   plan,
@@ -39,10 +42,23 @@ export function BackfillActionPanel({
 }: BackfillActionPanelProps) {
   const { locale, t } = useI18n();
   const downstreamNodes = plan?.downstream_nodes || [];
+  const fullChainNodes = plan?.full_chain || [];
+  const datasetLabel = getDatasetText(locale, dataset);
+  const activeRangeLabel = rangeFrom === rangeTo || !rangeTo ? rangeFrom || selectedDate : `${rangeFrom} → ${rangeTo}`;
 
   return (
     <div className="readiness-inspector__section">
-      <div className="readiness-inspector__label">{t("ops.tabs.recovery")}</div>
+      <div className="readiness-inspector__label">{t("recovery.restoreLatestRecommendation")}</div>
+
+      <div className="note-card">
+        <strong>{t("recovery.restoreLatestRecommendation")}</strong>
+        <div className="recovery-plan-copy">
+          {t("recovery.restorePlanIntro", {
+            dataset: datasetLabel,
+            date: activeRangeLabel,
+          })}
+        </div>
+      </div>
 
       <div className="recovery-range-grid">
         <label className="filter-bar__search">
@@ -55,27 +71,23 @@ export function BackfillActionPanel({
         </label>
       </div>
 
-      {changed && <div className="note-card note-card--warning">{t("recovery.changedDetected")}</div>}
-
-      <div className="note-card">
-        <div>{t("recovery.confirmCaption")}</div>
-      </div>
+      {changed && <div className="note-card note-card--warning">{t("recovery.changedDetectedStrong")}</div>}
 
       <div className="recovery-action-stack">
         <button type="button" className="button button--primary" onClick={onBackfillDay} disabled={loading}>
-          {t("recovery.backfillDay")}
+          {t("recovery.repairDataDay")}
         </button>
         <button type="button" className="button button--ghost" onClick={onBackfillRange} disabled={loading}>
-          {t("recovery.backfillRange")}
+          {t("recovery.repairDataRange")}
         </button>
         <button type="button" className="button button--ghost" onClick={onReplayDownstream} disabled={loading}>
-          {t("recovery.replayDownstream")}
+          {t("recovery.restoreLatestRecommendationAction")}
         </button>
         <button type="button" className="button button--ghost" onClick={onReplayFullChain} disabled={loading}>
-          {t("recovery.replayFullChain")}
+          {t("recovery.replayFullChainAction")}
         </button>
         <button type="button" className="button button--ghost" onClick={onDryRun} disabled={loading}>
-          {t("recovery.dryRun")}
+          {t("recovery.previewRecommendationImpact")}
         </button>
       </div>
 
@@ -86,13 +98,29 @@ export function BackfillActionPanel({
         <div className="note-stack">
           <div className="note-card">
             <strong>{plan ? t("recovery.planReady") : t("recovery.planUnavailable")}</strong>
+            {plan && (
+              <div className="recovery-plan-copy">
+                {t("recovery.planRecommendationCopy", {
+                  count: downstreamNodes.length || fullChainNodes.length || 0,
+                })}
+              </div>
+            )}
             {plan?.estimated_duration_ms && (
               <div className="recovery-plan-copy">{t("recovery.estimatedDuration")} {plan.estimated_duration_ms}ms</div>
+            )}
+            {(plan?.affected_outputs || []).length > 0 && (
+              <div className="tag-cluster tag-cluster--compact">
+                {(plan?.affected_outputs || []).map((output) => (
+                  <span className="tag-chip" key={output}>
+                    {getImpactText(locale, output)}
+                  </span>
+                ))}
+              </div>
             )}
           </div>
           {downstreamNodes.length > 0 && (
             <div className="operator-chain">
-              <div className="readiness-inspector__label">{t("recovery.operatorChain")}</div>
+              <div className="readiness-inspector__label">{t("recovery.restoreChain")}</div>
               <div className="operator-chain__steps">
                 {downstreamNodes.map((node, i) => (
                   <div key={node.job_name || i} className="operator-chain__step">
@@ -103,7 +131,20 @@ export function BackfillActionPanel({
               </div>
             </div>
           )}
-          {downstreamNodes.length === 0 && plan && (
+          {fullChainNodes.length > 0 && (
+            <div className="operator-chain">
+              <div className="readiness-inspector__label">{t("recovery.fullChain")}</div>
+              <div className="operator-chain__steps">
+                {fullChainNodes.map((node, i) => (
+                  <div key={node.job_name || i} className="operator-chain__step">
+                    {i > 0 && <span className="operator-chain__arrow">→</span>}
+                    <span className="operator-chain__job">{node.job_name || "?"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {downstreamNodes.length === 0 && fullChainNodes.length === 0 && plan && (
             <div className="readiness-inspector__subtle">{t("recovery.noDownstreamNodes")}</div>
           )}
         </div>

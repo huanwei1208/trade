@@ -86,6 +86,19 @@ export function shortText(value?: string | null, limit = 120) {
   return value.length > limit ? `${value.slice(0, limit - 1)}…` : value;
 }
 
+export function formatDurationMs(value?: number | null) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  if (value < 1000) {
+    return `${value}ms`;
+  }
+  if (value < 60_000) {
+    return `${(value / 1000).toFixed(1)}s`;
+  }
+  return `${(value / 60_000).toFixed(1)}m`;
+}
+
 export function labelizeDataset(value?: string | null) {
   if (!value) {
     return "Unknown dataset";

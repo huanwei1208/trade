@@ -372,6 +372,134 @@
   overflow-wrap: anywhere;
 }
 
+.recovery-timeline__steps {
+  margin-top: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.recovery-timeline__step {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(6, 17, 31, 0.4);
+}
+
+.recovery-timeline__step-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.recovery-timeline__step-copy {
+  margin-top: var(--space-2);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.execution-run-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(42, 157, 255, 0.18);
+  background: linear-gradient(180deg, rgba(42, 157, 255, 0.08), rgba(8, 24, 43, 0.88));
+  box-shadow: var(--shadow-panel);
+}
+
+.execution-run-card__head,
+.execution-run-card__step-main,
+.symbol-freshness__head,
+.symbol-freshness__footer {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.execution-run-card__eyebrow,
+.symbol-freshness__eyebrow {
+  color: var(--text-3);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.execution-run-card__title,
+.symbol-freshness__title {
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.execution-run-card__copy,
+.symbol-freshness__copy,
+.symbol-freshness__next span {
+  margin-top: var(--space-2);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.execution-run-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.execution-run-card__progress {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.execution-run-card__progress-bar {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.execution-run-card__progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue));
+}
+
+.execution-run-card__active {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.execution-run-card__steps {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.execution-run-card__step {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(6, 17, 31, 0.4);
+}
+
+.execution-run-card__step-copy,
+.execution-run-card__step-meta {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.execution-run-card__step-meta {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
 .recovery-range-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -609,6 +737,63 @@
   letter-spacing: 0.08em;
 }
 
+.symbol-freshness {
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
+  display: grid;
+  gap: var(--space-4);
+}
+
+.symbol-freshness--ok {
+  border-color: rgba(40, 200, 100, 0.22);
+  background: linear-gradient(180deg, rgba(40, 200, 100, 0.06), rgba(8, 24, 43, 0.92));
+}
+
+.symbol-freshness--warn {
+  border-color: rgba(255, 180, 50, 0.22);
+  background: linear-gradient(180deg, rgba(255, 180, 50, 0.06), rgba(8, 24, 43, 0.92));
+}
+
+.symbol-freshness--err {
+  border-color: rgba(255, 91, 110, 0.22);
+  background: linear-gradient(180deg, rgba(255, 91, 110, 0.06), rgba(8, 24, 43, 0.92));
+}
+
+.symbol-freshness__pills,
+.symbol-freshness__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.symbol-freshness__body {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.symbol-freshness__section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.symbol-freshness__label {
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.symbol-freshness__next {
+  min-width: 0;
+}
+
+.tag-cluster--compact {
+  margin-top: var(--space-2);
+}
+
 /* ==========================================
    OPERATOR CHAIN (Recovery / BackfillActionPanel)
    ========================================== */
@@ -722,5 +907,11 @@
     align-items: flex-start;
     flex-direction: row;
     flex-wrap: wrap;
+  }
+
+  .execution-run-card__head,
+  .symbol-freshness__head,
+  .symbol-freshness__footer {
+    flex-direction: column;
   }
 }

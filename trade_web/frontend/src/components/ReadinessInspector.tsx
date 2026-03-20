@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { ReadinessCell, ReadinessRow } from "../lib/api";
+import type { ReadinessActionDetail, ReadinessCell, ReadinessHistoryItem, ReadinessRow } from "../lib/api";
 import { formatDate, formatDateTime, formatPercent } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { getDatasetText, getImpactText, getReadinessStatusText } from "../lib/statusText";
@@ -12,10 +12,11 @@ import { StatusPill } from "./StatusPill";
 type ReadinessInspectorProps = {
   row?: ReadinessRow | null;
   cell?: ReadinessCell | null;
+  historyItems?: Array<ReadinessHistoryItem | ReadinessActionDetail>;
   actions?: ReactNode;
 };
 
-export function ReadinessInspector({ row, cell, actions }: ReadinessInspectorProps) {
+export function ReadinessInspector({ row, cell, historyItems, actions }: ReadinessInspectorProps) {
   const { locale, t } = useI18n();
 
   if (!row || !cell) {
@@ -94,7 +95,7 @@ export function ReadinessInspector({ row, cell, actions }: ReadinessInspectorPro
 
       <div className="readiness-inspector__section">
         <div className="readiness-inspector__label">{t("readiness.auditHistory")}</div>
-        <RecoveryTimeline items={cell.history} />
+        <RecoveryTimeline items={historyItems || cell.history} />
       </div>
     </PanelCard>
   );

@@ -181,6 +181,9 @@ export type KlineResponse = {
     confidence?: string;
     score?: number;
     risk?: number;
+    position_hint?: string;
+    reason?: string;
+    no_action_reason?: string;
     invalidators?: string[];
     next_triggers?: string[];
     supporting_factors?: string[];
@@ -255,6 +258,18 @@ export type ReadinessHistoryItem = {
   status?: string | null;
 };
 
+export type RecoveryStep = {
+  job_name?: string | null;
+  status?: string | null;
+  summary?: string | null;
+  duration_ms?: number | null;
+};
+
+export type RecoveryActionResult = {
+  steps?: RecoveryStep[];
+  duration_ms?: number | null;
+};
+
 export type ReadinessCell = {
   id: string;
   dataset: string;
@@ -324,23 +339,30 @@ export type ReadinessActionResponse = {
   plan: ReplayPlanPayload;
 };
 
+export type ReadinessActionDetail = {
+  id: number;
+  dataset: string;
+  date_from: string;
+  date_to: string;
+  action_type: string;
+  mode: string;
+  status: string;
+  requested_at: string;
+  updated_at: string;
+  job_names_json?: string;
+  affected_outputs_json?: string;
+  result_json?: string;
+  job_names?: string[];
+  affected_outputs?: string[];
+  result?: RecoveryActionResult | null;
+  summary?: string | null;
+  error?: string | null;
+  fingerprint_before?: string | null;
+  fingerprint_after?: string | null;
+};
+
 export type ReadinessHistoryPayload = {
-  items: Array<{
-    id: number;
-    dataset: string;
-    date_from: string;
-    date_to: string;
-    action_type: string;
-    mode: string;
-    status: string;
-    requested_at: string;
-    updated_at: string;
-    job_names?: string[];
-    affected_outputs?: string[];
-    result?: Record<string, unknown>;
-    summary?: string | null;
-    error?: string | null;
-  }>;
+  items: ReadinessActionDetail[];
 };
 
 export type ReadinessChangePayload = {
@@ -356,6 +378,15 @@ export type ReadinessChangePayload = {
     last_action_id?: number | null;
     last_action_status?: string | null;
   }>;
+};
+
+export type RecoveryProgress = {
+  totalSteps: number;
+  completedSteps: number;
+  failedSteps: number;
+  steps: RecoveryStep[];
+  activeStep: RecoveryStep | null;
+  progressRatio: number | null;
 };
 
 export type EventsPagePayload = {
@@ -634,4 +665,45 @@ export function postReadinessDetectChanges(payload: { dataset: string; date_from
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+}
+
+export function isTerminalRecoveryStatus(status?: string | null) {
+  const normalized = String(status || "").trim().toLowerCase();
+  return normalized === "ok" || normalized === "error";
+}
+
+export function extractRecoverySteps(action?: { result?: RecoveryActionResult | null } | null) {
+  return Array.isArray(action?.result?.steps) ? action.result?.steps || [] : [];
+}
+
+export function getRecoveryProgress(action?: ReadinessActionDetail | null): RecoveryProgress {
+  const steps = extractRecoverySteps(action);
+  const plannedSteps = (action?.job_names || []).filter(Boolean);
+  const totalSteps = Math.max(plannedSteps.length, steps.length);
+  const completedSteps = steps.filter((step) => String(step.status || "").toLowerCase() === "ok").length;
+  const failedSteps = steps.filter((step) => String(step.status || "").toLowerCase() === "error").length;
+
+  let activeStep =
+    steps.find((step) => {
+      const status = String(step.status || "").toLowerCase();
+      return status === "queued" || status === "running";
+    }) || null;
+
+  if (!activeStep && action && !isTerminalRecoveryStatus(action.status) && plannedSteps.length > completedSteps) {
+    activeStep = {
+      job_name: plannedSteps[completedSteps],
+      status: String(action.status || "running").toLowerCase(),
+      summary: null,
+      duration_ms: null,
+    };
+  }
+
+  return {
+    totalSteps,
+    completedSteps,
+    failedSteps,
+    steps,
+    activeStep,
+    progressRatio: totalSteps > 0 ? completedSteps / totalSteps : null,
+  };
 }

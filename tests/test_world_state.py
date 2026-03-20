@@ -223,3 +223,18 @@ class TestBuildWorldState:
         assert "market_state" in d
         assert "sentiment_state" in d
         assert "event_state" in d
+
+    def test_data_quality_state_contains_missing_and_stale_datasets(self):
+        ws = build_world_state(
+            symbol="000001.SZ",
+            as_of_date="2026-03-20",
+            trust_score=0.8,
+            freshness_score=0.5,
+            freshness_missing=["tushare_kline", "tushare_fund_flow"],
+            freshness_stale=["sentiment_gold"],
+        )
+        payload = ws.to_dict()
+        data_quality = payload["data_quality_state"]
+        assert data_quality["missing_datasets"] == ["tushare_kline", "tushare_fund_flow"]
+        assert data_quality["stale_datasets"] == ["sentiment_gold"]
+        assert any("missing_datasets" in blocker for blocker in payload["blockers"])

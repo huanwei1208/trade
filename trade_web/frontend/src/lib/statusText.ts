@@ -180,10 +180,17 @@ export function getWorldStateLabel(locale: Locale, kind: "market" | "event" | "s
 }
 
 export function getDatasetText(locale: Locale, dataset?: string | null, fallback?: string | null) {
-  const key = `dataset.${String(dataset || "").trim()}`;
+  const raw = String(dataset || "").trim();
+  const normalized = raw.startsWith("tushare_") ? raw.replace(/^tushare_/, "") : raw;
+  const key = `dataset.${raw}`;
   const translated = translate(locale, key);
   if (translated !== key) {
     return translated;
+  }
+  const normalizedKey = `dataset.${normalized}`;
+  const normalizedTranslated = translate(locale, normalizedKey);
+  if (normalizedTranslated !== normalizedKey) {
+    return normalizedTranslated;
   }
   return fallback || String(dataset || translate(locale, "common.unknown"));
 }

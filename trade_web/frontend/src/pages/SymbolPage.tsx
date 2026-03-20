@@ -8,6 +8,7 @@ import { PanelCard } from "../components/PanelCard";
 import { SectionHeader } from "../components/SectionHeader";
 import { SymbolChart } from "../components/SymbolChart";
 import { SymbolDecisionHeader } from "../components/SymbolDecisionHeader";
+import { SymbolFreshnessBanner } from "../components/SymbolFreshnessBanner";
 import type { DecisionExplanation, KlineResponse, WorldState } from "../lib/api";
 import { useApiResource } from "../lib/api";
 import { formatDate, formatPercent } from "../lib/format";
@@ -66,6 +67,30 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
   const explanation: DecisionExplanation | null = explainResource.data || (klineResource.data?.explanation as DecisionExplanation) || null;
   const dqs = stateResource.data?.data_quality_state;
   const hasDqs = Boolean(dqs && (dqs.missing_datasets || dqs.stale_datasets || typeof dqs.freshness_score === "number" || typeof dqs.score === "number"));
+  const focusDate = explanation?.as_of || klineResource.data?.as_of || stateResource.data?.as_of_date;
+  const focusDataset = resolveSymbolOpsDataset(stateResource.data, klineResource.data);
+
+  function openReadiness() {
+    onOpenOpsFocus({
+      tab: "readiness",
+      date: focusDate,
+      dataset: focusDataset,
+    });
+  }
+
+  function openRecovery() {
+    onOpenOpsFocus({
+      tab: "recovery",
+      date: focusDate,
+      dataset: focusDataset,
+    });
+  }
+
+  function retrySymbolResources() {
+    klineResource.retry();
+    explainResource.retry();
+    stateResource.retry();
+  }
 
   return (
     <div className="page-stack page-symbol">
@@ -75,16 +100,17 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
         explanation={explanation}
         state={stateResource.data}
         onBack={onBack}
-        onOpenReadiness={() => onOpenOpsFocus({
-          tab: "readiness",
-          date: explanation?.as_of || klineResource.data?.as_of || stateResource.data?.as_of_date,
-          dataset: klineResource.data?.ohlcv?.length ? "signals" : "kline",
-        })}
-        onOpenRecovery={() => onOpenOpsFocus({
-          tab: "recovery",
-          date: explanation?.as_of || klineResource.data?.as_of || stateResource.data?.as_of_date,
-          dataset: klineResource.data?.ohlcv?.length ? "signals" : "kline",
-        })}
+        onOpenReadiness={openReadiness}
+        onOpenRecovery={openRecovery}
+      />
+
+      <SymbolFreshnessBanner
+        kline={klineResource.data}
+        explanation={explanation}
+        state={stateResource.data}
+        onOpenReadiness={openReadiness}
+        onOpenRecovery={openRecovery}
+        onRetry={retrySymbolResources}
       />
 
       <div className="symbol-layout">
@@ -97,16 +123,8 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
               activeEvidenceSource={activeEvidenceSource}
               invalidationFocused={invalidationFocused}
               onMarkerHover={(value) => setMarkerKey(value)}
-              onOpenReadiness={() => onOpenOpsFocus({
-                tab: "readiness",
-                date: explanation?.as_of || klineResource.data?.as_of || stateResource.data?.as_of_date,
-                dataset: klineResource.data?.ohlcv?.length ? "signals" : "kline",
-              })}
-              onOpenRecovery={() => onOpenOpsFocus({
-                tab: "recovery",
-                date: explanation?.as_of || klineResource.data?.as_of || stateResource.data?.as_of_date,
-                dataset: klineResource.data?.ohlcv?.length ? "signals" : "kline",
-              })}
+              onOpenReadiness={openReadiness}
+              onOpenRecovery={openRecovery}
             />
           </PanelCard>
         </div>
@@ -240,4 +258,11 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
       </section>
     </div>
   );
+}
+
+function resolveSymbolOpsDataset(state?: WorldState | null, kline?: KlineResponse | null) {
+  const missing = state?.data_quality_state?.missing_datasets || [];
+  const stale = state?.data_quality_state?.stale_datasets || [];
+  const candidate = missing[0] || stale[0] || (kline?.ohlcv?.length ? "recommendation" : "kline");
+  return candidate.replace(/^tushare_/, "");
 }
