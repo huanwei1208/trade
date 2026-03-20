@@ -31,7 +31,7 @@ type OpsTab = "overview" | "readiness" | "recovery" | "pipeline" | "trust" | "wo
 
 export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   const { locale, t } = useI18n();
-  const [tab, setTab] = useLocalStorageState<OpsTab>("trade-web:ops-tab", "overview");
+  const [tab, setTab] = useLocalStorageState<OpsTab>("trade-web:ops-tab", "readiness");
   const [readinessDays, setReadinessDays] = useState<30 | 60 | 90>(30);
   const [selectedCellId, setSelectedCellId] = useState("");
   const [range, setRange] = useState({ dateFrom: "", dateTo: "" });
@@ -208,9 +208,9 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
 
       <div className="filter-bar filter-bar--ops">
         {([
-          ["overview", t("ops.tabs.overview")],
           ["readiness", t("ops.tabs.readiness")],
           ["recovery", t("ops.tabs.recovery")],
+          ["overview", t("ops.tabs.overview")],
           ["pipeline", t("ops.tabs.pipeline")],
           ["trust", t("ops.tabs.trust")],
           ["workflows", t("ops.tabs.workflows")],

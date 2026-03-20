@@ -413,3 +413,314 @@
     position: static;
   }
 }
+
+/* ==========================================
+   OPERATING MODE BANNER (Today page)
+   ========================================== */
+
+.today-mode-banner {
+  padding: var(--space-5) var(--space-6);
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-5);
+  align-items: center;
+}
+
+.today-mode-banner--actionable {
+  border-color: rgba(40, 200, 100, 0.28);
+  background: rgba(40, 200, 100, 0.05);
+}
+
+.today-mode-banner--review {
+  border-color: rgba(255, 180, 50, 0.28);
+  background: rgba(255, 180, 50, 0.05);
+}
+
+.today-mode-banner--blocked {
+  border-color: rgba(255, 91, 110, 0.28);
+  background: rgba(255, 91, 110, 0.05);
+}
+
+.today-mode-banner__left {
+  min-width: 0;
+}
+
+.today-mode-banner__mode {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+}
+
+.today-mode-banner__value {
+  margin-top: var(--space-2);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.today-mode-banner__value--actionable { color: var(--ok); }
+.today-mode-banner__value--review { color: var(--warn); }
+.today-mode-banner__value--blocked { color: var(--err); }
+
+.today-mode-banner__constraint {
+  margin-top: var(--space-2);
+  color: var(--text-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.today-mode-banner__actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+/* ==========================================
+   ACTION CARD STATS (Today page)
+   ========================================== */
+
+.action-card__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+
+.action-card__stat {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* ==========================================
+   CANDIDATE TABLE QUANT BAND
+   ========================================== */
+
+.candidate-row__quant {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  min-width: 0;
+}
+
+.candidate-row__summary {
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.belief-delta {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.belief-delta.is-positive { color: var(--ok); }
+.belief-delta.is-negative { color: var(--err); }
+
+/* ==========================================
+   SYMBOL HEADER STATS STRIP
+   ========================================== */
+
+.symbol-header__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  align-items: flex-end;
+  padding: var(--space-4) 0 var(--space-3);
+  border-top: 1px solid var(--line);
+  margin-top: var(--space-3);
+}
+
+.symbol-header__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.symbol-header__stat-label {
+  color: var(--text-3);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.symbol-header__stat-value {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.symbol-header__stat-value--positive { color: var(--ok); }
+.symbol-header__stat-value--negative { color: var(--err); }
+
+/* ==========================================
+   DATA QUALITY TABLE (Symbol page)
+   ========================================== */
+
+.data-quality-table {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.data-quality-table__score-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(6, 17, 31, 0.46);
+  border: 1px solid var(--line);
+}
+
+.data-quality-table__score-label {
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.data-quality-table__score-value {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.data-quality-section {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.data-quality-section__label {
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ==========================================
+   OPERATOR CHAIN (Recovery / BackfillActionPanel)
+   ========================================== */
+
+.operator-chain {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.operator-chain__steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.operator-chain__step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.operator-chain__job {
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(42, 157, 255, 0.1);
+  border: 1px solid rgba(42, 157, 255, 0.2);
+  font-size: 11px;
+  color: var(--info);
+  font-weight: 600;
+}
+
+.operator-chain__arrow {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+/* ==========================================
+   TRUST BREAKDOWN (Quick panel)
+   ========================================== */
+
+.trust-breakdown {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.trust-breakdown__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.trust-breakdown__label {
+  color: var(--text-2);
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+
+.trust-breakdown__bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.trust-breakdown__bar {
+  width: 56px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.trust-breakdown__fill {
+  height: 100%;
+  background: var(--info);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.trust-breakdown__pct {
+  font-size: 11px;
+  color: var(--text-2);
+  min-width: 28px;
+  text-align: right;
+}
+
+/* ==========================================
+   QUICK PANEL QUALITY NOTES
+   ========================================== */
+
+.quick-panel__quality-notes {
+  display: grid;
+  gap: var(--space-2);
+}
+
+/* ==========================================
+   MEDIA QUERY ADDITIONS
+   ========================================== */
+
+@media (max-width: 1200px) {
+  .today-mode-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .today-mode-banner__actions {
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}

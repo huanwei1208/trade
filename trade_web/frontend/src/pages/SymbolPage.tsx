@@ -12,7 +12,7 @@ import type { DecisionExplanation, KlineResponse, WorldState } from "../lib/api"
 import { useApiResource } from "../lib/api";
 import { formatDate, formatPercent } from "../lib/format";
 import { useI18n } from "../lib/i18n";
-import { getWorldStateLabel } from "../lib/statusText";
+import { getDatasetText, getWorldStateLabel } from "../lib/statusText";
 
 type SymbolPageProps = {
   symbol?: string;
@@ -64,6 +64,8 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
   }
 
   const explanation: DecisionExplanation | null = explainResource.data || (klineResource.data?.explanation as DecisionExplanation) || null;
+  const dqs = stateResource.data?.data_quality_state;
+  const hasDqs = Boolean(dqs && (dqs.missing_datasets || dqs.stale_datasets || typeof dqs.freshness_score === "number" || typeof dqs.score === "number"));
 
   return (
     <div className="page-stack page-symbol">
@@ -132,6 +134,65 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
       <section className="page-section">
         <SectionHeader title={t("symbol.supportingContext")} subtitle={t("symbol.supportingContextSubtitle")} />
         <div className="compact-grid">
+          <PanelCard title={t("symbol.dataQuality")} subdued>
+            {hasDqs ? (
+              <div className="data-quality-table">
+                {typeof dqs!.score === "number" && (
+                  <div className="data-quality-table__score-row">
+                    <span className="data-quality-table__score-label">{t("symbol.dataQualityScore")}</span>
+                    <strong className="data-quality-table__score-value">{formatPercent(dqs!.score, 0)}</strong>
+                  </div>
+                )}
+                {typeof dqs!.freshness_score === "number" && (
+                  <div className="data-quality-table__score-row">
+                    <span className="data-quality-table__score-label">{t("symbol.freshnessScore")}</span>
+                    <strong className="data-quality-table__score-value">{formatPercent(dqs!.freshness_score, 0)}</strong>
+                  </div>
+                )}
+                {(dqs!.missing_datasets || []).length > 0 && (
+                  <div className="data-quality-section">
+                    <div className="data-quality-section__label">{t("symbol.missingDatasets")}</div>
+                    <div className="tag-cluster">
+                      {(dqs!.missing_datasets || []).map((ds) => (
+                        <span className="tag-chip tag-chip--negative" key={ds}>
+                          {getDatasetText(locale, ds)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(dqs!.stale_datasets || []).length > 0 && (
+                  <div className="data-quality-section">
+                    <div className="data-quality-section__label">{t("symbol.staleDatasets")}</div>
+                    <div className="tag-cluster">
+                      {(dqs!.stale_datasets || []).map((ds) => (
+                        <span className="tag-chip tag-chip--warning" key={ds}>
+                          {getDatasetText(locale, ds)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(dqs!.missing_datasets || []).length === 0 && (dqs!.stale_datasets || []).length === 0 && (
+                  <div className="note-card">{t("symbol.noMissingDatasets")}</div>
+                )}
+                {dqs!.rationale && <div className="note-card note-card--warning">{dqs!.rationale}</div>}
+              </div>
+            ) : (
+              <div className="note-stack">
+                {(explanation?.data_quality_notes || []).map((item) => (
+                  <div className="note-card note-card--warning" key={item}>{item}</div>
+                ))}
+                {(explanation?.warnings || []).map((item) => (
+                  <div className="note-card note-card--danger" key={item}>{item}</div>
+                ))}
+                {!explanation?.data_quality_notes?.length && !explanation?.warnings?.length && (
+                  <div className="note-card">{t("symbol.noQualityWarnings")}</div>
+                )}
+              </div>
+            )}
+          </PanelCard>
+
           <PanelCard title={t("symbol.timeline")} subdued>
             <div className="timeline-list">
               {(klineResource.data?.event_markers || []).slice(-8).reverse().map((item, index) => (
@@ -144,22 +205,6 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
                   <div className="timeline-list__score">{formatPercent(item.kg_score, 0)}</div>
                 </div>
               ))}
-            </div>
-          </PanelCard>
-
-          <PanelCard title={t("symbol.dataQuality")} subdued>
-            <div className="note-stack">
-              {(explanation?.data_quality_notes || []).map((item) => (
-                <div className="note-card note-card--warning" key={item}>
-                  {item}
-                </div>
-              ))}
-              {(explanation?.warnings || []).map((item) => (
-                <div className="note-card note-card--danger" key={item}>
-                  {item}
-                </div>
-              ))}
-              {!explanation?.data_quality_notes?.length && !explanation?.warnings?.length && <div className="note-card">{t("symbol.noQualityWarnings")}</div>}
             </div>
           </PanelCard>
 

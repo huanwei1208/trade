@@ -1,5 +1,5 @@
 import type { CandidateRow, DecisionExplanation } from "../lib/api";
-import { formatConfidence, shortText } from "../lib/format";
+import { formatConfidence, formatPercent, humanizeEnum, shortText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { getGateStatusText } from "../lib/statusText";
 import { ActionChip } from "./ActionChip";
@@ -38,13 +38,13 @@ export function CandidateQuickPanel({
   const { locale, t } = useI18n();
   const constrainedNoAction = String(candidate?.action || explanation?.action || "").toUpperCase() === "NO_ACTION";
   const readinessSemantic = getGateStatusText(locale, constrainedNoAction ? "partial" : "ok");
+  const trustComponents = Object.entries(explanation?.trust?.components || {});
+  const hasQualityIssues = (explanation?.data_quality_notes || []).length > 0 || (explanation?.input_warnings || []).length > 0;
+
   if (!candidate) {
     return (
       <PanelCard title={t("candidate.quickReview")} eyebrow={t("candidate.selection")}>
-        <EmptyState
-          title={t("candidate.pickOne")}
-          body={t("candidate.pickOneCopy")}
-        />
+        <EmptyState title={t("candidate.pickOne")} body={t("candidate.pickOneCopy")} />
       </PanelCard>
     );
   }
@@ -136,6 +136,39 @@ export function CandidateQuickPanel({
         </div>
       </div>
 
+      {trustComponents.length > 0 && (
+        <div className="candidate-quick-panel__section">
+          <div className="candidate-quick-panel__label">{t("explain.trustComponents")}</div>
+          <div className="trust-breakdown">
+            {trustComponents.map(([key, value]) => (
+              <div className="trust-breakdown__row" key={key}>
+                <span className="trust-breakdown__label">{humanizeEnum(key)}</span>
+                <div className="trust-breakdown__bar-wrap">
+                  <div className="trust-breakdown__bar">
+                    <div className="trust-breakdown__fill" style={{ width: `${Math.max(4, Number(value) * 100)}%` }} />
+                  </div>
+                  <span className="trust-breakdown__pct">{formatPercent(value, 0)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {hasQualityIssues && (
+        <div className="candidate-quick-panel__section">
+          <div className="candidate-quick-panel__label">{t("symbol.dataQualityTitle")}</div>
+          <div className="quick-panel__quality-notes">
+            {(explanation?.input_warnings || []).map((item) => (
+              <div className="note-card note-card--danger" key={item}>{item}</div>
+            ))}
+            {(explanation?.data_quality_notes || []).map((item) => (
+              <div className="note-card note-card--warning" key={item}>{item}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="candidate-quick-panel__footer">
         <button type="button" className="button button--primary" onClick={() => candidate.symbol && onOpenSymbol(candidate.symbol)}>
           {t("common.openWorkspace")}
@@ -146,9 +179,6 @@ export function CandidateQuickPanel({
           </button>
           <button type="button" className="button button--ghost" onClick={onOpenRecovery}>
             {t("common.openRecovery")}
-          </button>
-          <button type="button" className="button button--ghost" onClick={onOpenOps}>
-            {t("common.openOps")}
           </button>
         </div>
       </div>

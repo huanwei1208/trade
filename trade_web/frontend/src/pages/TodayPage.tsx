@@ -9,10 +9,11 @@ import { SectionHeader } from "../components/SectionHeader";
 import { ActionChip } from "../components/ActionChip";
 import { StatusPill } from "../components/StatusPill";
 import { TrustBadge } from "../components/TrustBadge";
-import type { CandidateRow, EventsPagePayload, TodayPageData } from "../lib/api";
+import type { CandidateRow, TodayPageData } from "../lib/api";
 import { useApiResource } from "../lib/api";
-import { formatDateTime, shortText } from "../lib/format";
+import { formatConfidence, formatScore, shortText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { classNames } from "../lib/ui";
 import { getDatasetText, getGateStatusText } from "../lib/statusText";
 import { getTodayCall, isActionable } from "../lib/ui";
 
@@ -20,17 +21,75 @@ type TodayPageProps = {
   refreshToken: number;
   onOpenSymbol: (symbol: string) => void;
   onOpenOpsFocus: (focus: { tab: "readiness" | "recovery"; date?: string; dataset?: string }) => void;
+  onOpenCandidates?: () => void;
 };
 
-export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus }: TodayPageProps) {
+type OperatingMode = "actionable" | "review" | "blocked";
+
+function getOperatingMode(today: TodayPageData): OperatingMode {
+  if (today.global_blocked) return "blocked";
+  const opStatus = String(today.trust_gate?.operational_status || "").toLowerCase();
+  if (opStatus.includes("research") || opStatus.includes("browse")) return "review";
+  const trust = today.trust_gate?.trust_scalar;
+  if (typeof trust === "number" && trust < 0.4) return "review";
+  return "actionable";
+}
+
+function OperatingModeBanner({
+  today,
+  mode,
+  onOpenCandidates,
+  onOpenRecovery,
+}: {
+  today: TodayPageData;
+  mode: OperatingMode;
+  onOpenCandidates?: () => void;
+  onOpenRecovery?: () => void;
+}) {
+  const { locale, t } = useI18n();
+  const modeLabel =
+    mode === "actionable"
+      ? t("today.operatingModeActionable")
+      : mode === "review"
+        ? t("today.operatingModeReviewOnly")
+        : t("today.operatingModeBlocked");
+
+  const mainBlocker =
+    (today.blockers || [])[0] ||
+    (today.blocker_details?.[0]?.dataset ? getDatasetText(locale, today.blocker_details[0].dataset) : undefined);
+
+  return (
+    <div className={`today-mode-banner today-mode-banner--${mode}`}>
+      <div className="today-mode-banner__left">
+        <div className="today-mode-banner__mode">{t("today.operatingMode")}</div>
+        <div className={`today-mode-banner__value today-mode-banner__value--${mode}`}>{modeLabel}</div>
+        {mainBlocker && (
+          <div className="today-mode-banner__constraint">
+            {t("today.mainConstraint")}: {mainBlocker}
+          </div>
+        )}
+      </div>
+      <div className="today-mode-banner__actions">
+        {mode === "actionable" && onOpenCandidates && (
+          <button type="button" className="button button--primary" onClick={onOpenCandidates}>
+            {t("today.viewPriorityCandidates")}
+          </button>
+        )}
+        {(mode === "review" || mode === "blocked") && onOpenRecovery && (
+          <button type="button" className="button button--ghost" onClick={onOpenRecovery}>
+            {t("today.openDataRecovery")}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus, onOpenCandidates }: TodayPageProps) {
   const { locale, t } = useI18n();
   const todayResource = useApiResource<TodayPageData>("/api/today-page", {
     deps: [refreshToken],
     cacheKey: "trade-web:today-page",
-  });
-  const eventsResource = useApiResource<EventsPagePayload>("/api/events-page", {
-    deps: [refreshToken],
-    cacheKey: "trade-web:events-page",
   });
 
   const todayCall = getTodayCall(todayResource.data, locale);
@@ -45,16 +104,16 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus }: TodayP
 
   if (todayResource.error && !todayResource.data) {
     return (
-        <ErrorState
-          title={t("today.unavailable")}
-          body={t("today.unavailableCopy")}
-          detail={todayResource.error.message}
-          action={
-            <button type="button" className="button button--primary" onClick={todayResource.retry}>
-              {t("common.retry")}
-            </button>
-          }
-        />
+      <ErrorState
+        title={t("today.unavailable")}
+        body={t("today.unavailableCopy")}
+        detail={todayResource.error.message}
+        action={
+          <button type="button" className="button button--primary" onClick={todayResource.retry}>
+            {t("common.retry")}
+          </button>
+        }
+      />
     );
   }
 
@@ -63,16 +122,33 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus }: TodayP
     return null;
   }
 
+  const mode = getOperatingMode(today);
+
   return (
     <div className="page-stack page-today">
+      <OperatingModeBanner
+        today={today}
+        mode={mode}
+        onOpenCandidates={onOpenCandidates}
+        onOpenRecovery={() =>
+          onOpenOpsFocus({
+            tab: "recovery",
+            date: today.as_of,
+            dataset: today.blocker_details?.[0]?.dataset || "signals",
+          })
+        }
+      />
+
       <DecisionHero
         today={today}
         todayCall={todayCall}
-        onOpenReadiness={() => onOpenOpsFocus({
-          tab: "readiness",
-          date: today.as_of,
-          dataset: today.blocker_details?.[0]?.dataset || "signals",
-        })}
+        onOpenReadiness={() =>
+          onOpenOpsFocus({
+            tab: "readiness",
+            date: today.as_of,
+            dataset: today.blocker_details?.[0]?.dataset || "signals",
+          })
+        }
       />
 
       {todayResource.error && todayResource.data && (
@@ -116,11 +192,13 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus }: TodayP
             <button
               type="button"
               className="button button--ghost"
-              onClick={() => onOpenOpsFocus({
-                tab: "readiness",
-                date: today.as_of,
-                dataset: today.blocker_details?.[0]?.dataset || "signals",
-              })}
+              onClick={() =>
+                onOpenOpsFocus({
+                  tab: "readiness",
+                  date: today.as_of,
+                  dataset: today.blocker_details?.[0]?.dataset || "signals",
+                })
+              }
             >
               {t("common.openReadiness")}
             </button>
@@ -131,7 +209,7 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus }: TodayP
       <section className="page-section">
         <SectionHeader title={t("today.diagnostics")} subtitle={t("today.diagnosticsSubtitle")} />
         <div className="subtle-grid">
-          <CollapseSection title={t("today.trustAndFreshness")} initialOpen>
+          <CollapseSection title={t("today.trustAndFreshness")} initialOpen={false}>
             <div className="metric-grid">
               <MetricCard label={t("today.trustScalar")} value={<TrustBadge score={today.trust_gate?.trust_scalar} />} hint={today.trust_gate?.eval_date || t("common.notAvailable")} />
               <MetricCard label={t("today.conclusionMode")} value={getGateStatusText(locale, today.trust_gate?.operational_status).label} hint={getGateStatusText(locale, today.trust_gate?.operational_status).description} />
@@ -155,71 +233,14 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus }: TodayP
           </CollapseSection>
         </div>
       </section>
-
-      <section className="page-section">
-        <SectionHeader title={t("today.recentActivity")} subtitle={t("today.recentActivitySubtitle")} />
-        <div className="compact-grid">
-          <PanelCard title={t("today.recentRuns")} subdued>
-            <div className="list-stack">
-              {(today.recent_runs || []).length === 0 && <div className="note-card">{t("today.noRecentRuns")}</div>}
-              {(today.recent_runs || []).slice(0, 5).map((run) => (
-                <div className="compact-row" key={`${run.job_name}-${run.started_at}`}>
-                  <div>
-                    <div className="compact-row__title">{run.job_name || t("common.unknown")}</div>
-                    <div className="compact-row__subtitle">{shortText(run.result_summary, 80) || t("common.noSummary")}</div>
-                  </div>
-                  <div className="compact-row__meta">
-                    <StatusPill label={getGateStatusText(locale, run.status).label} tone={getGateStatusText(locale, run.status).tone} subtle />
-                    <span>{formatDateTime(run.started_at, locale === "zh-CN" ? "zh-CN" : "en-US")}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </PanelCard>
-
-          <PanelCard title={t("today.failedNodes")} subdued>
-            <div className="list-stack">
-              {(eventsResource.data?.failed_nodes || today.error_nodes || []).slice(0, 5).map((node) => {
-                const nodeRecord = node as Record<string, unknown>;
-                const key = String(nodeRecord.job_name || nodeRecord.id || "node");
-                const detail = String(nodeRecord.error_detail || nodeRecord.result_summary || t("common.noDetail"));
-                const status = String(nodeRecord.status || "error");
-                return (
-                <div className="compact-row" key={key}>
-                  <div>
-                    <div className="compact-row__title">{String(nodeRecord.job_name || nodeRecord.id || t("common.unknown"))}</div>
-                    <div className="compact-row__subtitle">{shortText(detail, 80)}</div>
-                  </div>
-                  <StatusPill label={getGateStatusText(locale, status).label} tone="err" subtle />
-                </div>
-                );
-              })}
-              {(!eventsResource.data?.failed_nodes || eventsResource.data.failed_nodes.length === 0) && (!today.error_nodes || today.error_nodes.length === 0) && <div className="note-card">{t("today.noFailures")}</div>}
-            </div>
-          </PanelCard>
-
-          <PanelCard title={t("today.noteworthyEvents")} subdued>
-            <div className="list-stack">
-              {(eventsResource.data?.today_events || eventsResource.data?.recent_market_events || []).slice(0, 5).map((item, index) => (
-                <div className="compact-row" key={`${item.title || item.event_type || index}`}>
-                  <div>
-                    <div className="compact-row__title">{String(item.title || item.event_type || item.symbol || t("common.marketEvent"))}</div>
-                    <div className="compact-row__subtitle">{shortText(String(item.summary || item.description || item.symbol || ""), 80) || t("common.noSummary")}</div>
-                  </div>
-                  <span>{String(item.event_date || item.created_at || "—")}</span>
-                </div>
-              ))}
-              {eventsResource.loading && !eventsResource.data && <LoadingSkeleton variant="panel" />}
-            </div>
-          </PanelCard>
-        </div>
-      </section>
     </div>
   );
 }
 
 function ActionCard({ candidate, onOpenSymbol }: { candidate: CandidateRow; onOpenSymbol: (symbol: string) => void }) {
   const { t } = useI18n();
+  const hasBeliefDelta = candidate.belief_delta_mu !== null && candidate.belief_delta_mu !== undefined;
+  const beliefDelta = Number(candidate.belief_delta_mu);
   return (
     <PanelCard accent={String(candidate.action || "").toUpperCase() === "ADD" ? "green" : String(candidate.action || "").toUpperCase() === "PROBE" ? "cyan" : "amber"} className="action-card">
       <div className="action-card__head">
@@ -228,15 +249,25 @@ function ActionCard({ candidate, onOpenSymbol }: { candidate: CandidateRow; onOp
             {candidate.symbol}
             <span>{candidate.name || ""}</span>
           </div>
-          <div className="action-card__summary">{shortText(candidate.world_state_summary || candidate.thesis, 120) || t("today.stateSummaryFallback")}</div>
+          <div className="action-card__summary">{shortText(candidate.world_state_summary || candidate.thesis, 100) || t("today.stateSummaryFallback")}</div>
         </div>
         <div className="action-card__meta">
           <ActionChip action={candidate.action} />
           <TrustBadge score={candidate.trust_score} level={candidate.trust_level} />
         </div>
       </div>
+      <div className="action-card__stats">
+        {candidate.confidence !== undefined && candidate.confidence !== null && (
+          <span className="action-card__stat">{formatConfidence(candidate.confidence)}</span>
+        )}
+        {hasBeliefDelta && (
+          <span className={classNames("action-card__stat belief-delta", beliefDelta >= 0 ? "is-positive" : "is-negative")}>
+            {beliefDelta >= 0 ? "+" : ""}{formatScore(beliefDelta, 2)}μ
+          </span>
+        )}
+      </div>
       <div className="action-card__footer">
-        <div className="action-card__invalidator">{shortText((candidate.top_invalidators || []).join(" · "), 90) || t("candidates.table.noInvalidator")}</div>
+        <div className="action-card__invalidator">{shortText((candidate.top_invalidators || []).join(" · "), 80) || t("candidates.table.noInvalidator")}</div>
         <button type="button" className="button button--ghost" onClick={() => candidate.symbol && onOpenSymbol(candidate.symbol)}>
           {t("common.openWorkspace")}
         </button>

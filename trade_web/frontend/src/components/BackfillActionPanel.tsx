@@ -38,6 +38,7 @@ export function BackfillActionPanel({
   onDryRun,
 }: BackfillActionPanelProps) {
   const { locale, t } = useI18n();
+  const downstreamNodes = plan?.downstream_nodes || [];
 
   return (
     <div className="readiness-inspector__section">
@@ -52,6 +53,12 @@ export function BackfillActionPanel({
           <span>{t("recovery.endDate")}</span>
           <input type="date" value={rangeTo} onChange={(event) => onChangeRange({ dateFrom: rangeFrom, dateTo: event.target.value })} />
         </label>
+      </div>
+
+      {changed && <div className="note-card note-card--warning">{t("recovery.changedDetected")}</div>}
+
+      <div className="note-card">
+        <div>{t("recovery.confirmCaption")}</div>
       </div>
 
       <div className="recovery-action-stack">
@@ -74,22 +81,36 @@ export function BackfillActionPanel({
 
       {error && <div className="note-card note-card--danger">{error}</div>}
       {successMessage && <div className="note-card note-card--warning">{successMessage}</div>}
-      {changed ? <div className="note-card note-card--warning">{t("recovery.changedDetected")}</div> : null}
+
+      {plan !== null && plan !== undefined && (
+        <div className="note-stack">
+          <div className="note-card">
+            <strong>{plan ? t("recovery.planReady") : t("recovery.planUnavailable")}</strong>
+            {plan?.estimated_duration_ms && (
+              <div className="recovery-plan-copy">{t("recovery.estimatedDuration")} {plan.estimated_duration_ms}ms</div>
+            )}
+          </div>
+          {downstreamNodes.length > 0 && (
+            <div className="operator-chain">
+              <div className="readiness-inspector__label">{t("recovery.operatorChain")}</div>
+              <div className="operator-chain__steps">
+                {downstreamNodes.map((node, i) => (
+                  <div key={node.job_name || i} className="operator-chain__step">
+                    {i > 0 && <span className="operator-chain__arrow">→</span>}
+                    <span className="operator-chain__job">{node.job_name || "?"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {downstreamNodes.length === 0 && plan && (
+            <div className="readiness-inspector__subtle">{t("recovery.noDownstreamNodes")}</div>
+          )}
+        </div>
+      )}
 
       <div className="readiness-inspector__subtle">
         {t("recovery.lastAction")} {lastActionAt ? formatDateTime(lastActionAt, locale === "zh-CN" ? "zh-CN" : "en-US") : "—"}
-      </div>
-
-      <div className="note-stack">
-        <div className="note-card">
-          <strong>{plan ? t("recovery.planReady") : t("recovery.planUnavailable")}</strong>
-          <div className="recovery-plan-copy">
-            {plan ? `${t("recovery.downstreamNodes")} ${(plan.downstream_nodes || []).map((item) => item.job_name).filter(Boolean).join(" → ") || "—"}` : t("common.noDetail")}
-          </div>
-          {plan?.estimated_duration_ms ? (
-            <div className="recovery-plan-copy">{t("recovery.estimatedDuration")} {plan.estimated_duration_ms}ms</div>
-          ) : null}
-        </div>
       </div>
     </div>
   );

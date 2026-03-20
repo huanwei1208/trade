@@ -48,12 +48,14 @@ export function CandidateTable({ rows, selectedSymbol, onSelect, onOpenSymbol }:
       <div className="candidate-table__head">
         <span>{t("candidates.table.symbol")}</span>
         <span>{t("candidates.table.decision")}</span>
-        <span>{t("candidates.table.thesis")}</span>
+        <span>{t("candidates.table.beliefChange")}</span>
         <span>{t("candidates.table.pulse")}</span>
       </div>
       <div className="candidate-table__body">
         {rows.map((row) => {
           const sparkline = normalizeSparkline(row.sparkline);
+          const hasBeliefDelta = row.belief_delta_mu !== null && row.belief_delta_mu !== undefined;
+          const beliefDelta = Number(row.belief_delta_mu);
           return (
             <button
               key={row.symbol}
@@ -65,19 +67,23 @@ export function CandidateTable({ rows, selectedSymbol, onSelect, onOpenSymbol }:
               <div className="candidate-row__identity">
                 <div className="candidate-row__symbol">{row.symbol}</div>
                 <div className="candidate-row__name">{row.name || t("candidates.table.noName")}</div>
+                <div className="candidate-row__summary">{shortText(row.world_state_summary || row.thesis, 72) || ""}</div>
               </div>
               <div className="candidate-row__decision">
                 <ActionChip action={row.action} />
                 <div className="candidate-row__meta">
                   <span>{formatConfidence(row.confidence)}</span>
-                  <TrustBadge score={row.trust_score} level={row.trust_level} />
                 </div>
               </div>
-              <div className="candidate-row__thesis">
-                <div className="candidate-row__copy">{shortText(row.world_state_summary || row.thesis, 140)}</div>
-                <div className="candidate-row__invalidator">{shortText((row.top_invalidators || []).join(" · "), 100) || t("candidates.table.noInvalidator")}</div>
+              <div className="candidate-row__quant">
+                <TrustBadge score={row.trust_score} level={row.trust_level} />
+                {hasBeliefDelta && (
+                  <span className={classNames("belief-delta", beliefDelta >= 0 ? "is-positive" : "is-negative")}>
+                    {beliefDelta >= 0 ? "+" : ""}{formatScore(beliefDelta, 2)}μ
+                  </span>
+                )}
                 <div className="candidate-row__tags">
-                  {(row.event_tags || []).slice(0, 3).map((tag) => (
+                  {(row.event_tags || []).slice(0, 2).map((tag) => (
                     <span className="tag-chip" key={`${row.symbol}-${tag}`}>
                       {tag}
                     </span>
@@ -88,7 +94,6 @@ export function CandidateTable({ rows, selectedSymbol, onSelect, onOpenSymbol }:
                 <svg viewBox="0 0 84 28" role="img" aria-label={`${row.symbol} sparkline`}>
                   <path d={sparklinePath(sparkline, 84, 28)} />
                 </svg>
-                <div className="candidate-row__score">{formatScore(row.trust_score)}</div>
               </div>
             </button>
           );

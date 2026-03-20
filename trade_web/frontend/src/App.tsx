@@ -128,7 +128,7 @@ export default function App() {
         onLocaleChange={setLocale}
         onRefresh={() => setRefreshToken((current) => current + 1)}
       >
-        {resolvedPage === "today" && <TodayPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOpsFocus={openOpsFocus} />}
+        {resolvedPage === "today" && <TodayPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOpsFocus={openOpsFocus} onOpenCandidates={() => navigate("candidates")} />}
         {resolvedPage === "candidates" && <CandidatesPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOps={() => navigate("ops")} onOpenOpsFocus={openOpsFocus} />}
         {resolvedPage === "symbol" && <SymbolPage symbol={selectedSymbol} refreshToken={refreshToken} onBack={() => navigate(symbolOrigin || "today")} onOpenOpsFocus={openOpsFocus} />}
         {resolvedPage === "ops" && <OpsPage refreshToken={refreshToken} focus={opsFocus} onFocusChange={setOpsFocus} />}
