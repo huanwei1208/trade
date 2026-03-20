@@ -1,0 +1,327 @@
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+}
+
+.app-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: var(--space-6);
+  border-right: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(8, 24, 43, 0.92), rgba(6, 17, 31, 0.96));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+.app-sidebar__brand {
+  display: flex;
+  gap: var(--space-4);
+  align-items: center;
+}
+
+.app-sidebar__logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, rgba(42, 157, 255, 0.28), rgba(108, 124, 255, 0.32));
+  box-shadow: var(--shadow-panel);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.app-sidebar__title {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.app-sidebar__subtitle {
+  color: var(--text-3);
+}
+
+.app-sidebar__nav {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.app-sidebar__link {
+  width: 100%;
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  padding: 12px 14px;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  transition: background var(--transition-fast), transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.app-sidebar__link:hover:not(:disabled) {
+  background: rgba(10, 24, 44, 0.7);
+  border-color: var(--line);
+}
+
+.app-sidebar__link:disabled {
+  cursor: default;
+  color: var(--text-3);
+}
+
+.app-sidebar__link.is-active {
+  background: linear-gradient(135deg, rgba(42, 157, 255, 0.22), rgba(108, 124, 255, 0.18));
+  border-color: rgba(42, 157, 255, 0.24);
+  color: var(--text-0);
+  box-shadow: 0 0 0 1px rgba(42, 157, 255, 0.12) inset, 0 0 28px rgba(42, 157, 255, 0.08);
+}
+
+.app-sidebar__icon {
+  width: 18px;
+  text-align: center;
+}
+
+.app-sidebar__footer {
+  margin-top: auto;
+  padding: var(--space-5);
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  box-shadow: var(--shadow-panel);
+}
+
+.app-sidebar__footer-label {
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+}
+
+.app-sidebar__footer-value {
+  margin-top: var(--space-2);
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.app-sidebar__footer-subtle {
+  color: var(--text-2);
+}
+
+.app-sidebar__footer-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.app-main {
+  min-width: 0;
+  padding: var(--space-6) var(--space-7);
+}
+
+.app-content {
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.top-nav {
+  margin: 0 auto var(--space-6);
+  max-width: 1600px;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-6);
+  align-items: flex-start;
+}
+
+.top-nav__eyebrow {
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 11px;
+}
+
+.top-nav__title {
+  margin-top: var(--space-2);
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1.05;
+}
+
+.top-nav__subtitle {
+  margin-top: var(--space-3);
+  max-width: 720px;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.top-nav__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.top-nav__asof,
+.top-nav__select {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px 12px;
+  border-radius: var(--radius-button);
+  border: 1px solid var(--line);
+  background: rgba(11, 23, 40, 0.54);
+}
+
+.top-nav__select select {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.page-stack {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.page-section {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.card-grid,
+.compact-grid,
+.subtle-grid,
+.metric-grid {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.card-grid--actions {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.compact-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.subtle-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.candidates-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.9fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.symbol-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.8fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.filter-bar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-4);
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--line);
+  background: rgba(8, 24, 43, 0.9);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--shadow-panel);
+}
+
+.filter-bar--ops {
+  position: static;
+}
+
+.segmented-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.segmented-group button,
+.filter-bar--ops > button {
+  border: 1px solid var(--line);
+  background: rgba(11, 23, 40, 0.64);
+  color: var(--text-1);
+  border-radius: var(--radius-pill);
+  padding: 8px 12px;
+}
+
+.segmented-group button.is-active,
+.filter-bar--ops > button.is-active {
+  background: rgba(42, 157, 255, 0.18);
+  border-color: rgba(42, 157, 255, 0.28);
+  color: var(--text-0);
+}
+
+.filter-bar__search {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--text-2);
+}
+
+.filter-bar__search input,
+.filter-bar__search select {
+  min-width: 180px;
+}
+
+@media (max-width: 1420px) {
+  .compact-grid,
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1200px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .app-sidebar {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .candidates-layout,
+  .symbol-layout,
+  .compact-grid,
+  .subtle-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-main {
+    padding: var(--space-4);
+  }
+
+  .top-nav {
+    flex-direction: column;
+  }
+
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+}

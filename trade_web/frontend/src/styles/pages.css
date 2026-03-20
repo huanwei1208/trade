@@ -1,0 +1,62 @@
+.today-blocker-card__copy,
+.diagnostic-callout,
+.diagnostic-copy {
+  color: var(--text-1);
+}
+
+.today-blocker-card__list {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.action-card__footer,
+.candidate-quick-panel__footer {
+  margin-top: var(--space-4);
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.action-card__invalidator {
+  color: var(--text-2);
+  max-width: 70%;
+}
+
+.diagnostic-list {
+  margin-top: var(--space-4);
+}
+
+.diagnostic-callout {
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 91, 110, 0.08);
+  border: 1px solid rgba(255, 91, 110, 0.18);
+}
+
+.diagnostic-copy {
+  margin-top: var(--space-3);
+}
+
+.symbol-layout__rail,
+.candidates-layout__panel {
+  min-width: 0;
+}
+
+.symbol-layout__chart,
+.candidates-layout__table {
+  min-width: 0;
+}
+
+.page-ops .panel-card,
+.page-ops .filter-bar {
+  background: rgba(8, 24, 43, 0.78);
+}
+
+.pipeline-list__meta {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: end;
+  color: var(--text-2);
+}

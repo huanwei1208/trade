@@ -232,6 +232,47 @@ def create_app():
         )
         return _cache_set(name, signature=signature, payload=payload)
 
+    def _read_symbol_sparkline(symbol: str, *, days: int = 12) -> list[dict[str, Any]]:
+        try:
+            from trade_py.data.market.kline import read_kline_range
+
+            end_date = date.today()
+            start_date = end_date - timedelta(days=max(14, days * 3))
+            df = read_kline_range(
+                data_root,
+                symbol,
+                start_date.isoformat(),
+                end_date.isoformat(),
+            )
+            if df.empty:
+                return []
+            points: list[dict[str, Any]] = []
+            for row in df.tail(days).to_dict(orient="records"):
+                points.append({
+                    "date": str(row.get("date") or row.get("trade_date") or ""),
+                    "close": float(row.get("close") or 0.0),
+                })
+            return points
+        except Exception:
+            return []
+
+    def _read_symbol_event_tags(db, symbol: str, *, as_of: str, limit: int = 3) -> list[str]:
+        try:
+            with db._conn_lock:
+                rows = db._conn.execute(
+                    """
+                    SELECT DISTINCT event_type
+                    FROM market_events
+                    WHERE symbol = ? AND event_date <= ?
+                    ORDER BY event_date DESC
+                    LIMIT ?
+                    """,
+                    (symbol, as_of, max(1, int(limit))),
+                ).fetchall()
+            return [str(row[0]) for row in rows if row and row[0]]
+        except Exception:
+            return []
+
     async def _stream_wait(poll_seconds: float) -> bool:
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=max(0.25, float(poll_seconds)))
@@ -906,6 +947,7 @@ def create_app():
         today_thesis = ""
         blockers: list[str] = []
         top_actions: list[dict] = []
+        market_regime = "UNKNOWN"
         try:
             for pick in top_picks[:5]:
                 sym = str(pick.get("symbol") or "")
@@ -924,6 +966,8 @@ def create_app():
                                           "MEDIUM" if ws.trust_score > 0.40 else "LOW"),
                         "top_invalidators": act.invalidators[:2],
                         "world_state_summary": ws.state_summary,
+                        "event_tags": _read_symbol_event_tags(db, sym, as_of=today_str, limit=2),
+                        "sparkline": _read_symbol_sparkline(sym),
                     }
                     top_actions.append(enriched)
                     # First ADD/PROBE becomes today's thesis
@@ -931,6 +975,8 @@ def create_app():
                         today_thesis = ws.state_summary
                     # Collect blockers
                     blockers.extend(ws.blockers[:1])
+                    if market_regime == "UNKNOWN":
+                        market_regime = str(ws.market_regime or "UNKNOWN")
                 except Exception:
                     top_actions.append(pick)
             if not today_thesis and top_actions:
@@ -938,21 +984,49 @@ def create_app():
         except Exception:
             top_actions = list(top_picks[:5])
 
-        # Market regime from trust gate
-        market_regime = "UNKNOWN"
-        try:
-            if trust_gate.get("research_status") == "ok":
-                market_regime = "OK"
-            elif trust_gate.get("operational_status") == "degraded":
-                market_regime = "DEGRADED"
-        except Exception:
-            pass
+        freshness_issues = [
+            {
+                "dataset": item.get("dataset"),
+                "lag_days": item.get("lag_days"),
+                "status": item.get("status"),
+            }
+            for item in (trust_gate.get("freshness") or [])
+            if str(item.get("status") or "") != "ok"
+        ]
+        global_blocked = bool(blockers) or any(
+            status in {"blocked", "degraded", "partial"}
+            for status in (
+                str(trust_gate.get("operational_status") or "").lower(),
+                str(trust_gate.get("research_status") or "").lower(),
+            )
+        )
+        actionable_count = sum(
+            1 for row in top_actions
+            if str(row.get("action") or "") in {"ADD", "PROBE", "REDUCE"}
+        )
+        watch_count = sum(1 for row in top_actions if str(row.get("action") or "") == "WATCH")
+        decision_posture = (
+            "DEGRADED" if global_blocked else
+            "ACTIONABLE" if actionable_count > 0 else
+            "WATCHLIST" if watch_count > 0 else
+            "NO_ACTION"
+        )
+        recovery_condition = (
+            "Restore missing or stale datasets and recover trust gate before acting."
+            if freshness_issues
+            else "Wait for stronger confirmation or regime improvement."
+        )
 
         return {
             "as_of": today_str,
             "today_thesis": today_thesis,
             "market_regime": market_regime,
             "blockers": list(dict.fromkeys(blockers))[:4],
+            "decision_posture": decision_posture,
+            "global_blocked": global_blocked,
+            "blocker_details": freshness_issues,
+            "safe_to_view": ["historical chart context", "recent events", "state summaries"],
+            "recovery_condition": recovery_condition,
             "pipeline_health": pipeline_health,
             "top_picks": top_picks,
             "top_actions": top_actions,
@@ -985,6 +1059,8 @@ def create_app():
                 belief_sigma = 0.3
                 delta_mu = 0.0
                 top_evidence: list = []
+                sparkline: list[dict[str, Any]] = []
+                event_tags: list[str] = []
                 try:
                     instr = db.instrument_lookup(sym)
                     name = str(instr.get("name") or "") if instr else ""
@@ -1004,9 +1080,11 @@ def create_app():
                         {"weight": a.get("weight"), "evidence_id": a.get("evidence_id")}
                         for a in attn
                     ]
+                    sparkline = _read_symbol_sparkline(sym)
+                    event_tags = _read_symbol_event_tags(db, sym, as_of=today_str, limit=3)
                 except Exception:
                     pass
-                    # Decision-layer enrichment (top 20 only — speed)
+                # Decision-layer enrichment (top 20 only — speed)
                 action_val = str(r.get("action") or "")
                 confidence_val = str(r.get("conviction") or "")
                 ws_summary = ""
@@ -1033,6 +1111,8 @@ def create_app():
                     "belief_sigma": round(belief_sigma, 4),
                     "belief_delta_mu": round(delta_mu, 4),
                     "top_evidence": top_evidence,
+                    "sparkline": sparkline,
+                    "event_tags": event_tags,
                     "action":               action_val,
                     "confidence":           confidence_val,
                     "world_state_summary":  ws_summary,
@@ -1058,6 +1138,8 @@ def create_app():
                 try:
                     instr = db.instrument_lookup(sym)
                     pick["name"] = str(instr.get("name") or "") if instr else ""
+                    pick["sparkline"] = _read_symbol_sparkline(sym)
+                    pick["event_tags"] = _read_symbol_event_tags(db, sym, as_of=today_str, limit=3)
                 except Exception:
                     pick["name"] = ""
         return {
@@ -1800,7 +1882,6 @@ def create_app():
     @app.get("/api/kline/{symbol}")
     async def get_kline(symbol: str, days: int = 60):
         """Return OHLCV + indicators + event markers + recommendation context."""
-        import math
         symbol = symbol.strip().upper()
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol required")
@@ -1814,157 +1895,12 @@ def create_app():
         except Exception:
             name = symbol
 
-        # Read kline data from parquet
-        ohlcv: list[dict] = []
-        try:
-            import pandas as pd
-            from pathlib import Path as _Path
-            kline_dir = _Path(data_root) / "market" / "kline"
-            # Convert symbol "600643.SH" → "600643_SH" for filename lookup
-            fname = symbol.replace(".", "_") + ".parquet"
-            sym_files = sorted(kline_dir.rglob(fname)) if kline_dir.exists() else []
-
-            if sym_files:
-                dfs = []
-                for f in sym_files[-4:]:  # last few month partition files
-                    try:
-                        df_part = pd.read_parquet(f)
-                        if "symbol" in df_part.columns:
-                            df_part = df_part[df_part["symbol"] == symbol]
-                        dfs.append(df_part)
-                    except Exception:
-                        pass
-                if dfs:
-                    df = pd.concat(dfs, ignore_index=True)
-                    date_col = "date" if "date" in df.columns else (
-                        "trade_date" if "trade_date" in df.columns else df.columns[0]
-                    )
-                    if date_col == "trade_date":
-                        df = df.rename(columns={"trade_date": "date"})
-                        date_col = "date"
-                    df = df.sort_values(date_col).tail(max(days, 60))
-                    for _, row_data in df.iterrows():
-                        try:
-                            ohlcv.append({
-                                "date": str(row_data.get("date") or ""),
-                                "open": float(row_data.get("open") or 0),
-                                "high": float(row_data.get("high") or 0),
-                                "low": float(row_data.get("low") or 0),
-                                "close": float(row_data.get("close") or 0),
-                                "volume": int(float(row_data.get("vol") or row_data.get("volume") or 0)),
-                            })
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
-        # Compute technical indicators from ohlcv
-        indicators: dict[str, Any] = {}
-        if len(ohlcv) >= 14:
-            closes = [float(r["close"]) for r in ohlcv if float(r.get("close") or 0) > 0]
-            vols = [float(r["volume"]) for r in ohlcv if float(r.get("volume") or 0) > 0]
-            if len(closes) >= 14:
-                # RSI-14
-                gains, losses = [], []
-                for i in range(1, 15):
-                    delta = closes[-i] - closes[-i - 1] if i + 1 < len(closes) else 0
-                    (gains if delta > 0 else losses).append(abs(delta))
-                avg_gain = sum(gains) / 14 if gains else 0.001
-                avg_loss = sum(losses) / 14 if losses else 0.001
-                rs = avg_gain / avg_loss if avg_loss > 0 else 100
-                rsi = round(100 - 100 / (1 + rs), 1)
-                indicators["rsi_14"] = rsi
-            if len(vols) >= 20 and vols[-1] > 0:
-                vol_ma20 = sum(vols[-20:]) / 20
-                vol_ratio = round(vols[-1] / vol_ma20, 2) if vol_ma20 > 0 else 1.0
-                indicators["vol_ratio"] = vol_ratio
-            if len(closes) >= 52:
-                high_52w = max(closes[-252:] if len(closes) >= 252 else closes)
-                low_52w = min(closes[-252:] if len(closes) >= 252 else closes)
-                rng = high_52w - low_52w
-                dist = round((closes[-1] - low_52w) / rng, 3) if rng > 0 else 0.5
-                indicators["dist_52w_low"] = dist
-
-        # Get event markers for this symbol
-        event_markers: list[dict] = []
-        try:
-            with db._conn_lock:
-                ep_rows = db._conn.execute("""
-                    SELECT me.event_date, me.event_type, me.magnitude, ep.kg_score
-                    FROM event_propagations ep
-                    JOIN market_events me ON ep.event_id = me.event_id
-                    WHERE ep.symbol = ?
-                    ORDER BY me.event_date DESC
-                    LIMIT 20
-                """, (symbol,)).fetchall()
-            for row in ep_rows:
-                try:
-                    event_markers.append({
-                        "date": str(row[0] or ""),
-                        "event_type": str(row[1] or ""),
-                        "magnitude": float(row[2] or 0),
-                        "kg_score": float(row[3] or 0),
-                    })
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # Get latest signal
-        latest_signal: dict = {}
-        try:
-            with db._conn_lock:
-                sig_row = db._conn.execute("""
-                    WITH latest AS (SELECT symbol, MAX(date) AS max_date FROM signals WHERE symbol=? GROUP BY symbol)
-                    SELECT sc.*
-                    FROM signals sc JOIN latest ON sc.symbol=latest.symbol AND sc.date=latest.max_date
-                    LIMIT 1
-                """, (symbol,)).fetchone()
-            if sig_row:
-                latest_signal = dict(sig_row)
-        except Exception:
-            pass
-
-        # EBRT: belief transition overlay for kline chart
-        belief_overlay: list[dict] = []
-        try:
-            from datetime import timedelta as _td2
-            cur2 = date.today()
-            for _ in range(days):
-                dstr = cur2.isoformat()
-                bs = db.belief_state_get(dstr, symbol)
-                if bs:
-                    bv = bs.get("belief_vec") or {}
-                    bt = db.belief_transition_get(symbol, dstr)
-                    delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0)) if bt else 0.0
-                    belief_overlay.append({
-                        "date": dstr,
-                        "mu": float(bv.get("mu", 0.0)),
-                        "sigma": float(bv.get("sigma", 0.3)),
-                        "delta_mu": round(delta_mu, 4),
-                    })
-                cur2 -= _td2(days=1)
-            belief_overlay = list(reversed(belief_overlay))
-        except Exception:
-            belief_overlay = []
-
-        # EBRT: latest Recommendation for this symbol
-        ebrt_rec: dict = {}
-        try:
-            today_str2 = date.today().isoformat()
-            recs2 = db.recommendation_list(today_str2)
-            for r2 in recs2:
-                if r2.get("symbol") == symbol:
-                    ebrt_rec = {
-                        "action": r2.get("action"),
-                        "conviction": r2.get("conviction"),
-                        "score": r2.get("score"),
-                        "risk": r2.get("risk"),
-                        "reasons": r2.get("reasons", []),
-                    }
-                    break
-        except Exception:
-            pass
+        context = _explain_svc.build_kline_context(
+            symbol,
+            days=max(days, 60),
+            db=db,
+            data_root=data_root,
+        )
 
         # Decision explanation — primary truth source for Symbol page
         explanation: dict = {}
@@ -1975,20 +1911,8 @@ def create_app():
             logger.debug("kline explain failed for %s: %s", symbol, exc)
 
         return {
-            "symbol": symbol,
+            **context,
             "name": name,
-            "ohlcv": ohlcv,
-            "event_markers": event_markers,
-            "indicators": indicators,
-            "ebrt_recommendation": ebrt_rec,
-            "belief_overlay": belief_overlay,
-            "latest_signal": {
-                "model_score": latest_signal.get("model_score"),
-                "window_score": latest_signal.get("window_score"),
-                "event_kg_score": latest_signal.get("event_kg_score"),
-                "net_sentiment": latest_signal.get("net_sentiment"),
-                "status": latest_signal.get("status"),
-            },
             "explanation": explanation,
         }
 
