@@ -18,20 +18,30 @@ type OpsFocus = {
 
 function readInitialQuery() {
   if (typeof window === "undefined") {
-    return { page: undefined, opsFocus: {} as OpsFocus };
+    return { page: undefined as PageKey | undefined, opsFocus: {} as OpsFocus };
   }
   const params = new URLSearchParams(window.location.search);
   const opsTab = params.get("opsTab");
-  const date = params.get("date");
-  const dataset = params.get("dataset");
-  return {
-    page: opsTab ? ("ops" as PageKey) : undefined,
-    opsFocus: {
-      tab: (opsTab as OpsFocus["tab"]) || undefined,
-      date: date || undefined,
-      dataset: dataset || undefined,
-    },
+  if (!opsTab) {
+    return { page: undefined as PageKey | undefined, opsFocus: {} as OpsFocus };
+  }
+  const date = params.get("date") || undefined;
+  const dataset = params.get("dataset") || undefined;
+  const opsFocus: OpsFocus = {
+    tab: opsTab as OpsFocus["tab"],
+    date,
+    dataset,
   };
+  // URL params must win over stale localStorage. Write synchronously here so
+  // useLocalStorageState's lazy initializer (called after this function)
+  // reads the correct values on first render.
+  try {
+    window.localStorage.setItem("trade-web:page", JSON.stringify("ops"));
+    window.localStorage.setItem("trade-web:ops-focus", JSON.stringify(opsFocus));
+  } catch {
+    // ignore — storage quota or private mode
+  }
+  return { page: "ops" as PageKey, opsFocus };
 }
 
 export default function App() {

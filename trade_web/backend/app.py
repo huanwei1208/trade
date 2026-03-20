@@ -246,10 +246,12 @@ def create_app():
         db = _db()
         stored = db.ui_snapshot_get(name, scope=scope)
         if stored and str(stored.get("signature") or "") == signature:
-            payload = stored.get("payload_json") or {}
-            if isinstance(payload, dict):
+            payload = stored.get("payload_json")
+            # Reject null/empty payloads — they indicate a previously failed build.
+            # Treat as a cache miss so builder() is called again to produce real data.
+            if isinstance(payload, dict) and len(payload) > 0:
                 payload.setdefault("cached", True)
-            return _cache_set(name, signature=signature, payload=payload)
+                return _cache_set(name, signature=signature, payload=payload)
         started = time.monotonic()
         payload = builder()
         build_ms = int((time.monotonic() - started) * 1000)
