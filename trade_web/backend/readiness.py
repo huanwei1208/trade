@@ -7,6 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,9 @@ DOWNSTREAM_JOB_MAP: dict[str, list[str]] = {
 READINESS_READY = {"READY", "LATE_READY", "REPLAYED"}
 READINESS_WARN = {"PARTIAL", "CHANGED", "REPLAYING"}
 READINESS_BAD = {"MISSING"}
+
+_daily_file_cache_lock = Lock()
+_daily_file_cache: dict[str, tuple[int, set[str]]] = {}
 
 
 def _safe_json(value: Any, default: Any) -> Any:
@@ -253,6 +257,13 @@ def _coverage_for_day(grouped_last_dates: list[tuple[str, int]], day_iso: str) -
 
 
 def _list_daily_files(root: Path) -> set[str]:
+    cache_key = str(root)
+    mtime_ns = root.stat().st_mtime_ns if root.exists() else -1
+    with _daily_file_cache_lock:
+        cached = _daily_file_cache.get(cache_key)
+        if cached and cached[0] == mtime_ns:
+            return set(cached[1])
+
     dates: set[str] = set()
     if not root.exists():
         return dates
@@ -260,6 +271,8 @@ def _list_daily_files(root: Path) -> set[str]:
         stem = path.stem
         if len(stem) == 10 and stem[4] == "-" and stem[7] == "-":
             dates.add(stem)
+    with _daily_file_cache_lock:
+        _daily_file_cache[cache_key] = (mtime_ns, dates)
     return dates
 
 
@@ -531,8 +544,10 @@ def build_readiness_grid(
     repair_by_cell, repair_by_dataset = _collect_repair_runs(db, date_from, date_to)
     gap_ranges = _collect_gap_ranges(db)
 
-    sentiment_gold_dates = _list_daily_files(Path(data_root) / "sentiment" / "gold")
-    sentiment_silver_dates = _list_daily_files(Path(data_root) / "sentiment" / "silver")
+    needs_gold_dates = any(item.key in {"sentiment_gold", "events"} for item in catalog)
+    needs_silver_dates = any(item.key == "sentiment_silver" for item in catalog)
+    sentiment_gold_dates = _list_daily_files(Path(data_root) / "sentiment" / "gold") if needs_gold_dates else set()
+    sentiment_silver_dates = _list_daily_files(Path(data_root) / "sentiment" / "silver") if needs_silver_dates else set()
     latest_gold = _latest_path_date(sentiment_gold_dates)
     latest_silver = _latest_path_date(sentiment_silver_dates)
 
@@ -857,6 +872,32 @@ def build_readiness_grid(
         },
     }
 
+    return {
+        "as_of": date.today().isoformat(),
+        "range": {
+            "days": len(day_strings),
+            "end_date": day_strings[-1],
+            "dates": day_strings,
+        },
+        "summary": summary,
+        "datasets": [
+            {
+                "key": item.key,
+                "label": item.label,
+                "critical": item.critical,
+                "job_name": item.job_name,
+                "affected_outputs": list(item.impacts),
+            }
+            for item in catalog
+        ],
+        "rows": rows,
+        "recovery_history": {
+            dataset_key: (_action_history_summary(recovery_by_dataset.get(dataset_key, [])) or _history_summary(repair_by_dataset.get(dataset_key, [])))
+            for dataset_key in dataset_order
+            if recovery_by_dataset.get(dataset_key) or repair_by_dataset.get(dataset_key)
+        },
+    }
+
 
 def get_dataset_meta(dataset: str) -> DatasetMeta | None:
     return next((item for item in DATASET_CATALOG if item.key == dataset), None)
@@ -942,9 +983,26 @@ def detect_changed_data(
     date_to: str,
 ) -> dict[str, Any]:
     history = list_recovery_history(db, dataset=dataset, limit=200)
+    day_strings = _iter_day_strings(date_from, date_to)
+    fingerprints: dict[str, str | None] = {}
+    for chunk_start in range(0, len(day_strings), 90):
+        chunk_days = day_strings[chunk_start:chunk_start + 90]
+        payload = build_readiness_grid(
+            data_root,
+            db,
+            days=len(chunk_days),
+            end_date=chunk_days[-1],
+            datasets=[dataset],
+            include_actions=False,
+        )
+        rows = payload.get("rows") or []
+        cells = (rows[0].get("cells") if rows else []) or []
+        for cell in cells:
+            fingerprints[str(cell.get("date") or "")] = str(cell.get("fingerprint") or "") or None
+
     items: list[dict[str, Any]] = []
-    for day_str in _iter_day_strings(date_from, date_to):
-        current_fingerprint = compute_readiness_fingerprint(data_root, db, dataset=dataset, day=day_str)
+    for day_str in day_strings:
+        current_fingerprint = fingerprints.get(day_str)
         latest_ok = next(
             (
                 item for item in history
@@ -1161,29 +1219,3 @@ def execute_recovery_action(
             summary="error",
             error=str(exc),
         )
-
-    return {
-        "as_of": date.today().isoformat(),
-        "range": {
-            "days": len(day_strings),
-            "end_date": day_strings[-1],
-            "dates": day_strings,
-        },
-        "summary": summary,
-        "datasets": [
-            {
-                "key": item.key,
-                "label": item.label,
-                "critical": item.critical,
-                "job_name": item.job_name,
-                "affected_outputs": list(item.impacts),
-            }
-            for item in catalog
-        ],
-        "rows": rows,
-        "recovery_history": {
-            dataset: (_action_history_summary(recovery_by_dataset.get(dataset, [])) or _history_summary(repair_by_dataset.get(dataset, [])))
-            for dataset in dataset_order
-            if recovery_by_dataset.get(dataset) or repair_by_dataset.get(dataset)
-        },
-    }

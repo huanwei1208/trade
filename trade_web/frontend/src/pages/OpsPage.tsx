@@ -53,6 +53,9 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   });
 
   const selectedReadiness = findSelectedReadiness(readiness.data?.rows || [], selectedCellId);
+  const selectedDataset = selectedReadiness.row?.dataset || "";
+  const selectedDate = selectedReadiness.cell?.date || "";
+  const selectedCellChanged = selectedReadiness.cell?.changed_since_last_ready;
 
   useEffect(() => {
     if (selectedReadiness.cell || !readiness.data?.rows?.length) {
@@ -86,12 +89,17 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     if (!selectedReadiness.cell) {
       return;
     }
-    setRange({ dateFrom: selectedReadiness.cell.date, dateTo: selectedReadiness.cell.date });
+    const nextDate = selectedReadiness.cell.date;
+    setRange((current) =>
+      current.dateFrom === nextDate && current.dateTo === nextDate
+        ? current
+        : { dateFrom: nextDate, dateTo: nextDate },
+    );
     setRecoveryPlan(null);
     setRecoveryError(null);
     setRecoverySuccess(null);
-    setChangeDetected(null);
-  }, [selectedReadiness.cell?.id]);
+    setChangeDetected(typeof selectedCellChanged === "boolean" ? selectedCellChanged : null);
+  }, [selectedReadiness.cell?.id, selectedCellChanged]);
 
   useEffect(() => {
     if (pollCount <= 0) {
@@ -102,15 +110,17 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
       setPollCount((current) => current - 1);
     }, 2000);
     return () => window.clearTimeout(timer);
-  }, [pollCount, readiness]);
+  }, [pollCount]);
 
   useEffect(() => {
-    if (!selectedReadiness.row || !range.dateFrom || !range.dateTo) {
+    const isDefaultSingleDayRange = selectedDate && range.dateFrom === selectedDate && range.dateTo === selectedDate;
+    const shouldCheckChanges = Boolean(selectedDataset && range.dateFrom && range.dateTo && (tab === "recovery" || !isDefaultSingleDayRange));
+    if (!selectedDataset || !range.dateFrom || !range.dateTo || !shouldCheckChanges) {
       return;
     }
     let cancelled = false;
     postReadinessDetectChanges({
-      dataset: selectedReadiness.row.dataset,
+      dataset: selectedDataset,
       date_from: range.dateFrom,
       date_to: range.dateTo,
     })
@@ -128,18 +138,21 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [selectedReadiness.row, range.dateFrom, range.dateTo]);
+  }, [selectedDataset, selectedDate, range.dateFrom, range.dateTo, tab]);
 
   useEffect(() => {
-    if (!selectedReadiness.row || !selectedReadiness.cell || !onFocusChange) {
+    if (!selectedDataset || !selectedDate || !onFocusChange) {
+      return;
+    }
+    if (focus?.tab === tab && focus?.date === selectedDate && focus?.dataset === selectedDataset) {
       return;
     }
     onFocusChange({
       tab,
-      date: selectedReadiness.cell.date,
-      dataset: selectedReadiness.row.dataset,
+      date: selectedDate,
+      dataset: selectedDataset,
     });
-  }, [tab, selectedReadiness.row, selectedReadiness.cell, onFocusChange]);
+  }, [focus?.dataset, focus?.date, focus?.tab, onFocusChange, selectedDataset, selectedDate, tab]);
 
   const latestRecoveryAt = selectedReadiness.cell?.history?.[0]?.ts || readiness.data?.recovery_history?.[selectedReadiness.row?.dataset || ""]?.[0]?.ts || null;
 
