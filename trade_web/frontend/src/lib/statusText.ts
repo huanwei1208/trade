@@ -81,6 +81,27 @@ export function getGateStatusText(locale: Locale, raw?: string | null): Semantic
   }
 }
 
+export function getReadinessStatusText(locale: Locale, raw?: string | null): SemanticText {
+  switch (normalize(raw)) {
+    case "READY":
+      return { key: "READY", label: translate(locale, "status.ready"), description: locale === "zh-CN" ? "该数据集在这个日期点具备可用结果。" : "This dataset is usable for the selected day.", tone: "ok" };
+    case "LATE_READY":
+      return { key: "LATE_READY", label: translate(locale, "status.lateReady"), description: locale === "zh-CN" ? "结果可用，但它是在更晚的快照或补齐后才达到可用状态。" : "Usable, but only after a later snapshot or delayed repair path caught up.", tone: "warn" };
+    case "PARTIAL":
+      return { key: "PARTIAL", label: translate(locale, "status.partiallyReady"), description: locale === "zh-CN" ? "已经有部分结果，但覆盖和稳定性还不完整。" : "Some usable results exist, but coverage or stability is still incomplete.", tone: "warn" };
+    case "MISSING":
+      return { key: "MISSING", label: translate(locale, "status.missing"), description: locale === "zh-CN" ? "该日期点缺少可用数据，前台结论可能受影响。" : "Usable data is missing for this day, so front-stage outputs may be constrained.", tone: "err" };
+    case "CHANGED":
+      return { key: "CHANGED", label: translate(locale, "status.changed"), description: locale === "zh-CN" ? "底层数据发生变化，等待或需要下游重算。" : "Underlying data changed and downstream recompute is pending or required.", tone: "info" };
+    case "REPLAYING":
+      return { key: "REPLAYING", label: translate(locale, "status.replaying"), description: locale === "zh-CN" ? "下游恢复或重算正在进行中。" : "Downstream recovery or replay is currently running.", tone: "info" };
+    case "REPLAYED":
+      return { key: "REPLAYED", label: translate(locale, "status.replayed"), description: locale === "zh-CN" ? "恢复链路已经跑完，结果已刷新。" : "Recovery replay completed and outputs were refreshed.", tone: "ok" };
+    default:
+      return { key: "UNKNOWN", label: translate(locale, "status.unknown"), description: locale === "zh-CN" ? "当前无法判定该日期点的就绪状态。" : "The readiness state for this day cannot be determined.", tone: "muted" };
+  }
+}
+
 export function getTrustLevelText(locale: Locale, score?: number | null, rawLevel?: string | null): SemanticText {
   const level = normalize(rawLevel || (score === null || score === undefined ? "UNKNOWN" : score > 0.7 ? "HIGH" : score > 0.4 ? "MEDIUM" : "LOW"));
   if (level === "HIGH") {
@@ -152,6 +173,19 @@ export function getMarketRegimeText(locale: Locale, raw?: string | null): Semant
 export function getWorldStateLabel(locale: Locale, kind: "market" | "event" | "sentiment" | "technical" | "liquidity" | "uncertainty", raw?: string | null) {
   const value = normalize(raw);
   return translate(locale, `regime.${kind}.${value}`);
+}
+
+export function getDatasetText(locale: Locale, dataset?: string | null, fallback?: string | null) {
+  const key = `dataset.${String(dataset || "").trim()}`;
+  const translated = translate(locale, key);
+  if (translated !== key) {
+    return translated;
+  }
+  return fallback || String(dataset || translate(locale, "common.unknown"));
+}
+
+export function getImpactText(locale: Locale, key?: string | null) {
+  return translate(locale, `impact.${String(key || "").trim()}`);
 }
 
 export function getTodayUsageCopy(locale: Locale, today?: TodayPageData | null) {

@@ -43,11 +43,11 @@ This pass upgrades TradeDB from a strong-looking decision workspace into an audi
 
 ### Phase 2 — Ops readiness tab + heatmap + inspector
 
-- [ ] Add new Ops tab structure with `readiness` and `recovery`
-- [ ] Add backend `GET /api/readiness-grid`
-- [ ] Implement readiness summary strip
-- [ ] Implement day-level dataset heatmap
-- [ ] Implement inspector panel with dataset/day detail and impact scope
+- [x] Add new Ops tab structure with `readiness` and `recovery`
+- [x] Add backend `GET /api/readiness-grid`
+- [x] Implement readiness summary strip
+- [x] Implement day-level dataset heatmap
+- [x] Implement inspector panel with dataset/day detail and impact scope
 - [ ] Verify app builds and commit Phase 2
 
 ### Phase 3 — backfill / replay actions + backend endpoints
@@ -122,3 +122,9 @@ Planned additions:
 - Replaced primary decision-facing raw statuses with product-language copy
 - Added layout resilience rules for dense cards, lists, rail panels, and failure summaries
 - Verified `cd trade_web/frontend && npm run build`
+- Started Phase 2
+- Added backend readiness aggregation in `trade_web/backend/readiness.py`
+- Added `GET /api/readiness-grid` and hooked it into FastAPI snapshot caching
+- Reworked Ops tabs into `overview / readiness / recovery / pipeline / trust / workflows`
+- Implemented readiness summary cards, dataset heatmap, tooltip, and sticky inspector
+- Verified `python -m compileall trade_web/backend/app.py trade_web/backend/readiness.py`

@@ -243,6 +243,67 @@ export type DataHealthPayload = {
 
 export type WorkflowSummary = Record<string, unknown>;
 
+export type ReadinessStatus = "READY" | "LATE_READY" | "PARTIAL" | "MISSING" | "CHANGED" | "REPLAYING" | "REPLAYED" | "UNKNOWN";
+
+export type ReadinessHistoryItem = {
+  ts?: string;
+  action?: string;
+  reason_code?: string | null;
+  duration_ms?: number | null;
+  api_calls_actual?: number | null;
+  error?: string | null;
+};
+
+export type ReadinessCell = {
+  id: string;
+  dataset: string;
+  date: string;
+  status: ReadinessStatus;
+  row_count?: number | null;
+  expected_count?: number | null;
+  coverage_pct?: number | null;
+  lag_days?: number | null;
+  source_last_date?: string | null;
+  last_backfill_at?: string | null;
+  affected_outputs?: string[];
+  history?: ReadinessHistoryItem[];
+  reason_codes?: string[];
+  changed_since_last_ready?: boolean;
+  fingerprint?: string | null;
+};
+
+export type ReadinessRow = {
+  dataset: string;
+  label: string;
+  critical: boolean;
+  job_name?: string | null;
+  impacts?: string[];
+  cells: ReadinessCell[];
+};
+
+export type ReadinessGridPayload = {
+  as_of?: string;
+  range: {
+    days: number;
+    end_date: string;
+    dates: string[];
+  };
+  summary: {
+    overall_readiness_pct?: number | null;
+    blocked_days?: number;
+    unstable_datasets?: Array<{ dataset: string; label: string; issue_count: number }>;
+    today_impact?: {
+      date?: string;
+      affected_outputs?: string[];
+      datasets?: Array<{ dataset: string; label: string; status: ReadinessStatus; affected_outputs?: string[] }>;
+      constrained?: boolean;
+    };
+  };
+  datasets: Array<{ key: string; label: string; critical: boolean; job_name?: string | null; affected_outputs?: string[] }>;
+  rows: ReadinessRow[];
+  recovery_history?: Record<string, ReadinessHistoryItem[]>;
+};
+
 export type EventsPagePayload = {
   as_of?: string;
   workflows?: WorkflowSummary[];
@@ -471,4 +532,12 @@ export function getWorkflows() {
 
 export function getEventsPage() {
   return fetchJson<EventsPagePayload>("/api/events-page");
+}
+
+export function getReadinessGrid(days = 30, endDate?: string) {
+  const query = new URLSearchParams({ days: String(days) });
+  if (endDate) {
+    query.set("end_date", endDate);
+  }
+  return fetchJson<ReadinessGridPayload>(`/api/readiness-grid?${query.toString()}`);
 }

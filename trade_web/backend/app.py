@@ -142,6 +142,7 @@ def create_app():
     from trade_py.services.state_service import StateService
     from trade_py.services.decision_service import DecisionService
     from trade_py.services.explanation_service import ExplanationService
+    from trade_web.backend.readiness import build_readiness_grid
     _state_svc    = StateService(data_root)
     _decision_svc = DecisionService(inference=_inference)
     _explain_svc  = ExplanationService(_state_svc, _decision_svc, inference=_inference)
@@ -177,6 +178,29 @@ def create_app():
             ).fetchone()
         base = "|".join(str(item or "") for item in (row or ()))
         return f"{kind}:{date.today().isoformat()}:{base}"
+
+    def _readiness_signature(*, days: int, end_date: str | None, datasets: str | None) -> str:
+        db = _db()
+        with db._conn_lock:
+            row = db._conn.execute(
+                """
+                SELECT
+                    COALESCE((SELECT MAX(updated_at) FROM daily_quality_gate), ''),
+                    COALESCE((SELECT MAX(eval_date) FROM dataset_snapshots), ''),
+                    COALESCE((SELECT MAX(eval_date) FROM QualityReport), ''),
+                    COALESCE((SELECT MAX(as_of_date) FROM FreshnessStatus), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM sync_state), ''),
+                    COALESCE((SELECT MAX(id) FROM data_repair_runs), 0),
+                    COALESCE((SELECT MAX(updated_at) FROM data_gaps), ''),
+                    COALESCE((SELECT MAX(date) FROM signals), ''),
+                    COALESCE((SELECT MAX(as_of_date) FROM BeliefState), ''),
+                    COALESCE((SELECT MAX(as_of_date) FROM Recommendation), ''),
+                    COALESCE((SELECT MAX(substr(updated_at, 1, 10)) FROM sector_members), ''),
+                    COALESCE((SELECT MAX(substr(trained_at, 1, 10)) FROM model_registry), '')
+                """
+            ).fetchone()
+        base = "|".join(str(item or "") for item in (row or ()))
+        return f"readiness:{days}:{end_date or ''}:{datasets or ''}:{base}"
 
     def _cache_get(name: str, *, signature: str, ttl_seconds: float) -> dict[str, Any] | None:
         now = time.monotonic()
@@ -1518,6 +1542,30 @@ def create_app():
             signature=_payload_signature("data-health"),
             ttl_seconds=30.0,
             builder=_data_health_payload,
+        )
+
+    @app.get("/api/readiness-grid")
+    async def get_readiness_grid(days: int = 30, end_date: str | None = None, datasets: str | None = None):
+        db = _db()
+        db.job_runs_mark_stale_by_policy()
+        db.event_log_mark_stale()
+        resolved_days = int(days or 30)
+        if resolved_days not in {30, 60, 90}:
+            resolved_days = 30
+        dataset_list = [item.strip() for item in str(datasets or "").split(",") if item.strip()] or None
+        scope = f"{resolved_days}:{end_date or ''}:{','.join(dataset_list or [])}"
+        return _snapshot_get_or_build(
+            "readiness-grid",
+            signature=_readiness_signature(days=resolved_days, end_date=end_date, datasets=datasets),
+            ttl_seconds=20.0,
+            scope=scope,
+            builder=lambda: build_readiness_grid(
+                data_root,
+                _db(),
+                days=resolved_days,
+                end_date=end_date,
+                datasets=dataset_list,
+            ),
         )
 
     @app.get("/api/events/stream")
