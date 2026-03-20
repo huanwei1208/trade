@@ -7,6 +7,8 @@
   color: var(--text-0);
   padding: var(--space-5);
   transition: transform var(--transition-base), box-shadow var(--transition-base), border-color var(--transition-base);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .panel-card.is-interactive:hover,
@@ -42,6 +44,7 @@
   gap: var(--space-4);
   align-items: flex-start;
   margin-bottom: var(--space-4);
+  min-width: 0;
 }
 
 .panel-card__eyebrow {
@@ -55,6 +58,7 @@
   margin-top: var(--space-2);
   font-size: 16px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 .status-pill,
@@ -221,6 +225,7 @@
 .state-card__body {
   color: var(--text-2);
   max-width: 620px;
+  overflow-wrap: anywhere;
 }
 
 .state-card__details summary {
@@ -249,6 +254,7 @@
   border-radius: 14px;
   background: rgba(255, 180, 50, 0.1);
   color: var(--text-1);
+  min-width: 0;
 }
 
 .skeleton {
@@ -337,6 +343,19 @@
   gap: var(--space-5);
 }
 
+.decision-hero__primary,
+.decision-hero__side,
+.decision-hero__mini,
+.decision-hero__mini > div,
+.candidate-row > div,
+.candidate-quick-panel__header > div,
+.symbol-header__identity > div,
+.compact-row > div,
+.timeline-list__body,
+.pipeline-list__row > div {
+  min-width: 0;
+}
+
 .decision-hero__chips,
 .decision-hero__safe,
 .decision-hero__microcopy {
@@ -363,6 +382,7 @@
   max-width: 780px;
   font-size: 15px;
   color: var(--text-1);
+  overflow-wrap: anywhere;
 }
 
 .decision-hero__microcopy {
@@ -398,6 +418,42 @@
 .hero-stat__text {
   margin-top: var(--space-3);
   color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+.decision-hero__summary {
+  margin-top: var(--space-5);
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.decision-hero__summary-item {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+  background: rgba(6, 17, 31, 0.46);
+  min-width: 0;
+}
+
+.decision-hero__summary-item span {
+  display: block;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+}
+
+.decision-hero__summary-item strong {
+  display: block;
+  margin-top: var(--space-2);
+  font-size: 15px;
+}
+
+.decision-hero__summary-item p {
+  margin-top: var(--space-2);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
 }
 
 .decision-hero__blocker {
@@ -414,6 +470,7 @@
 .decision-hero__blocker-copy {
   margin-top: var(--space-2);
   color: var(--text-1);
+  overflow-wrap: anywhere;
 }
 
 .decision-hero__blocker-list {
@@ -469,6 +526,11 @@
 .decision-hero__mini-copy {
   margin-top: var(--space-2);
   color: var(--text-2);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .decision-hero__mini-aside,
@@ -485,6 +547,7 @@
   box-shadow: var(--shadow-panel);
   overflow: hidden;
   outline: none;
+  min-width: 0;
 }
 
 .candidate-table__head {
@@ -536,6 +599,37 @@
 .candidate-row__score,
 .candidate-row__copy {
   color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.candidate-row__copy,
+.candidate-row__invalidator,
+.compact-row__subtitle,
+.pipeline-list__subtitle,
+.timeline-list__copy,
+.symbol-header__copy,
+.candidate-quick-panel__copy,
+.action-card__summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.candidate-row__copy,
+.candidate-quick-panel__copy,
+.symbol-header__copy,
+.action-card__summary {
+  -webkit-line-clamp: 3;
+}
+
+.compact-row__subtitle,
+.pipeline-list__subtitle,
+.timeline-list__copy {
+  -webkit-line-clamp: 2;
+}
+
+.candidate-row__invalidator {
+  -webkit-line-clamp: 2;
 }
 
 .candidate-row__decision,
@@ -563,6 +657,7 @@
 .candidate-row__spark svg {
   width: 84px;
   height: 28px;
+  flex-shrink: 0;
 }
 
 .candidate-row__spark path {
@@ -603,6 +698,22 @@
   gap: var(--space-2);
 }
 
+.candidate-quick-panel__readiness {
+  margin-top: var(--space-4);
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(6, 17, 31, 0.44);
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.candidate-quick-panel__readiness span {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
 .candidate-quick-panel__section + .candidate-quick-panel__section,
 .candidate-quick-panel__footer {
   margin-top: var(--space-4);
@@ -633,6 +744,7 @@
   padding: var(--space-5);
   background: linear-gradient(135deg, rgba(10, 24, 44, 0.94), rgba(13, 33, 56, 0.92));
   box-shadow: var(--shadow-panel);
+  min-width: 0;
 }
 
 .symbol-header__metric {
@@ -643,6 +755,12 @@
 
 .symbol-header__metric strong {
   color: var(--text-0);
+}
+
+.symbol-header__readiness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .symbol-chart {
@@ -785,6 +903,7 @@
 .explanation-rail__hero-copy {
   margin-top: var(--space-3);
   color: var(--text-1);
+  overflow-wrap: anywhere;
 }
 
 .evidence-list,
@@ -807,6 +926,15 @@
   color: var(--text-1);
   padding: 12px;
   text-align: left;
+  min-width: 0;
+}
+
+.evidence-item__body,
+.scenario-card__body,
+.note-card,
+.diagnostic-copy,
+.diagnostic-callout {
+  overflow-wrap: anywhere;
 }
 
 .evidence-item--positive.is-highlighted {
@@ -872,6 +1000,7 @@
 .timeline-list__date {
   min-width: 70px;
   color: var(--text-3);
+  flex-shrink: 0;
 }
 
 .timeline-list__score {
@@ -901,6 +1030,22 @@
 .pipeline-list__title,
 .timeline-list__title {
   font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.list-stack,
+.pipeline-list,
+.timeline-list,
+.diagnostic-list {
+  min-width: 0;
+}
+
+.page-today .compact-grid .panel-card .list-stack,
+.page-ops .list-stack,
+.page-ops .pipeline-list {
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 @keyframes shimmer {
@@ -924,7 +1069,8 @@
 
 @media (max-width: 1200px) {
   .decision-hero__grid,
-  .decision-hero__strip {
+  .decision-hero__strip,
+  .decision-hero__summary {
     grid-template-columns: 1fr;
   }
 
@@ -936,6 +1082,15 @@
   .symbol-header__identity,
   .symbol-header__meta,
   .symbol-chart__footer {
+    flex-direction: column;
+  }
+
+  .candidate-quick-panel__header,
+  .action-card__head,
+  .compact-row,
+  .pipeline-list__row,
+  .timeline-list__row,
+  .today-blocker-card__item {
     flex-direction: column;
   }
 }

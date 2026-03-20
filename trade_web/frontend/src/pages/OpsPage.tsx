@@ -7,6 +7,8 @@ import { SectionHeader } from "../components/SectionHeader";
 import { StatusPill } from "../components/StatusPill";
 import { useApiResource, type DagRuntime, type DataHealthPayload, type EventsPagePayload, type StatusPayload, type TrustOverview, type WorkflowSummary } from "../lib/api";
 import { formatDateTime, formatPercent, labelizeDataset, shortText } from "../lib/format";
+import { useI18n } from "../lib/i18n";
+import { getGateStatusText } from "../lib/statusText";
 import { useLocalStorageState } from "../lib/ui";
 
 type OpsPageProps = {
@@ -16,6 +18,7 @@ type OpsPageProps = {
 type OpsTab = "overview" | "pipeline" | "data" | "trust" | "workflows";
 
 export function OpsPage({ refreshToken }: OpsPageProps) {
+  const { locale, t } = useI18n();
   const [tab, setTab] = useLocalStorageState<OpsTab>("trade-web:ops-tab", "overview");
 
   const status = useApiResource<StatusPayload>("/api/status", { deps: [refreshToken], cacheKey: "trade-web:status" });
@@ -30,20 +33,20 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
   }
 
   if (status.error && !status.data) {
-    return <ErrorState title="Ops view unavailable" body="The backstage console could not load its status payload." detail={status.error.message} action={<button type="button" className="button button--primary" onClick={status.retry}>Retry</button>} />;
+    return <ErrorState title={t("ops.viewUnavailable")} body={t("ops.viewUnavailableCopy")} detail={status.error.message} action={<button type="button" className="button button--primary" onClick={status.retry}>{t("common.retry")}</button>} />;
   }
 
   return (
     <div className="page-stack page-ops">
-      <SectionHeader title="Backstage operations" subtitle="The decision workflow stays front-stage. This page is for verifying runtime health, data freshness, and replay paths." />
+      <SectionHeader title={t("ops.title")} subtitle={t("ops.subtitle")} />
 
       <div className="filter-bar filter-bar--ops">
         {([
-          ["overview", "Overview"],
-          ["pipeline", "Pipeline"],
-          ["data", "Data Health"],
-          ["trust", "Trust"],
-          ["workflows", "Workflows"],
+          ["overview", t("ops.tabs.overview")],
+          ["pipeline", t("ops.tabs.pipeline")],
+          ["data", t("ops.dataFreshness")],
+          ["trust", t("ops.tabs.trust")],
+          ["workflows", t("ops.tabs.workflows")],
         ] as const).map(([key, label]) => (
           <button key={key} type="button" className={tab === key ? "is-active" : ""} onClick={() => setTab(key)}>
             {label}
@@ -53,30 +56,30 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
 
       {tab === "overview" && (
         <div className="compact-grid">
-          <PanelCard title="System summary" subdued>
+          <PanelCard title={t("ops.systemSummary")} subdued>
             <div className="metric-grid">
               <div className="metric-card">
-                <div className="metric-card__label">Status</div>
-                <div className="metric-card__value">{status.data?.status || "unknown"}</div>
+                <div className="metric-card__label">{t("ops.status")}</div>
+                <div className="metric-card__value">{getGateStatusText(locale, status.data?.status).label}</div>
               </div>
               <div className="metric-card">
-                <div className="metric-card__label">Models</div>
+                <div className="metric-card__label">{t("ops.models")}</div>
                 <div className="metric-card__value">{(status.data?.inference_models || []).length}</div>
               </div>
               <div className="metric-card">
-                <div className="metric-card__label">Trust</div>
+                <div className="metric-card__label">{t("ops.trust")}</div>
                 <div className="metric-card__value">{formatPercent(trust.data?.trust_scalar, 0)}</div>
               </div>
             </div>
           </PanelCard>
 
-          <PanelCard title="Stage summary" subdued>
+          <PanelCard title={t("ops.stageSummary")} subdued>
             <div className="list-stack">
               {Object.entries(runtime.data?.stage_summary || {}).map(([key, value]) => (
                 <div className="compact-row" key={key}>
                   <div className="compact-row__title">{key}</div>
                   <div className="compact-row__meta">
-                    <StatusPill label={`${value.ok || 0} ok`} tone="ok" subtle />
+                    <StatusPill label={`${value.ok || 0} ${t("status.healthy")}`} tone="ok" subtle />
                     <StatusPill label={`${value.error || 0} err`} tone="err" subtle />
                     <StatusPill label={`${value.running || 0} running`} tone="info" subtle />
                   </div>
@@ -85,7 +88,7 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
             </div>
           </PanelCard>
 
-          <PanelCard title="Recent failures" subdued>
+          <PanelCard title={t("ops.recentFailures")} subdued>
             <div className="list-stack">
               {(events.data?.failed_nodes || []).slice(0, 8).map((node, index) => (
                 <div className="compact-row" key={`${node.job_name || node.id || index}`}>
@@ -93,17 +96,17 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
                     <div className="compact-row__title">{String(node.job_name || node.id || "Node")}</div>
                     <div className="compact-row__subtitle">{shortText(String(node.error_detail || node.result_summary || ""), 80)}</div>
                   </div>
-                  <StatusPill label={String(node.status || "error")} tone="err" subtle />
+                  <StatusPill label={getGateStatusText(locale, String(node.status || "error")).label} tone="err" subtle />
                 </div>
               ))}
-              {(!events.data?.failed_nodes || events.data.failed_nodes.length === 0) && <div className="note-card">No recent failed nodes.</div>}
+              {(!events.data?.failed_nodes || events.data.failed_nodes.length === 0) && <div className="note-card">{t("ops.noFailures")}</div>}
             </div>
           </PanelCard>
         </div>
       )}
 
       {tab === "pipeline" && (
-        <PanelCard title="Pipeline runtime" subdued>
+        <PanelCard title={t("ops.pipelineRuntime")} subdued>
           <div className="pipeline-list">
             {(runtime.data?.nodes || []).slice(0, 18).map((node, index) => (
               <div className="pipeline-list__row" key={`${node.job_name || node.id || index}`}>
@@ -112,7 +115,7 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
                   <div className="pipeline-list__subtitle">{String(node.stage || "unknown stage")}</div>
                 </div>
                 <div className="pipeline-list__meta">
-                  <StatusPill label={String(node.status || "unknown")} tone={String(node.status) === "ok" ? "ok" : String(node.status) === "error" ? "err" : "info"} subtle />
+                  <StatusPill label={getGateStatusText(locale, String(node.status || "unknown")).label} tone={String(node.status) === "ok" ? "ok" : String(node.status) === "error" ? "err" : "info"} subtle />
                   <span>{shortText(String(node.error_detail || node.result_summary || ""), 70)}</span>
                 </div>
               </div>
@@ -123,7 +126,7 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
 
       {tab === "data" && (
         <div className="compact-grid">
-          <PanelCard title="Data freshness" subdued>
+          <PanelCard title={t("ops.dataFreshness")} subdued>
             <div className="list-stack">
               {(dataHealth.data?.datasets || []).map((dataset) => (
                 <div className="compact-row" key={dataset.id}>
@@ -133,14 +136,14 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
                   </div>
                   <div className="compact-row__meta">
                     <span>{dataset.lag_days !== null && dataset.lag_days !== undefined ? `${dataset.lag_days}d` : "—"}</span>
-                    <StatusPill label={dataset.status || "unknown"} tone={dataset.status === "ok" ? "ok" : dataset.status === "error" ? "err" : "warn"} subtle />
+                    <StatusPill label={getGateStatusText(locale, dataset.status).label} tone={dataset.status === "ok" ? "ok" : dataset.status === "error" ? "err" : "warn"} subtle />
                   </div>
                 </div>
               ))}
             </div>
           </PanelCard>
 
-          <PanelCard title="Data highlights" subdued>
+          <PanelCard title={t("ops.dataHighlights")} subdued>
             <div className="tag-cluster">
               {(dataHealth.data?.highlights || []).map((item) => (
                 <span className="tag-chip" key={item.title}>
@@ -153,7 +156,7 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
       )}
 
       {tab === "trust" && (
-        <PanelCard title="Trust trend" subdued>
+        <PanelCard title={t("ops.trustTrend")} subdued>
           <div className="list-stack">
             {(trust.data?.trend || []).map((item) => (
               <div className="compact-row" key={item.eval_date}>
@@ -169,7 +172,7 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
       )}
 
       {tab === "workflows" && (
-        <PanelCard title="Workflow traces" subdued>
+        <PanelCard title={t("ops.workflowTraces")} subdued>
           <div className="list-stack">
             {(workflows.data || []).slice(0, 12).map((workflow, index) => (
               <div className="compact-row" key={`${workflow.root_event_id || index}`}>
@@ -178,8 +181,8 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
                   <div className="compact-row__subtitle">{shortText(String(workflow.root_cause || workflow.reason_summary || ""), 90) || "No root cause summary"}</div>
                 </div>
                 <div className="compact-row__meta">
-                  <StatusPill label={String(workflow.status || "unknown")} tone={String(workflow.status) === "ok" ? "ok" : String(workflow.status) === "error" ? "err" : "info"} subtle />
-                  <span>{formatDateTime(String(workflow.created_at || workflow.started_at || ""))}</span>
+                  <StatusPill label={getGateStatusText(locale, String(workflow.status || "unknown")).label} tone={String(workflow.status) === "ok" ? "ok" : String(workflow.status) === "error" ? "err" : "info"} subtle />
+                  <span>{formatDateTime(String(workflow.created_at || workflow.started_at || ""), locale === "zh-CN" ? "zh-CN" : "en-US")}</span>
                 </div>
               </div>
             ))}

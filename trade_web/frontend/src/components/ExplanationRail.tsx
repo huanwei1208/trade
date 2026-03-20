@@ -1,5 +1,7 @@
 import type { DecisionExplanation } from "../lib/api";
 import { formatPercent, humanizeEnum } from "../lib/format";
+import { useI18n } from "../lib/i18n";
+import { getActionText } from "../lib/statusText";
 import { classNames } from "../lib/ui";
 import { StatusPill } from "./StatusPill";
 import { TrustBadge } from "./TrustBadge";
@@ -22,6 +24,7 @@ type EvidenceSectionProps = {
 };
 
 function EvidenceSection({ title, items, tone, activeEvidenceSource, markerActive, onEvidenceHover }: EvidenceSectionProps) {
+  const { locale, t } = useI18n();
   return (
     <section className="explanation-rail__section">
       <div className="explanation-rail__section-title">{title}</div>
@@ -41,7 +44,7 @@ function EvidenceSection({ title, items, tone, activeEvidenceSource, markerActiv
                 <span className="evidence-item__source">{source}</span>
                 <span className="evidence-item__weight">{formatPercent(item.weight, 0)}</span>
               </div>
-              <div className="evidence-item__body">{item.description}</div>
+              <div className="evidence-item__body">{item.description || t("common.noDetail")}</div>
             </button>
           );
         })}
@@ -57,6 +60,7 @@ export function ExplanationRail({
   onEvidenceHover,
   onInvalidatorClick,
 }: ExplanationRailProps) {
+  const { locale, t } = useI18n();
   if (!explanation) {
     return null;
   }
@@ -69,10 +73,10 @@ export function ExplanationRail({
       <div className="explanation-rail__sticky">
         <section className="explanation-rail__hero">
           <div className="explanation-rail__hero-top">
-            <StatusPill label={String(explanation.action || "NO_ACTION")} tone="info" />
+            <StatusPill label={getActionText(locale, explanation.action)} tone="info" />
             <TrustBadge score={explanation.trust?.trust_score} level={explanation.trust?.trust_level} detailed />
           </div>
-          <div className="explanation-rail__hero-copy">{explanation.thesis || "No thesis available."}</div>
+          <div className="explanation-rail__hero-copy">{explanation.thesis || t("symbol.noThesis")}</div>
           <div className="tag-cluster">
             {(explanation.warnings || []).map((item) => (
               <span className="tag-chip tag-chip--warning" key={item}>
@@ -83,7 +87,7 @@ export function ExplanationRail({
         </section>
 
         <EvidenceSection
-          title="Evidence For"
+          title={t("explain.evidenceFor")}
           items={explanation.evidence_for || []}
           tone="positive"
           activeEvidenceSource={activeEvidenceSource}
@@ -92,7 +96,7 @@ export function ExplanationRail({
         />
 
         <EvidenceSection
-          title="Evidence Against"
+          title={t("explain.evidenceAgainst")}
           items={explanation.evidence_against || []}
           tone="negative"
           activeEvidenceSource={activeEvidenceSource}
@@ -101,7 +105,7 @@ export function ExplanationRail({
         />
 
         <section className="explanation-rail__section">
-          <div className="explanation-rail__section-title">Invalidators</div>
+          <div className="explanation-rail__section-title">{t("explain.invalidators")}</div>
           <div className="tag-cluster">
             {(explanation.invalidators || []).map((item) => (
               <button type="button" className="tag-chip tag-chip--negative" key={item} onClick={onInvalidatorClick}>
@@ -112,7 +116,7 @@ export function ExplanationRail({
         </section>
 
         <section className="explanation-rail__section">
-          <div className="explanation-rail__section-title">Next Triggers</div>
+          <div className="explanation-rail__section-title">{t("explain.nextTriggers")}</div>
           <div className="tag-cluster">
             {(explanation.next_triggers || []).map((item) => (
               <span className="tag-chip" key={item}>
@@ -124,7 +128,7 @@ export function ExplanationRail({
 
         {scenario && (
           <section className="explanation-rail__section">
-            <div className="explanation-rail__section-title">Scenario Summary</div>
+            <div className="explanation-rail__section-title">{t("explain.scenarioSummary")}</div>
             <div className="scenario-stack">
               {(["bull_case", "base_case", "bear_case"] as const).map((key) => {
                 const item = scenario[key];
@@ -147,7 +151,7 @@ export function ExplanationRail({
         )}
 
         <section className="explanation-rail__section">
-          <div className="explanation-rail__section-title">Data / Trust Notes</div>
+          <div className="explanation-rail__section-title">{t("explain.dataTrustNotes")}</div>
           <div className="note-stack">
             {(explanation.data_quality_notes || []).map((item) => (
               <div className="note-card note-card--warning" key={item}>
@@ -163,9 +167,9 @@ export function ExplanationRail({
         </section>
 
         <section className="explanation-rail__section">
-          <div className="explanation-rail__section-title">Trust Components</div>
+          <div className="explanation-rail__section-title">{t("explain.trustComponents")}</div>
           <div className="trust-components">
-            {trustComponents.length === 0 && <div className="note-card">No detailed trust vector returned.</div>}
+            {trustComponents.length === 0 && <div className="note-card">{t("explain.noTrustVector")}</div>}
             {trustComponents.map(([key, value]) => (
               <div className="trust-components__row" key={key}>
                 <span>{humanizeEnum(key)}</span>

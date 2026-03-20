@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import type { CandidateRow, Locale, PageKey, TodayPageData } from "./api";
+import { translate } from "./i18n";
+import { getDecisionPostureText } from "./statusText";
 
 export type TodayCall = {
   key: "ACTIONABLE" | "WATCHLIST" | "NO_ACTION" | "DEGRADED";
@@ -36,64 +38,28 @@ export function useLocalStorageState<T>(key: string, initialValue: T) {
 }
 
 export function getPageMeta(page: PageKey, locale: Locale, symbol?: string) {
-  const copy =
-    locale === "zh-CN"
-      ? {
-          today: ["今日决策", "先看是否能行动，再看为什么。"],
-          candidates: ["候选工作台", "筛出值得深挖的少数标的。"],
-          symbol: [symbol ? `${symbol} 工作区` : "Symbol 工作区", "图表、证据、失效条件放在同一个决策平面。"],
-          ops: ["运营后台", "数据、DAG、工作流与失败恢复。"],
-        }
-      : {
-          today: ["Today", "Start with posture, trust, and blockers."],
-          candidates: ["Candidates", "Triage which setups deserve a deeper review."],
-          symbol: [symbol ? `${symbol} Workspace` : "Symbol Workspace", "Keep chart, evidence, and invalidation in one place."],
-          ops: ["Ops", "Pipeline, data health, workflows, and recovery paths."],
-        };
-  const [title, subtitle] = copy[page];
+  const titleKey = page === "symbol" && symbol ? "page.symbol.titleWithCode" : `page.${page}.title`;
+  const title = translate(locale, titleKey, { symbol });
+  const subtitle = translate(locale, `page.${page}.subtitle`);
   return { title, subtitle };
 }
 
-export function getTodayCall(today?: TodayPageData | null): TodayCall {
+export function getTodayCall(today: TodayPageData | null | undefined, locale: Locale): TodayCall {
   if (!today) {
     return {
       key: "DEGRADED",
       tone: "info",
-      headline: "Loading today's posture",
-      summary: "Waiting for the latest decision snapshot.",
+      headline: locale === "zh-CN" ? "正在加载今日判断" : "Loading today's posture",
+      summary: locale === "zh-CN" ? "等待最新决策快照返回。" : "Waiting for the latest decision snapshot.",
     };
   }
 
-  const posture = String(today.decision_posture || "").toUpperCase();
-  if (posture === "ACTIONABLE") {
-    return {
-      key: "ACTIONABLE",
-      tone: "ok",
-      headline: "Actionable",
-      summary: "At least one setup is strong enough to review for action today.",
-    };
-  }
-  if (posture === "WATCHLIST") {
-    return {
-      key: "WATCHLIST",
-      tone: "warn",
-      headline: "Watchlist",
-      summary: "Monitor candidates, but conviction is not broad enough for aggressive action.",
-    };
-  }
-  if (posture === "NO_ACTION") {
-    return {
-      key: "NO_ACTION",
-      tone: "info",
-      headline: "No Action",
-      summary: "The current state supports patience over forced trades.",
-    };
-  }
+  const posture = getDecisionPostureText(locale, today.decision_posture);
   return {
-    key: "DEGRADED",
-    tone: "err",
-    headline: "Degraded",
-    summary: "Data freshness or trust blockers are constraining decision quality.",
+    key: posture.key as TodayCall["key"],
+    tone: posture.tone as TodayCall["tone"],
+    headline: posture.label,
+    summary: posture.description,
   };
 }
 

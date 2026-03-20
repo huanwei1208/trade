@@ -12,6 +12,8 @@ import { TrustBadge } from "../components/TrustBadge";
 import type { CandidateRow, EventsPagePayload, TodayPageData } from "../lib/api";
 import { useApiResource } from "../lib/api";
 import { formatDateTime, labelizeDataset, shortText } from "../lib/format";
+import { useI18n } from "../lib/i18n";
+import { getGateStatusText } from "../lib/statusText";
 import { getTodayCall, isActionable } from "../lib/ui";
 
 type TodayPageProps = {
@@ -20,6 +22,7 @@ type TodayPageProps = {
 };
 
 export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
+  const { locale, t } = useI18n();
   const todayResource = useApiResource<TodayPageData>("/api/today-page", {
     deps: [refreshToken],
     cacheKey: "trade-web:today-page",
@@ -29,7 +32,7 @@ export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
     cacheKey: "trade-web:events-page",
   });
 
-  const todayCall = getTodayCall(todayResource.data);
+  const todayCall = getTodayCall(todayResource.data, locale);
   const actions = todayResource.data?.top_actions || [];
   const actionable = actions.filter((item) => isActionable(item.action) && String(item.action || "").toUpperCase() !== "WATCH");
 
@@ -41,16 +44,16 @@ export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
 
   if (todayResource.error && !todayResource.data) {
     return (
-      <ErrorState
-        title="Today's workspace is unavailable"
-        body="The decision snapshot could not be loaded. Retry the request or verify backend availability."
-        detail={todayResource.error.message}
-        action={
-          <button type="button" className="button button--primary" onClick={todayResource.retry}>
-            Retry
-          </button>
-        }
-      />
+        <ErrorState
+          title={t("today.unavailable")}
+          body={t("today.unavailableCopy")}
+          detail={todayResource.error.message}
+          action={
+            <button type="button" className="button button--primary" onClick={todayResource.retry}>
+              {t("common.retry")}
+            </button>
+          }
+        />
     );
   }
 
@@ -64,13 +67,13 @@ export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
       <DecisionHero today={today} todayCall={todayCall} />
 
       {todayResource.error && todayResource.data && (
-        <RetryInline message="Showing the last successful Today snapshot while a fresh fetch failed." onRetry={todayResource.retry} />
+        <RetryInline message={t("today.showingStale")} onRetry={todayResource.retry} />
       )}
 
       <section className="page-section">
         <SectionHeader
-          title="Top setups"
-          subtitle={canRenderCards ? "Small set of names worth immediate review." : "The system is constrained, so action cards are intentionally suppressed."}
+          title={t("today.topSetups")}
+          subtitle={canRenderCards ? t("today.topSetupsActionable") : t("today.topSetupsConstrained")}
         />
 
         {canRenderCards ? (
@@ -80,15 +83,17 @@ export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
             ))}
           </div>
         ) : (
-          <PanelCard title="Decision blockers" accent="red" className="today-blocker-card">
-            <div className="today-blocker-card__copy">
-              The workspace is keeping action output conservative because trust or freshness blockers affect decision quality.
-            </div>
+          <PanelCard title={t("today.blockers")} accent="red" className="today-blocker-card">
+            <div className="today-blocker-card__copy">{t("today.blockersCopy")}</div>
             <div className="today-blocker-card__list">
               {(today.blocker_details || []).map((item) => (
                 <div className="today-blocker-card__item" key={`${item.dataset}-${item.status}`}>
                   <div>{labelizeDataset(item.dataset)}</div>
-                  <StatusPill label={`${item.status || "unknown"}${item.lag_days !== null && item.lag_days !== undefined ? ` · ${item.lag_days}d` : ""}`} tone="warn" subtle />
+                  <StatusPill
+                    label={`${getGateStatusText(locale, item.status).label}${item.lag_days !== null && item.lag_days !== undefined ? ` · ${item.lag_days}d` : ""}`}
+                    tone={getGateStatusText(locale, item.status).tone}
+                    subtle
+                  />
                 </div>
               ))}
             </div>
@@ -104,82 +109,82 @@ export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
       </section>
 
       <section className="page-section">
-        <SectionHeader title="Diagnostic context" subtitle="Important, but visually secondary to the decision path." />
+        <SectionHeader title={t("today.diagnostics")} subtitle={t("today.diagnosticsSubtitle")} />
         <div className="subtle-grid">
-          <CollapseSection title="Trust and data freshness" initialOpen>
+          <CollapseSection title={t("today.trustAndFreshness")} initialOpen>
             <div className="metric-grid">
-              <MetricCard label="Trust scalar" value={<TrustBadge score={today.trust_gate?.trust_scalar} />} hint={today.trust_gate?.eval_date || "No eval date"} />
-              <MetricCard label="Operational gate" value={today.trust_gate?.operational_status || "unknown"} />
-              <MetricCard label="Research gate" value={today.trust_gate?.research_status || "unknown"} />
-              <MetricCard label="Pipeline health" value={today.pipeline_health?.status || "unknown"} hint={`${today.pipeline_health?.ok || 0} ok · ${today.pipeline_health?.error || 0} error`} />
+              <MetricCard label={t("today.trustScalar")} value={<TrustBadge score={today.trust_gate?.trust_scalar} />} hint={today.trust_gate?.eval_date || t("common.notAvailable")} />
+              <MetricCard label={t("today.conclusionMode")} value={getGateStatusText(locale, today.trust_gate?.operational_status).label} hint={getGateStatusText(locale, today.trust_gate?.operational_status).description} />
+              <MetricCard label={t("today.whyConstrained")} value={getGateStatusText(locale, today.trust_gate?.research_status).label} hint={getGateStatusText(locale, today.trust_gate?.research_status).description} />
+              <MetricCard label="Pipeline" value={getGateStatusText(locale, today.pipeline_health?.status).label} hint={`${today.pipeline_health?.ok || 0} ok · ${today.pipeline_health?.error || 0} error`} />
             </div>
             <div className="diagnostic-list">
               {(today.trust_gate?.freshness || []).map((item) => (
                 <div className="diagnostic-list__row" key={`${item.dataset}-${item.status}`}>
                   <span>{labelizeDataset(item.dataset)}</span>
-                  <span>{item.lag_days !== undefined && item.lag_days !== null ? `${item.lag_days}d lag` : "No lag info"}</span>
-                  <StatusPill label={item.status || "unknown"} tone={String(item.status) === "ok" ? "ok" : "warn"} subtle />
+                  <span>{item.lag_days !== undefined && item.lag_days !== null ? `${item.lag_days}d lag` : t("today.noLagInfo")}</span>
+                  <StatusPill label={getGateStatusText(locale, item.status).label} tone={getGateStatusText(locale, item.status).tone} subtle />
                 </div>
               ))}
             </div>
           </CollapseSection>
 
-          <CollapseSection title="Blockers and recovery path">
-            <div className="diagnostic-callout">{(today.blockers || []).join(" · ") || "No explicit blockers surfaced."}</div>
-            <div className="diagnostic-copy">{today.recovery_condition || "Wait for stronger confirmation."}</div>
+          <CollapseSection title={t("today.blockersRecovery")}>
+            <div className="diagnostic-callout">{(today.blockers || []).join(" · ") || t("today.noExplicitBlocker")}</div>
+            <div className="diagnostic-copy">{today.recovery_condition || t("status.recoveryPathDefault")}</div>
           </CollapseSection>
         </div>
       </section>
 
       <section className="page-section">
-        <SectionHeader title="Recent activity" subtitle="Runs, failures, and recent event context in compact form." />
+        <SectionHeader title={t("today.recentActivity")} subtitle={t("today.recentActivitySubtitle")} />
         <div className="compact-grid">
-          <PanelCard title="Recent runs" subdued>
+          <PanelCard title={t("today.recentRuns")} subdued>
             <div className="list-stack">
-              {(today.recent_runs || []).length === 0 && <div className="note-card">No recent runs.</div>}
+              {(today.recent_runs || []).length === 0 && <div className="note-card">{t("today.noRecentRuns")}</div>}
               {(today.recent_runs || []).slice(0, 5).map((run) => (
                 <div className="compact-row" key={`${run.job_name}-${run.started_at}`}>
                   <div>
-                    <div className="compact-row__title">{run.job_name || "Unknown run"}</div>
-                    <div className="compact-row__subtitle">{shortText(run.result_summary, 80) || "No summary"}</div>
+                    <div className="compact-row__title">{run.job_name || t("common.unknown")}</div>
+                    <div className="compact-row__subtitle">{shortText(run.result_summary, 80) || t("common.noSummary")}</div>
                   </div>
                   <div className="compact-row__meta">
-                    <StatusPill label={run.status || "unknown"} tone={String(run.status) === "ok" ? "ok" : String(run.status) === "error" ? "err" : "info"} subtle />
-                    <span>{formatDateTime(run.started_at)}</span>
+                    <StatusPill label={getGateStatusText(locale, run.status).label} tone={getGateStatusText(locale, run.status).tone} subtle />
+                    <span>{formatDateTime(run.started_at, locale === "zh-CN" ? "zh-CN" : "en-US")}</span>
                   </div>
                 </div>
               ))}
             </div>
           </PanelCard>
 
-          <PanelCard title="Failed nodes" subdued>
+          <PanelCard title={t("today.failedNodes")} subdued>
             <div className="list-stack">
               {(eventsResource.data?.failed_nodes || today.error_nodes || []).slice(0, 5).map((node) => {
                 const nodeRecord = node as Record<string, unknown>;
                 const key = String(nodeRecord.job_name || nodeRecord.id || "node");
-                const detail = String(nodeRecord.error_detail || nodeRecord.result_summary || "No detail");
+                const detail = String(nodeRecord.error_detail || nodeRecord.result_summary || t("common.noDetail"));
                 const status = String(nodeRecord.status || "error");
                 return (
                 <div className="compact-row" key={key}>
                   <div>
-                    <div className="compact-row__title">{String(nodeRecord.job_name || nodeRecord.id || "Unknown node")}</div>
+                    <div className="compact-row__title">{String(nodeRecord.job_name || nodeRecord.id || t("common.unknown"))}</div>
                     <div className="compact-row__subtitle">{shortText(detail, 80)}</div>
                   </div>
-                  <StatusPill label={status} tone="err" subtle />
+                  <StatusPill label={getGateStatusText(locale, status).label} tone="err" subtle />
                 </div>
                 );
               })}
-              {(!eventsResource.data?.failed_nodes || eventsResource.data.failed_nodes.length === 0) && (!today.error_nodes || today.error_nodes.length === 0) && <div className="note-card">No active node failures.</div>}
+              {(!eventsResource.data?.failed_nodes || eventsResource.data.failed_nodes.length === 0) && (!today.error_nodes || today.error_nodes.length === 0) && <div className="note-card">{t("today.noFailures")}</div>}
             </div>
           </PanelCard>
 
-          <PanelCard title="Noteworthy events" subdued>
+          <PanelCard title={t("today.noteworthyEvents")} subdued>
             <div className="list-stack">
               {(eventsResource.data?.today_events || eventsResource.data?.recent_market_events || []).slice(0, 5).map((item, index) => (
                 <div className="compact-row" key={`${item.title || item.event_type || index}`}>
                   <div>
-                    <div className="compact-row__title">{String(item.title || item.event_type || item.symbol || "Market event")}</div>
-                    <div className="compact-row__subtitle">{shortText(String(item.summary || item.description || item.symbol || ""), 80) || "No summary"}</div>
+                    <div className="compact-row__title">{String(item.title || item.event_type || item.symbol || t("common.marketEvent"))}</div>
+                    <div className="compact-row__subtitle">{shortText(String(item.summary || item.description || item.symbol || ""), 80) || t("common.noSummary")}</div>
                   </div>
                   <span>{String(item.event_date || item.created_at || "—")}</span>
                 </div>
@@ -194,6 +199,7 @@ export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
 }
 
 function ActionCard({ candidate, onOpenSymbol }: { candidate: CandidateRow; onOpenSymbol: (symbol: string) => void }) {
+  const { t } = useI18n();
   return (
     <PanelCard accent={String(candidate.action || "").toUpperCase() === "ADD" ? "green" : String(candidate.action || "").toUpperCase() === "PROBE" ? "cyan" : "amber"} className="action-card">
       <div className="action-card__head">
@@ -202,7 +208,7 @@ function ActionCard({ candidate, onOpenSymbol }: { candidate: CandidateRow; onOp
             {candidate.symbol}
             <span>{candidate.name || ""}</span>
           </div>
-          <div className="action-card__summary">{shortText(candidate.world_state_summary || candidate.thesis, 120)}</div>
+          <div className="action-card__summary">{shortText(candidate.world_state_summary || candidate.thesis, 120) || t("today.stateSummaryFallback")}</div>
         </div>
         <div className="action-card__meta">
           <ActionChip action={candidate.action} />
@@ -210,9 +216,9 @@ function ActionCard({ candidate, onOpenSymbol }: { candidate: CandidateRow; onOp
         </div>
       </div>
       <div className="action-card__footer">
-        <div className="action-card__invalidator">{shortText((candidate.top_invalidators || []).join(" · "), 90) || "No invalidator surfaced."}</div>
+        <div className="action-card__invalidator">{shortText((candidate.top_invalidators || []).join(" · "), 90) || t("candidates.table.noInvalidator")}</div>
         <button type="button" className="button button--ghost" onClick={() => candidate.symbol && onOpenSymbol(candidate.symbol)}>
-          Open workspace
+          {t("common.openWorkspace")}
         </button>
       </div>
     </PanelCard>

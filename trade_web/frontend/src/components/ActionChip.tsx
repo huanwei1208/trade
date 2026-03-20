@@ -1,4 +1,5 @@
-import { formatAction } from "../lib/format";
+import { useI18n } from "../lib/i18n";
+import { getActionText } from "../lib/statusText";
 import { classNames } from "../lib/ui";
 
 type ActionChipProps = {
@@ -6,6 +7,7 @@ type ActionChipProps = {
 };
 
 export function ActionChip({ action }: ActionChipProps) {
+  const { locale } = useI18n();
   const normalized = String(action || "NO_ACTION").toUpperCase();
   const tone =
     normalized === "ADD"
@@ -17,6 +19,5 @@ export function ActionChip({ action }: ActionChipProps) {
           : normalized === "REDUCE"
             ? "reduce"
             : "no-action";
-
-  return <span className={classNames("action-chip", `action-chip--${tone}`)}>{formatAction(normalized)}</span>;
+  return <span className={classNames("action-chip", `action-chip--${tone}`)}>{getActionText(locale, normalized)}</span>;
 }

@@ -9,6 +9,7 @@ import { RetryInline } from "../components/RetryInline";
 import { SectionHeader } from "../components/SectionHeader";
 import type { DecisionExplanation, SignalsPageData } from "../lib/api";
 import { useApiResource } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 import { searchCandidate, sortCandidates, useLocalStorageState } from "../lib/ui";
 
 type CandidatesPageProps = {
@@ -22,6 +23,7 @@ type TrustFilter = "ALL" | "HIGH" | "MEDIUM" | "LOW";
 type AvailabilityFilter = "ACTIONABLE_ONLY" | "INCLUDE_BLOCKED";
 
 export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps }: CandidatesPageProps) {
+  const { t } = useI18n();
   const resource = useApiResource<SignalsPageData>("/api/signals-page", {
     deps: [refreshToken],
     cacheKey: "trade-web:signals-page",
@@ -72,17 +74,17 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps }: Candid
 
   if (resource.error && !resource.data) {
     return (
-      <ErrorState
-        title="Candidates are unavailable"
-        body="The candidate list could not be loaded. If this persists, inspect Ops for data freshness or pipeline issues."
+        <ErrorState
+        title={t("candidates.unavailable")}
+        body={t("candidates.unavailableCopy")}
         detail={resource.error.message}
         action={
           <div className="state-card__button-row">
             <button type="button" className="button button--primary" onClick={resource.retry}>
-              Retry
+              {t("common.retry")}
             </button>
             <button type="button" className="button button--ghost" onClick={onOpenOps}>
-              Open Ops
+              {t("common.openOps")}
             </button>
           </div>
         }
@@ -92,17 +94,24 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps }: Candid
 
   return (
     <div className="page-stack page-candidates">
-      <SectionHeader title="Candidate triage" subtitle="Review a small set of candidates, keep the right-side panel hot, and only open a symbol when the thesis survives quick scrutiny." />
+      <SectionHeader title={t("candidates.title")} subtitle={t("candidates.subtitle")} />
 
       {resource.error && resource.data && (
-        <RetryInline message="Showing the last successful candidate snapshot while the latest fetch failed." onRetry={resource.retry} />
+        <RetryInline message={t("candidates.showingStale")} onRetry={resource.retry} />
+      )}
+
+      {resource.data?.picks?.some((candidate) => String(candidate.action || "").toUpperCase() === "NO_ACTION") && (
+        <div className="page-banner page-banner--muted">
+          <strong>{t("candidates.browseOnly")}</strong>
+          <span>{t("candidates.globalConstraint")}</span>
+        </div>
       )}
 
       <div className="filter-bar">
         <div className="segmented-group">
           {(["ALL", "ADD", "PROBE", "WATCH", "NO_ACTION"] as ActionFilter[]).map((value) => (
             <button key={value} type="button" className={actionFilter === value ? "is-active" : ""} onClick={() => setActionFilter(value)}>
-              {value}
+              {value === "ALL" ? t("candidates.filters.all") : value === "ADD" ? t("candidates.filters.add") : value === "PROBE" ? t("candidates.filters.probe") : value === "WATCH" ? t("candidates.filters.watch") : t("candidates.filters.noAction")}
             </button>
           ))}
         </div>
@@ -115,23 +124,23 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps }: Candid
         </div>
         <div className="segmented-group">
           <button type="button" className={availabilityFilter === "ACTIONABLE_ONLY" ? "is-active" : ""} onClick={() => setAvailabilityFilter("ACTIONABLE_ONLY")}>
-            Actionable only
+            {t("candidates.actionableOnly")}
           </button>
           <button type="button" className={availabilityFilter === "INCLUDE_BLOCKED" ? "is-active" : ""} onClick={() => setAvailabilityFilter("INCLUDE_BLOCKED")}>
-            Include blocked
+            {t("candidates.includeBlocked")}
           </button>
         </div>
         <label className="filter-bar__search">
-          <span>Search</span>
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Symbol or thesis" />
+          <span>{t("common.search")}</span>
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("common.search")} />
         </label>
         <label className="filter-bar__search filter-bar__sort">
-          <span>Sort</span>
+          <span>{t("common.sort")}</span>
           <select value={sortBy} onChange={(event) => setSortBy(event.target.value as "confidence" | "trust" | "action" | "latest")}>
-            <option value="action">Action priority</option>
-            <option value="confidence">Confidence</option>
-            <option value="trust">Trust</option>
-            <option value="latest">Latest</option>
+            <option value="action">{t("candidates.sort.action")}</option>
+            <option value="confidence">{t("candidates.sort.confidence")}</option>
+            <option value="trust">{t("candidates.sort.trust")}</option>
+            <option value="latest">{t("candidates.sort.latest")}</option>
           </select>
         </label>
       </div>
@@ -140,8 +149,8 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps }: Candid
         <div className="candidates-layout__table">
           {filtered.length === 0 ? (
             <ErrorState
-              title="No candidates match"
-              body="The current filters remove every row. Relax the filters or include blocked names."
+              title={t("candidates.empty")}
+              body={t("candidates.emptyCopy")}
               action={
                 <button type="button" className="button button--ghost" onClick={() => {
                   setActionFilter("ALL");
@@ -149,7 +158,7 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps }: Candid
                   setAvailabilityFilter("INCLUDE_BLOCKED");
                   setSearch("");
                 }}>
-                  Reset filters
+                  {t("candidates.resetFilters")}
                 </button>
               }
             />

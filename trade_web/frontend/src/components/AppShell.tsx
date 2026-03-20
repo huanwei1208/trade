@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { Locale, PageKey, TrustOverview } from "../lib/api";
 import { formatPercent } from "../lib/format";
+import { useI18n } from "../lib/i18n";
 import { classNames } from "../lib/ui";
 import { TopNav } from "./TopNav";
 import { StatusPill } from "./StatusPill";
@@ -33,11 +34,12 @@ export function AppShell({
   onRefresh,
   children,
 }: AppShellProps) {
+  const { t } = useI18n();
   const navItems: Array<{ key: PageKey; label: string; symbolOnly?: boolean }> = [
-    { key: "today", label: "Today" },
-    { key: "candidates", label: "Candidates" },
-    { key: "symbol", label: selectedSymbol ? `Symbol · ${selectedSymbol}` : "Symbol", symbolOnly: true },
-    { key: "ops", label: "Ops" },
+    { key: "today", label: t("nav.today") },
+    { key: "candidates", label: t("nav.candidates") },
+    { key: "symbol", label: selectedSymbol ? t("nav.symbolWithCode", { symbol: selectedSymbol }) : t("nav.symbol"), symbolOnly: true },
+    { key: "ops", label: t("nav.ops") },
   ];
 
   return (
@@ -47,7 +49,7 @@ export function AppShell({
           <div className="app-sidebar__logo">T</div>
           <div>
             <div className="app-sidebar__title">TradeDB</div>
-            <div className="app-sidebar__subtitle">Premium decision workspace</div>
+            <div className="app-sidebar__subtitle">{t("app.brandSubtitle")}</div>
           </div>
         </div>
 
@@ -70,12 +72,12 @@ export function AppShell({
         </nav>
 
         <div className="app-sidebar__footer">
-          <div className="app-sidebar__footer-label">Portfolio trust</div>
+          <div className="app-sidebar__footer-label">{t("shell.portfolioTrust")}</div>
           <div className="app-sidebar__footer-value">{formatPercent(trustOverview?.trust_scalar, 0)}</div>
-          <div className="app-sidebar__footer-subtle">Coverage {formatPercent(trustOverview?.coverage, 0)}</div>
+          <div className="app-sidebar__footer-subtle">{t("shell.coverage")} {formatPercent(trustOverview?.coverage, 0)}</div>
           <div className="app-sidebar__footer-pills">
-            <StatusPill label={selectedSymbol ? "Symbol ready" : "Pick a symbol"} tone={selectedSymbol ? "ok" : "muted"} subtle />
-            <StatusPill label={`As of ${trustOverview?.as_of || "—"}`} tone="info" subtle />
+            <StatusPill label={selectedSymbol ? t("shell.symbolReady") : t("shell.pickSymbol")} tone={selectedSymbol ? "ok" : "muted"} subtle />
+            <StatusPill label={t("shell.asOf", { date: trustOverview?.as_of || "—" })} tone="info" subtle />
           </div>
         </div>
       </aside>

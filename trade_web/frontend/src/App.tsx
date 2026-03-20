@@ -1,6 +1,7 @@
 import { AppShell } from "./components/AppShell";
 import { useApiResource, type Locale, type PageKey, type TrustOverview } from "./lib/api";
 import { formatDateTime } from "./lib/format";
+import { I18nProvider } from "./lib/i18n";
 import { getPageMeta, useLocalStorageState } from "./lib/ui";
 import { CandidatesPage } from "./pages/CandidatesPage";
 import { OpsPage } from "./pages/OpsPage";
@@ -42,22 +43,24 @@ export default function App() {
   }
 
   return (
-    <AppShell
-      activePage={resolvedPage}
-      pageTitle={meta.title}
-      pageSubtitle={meta.subtitle}
-      locale={locale}
-      asOf={asOf}
-      selectedSymbol={selectedSymbol}
-      trustOverview={trustOverview.data}
-      onNavigate={navigate}
-      onLocaleChange={setLocale}
-      onRefresh={() => setRefreshToken((current) => current + 1)}
-    >
-      {resolvedPage === "today" && <TodayPage refreshToken={refreshToken} onOpenSymbol={openSymbol} />}
-      {resolvedPage === "candidates" && <CandidatesPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOps={() => navigate("ops")} />}
-      {resolvedPage === "symbol" && <SymbolPage symbol={selectedSymbol} refreshToken={refreshToken} onBack={() => navigate(symbolOrigin || "today")} />}
-      {resolvedPage === "ops" && <OpsPage refreshToken={refreshToken} />}
-    </AppShell>
+    <I18nProvider locale={locale}>
+      <AppShell
+        activePage={resolvedPage}
+        pageTitle={meta.title}
+        pageSubtitle={meta.subtitle}
+        locale={locale}
+        asOf={asOf}
+        selectedSymbol={selectedSymbol}
+        trustOverview={trustOverview.data}
+        onNavigate={navigate}
+        onLocaleChange={setLocale}
+        onRefresh={() => setRefreshToken((current) => current + 1)}
+      >
+        {resolvedPage === "today" && <TodayPage refreshToken={refreshToken} onOpenSymbol={openSymbol} />}
+        {resolvedPage === "candidates" && <CandidatesPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOps={() => navigate("ops")} />}
+        {resolvedPage === "symbol" && <SymbolPage symbol={selectedSymbol} refreshToken={refreshToken} onBack={() => navigate(symbolOrigin || "today")} />}
+        {resolvedPage === "ops" && <OpsPage refreshToken={refreshToken} />}
+      </AppShell>
+    </I18nProvider>
   );
 }
