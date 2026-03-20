@@ -95,6 +95,16 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
               activeEvidenceSource={activeEvidenceSource}
               invalidationFocused={invalidationFocused}
               onMarkerHover={(value) => setMarkerKey(value)}
+              onOpenReadiness={() => onOpenOpsFocus({
+                tab: "readiness",
+                date: explanation?.as_of || klineResource.data?.as_of || stateResource.data?.as_of_date,
+                dataset: klineResource.data?.ohlcv?.length ? "signals" : "kline",
+              })}
+              onOpenRecovery={() => onOpenOpsFocus({
+                tab: "recovery",
+                date: explanation?.as_of || klineResource.data?.as_of || stateResource.data?.as_of_date,
+                dataset: klineResource.data?.ohlcv?.length ? "signals" : "kline",
+              })}
             />
           </PanelCard>
         </div>
@@ -156,27 +166,27 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
           <PanelCard title={t("symbol.worldState")} subdued>
             <div className="regime-grid">
               <div className="regime-grid__item">
-                <span>Market</span>
+                <span>{t("symbol.worldStateLabel.market")}</span>
                 <strong>{getWorldStateLabel(locale, "market", stateResource.data?.market_regime)}</strong>
               </div>
               <div className="regime-grid__item">
-                <span>Event</span>
+                <span>{t("symbol.worldStateLabel.event")}</span>
                 <strong>{getWorldStateLabel(locale, "event", stateResource.data?.event_regime)}</strong>
               </div>
               <div className="regime-grid__item">
-                <span>Sentiment</span>
+                <span>{t("symbol.worldStateLabel.sentiment")}</span>
                 <strong>{getWorldStateLabel(locale, "sentiment", stateResource.data?.sentiment_regime)}</strong>
               </div>
               <div className="regime-grid__item">
-                <span>Technical</span>
+                <span>{t("symbol.worldStateLabel.technical")}</span>
                 <strong>{getWorldStateLabel(locale, "technical", stateResource.data?.technical_regime)}</strong>
               </div>
               <div className="regime-grid__item">
-                <span>Liquidity</span>
+                <span>{t("symbol.worldStateLabel.liquidity")}</span>
                 <strong>{getWorldStateLabel(locale, "liquidity", stateResource.data?.liquidity_regime)}</strong>
               </div>
               <div className="regime-grid__item">
-                <span>Uncertainty</span>
+                <span>{t("symbol.worldStateLabel.uncertainty")}</span>
                 <strong>{getWorldStateLabel(locale, "uncertainty", stateResource.data?.uncertainty_level)}</strong>
               </div>
             </div>

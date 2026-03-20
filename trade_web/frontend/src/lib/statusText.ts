@@ -76,6 +76,10 @@ export function getGateStatusText(locale: Locale, raw?: string | null): Semantic
       return { key: "degraded", label: translate(locale, "status.constrained"), description: locale === "zh-CN" ? "系统仍可浏览，但关键输入不完整。" : "The system is still browsable, but critical inputs are incomplete.", tone: "warn" };
     case "missing":
       return { key: "missing", label: translate(locale, "status.missing"), description: locale === "zh-CN" ? "需要的数据当前不存在。" : "Required data is currently missing.", tone: "err" };
+    case "error":
+      return { key: "error", label: translate(locale, "status.error"), description: locale === "zh-CN" ? "该节点在最近一次运行中出现了异常。" : "This node encountered an error during its last run.", tone: "err" };
+    case "running":
+      return { key: "running", label: translate(locale, "status.running"), description: locale === "zh-CN" ? "该节点当前正在运行中。" : "This node is currently running.", tone: "info" };
     default:
       return { key: "unknown", label: translate(locale, "status.unknown"), description: locale === "zh-CN" ? "当前无法判断该状态。" : "The current state cannot be determined.", tone: "muted" };
   }

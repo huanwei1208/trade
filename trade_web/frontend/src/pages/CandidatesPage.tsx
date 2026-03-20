@@ -126,7 +126,7 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps, onOpenOp
         <div className="segmented-group">
           {(["ALL", "HIGH", "MEDIUM", "LOW"] as TrustFilter[]).map((value) => (
             <button key={value} type="button" className={trustFilter === value ? "is-active" : ""} onClick={() => setTrustFilter(value)}>
-              {value}
+              {value === "ALL" ? t("candidates.trust.all") : value === "HIGH" ? t("candidates.trust.high") : value === "MEDIUM" ? t("candidates.trust.medium") : t("candidates.trust.low")}
             </button>
           ))}
         </div>

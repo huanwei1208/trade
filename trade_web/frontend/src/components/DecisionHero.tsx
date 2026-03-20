@@ -1,7 +1,7 @@
 import type { TodayPageData } from "../lib/api";
-import { formatDate, formatPercent, labelizeDataset } from "../lib/format";
+import { formatDate, formatPercent } from "../lib/format";
 import { useI18n } from "../lib/i18n";
-import { getGateStatusText, getMarketRegimeText, getTodayUsageCopy } from "../lib/statusText";
+import { getDatasetText, getGateStatusText, getMarketRegimeText, getTodayUsageCopy } from "../lib/statusText";
 import type { TodayCall } from "../lib/ui";
 import { ActionChip } from "./ActionChip";
 import { PanelCard } from "./PanelCard";
@@ -90,7 +90,7 @@ export function DecisionHero({ today, todayCall, onOpenReadiness }: DecisionHero
           <div className="decision-hero__blocker-list">
             {freshnessIssues.map((item) => (
               <div className="decision-hero__blocker-item" key={`${item.dataset}-${item.status}`}>
-                <span>{labelizeDataset(item.dataset)}</span>
+                <span>{getDatasetText(locale, item.dataset)}</span>
                 <StatusPill
                   label={`${getGateStatusText(locale, item.status).label}${item.lag_days !== undefined && item.lag_days !== null ? ` · ${item.lag_days}d` : ""}`}
                   tone={getGateStatusText(locale, item.status).tone}

@@ -136,10 +136,14 @@ export function ExplanationRail({
                   return null;
                 }
                 const dominant = scenario.dominant_scenario === item.label;
+                const scenarioLabel = (() => {
+                  const translated = t(`scenario.${key}`);
+                  return translated !== `scenario.${key}` ? translated : humanizeEnum(item.label);
+                })();
                 return (
                   <div className={classNames("scenario-card", dominant && "is-dominant")} key={key}>
                     <div className="scenario-card__head">
-                      <span>{humanizeEnum(item.label)}</span>
+                      <span>{scenarioLabel}</span>
                       <strong>{formatPercent(item.probability, 0)}</strong>
                     </div>
                     <div className="scenario-card__body">{item.thesis}</div>

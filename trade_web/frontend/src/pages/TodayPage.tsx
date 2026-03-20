@@ -11,9 +11,9 @@ import { StatusPill } from "../components/StatusPill";
 import { TrustBadge } from "../components/TrustBadge";
 import type { CandidateRow, EventsPagePayload, TodayPageData } from "../lib/api";
 import { useApiResource } from "../lib/api";
-import { formatDateTime, labelizeDataset, shortText } from "../lib/format";
+import { formatDateTime, shortText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
-import { getGateStatusText } from "../lib/statusText";
+import { getDatasetText, getGateStatusText } from "../lib/statusText";
 import { getTodayCall, isActionable } from "../lib/ui";
 
 type TodayPageProps = {
@@ -97,7 +97,7 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus }: TodayP
             <div className="today-blocker-card__list">
               {(today.blocker_details || []).map((item) => (
                 <div className="today-blocker-card__item" key={`${item.dataset}-${item.status}`}>
-                  <div>{labelizeDataset(item.dataset)}</div>
+                  <div>{getDatasetText(locale, item.dataset)}</div>
                   <StatusPill
                     label={`${getGateStatusText(locale, item.status).label}${item.lag_days !== null && item.lag_days !== undefined ? ` · ${item.lag_days}d` : ""}`}
                     tone={getGateStatusText(locale, item.status).tone}
@@ -136,12 +136,12 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus }: TodayP
               <MetricCard label={t("today.trustScalar")} value={<TrustBadge score={today.trust_gate?.trust_scalar} />} hint={today.trust_gate?.eval_date || t("common.notAvailable")} />
               <MetricCard label={t("today.conclusionMode")} value={getGateStatusText(locale, today.trust_gate?.operational_status).label} hint={getGateStatusText(locale, today.trust_gate?.operational_status).description} />
               <MetricCard label={t("today.whyConstrained")} value={getGateStatusText(locale, today.trust_gate?.research_status).label} hint={getGateStatusText(locale, today.trust_gate?.research_status).description} />
-              <MetricCard label="Pipeline" value={getGateStatusText(locale, today.pipeline_health?.status).label} hint={`${today.pipeline_health?.ok || 0} ok · ${today.pipeline_health?.error || 0} error`} />
+              <MetricCard label={t("ops.tabs.pipeline")} value={getGateStatusText(locale, today.pipeline_health?.status).label} hint={`${today.pipeline_health?.ok || 0} ${t("status.healthy")} · ${today.pipeline_health?.error || 0} ${t("status.error")}`} />
             </div>
             <div className="diagnostic-list">
               {(today.trust_gate?.freshness || []).map((item) => (
                 <div className="diagnostic-list__row" key={`${item.dataset}-${item.status}`}>
-                  <span>{labelizeDataset(item.dataset)}</span>
+                  <span>{getDatasetText(locale, item.dataset)}</span>
                   <span>{item.lag_days !== undefined && item.lag_days !== null ? `${item.lag_days}d lag` : t("today.noLagInfo")}</span>
                   <StatusPill label={getGateStatusText(locale, item.status).label} tone={getGateStatusText(locale, item.status).tone} subtle />
                 </div>

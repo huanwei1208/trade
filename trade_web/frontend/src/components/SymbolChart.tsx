@@ -1,8 +1,10 @@
 import { useState } from "react";
 
 import type { DecisionExplanation, KlineBar, KlineResponse, WorldState } from "../lib/api";
-import { areaPath, clamp, closestBarIndex, linePath } from "../lib/chart";
+import { clamp, closestBarIndex, linePath } from "../lib/chart";
 import { formatCompactNumber, formatDate, formatScore } from "../lib/format";
+import { useI18n } from "../lib/i18n";
+import { getWorldStateLabel } from "../lib/statusText";
 import { classNames } from "../lib/ui";
 import { EmptyState } from "./EmptyState";
 
@@ -13,20 +15,71 @@ type SymbolChartProps = {
   activeEvidenceSource?: string | null;
   invalidationFocused?: boolean;
   onMarkerHover: (value: string | null) => void;
+  onOpenReadiness?: () => void;
+  onOpenRecovery?: () => void;
 };
 
-type LayerState = {
-  volume: boolean;
-  events: boolean;
-  belief: boolean;
-  zones: boolean;
-};
+type LayerKey = "volume" | "events" | "belief" | "zones";
+
+type LayerState = Record<LayerKey, boolean>;
 
 function latest(values: Array<number | undefined>) {
   return [...values].reverse().find((value) => value !== undefined && value !== null);
 }
 
-export function SymbolChart({ kline, explanation, state, activeEvidenceSource, invalidationFocused, onMarkerHover }: SymbolChartProps) {
+function ChartEmptyState({
+  kline,
+  explanation,
+  onOpenReadiness,
+  onOpenRecovery,
+}: {
+  kline?: KlineResponse | null;
+  explanation?: DecisionExplanation | null;
+  onOpenReadiness?: () => void;
+  onOpenRecovery?: () => void;
+}) {
+  const { t } = useI18n();
+
+  const hasExplanation = Boolean(explanation && (explanation.thesis || explanation.action));
+  const isReadinessConstrained = Boolean(
+    explanation?.input_warnings?.length || explanation?.warnings?.some((w) => String(w).toLowerCase().includes("readiness") || String(w).toLowerCase().includes("missing"))
+  );
+
+  let body = t("symbol.chartEmptyCopy");
+  if (hasExplanation && isReadinessConstrained) {
+    body = t("symbol.chartEmptyReadinessCause");
+  } else if (hasExplanation) {
+    body = t("symbol.chartEmptyExplanationAvailable");
+  }
+
+  return (
+    <div className="symbol-chart symbol-chart--empty">
+      <EmptyState
+        title={t("symbol.chartEmpty")}
+        body={body}
+        action={
+          (onOpenReadiness || onOpenRecovery) ? (
+            <div className="state-card__button-row">
+              {onOpenReadiness && (
+                <button type="button" className="button button--ghost" onClick={onOpenReadiness}>
+                  {t("symbol.inspectDayReadiness")}
+                </button>
+              )}
+              {onOpenRecovery && (
+                <button type="button" className="button button--ghost" onClick={onOpenRecovery}>
+                  {t("symbol.openRecovery")}
+                </button>
+              )}
+            </div>
+          ) : undefined
+        }
+      />
+    </div>
+  );
+}
+
+export function SymbolChart({ kline, explanation, state, activeEvidenceSource, invalidationFocused, onMarkerHover, onOpenReadiness, onOpenRecovery }: SymbolChartProps) {
+  const { locale, t } = useI18n();
   const [layers, setLayers] = useState<LayerState>({
     volume: true,
     events: true,
@@ -37,11 +90,7 @@ export function SymbolChart({ kline, explanation, state, activeEvidenceSource, i
   const bars = (kline?.ohlcv || []).filter((bar): bar is Required<KlineBar> => Boolean(bar.date));
 
   if (!bars.length) {
-    return (
-      <div className="symbol-chart symbol-chart--empty">
-        <EmptyState title="No chart context" body="Historical OHLCV is not available for this symbol yet." />
-      </div>
-    );
+    return <ChartEmptyState kline={kline} explanation={explanation} onOpenReadiness={onOpenReadiness} onOpenRecovery={onOpenRecovery} />;
   }
 
   const width = 880;
@@ -117,17 +166,28 @@ export function SymbolChart({ kline, explanation, state, activeEvidenceSource, i
   const eventHighlight = String(activeEvidenceSource || "").toLowerCase().includes("event");
   const markerRows = (kline?.event_markers || []).slice(-14);
 
+  const layerKeys: LayerKey[] = ["volume", "events", "belief", "zones"];
+  const layerLabelKeys: Record<LayerKey, string> = {
+    volume: "symbol.chartLayer.volume",
+    events: "symbol.chartLayer.events",
+    belief: "symbol.chartLayer.belief",
+    zones: "symbol.chartLayer.zones",
+  };
+
+  const marketRegimeLabel = getWorldStateLabel(locale, "market", state?.market_regime);
+  const technicalRegimeLabel = getWorldStateLabel(locale, "technical", state?.technical_regime);
+
   return (
     <div className="symbol-chart">
       <div className="symbol-chart__toolbar">
-        {(["volume", "events", "belief", "zones"] as Array<keyof LayerState>).map((key) => (
+        {layerKeys.map((key) => (
           <button
             type="button"
             key={key}
             className={classNames("toggle-chip", layers[key] && "is-active")}
             onClick={() => setLayers((current) => ({ ...current, [key]: !current[key] }))}
           >
-            {key}
+            {t(layerLabelKeys[key])}
           </button>
         ))}
       </div>
@@ -219,35 +279,35 @@ export function SymbolChart({ kline, explanation, state, activeEvidenceSource, i
 
         <g className="symbol-chart__legend">
           <text x={left} y={20}>
-            Decision overlay {String(explanation?.action || kline?.action?.action || "NO_ACTION")}
+            {t("symbol.chartLegend.decisionOverlay")} {String(explanation?.action || kline?.action?.action || "NO_ACTION")}
           </text>
           <text x={right - 180} y={20}>
-            Last close {formatScore(latest(closes), 2)}
+            {t("symbol.chartLegend.lastClose")} {formatScore(latest(closes), 2)}
           </text>
         </g>
 
         <g className="symbol-chart__strip">
           <rect x={left} y={stripTop} width={chartWidth} height={18} rx={9} />
           <text x={left + 8} y={stripTop + 12}>
-            {state?.market_regime || "UNKNOWN"}
+            {marketRegimeLabel}
           </text>
           <text x={left + chartWidth / 2 - 40} y={stripTop + 12}>
-            {state?.technical_regime || "UNKNOWN"}
+            {technicalRegimeLabel}
           </text>
           <text x={right - 130} y={stripTop + 12}>
-            Trust {formatScore(explanation?.trust?.trust_score || state?.trust_score)}
+            {t("ops.trust.scalar")} {formatScore(explanation?.trust?.trust_score || state?.trust_score)}
           </text>
         </g>
       </svg>
 
       <div className="symbol-chart__footer">
         <div>
-          <div className="symbol-chart__footer-label">Market context</div>
-          <div>{state?.state_summary || explanation?.world_state_summary || "Unavailable."}</div>
+          <div className="symbol-chart__footer-label">{t("symbol.chartFooter.marketContext")}</div>
+          <div>{state?.state_summary || explanation?.world_state_summary || t("common.notAvailable")}</div>
         </div>
         <div>
-          <div className="symbol-chart__footer-label">Latest bar</div>
-          <div>{formatDate(bars[bars.length - 1]?.date)} · Vol {formatCompactNumber(bars[bars.length - 1]?.volume)}</div>
+          <div className="symbol-chart__footer-label">{t("symbol.chartFooter.latestBar")}</div>
+          <div>{formatDate(bars[bars.length - 1]?.date, locale === "zh-CN" ? "zh-CN" : "en-US")} · {t("symbol.chartLegend.vol")} {formatCompactNumber(bars[bars.length - 1]?.volume)}</div>
         </div>
       </div>
     </div>

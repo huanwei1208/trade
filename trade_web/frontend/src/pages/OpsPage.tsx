@@ -251,8 +251,8 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
                   <div className="compact-row__title">{key}</div>
                   <div className="compact-row__meta">
                     <StatusPill label={`${value.ok || 0} ${t("status.healthy")}`} tone="ok" subtle />
-                    <StatusPill label={`${value.error || 0} err`} tone="err" subtle />
-                    <StatusPill label={`${value.running || 0} running`} tone="info" subtle />
+                    <StatusPill label={`${value.error || 0} ${t("ops.stage.error")}`} tone="err" subtle />
+                    <StatusPill label={`${value.running || 0} ${t("ops.stage.running")}`} tone="info" subtle />
                   </div>
                 </div>
               ))}
@@ -426,8 +426,8 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
               <div className="compact-row" key={item.eval_date}>
                 <div className="compact-row__title">{item.eval_date}</div>
                 <div className="compact-row__meta">
-                  <span>Trust {formatPercent(item.trust_scalar, 0)}</span>
-                  <span>Coverage {formatPercent(item.coverage, 0)}</span>
+                  <span>{t("ops.trust.scalar")} {formatPercent(item.trust_scalar, 0)}</span>
+                  <span>{t("ops.trust.coverageLabel")} {formatPercent(item.coverage, 0)}</span>
                 </div>
               </div>
             ))}
@@ -442,7 +442,7 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
               <div className="compact-row" key={`${workflow.root_event_id || index}`}>
                 <div>
                   <div className="compact-row__title">{String(workflow.topic || workflow.job_name || "Workflow")}</div>
-                  <div className="compact-row__subtitle">{shortText(String(workflow.root_cause || workflow.reason_summary || ""), 90) || "No root cause summary"}</div>
+                  <div className="compact-row__subtitle">{shortText(String(workflow.root_cause || workflow.reason_summary || ""), 90) || t("ops.noRootCause")}</div>
                 </div>
                 <div className="compact-row__meta">
                   <StatusPill label={getGateStatusText(locale, String(workflow.status || "unknown")).label} tone={String(workflow.status) === "ok" ? "ok" : String(workflow.status) === "error" ? "err" : "info"} subtle />
