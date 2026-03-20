@@ -372,6 +372,23 @@
   overflow-wrap: anywhere;
 }
 
+.recovery-range-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.recovery-action-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.recovery-plan-copy {
+  margin-top: var(--space-2);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 1200px) {
   .action-card__footer,
   .candidate-quick-panel__footer {
@@ -385,6 +402,10 @@
 
   .readiness-summary-grid,
   .readiness-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .recovery-range-grid {
     grid-template-columns: 1fr;
   }
 

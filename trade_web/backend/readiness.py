@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class DatasetMeta:
@@ -31,6 +33,21 @@ DATASET_CATALOG: tuple[DatasetMeta, ...] = (
     DatasetMeta("models", "Models", False, ("signals", "belief", "recommendations", "trust"), "model_train"),
     DatasetMeta("sector_map", "Sector Map", False, ("events", "signals", "belief"), "sector_refresh"),
 )
+
+DOWNSTREAM_JOB_MAP: dict[str, list[str]] = {
+    "kline": ["window_score", "belief_update", "recommend", "evaluate_daily"],
+    "fund_flow": ["window_score", "belief_update", "recommend", "evaluate_daily"],
+    "fundamental": ["window_score", "belief_update", "recommend", "evaluate_daily"],
+    "sentiment_silver": ["sentiment_gold", "event_extract", "kg_propagate", "belief_update", "recommend", "evaluate_daily"],
+    "sentiment_gold": ["event_extract", "kg_propagate", "belief_update", "recommend", "evaluate_daily"],
+    "events": ["kg_propagate", "belief_update", "recommend", "evaluate_daily"],
+    "planned_events": ["planned_event_realize", "event_extract", "kg_propagate", "belief_update", "recommend"],
+    "signals": ["belief_update", "recommend", "evaluate_daily"],
+    "belief_state": ["recommend", "evaluate_daily"],
+    "recommendation": ["evaluate_daily"],
+    "models": ["belief_update", "recommend", "evaluate_daily"],
+    "sector_map": ["event_extract", "kg_propagate", "window_score", "belief_update", "recommend", "evaluate_daily"],
+}
 
 
 READINESS_READY = {"READY", "LATE_READY", "REPLAYED"}
@@ -321,6 +338,45 @@ def _collect_gap_ranges(db) -> dict[str, list[tuple[date | None, date | None, st
     return payload
 
 
+def _collect_recovery_actions(db, date_from: str, date_to: str) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    with db._conn_lock:
+        rows = db._conn.execute(
+            """
+            SELECT id, dataset, date_from, date_to, action_type, mode, status, requested_at,
+                   updated_at, job_names_json, affected_outputs_json, request_json,
+                   result_json, summary, error, fingerprint_before, fingerprint_after
+            FROM readiness_recovery_actions
+            WHERE date_to >= ? AND date_from <= ?
+            ORDER BY requested_at DESC, id DESC
+            LIMIT 1000
+            """,
+            (date_from, date_to),
+        ).fetchall()
+    by_cell: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    by_dataset: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        item = dict(row)
+        item["job_names"] = _safe_json(item.get("job_names_json"), [])
+        item["affected_outputs"] = _safe_json(item.get("affected_outputs_json"), [])
+        item["request"] = _safe_json(item.get("request_json"), {})
+        item["result"] = _safe_json(item.get("result_json"), {})
+        dataset = str(item.get("dataset") or "")
+        if not dataset:
+            continue
+        by_dataset[dataset].append(item)
+        start_day = _to_date(item.get("date_from"))
+        end_day = _to_date(item.get("date_to"))
+        if not start_day or not end_day:
+            continue
+        cursor = start_day
+        while cursor <= end_day and (cursor - start_day).days < 31:
+            bucket = by_cell[(dataset, cursor.isoformat())]
+            if len(bucket) < 8:
+                bucket.append(item)
+            cursor += timedelta(days=1)
+    return by_cell, by_dataset
+
+
 def _history_summary(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for row in history[:5]:
@@ -351,6 +407,21 @@ def _snapshot_coverage(snapshot: dict[str, Any] | None, key: str) -> float | Non
 def _signal_expected_count(signal_counts: dict[str, int], total_symbols: int) -> int:
     max_signal = max(signal_counts.values()) if signal_counts else 0
     return max(max_signal, total_symbols, 1)
+
+
+def _action_history_summary(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in history[:5]:
+        items.append({
+            "ts": row.get("requested_at"),
+            "action": row.get("action_type"),
+            "reason_code": row.get("mode"),
+            "duration_ms": (row.get("result") or {}).get("duration_ms"),
+            "api_calls_actual": None,
+            "error": row.get("error"),
+            "status": row.get("status"),
+        })
+    return items
 
 
 def _build_cell(
@@ -437,6 +508,7 @@ def build_readiness_grid(
     signal_expected = _signal_expected_count(signal_counts, total_symbols)
     belief_expected = max(max(belief_counts.values()) if belief_counts else 0, 1)
     recommendation_expected = max(max(recommendation_counts.values()) if recommendation_counts else 0, 1)
+    recovery_by_cell, recovery_by_dataset = _collect_recovery_actions(db, date_from, date_to)
 
     rows: list[dict[str, Any]] = []
     unstable: list[tuple[int, str]] = []
@@ -458,6 +530,7 @@ def build_readiness_grid(
             quality_row = quality.get(day_iso)
             day_freshness = freshness.get(day_iso, {}).get(dataset.key)
             cell_history = repair_by_cell.get((dataset.key, day_iso), [])
+            recovery_history = recovery_by_cell.get((dataset.key, day_iso), [])
             last_backfill_at = cell_history[0].get("ts") if cell_history else None
             gap_match = any(
                 status != "resolved" and _range_contains_day(start_day, end_day, day)
@@ -670,6 +743,22 @@ def build_readiness_grid(
                 else None
             )
             cell["fingerprint"] = fingerprint
+            if recovery_history:
+                latest_action = recovery_history[0]
+                action_status = str(latest_action.get("status") or "")
+                if action_status in {"queued", "running"}:
+                    cell["status"] = "REPLAYING"
+                elif action_status == "ok" and str(latest_action.get("action_type") or "") in {"replay", "backfill"}:
+                    cell["status"] = "REPLAYED"
+                elif action_status == "error":
+                    cell["status"] = "CHANGED"
+                cell["last_backfill_at"] = latest_action.get("requested_at") or cell.get("last_backfill_at")
+                cell["history"] = action_history = _action_history_summary(recovery_history)
+                if cell_history:
+                    cell["history"] = (action_history + _history_summary(cell_history))[:6]
+                cell["changed_since_last_ready"] = bool(action_status in {"error"})
+            elif cell_history:
+                cell["history"] = _history_summary(cell_history)
 
             row_cells.append(cell)
             readiness_score_total += 1
@@ -726,6 +815,253 @@ def build_readiness_grid(
         },
     }
 
+
+def get_dataset_meta(dataset: str) -> DatasetMeta | None:
+    return next((item for item in DATASET_CATALOG if item.key == dataset), None)
+
+
+def build_replay_plan(db, dataset: str, *, date_from: str, date_to: str) -> dict[str, Any]:
+    meta = get_dataset_meta(dataset)
+    if meta is None:
+        raise ValueError(f"Unknown readiness dataset: {dataset}")
+
+    downstream = list(DOWNSTREAM_JOB_MAP.get(dataset, []))
+    full_chain = [job for job in [meta.job_name, *downstream] if job]
+    recommended_mode = "data_plus_downstream" if downstream else "data_only"
+
+    with db._conn_lock:
+        dag_rows = db._conn.execute(
+            "SELECT job_name, stage, enabled FROM pipeline_dag ORDER BY stage, id"
+        ).fetchall()
+        durations = db._conn.execute(
+            """
+            SELECT job_name, CAST(AVG(COALESCE(elapsed_ms, 0)) AS INTEGER) AS avg_ms
+            FROM job_runs
+            WHERE job_name IN ({})
+            GROUP BY job_name
+            """.format(",".join("?" for _ in full_chain or [""])),
+            tuple(full_chain or [""]),
+        ).fetchall()
+    dag_lookup = {str(row["job_name"] or ""): {"stage": row["stage"], "enabled": bool(row["enabled"])} for row in dag_rows}
+    avg_durations = {str(row["job_name"] or ""): int(row["avg_ms"] or 0) for row in durations}
+
+    return {
+        "dataset": dataset,
+        "label": meta.label,
+        "job_name": meta.job_name,
+        "recommended_mode": recommended_mode,
+        "affected_outputs": list(meta.impacts),
+        "downstream_nodes": [
+            {
+                "job_name": job_name,
+                "stage": dag_lookup.get(job_name, {}).get("stage"),
+                "enabled": dag_lookup.get(job_name, {}).get("enabled", True),
+                "avg_duration_ms": avg_durations.get(job_name),
+            }
+            for job_name in downstream
+        ],
+        "full_chain": [
+            {
+                "job_name": job_name,
+                "stage": dag_lookup.get(job_name, {}).get("stage"),
+                "enabled": dag_lookup.get(job_name, {}).get("enabled", True),
+                "avg_duration_ms": avg_durations.get(job_name),
+            }
+            for job_name in full_chain
+        ],
+        "date_from": date_from,
+        "date_to": date_to,
+        "estimated_duration_ms": sum(avg_durations.get(job_name, 0) for job_name in full_chain),
+    }
+
+
+def list_recovery_history(db, *, dataset: str | None = None, date: str | None = None, limit: int = 40) -> list[dict[str, Any]]:
+    clauses = ["1=1"]
+    params: list[Any] = []
+    if dataset:
+        clauses.append("dataset = ?")
+        params.append(dataset)
+    if date:
+        clauses.append("date_to >= ?")
+        params.append(date)
+        clauses.append("date_from <= ?")
+        params.append(date)
+    query = f"""
+        SELECT id, dataset, date_from, date_to, action_type, mode, status, requested_at,
+               updated_at, job_names_json, affected_outputs_json, result_json, summary, error,
+               fingerprint_before, fingerprint_after
+        FROM readiness_recovery_actions
+        WHERE {' AND '.join(clauses)}
+        ORDER BY requested_at DESC, id DESC
+        LIMIT ?
+    """
+    params.append(max(1, int(limit)))
+    with db._conn_lock:
+        rows = db._conn.execute(query, tuple(params)).fetchall()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["job_names"] = _safe_json(item.get("job_names_json"), [])
+        item["affected_outputs"] = _safe_json(item.get("affected_outputs_json"), [])
+        item["result"] = _safe_json(item.get("result_json"), {})
+        results.append(item)
+    return results
+
+
+def create_recovery_action(
+    db,
+    *,
+    dataset: str,
+    date_from: str,
+    date_to: str,
+    action_type: str,
+    mode: str,
+    job_names: list[str],
+    affected_outputs: list[str],
+    request_payload: dict[str, Any],
+    fingerprint_before: str | None = None,
+) -> int:
+    with db._conn_lock:
+        cur = db._conn.execute(
+            """
+            INSERT INTO readiness_recovery_actions (
+                dataset, date_from, date_to, action_type, mode, status,
+                requested_at, updated_at, job_names_json, affected_outputs_json,
+                request_json, fingerprint_before
+            ) VALUES (?, ?, ?, ?, ?, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+            """,
+            (
+                dataset,
+                date_from,
+                date_to,
+                action_type,
+                mode,
+                json.dumps(job_names, ensure_ascii=False),
+                json.dumps(affected_outputs, ensure_ascii=False),
+                json.dumps(request_payload, ensure_ascii=False),
+                fingerprint_before,
+            ),
+        )
+        db._conn.commit()
+        return int(cur.lastrowid or 0)
+
+
+def update_recovery_action(
+    db,
+    action_id: int,
+    *,
+    status: str,
+    result_payload: dict[str, Any] | None = None,
+    summary: str | None = None,
+    error: str | None = None,
+    fingerprint_after: str | None = None,
+) -> None:
+    with db._conn_lock:
+        db._conn.execute(
+            """
+            UPDATE readiness_recovery_actions
+            SET status = ?, updated_at = CURRENT_TIMESTAMP, result_json = ?, summary = ?, error = ?, fingerprint_after = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                json.dumps(result_payload or {}, ensure_ascii=False),
+                summary,
+                error,
+                fingerprint_after,
+                action_id,
+            ),
+        )
+        db._conn.commit()
+
+
+def execute_recovery_action(
+    data_root: str | Path,
+    db,
+    *,
+    action_id: int,
+    dataset: str,
+    date_from: str,
+    date_to: str,
+    mode: str,
+    action_type: str = "backfill",
+) -> None:
+    from trade_py.engine import run_node
+
+    plan = build_replay_plan(db, dataset, date_from=date_from, date_to=date_to)
+    meta = get_dataset_meta(dataset)
+    if meta is None:
+        raise ValueError(f"Unknown readiness dataset: {dataset}")
+
+    jobs: list[str] = []
+    if action_type == "backfill" and meta.job_name:
+        jobs.append(meta.job_name)
+    if action_type in {"replay", "backfill"} and mode in {"data_plus_downstream", "full_replay"}:
+        jobs.extend(DOWNSTREAM_JOB_MAP.get(dataset, []))
+    if action_type == "replay" and mode == "data_only":
+        jobs = []
+
+    if mode == "full_replay":
+        jobs = [job for job in [meta.job_name, *DOWNSTREAM_JOB_MAP.get(dataset, [])] if job] if action_type == "backfill" else list(DOWNSTREAM_JOB_MAP.get(dataset, []))
+
+    # preserve job order while removing duplicates
+    deduped_jobs = list(dict.fromkeys(job for job in jobs if job))
+    started_at = datetime.utcnow()
+    steps: list[dict[str, Any]] = []
+    update_recovery_action(db, action_id, status="running", result_payload={"steps": []}, summary="running")
+
+    try:
+        if not deduped_jobs:
+            update_recovery_action(
+                db,
+                action_id,
+                status="ok",
+                result_payload={"steps": [], "duration_ms": 0},
+                summary="no-op replay plan",
+            )
+            return
+
+        for job_name in deduped_jobs:
+            logger.info("readiness recovery action %s running job=%s range=%s..%s", action_id, job_name, date_from, date_to)
+            step_started = datetime.utcnow()
+            summary = run_node(job_name, str(data_root), date_from=date_from, date_to=date_to)
+            steps.append({
+                "job_name": job_name,
+                "status": "ok",
+                "summary": summary,
+                "duration_ms": int((datetime.utcnow() - step_started).total_seconds() * 1000),
+            })
+            update_recovery_action(
+                db,
+                action_id,
+                status="running",
+                result_payload={"steps": steps, "duration_ms": int((datetime.utcnow() - started_at).total_seconds() * 1000)},
+                summary=summary,
+            )
+
+        update_recovery_action(
+            db,
+            action_id,
+            status="ok",
+            result_payload={"steps": steps, "duration_ms": int((datetime.utcnow() - started_at).total_seconds() * 1000)},
+            summary=steps[-1]["summary"] if steps else "ok",
+        )
+    except Exception as exc:
+        logger.exception("readiness recovery action %s failed", action_id)
+        steps.append({
+            "job_name": deduped_jobs[len(steps)] if len(steps) < len(deduped_jobs) else None,
+            "status": "error",
+            "summary": str(exc),
+        })
+        update_recovery_action(
+            db,
+            action_id,
+            status="error",
+            result_payload={"steps": steps, "duration_ms": int((datetime.utcnow() - started_at).total_seconds() * 1000)},
+            summary="error",
+            error=str(exc),
+        )
+
     return {
         "as_of": date.today().isoformat(),
         "range": {
@@ -746,8 +1082,8 @@ def build_readiness_grid(
         ],
         "rows": rows,
         "recovery_history": {
-            dataset: _history_summary(items)
-            for dataset, items in repair_by_dataset.items()
-            if dataset in dataset_order
+            dataset: (_action_history_summary(recovery_by_dataset.get(dataset, [])) or _history_summary(repair_by_dataset.get(dataset, [])))
+            for dataset in dataset_order
+            if recovery_by_dataset.get(dataset) or repair_by_dataset.get(dataset)
         },
     }

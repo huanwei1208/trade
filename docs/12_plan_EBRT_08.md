@@ -52,11 +52,11 @@ This pass upgrades TradeDB from a strong-looking decision workspace into an audi
 
 ### Phase 3 — backfill / replay actions + backend endpoints
 
-- [ ] Add backend `POST /api/readiness/backfill`
-- [ ] Add backend `GET /api/readiness/replay-plan`
-- [ ] Add backend readiness history / recovery timeline support
-- [ ] Implement recovery action panel in UI
-- [ ] Wire real backfill + downstream replay execution paths
+- [x] Add backend `POST /api/readiness/backfill`
+- [x] Add backend `GET /api/readiness/replay-plan`
+- [x] Add backend readiness history / recovery timeline support
+- [x] Implement recovery action panel in UI
+- [x] Wire real backfill + downstream replay execution paths
 - [ ] Verify app builds and commit Phase 3
 
 ### Phase 4 — changed-data detection + deep-link integration
@@ -128,3 +128,10 @@ Planned additions:
 - Reworked Ops tabs into `overview / readiness / recovery / pipeline / trust / workflows`
 - Implemented readiness summary cards, dataset heatmap, tooltip, and sticky inspector
 - Verified `python -m compileall trade_web/backend/app.py trade_web/backend/readiness.py`
+- Started Phase 3
+- Added recovery audit table `readiness_recovery_actions`
+- Added backend recovery endpoints for replay plan, history, backfill, and replay execution
+- Extended jobs so `fund_flow`, `fundamental`, `window_score`, `belief_update`, `recommend`, and `evaluate_daily` can consume date ranges
+- Added recovery action panel with dry-run / backfill / replay controls in the Ops inspector
+- Verified `cd trade_web/frontend && npm run build`
+- Verified `python -m compileall trade_web/backend/app.py trade_web/backend/readiness.py trade_py/jobs/__init__.py trade_py/db/trade_db.py`

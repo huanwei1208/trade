@@ -252,6 +252,7 @@ export type ReadinessHistoryItem = {
   duration_ms?: number | null;
   api_calls_actual?: number | null;
   error?: string | null;
+  status?: string | null;
 };
 
 export type ReadinessCell = {
@@ -302,6 +303,44 @@ export type ReadinessGridPayload = {
   datasets: Array<{ key: string; label: string; critical: boolean; job_name?: string | null; affected_outputs?: string[] }>;
   rows: ReadinessRow[];
   recovery_history?: Record<string, ReadinessHistoryItem[]>;
+};
+
+export type ReplayPlanPayload = {
+  dataset: string;
+  label: string;
+  job_name?: string | null;
+  recommended_mode: "data_only" | "data_plus_downstream" | "full_replay";
+  affected_outputs?: string[];
+  downstream_nodes?: Array<{ job_name?: string; stage?: string; enabled?: boolean; avg_duration_ms?: number | null }>;
+  full_chain?: Array<{ job_name?: string; stage?: string; enabled?: boolean; avg_duration_ms?: number | null }>;
+  date_from: string;
+  date_to: string;
+  estimated_duration_ms?: number | null;
+};
+
+export type ReadinessActionResponse = {
+  accepted: boolean;
+  action_id: number;
+  plan: ReplayPlanPayload;
+};
+
+export type ReadinessHistoryPayload = {
+  items: Array<{
+    id: number;
+    dataset: string;
+    date_from: string;
+    date_to: string;
+    action_type: string;
+    mode: string;
+    status: string;
+    requested_at: string;
+    updated_at: string;
+    job_names?: string[];
+    affected_outputs?: string[];
+    result?: Record<string, unknown>;
+    summary?: string | null;
+    error?: string | null;
+  }>;
 };
 
 export type EventsPagePayload = {
@@ -540,4 +579,36 @@ export function getReadinessGrid(days = 30, endDate?: string) {
     query.set("end_date", endDate);
   }
   return fetchJson<ReadinessGridPayload>(`/api/readiness-grid?${query.toString()}`);
+}
+
+export function getReadinessReplayPlan(dataset: string, dateFrom: string, dateTo?: string) {
+  const query = new URLSearchParams({ dataset, date_from: dateFrom, date_to: dateTo || dateFrom });
+  return fetchJson<ReplayPlanPayload>(`/api/readiness/replay-plan?${query.toString()}`);
+}
+
+export function getReadinessHistory(dataset?: string, date?: string) {
+  const query = new URLSearchParams();
+  if (dataset) {
+    query.set("dataset", dataset);
+  }
+  if (date) {
+    query.set("date", date);
+  }
+  return fetchJson<ReadinessHistoryPayload>(`/api/readiness/history?${query.toString()}`);
+}
+
+export function postReadinessBackfill(payload: { dataset: string; date_from: string; date_to: string; mode: "data_only" | "data_plus_downstream" | "full_replay" }) {
+  return fetchJson<ReadinessActionResponse>("/api/readiness/backfill", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function postReadinessReplay(payload: { dataset: string; date_from: string; date_to: string; mode: "data_only" | "data_plus_downstream" | "full_replay" }) {
+  return fetchJson<ReadinessActionResponse>("/api/readiness/replay", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }

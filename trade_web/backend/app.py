@@ -33,6 +33,7 @@ Routes:
 from __future__ import annotations
 
 import asyncio
+import datetime as dtm
 import json
 import logging
 import os
@@ -142,7 +143,13 @@ def create_app():
     from trade_py.services.state_service import StateService
     from trade_py.services.decision_service import DecisionService
     from trade_py.services.explanation_service import ExplanationService
-    from trade_web.backend.readiness import build_readiness_grid
+    from trade_web.backend.readiness import (
+        build_readiness_grid,
+        build_replay_plan,
+        create_recovery_action,
+        execute_recovery_action,
+        list_recovery_history,
+    )
     _state_svc    = StateService(data_root)
     _decision_svc = DecisionService(inference=_inference)
     _explain_svc  = ExplanationService(_state_svc, _decision_svc, inference=_inference)
@@ -1567,6 +1574,106 @@ def create_app():
                 datasets=dataset_list,
             ),
         )
+
+    @app.get("/api/readiness/replay-plan")
+    async def get_readiness_replay_plan(dataset: str, date: str | None = None, date_from: str | None = None, date_to: str | None = None):
+        db = _db()
+        resolved_from = date_from or date or dtm.date.today().isoformat()
+        resolved_to = date_to or date or resolved_from
+        return build_replay_plan(db, dataset.strip(), date_from=resolved_from, date_to=resolved_to)
+
+    @app.get("/api/readiness/history")
+    async def get_readiness_history(dataset: str | None = None, date: str | None = None, limit: int = 40):
+        return {
+            "items": list_recovery_history(_db(), dataset=dataset.strip() if dataset else None, date=date, limit=limit),
+        }
+
+    @app.post("/api/readiness/backfill")
+    async def post_readiness_backfill(req: dict = Body(...)):
+        dataset = str(req.get("dataset") or "").strip()
+        if not dataset:
+            raise HTTPException(status_code=400, detail="dataset is required")
+        date_from = str(req.get("date_from") or req.get("date") or "").strip()
+        date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
+        mode = str(req.get("mode") or "data_only").strip().lower()
+        if mode not in {"data_only", "data_plus_downstream", "full_replay"}:
+            raise HTTPException(status_code=400, detail="mode must be one of data_only, data_plus_downstream, full_replay")
+        if not date_from:
+            raise HTTPException(status_code=400, detail="date_from is required")
+        db = _db()
+        plan = build_replay_plan(db, dataset, date_from=date_from, date_to=date_to)
+        job_names = [plan.get("job_name")] if plan.get("job_name") else []
+        if mode in {"data_plus_downstream", "full_replay"}:
+            job_names.extend(str(item.get("job_name") or "") for item in plan.get("downstream_nodes", []))
+        if mode == "full_replay":
+            job_names = [str(item.get("job_name") or "") for item in plan.get("full_chain", [])]
+        action_id = create_recovery_action(
+            db,
+            dataset=dataset,
+            date_from=date_from,
+            date_to=date_to,
+            action_type="backfill",
+            mode=mode,
+            job_names=[job for job in job_names if job],
+            affected_outputs=list(plan.get("affected_outputs") or []),
+            request_payload=req,
+        )
+
+        def _run() -> None:
+            execute_recovery_action(
+                data_root,
+                _db(),
+                action_id=action_id,
+                dataset=dataset,
+                date_from=date_from,
+                date_to=date_to,
+                mode=mode,
+                action_type="backfill",
+            )
+
+        Thread(target=_run, name=f"readiness-backfill-{action_id}", daemon=True).start()
+        return {"accepted": True, "action_id": action_id, "plan": plan}
+
+    @app.post("/api/readiness/replay")
+    async def post_readiness_replay(req: dict = Body(...)):
+        dataset = str(req.get("dataset") or "").strip()
+        if not dataset:
+            raise HTTPException(status_code=400, detail="dataset is required")
+        date_from = str(req.get("date_from") or req.get("date") or "").strip()
+        date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
+        mode = str(req.get("mode") or "data_plus_downstream").strip().lower()
+        if mode not in {"data_only", "data_plus_downstream", "full_replay"}:
+            raise HTTPException(status_code=400, detail="mode must be one of data_only, data_plus_downstream, full_replay")
+        if not date_from:
+            raise HTTPException(status_code=400, detail="date_from is required")
+        db = _db()
+        plan = build_replay_plan(db, dataset, date_from=date_from, date_to=date_to)
+        action_id = create_recovery_action(
+            db,
+            dataset=dataset,
+            date_from=date_from,
+            date_to=date_to,
+            action_type="replay",
+            mode=mode,
+            job_names=[str(item.get("job_name") or "") for item in plan.get("downstream_nodes", [])],
+            affected_outputs=list(plan.get("affected_outputs") or []),
+            request_payload=req,
+        )
+
+        def _run() -> None:
+            execute_recovery_action(
+                data_root,
+                _db(),
+                action_id=action_id,
+                dataset=dataset,
+                date_from=date_from,
+                date_to=date_to,
+                mode=mode,
+                action_type="replay",
+            )
+
+        Thread(target=_run, name=f"readiness-replay-{action_id}", daemon=True).start()
+        return {"accepted": True, "action_id": action_id, "plan": plan}
 
     @app.get("/api/events/stream")
     async def stream_events(request: FastAPIRequest, after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):

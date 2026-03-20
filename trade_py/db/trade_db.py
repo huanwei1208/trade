@@ -487,6 +487,30 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             CREATE INDEX IF NOT EXISTS idx_ui_snapshots_expiry
                 ON ui_snapshots(expires_at);
 
+            CREATE TABLE IF NOT EXISTS readiness_recovery_actions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset             TEXT NOT NULL,
+                date_from           TEXT NOT NULL,
+                date_to             TEXT NOT NULL,
+                action_type         TEXT NOT NULL,
+                mode                TEXT NOT NULL,
+                status              TEXT NOT NULL DEFAULT 'queued',
+                requested_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                job_names_json      TEXT,
+                affected_outputs_json TEXT,
+                request_json        TEXT,
+                result_json         TEXT,
+                summary             TEXT,
+                error               TEXT,
+                fingerprint_before  TEXT,
+                fingerprint_after   TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_recovery_actions_dataset
+                ON readiness_recovery_actions(dataset, date_from, date_to);
+            CREATE INDEX IF NOT EXISTS idx_recovery_actions_status
+                ON readiness_recovery_actions(status, requested_at DESC);
+
             -- CFG: pipeline_dag
             CREATE TABLE IF NOT EXISTS pipeline_dag (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,

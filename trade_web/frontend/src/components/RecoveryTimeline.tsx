@@ -22,7 +22,11 @@ export function RecoveryTimeline({ items = [] }: RecoveryTimelineProps) {
           <div className="recovery-timeline__body">
             <div className="recovery-timeline__head">
               <strong>{item.action || t("common.noDetail")}</strong>
-              <StatusPill label={item.error ? "Error" : "OK"} tone={item.error ? "err" : "ok"} subtle />
+              <StatusPill
+                label={item.error ? t("queue.error") : item.status === "running" ? t("queue.running") : item.status === "queued" ? t("queue.queued") : t("queue.ok")}
+                tone={item.error ? "err" : item.status === "running" || item.status === "queued" ? "info" : "ok"}
+                subtle
+              />
             </div>
             <div className="recovery-timeline__copy">
               {[item.reason_code, item.api_calls_actual ? `api=${item.api_calls_actual}` : "", item.duration_ms ? `${item.duration_ms}ms` : ""]

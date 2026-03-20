@@ -28,6 +28,21 @@ class JobDef:
     tags: list[str] = field(default_factory=list)
 
 
+def _iter_target_dates(date_from: str | None = None, date_to: str | None = None) -> list[str]:
+    if not date_from and not date_to:
+        return [date.today().isoformat()]
+    start_day = date.fromisoformat((date_from or date_to or date.today().isoformat())[:10])
+    end_day = date.fromisoformat((date_to or date_from or date.today().isoformat())[:10])
+    if end_day < start_day:
+        start_day, end_day = end_day, start_day
+    days: list[str] = []
+    cursor = start_day
+    while cursor <= end_day:
+        days.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return days
+
+
 # ── FETCH jobs ─────────────────────────────────────────────────────────────────
 
 def _job_sentiment_pipeline(data_root: str, config: dict | None = None) -> str:
@@ -170,7 +185,8 @@ def _job_market_index(data_root: str, config: dict | None = None) -> str:
     return "指数/板块日线同步完成"
 
 
-def _job_fund_flow(data_root: str, config: dict | None = None) -> str:
+def _job_fund_flow(data_root: str, config: dict | None = None,
+                   date_from: str | None = None, date_to: str | None = None) -> str:
     from trade_py.data.market.fund_flow import FundFlowFetcher
     from trade_py.db.trade_db import TradeDB
 
@@ -179,8 +195,11 @@ def _job_fund_flow(data_root: str, config: dict | None = None) -> str:
     watchlist = db.watchlist_get()
     symbols = watchlist or db.get_all_symbols()[:50]
     logger.info("Updating fund flow for %d symbols", len(symbols))
-    fetcher.fetch_batch(symbols)
-    return f"资金流向: {len(symbols)} symbols"
+    summary = fetcher.fetch_batch(symbols, start_date=date_from, end_date=date_to)
+    return (
+        f"资金流向: {len(symbols)} symbols "
+        f"mode={summary.get('mode')} saved={summary.get('saved_symbols')} api_calls={summary.get('api_calls')}"
+    )
 
 
 def _job_northbound(data_root: str, config: dict | None = None) -> str:
@@ -190,15 +209,19 @@ def _job_northbound(data_root: str, config: dict | None = None) -> str:
     return f"北向资金同步: {len(df)} 行"
 
 
-def _job_fundamental(data_root: str, config: dict | None = None) -> str:
+def _job_fundamental(data_root: str, config: dict | None = None,
+                     date_from: str | None = None, date_to: str | None = None) -> str:
     from trade_py.data.market.fundamental import FundamentalFetcher
     from trade_py.db.trade_db import TradeDB
 
     db = TradeDB(data_root)
     symbols = db.get_all_symbols()
     fetcher = FundamentalFetcher(data_root)
-    fetcher.fetch_batch(symbols)
-    return f"基本面数据同步: {len(symbols)} symbols"
+    summary = fetcher.fetch_batch(symbols, start_date=date_from)
+    return (
+        f"基本面数据同步: {len(symbols)} symbols "
+        f"mode={summary.get('mode')} saved={summary.get('saved_symbols')} api_calls={summary.get('api_calls')}"
+    )
 
 
 def _job_macro(data_root: str, config: dict | None = None) -> str:
@@ -222,10 +245,15 @@ def _job_sector_refresh(data_root: str, config: dict | None = None) -> str:
 
 # ── COMPUTE jobs ───────────────────────────────────────────────────────────────
 
-def _job_window_score(data_root: str, config: dict | None = None) -> str:
+def _job_window_score(data_root: str, config: dict | None = None,
+                      date_from: str | None = None, date_to: str | None = None) -> str:
     from trade_py.signals.window_scorer import score_universe
-    scores = score_universe(data_root)
-    return f"全市场评分完成: {len(scores)} symbols"
+    days = _iter_target_dates(date_from, date_to)
+    total_scored = 0
+    for day_str in days:
+        scores = score_universe(data_root, date_str=day_str)
+        total_scored = max(total_scored, len(scores))
+    return f"全市场评分完成: dates={len(days)} latest_symbols={total_scored}"
 
 
 def _job_event_pipeline(data_root: str, config: dict | None = None,
@@ -244,15 +272,19 @@ def _job_event_backfill(data_root: str, config: dict | None = None) -> str:
     return backfill_events(data_root)
 
 
-def _job_evaluate_daily(data_root: str, config: dict | None = None) -> str:
+def _job_evaluate_daily(data_root: str, config: dict | None = None,
+                        date_from: str | None = None, date_to: str | None = None) -> str:
     from trade_py.evaluation.service import evaluate_daily
 
-    outcome = evaluate_daily(
-        data_root,
-        eval_date=date.today().isoformat(),
-        use_cache=False,
-    )
-    return outcome.summary
+    summaries: list[str] = []
+    for day_str in _iter_target_dates(date_from, date_to):
+        outcome = evaluate_daily(
+            data_root,
+            eval_date=day_str,
+            use_cache=False,
+        )
+        summaries.append(outcome.summary)
+    return summaries[-1] if summaries else "日常全链路评估未执行"
 
 
 def _job_build_features(data_root: str, config: dict | None = None) -> str:
@@ -411,23 +443,32 @@ def _job_influence_score(data_root: str, config: dict | None = None) -> str:
     return f"信源影响力评分完成: {len(scores)} 个信源"
 
 
-def _job_belief_update(data_root: str, config: dict | None = None) -> str:
+def _job_belief_update(data_root: str, config: dict | None = None,
+                       date_from: str | None = None, date_to: str | None = None) -> str:
     """Run BeliefEngine: compute attention + residual update → BeliefState."""
     from trade_py.engine import update_belief
-    today = date.today().isoformat()
-    result = update_belief(today, data_root)
-    updated = result.get("symbols_updated", 0)
-    errors = result.get("errors", 0)
-    return f"信念更新完成: {updated} 个标的, errors={errors}"
+    total_updated = 0
+    total_errors = 0
+    days = _iter_target_dates(date_from, date_to)
+    for day_str in days:
+        result = update_belief(day_str, data_root)
+        total_updated += int(result.get("symbols_updated", 0) or 0)
+        total_errors += int(result.get("errors", 0) or 0)
+    return f"信念更新完成: dates={len(days)} symbols={total_updated} errors={total_errors}"
 
 
-def _job_recommend(data_root: str, config: dict | None = None) -> str:
+def _job_recommend(data_root: str, config: dict | None = None,
+                   date_from: str | None = None, date_to: str | None = None) -> str:
     """Produce Recommendation + RecommendationTrace from BeliefState."""
     from trade_py.engine import produce_picks
-    today = date.today().isoformat()
-    recs = produce_picks(today, data_root)
-    buys = sum(1 for r in recs if r.get("action") == "buy")
-    return f"推荐决策完成: {len(recs)} 条, buy={buys}"
+    latest_count = 0
+    latest_adds = 0
+    days = _iter_target_dates(date_from, date_to)
+    for day_str in days:
+        recs = produce_picks(day_str, data_root)
+        latest_count = len(recs)
+        latest_adds = sum(1 for r in recs if str(r.get("action") or "").lower() in {"buy", "add"})
+    return f"推荐决策完成: dates={len(days)} latest={latest_count} add={latest_adds}"
 
 
 def _job_reliability_update(data_root: str, config: dict | None = None) -> str:

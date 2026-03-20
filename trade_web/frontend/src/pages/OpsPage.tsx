@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { BackfillActionPanel } from "../components/BackfillActionPanel";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingSkeleton } from "../components/LoadingSkeleton";
 import { PanelCard } from "../components/PanelCard";
@@ -9,7 +10,7 @@ import { ReadinessSummaryCards } from "../components/ReadinessSummaryCards";
 import { RecoveryTimeline } from "../components/RecoveryTimeline";
 import { SectionHeader } from "../components/SectionHeader";
 import { StatusPill } from "../components/StatusPill";
-import { useApiResource, type DagRuntime, type DataHealthPayload, type EventsPagePayload, type ReadinessCell, type ReadinessGridPayload, type ReadinessRow, type StatusPayload, type TrustOverview, type WorkflowSummary } from "../lib/api";
+import { getReadinessReplayPlan, postReadinessBackfill, postReadinessReplay, useApiResource, type DagRuntime, type EventsPagePayload, type ReadinessCell, type ReadinessGridPayload, type ReadinessRow, type ReplayPlanPayload, type StatusPayload, type TrustOverview, type WorkflowSummary } from "../lib/api";
 import { formatDateTime, formatPercent, shortText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { getDatasetText } from "../lib/statusText";
@@ -27,10 +28,15 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
   const [tab, setTab] = useLocalStorageState<OpsTab>("trade-web:ops-tab", "overview");
   const [readinessDays, setReadinessDays] = useState<30 | 60 | 90>(30);
   const [selectedCellId, setSelectedCellId] = useState("");
+  const [range, setRange] = useState({ dateFrom: "", dateTo: "" });
+  const [recoveryPlan, setRecoveryPlan] = useState<ReplayPlanPayload | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [recoverySuccess, setRecoverySuccess] = useState<string | null>(null);
+  const [pollCount, setPollCount] = useState(0);
 
   const status = useApiResource<StatusPayload>("/api/status", { deps: [refreshToken], cacheKey: "trade-web:status" });
   const runtime = useApiResource<DagRuntime>("/api/dag/runtime", { deps: [refreshToken], cacheKey: "trade-web:dag-runtime" });
-  const dataHealth = useApiResource<DataHealthPayload>("/api/data-health", { deps: [refreshToken], cacheKey: "trade-web:data-health" });
   const trust = useApiResource<TrustOverview>("/api/trust/overview", { deps: [refreshToken], cacheKey: "trade-web:trust-overview" });
   const workflows = useApiResource<WorkflowSummary[]>("/api/workflows", { deps: [refreshToken], cacheKey: "trade-web:workflows" });
   const events = useApiResource<EventsPagePayload>("/api/events-page", { deps: [refreshToken], cacheKey: "trade-web:events-page" });
@@ -50,6 +56,71 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
       setSelectedCellId(fallback.id);
     }
   }, [readiness.data, selectedReadiness.cell]);
+
+  useEffect(() => {
+    if (!selectedReadiness.cell) {
+      return;
+    }
+    setRange({ dateFrom: selectedReadiness.cell.date, dateTo: selectedReadiness.cell.date });
+    setRecoveryPlan(null);
+    setRecoveryError(null);
+    setRecoverySuccess(null);
+  }, [selectedReadiness.cell?.id]);
+
+  useEffect(() => {
+    if (pollCount <= 0) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      readiness.retry();
+      setPollCount((current) => current - 1);
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [pollCount, readiness]);
+
+  const latestRecoveryAt = selectedReadiness.cell?.history?.[0]?.ts || readiness.data?.recovery_history?.[selectedReadiness.row?.dataset || ""]?.[0]?.ts || null;
+
+  async function loadReplayPlan() {
+    if (!selectedReadiness.row) {
+      return;
+    }
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    try {
+      const plan = await getReadinessReplayPlan(selectedReadiness.row.dataset, range.dateFrom || selectedReadiness.cell?.date || "", range.dateTo || range.dateFrom || selectedReadiness.cell?.date || "");
+      setRecoveryPlan(plan);
+    } catch (error) {
+      setRecoveryError(error instanceof Error ? error.message : t("recovery.submitFailed"));
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }
+
+  async function submitRecovery(kind: "backfill" | "replay", mode: "data_only" | "data_plus_downstream" | "full_replay", dateFrom: string, dateTo: string) {
+    if (!selectedReadiness.row) {
+      return;
+    }
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    setRecoverySuccess(null);
+    try {
+      const payload = {
+        dataset: selectedReadiness.row.dataset,
+        date_from: dateFrom,
+        date_to: dateTo,
+        mode,
+      };
+      const response = kind === "backfill" ? await postReadinessBackfill(payload) : await postReadinessReplay(payload);
+      setRecoveryPlan(response.plan);
+      setRecoverySuccess(t("recovery.requestAccepted"));
+      readiness.retry();
+      setPollCount(6);
+    } catch (error) {
+      setRecoveryError(error instanceof Error ? error.message : t("recovery.submitFailed"));
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }
 
   if (status.loading && !status.data) {
     return <LoadingSkeleton variant="ops" />;
@@ -170,7 +241,31 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
                     onSelect={(row, cell) => setSelectedCellId(cell.id)}
                   />
                 </PanelCard>
-                <ReadinessInspector row={selectedReadiness.row} cell={selectedReadiness.cell} />
+                <ReadinessInspector
+                  row={selectedReadiness.row}
+                  cell={selectedReadiness.cell}
+                  actions={
+                    selectedReadiness.row && selectedReadiness.cell ? (
+                      <BackfillActionPanel
+                        dataset={selectedReadiness.row.dataset}
+                        selectedDate={selectedReadiness.cell.date}
+                        rangeFrom={range.dateFrom}
+                        rangeTo={range.dateTo}
+                        plan={recoveryPlan}
+                        loading={recoveryBusy}
+                        error={recoveryError}
+                        successMessage={recoverySuccess}
+                        lastActionAt={latestRecoveryAt}
+                        onChangeRange={setRange}
+                        onBackfillDay={() => submitRecovery("backfill", "data_only", selectedReadiness.cell?.date || "", selectedReadiness.cell?.date || "")}
+                        onBackfillRange={() => submitRecovery("backfill", "data_only", range.dateFrom, range.dateTo)}
+                        onReplayDownstream={() => submitRecovery("replay", "data_plus_downstream", range.dateFrom, range.dateTo)}
+                        onReplayFullChain={() => submitRecovery("replay", "full_replay", range.dateFrom, range.dateTo)}
+                        onDryRun={loadReplayPlan}
+                      />
+                    ) : null
+                  }
+                />
               </div>
             </>
           ) : (
@@ -218,7 +313,31 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
               </PanelCard>
             </div>
           </PanelCard>
-          <ReadinessInspector row={selectedReadiness.row} cell={selectedReadiness.cell} />
+          <ReadinessInspector
+            row={selectedReadiness.row}
+            cell={selectedReadiness.cell}
+            actions={
+              selectedReadiness.row && selectedReadiness.cell ? (
+                <BackfillActionPanel
+                  dataset={selectedReadiness.row.dataset}
+                  selectedDate={selectedReadiness.cell.date}
+                  rangeFrom={range.dateFrom}
+                  rangeTo={range.dateTo}
+                  plan={recoveryPlan}
+                  loading={recoveryBusy}
+                  error={recoveryError}
+                  successMessage={recoverySuccess}
+                  lastActionAt={latestRecoveryAt}
+                  onChangeRange={setRange}
+                  onBackfillDay={() => submitRecovery("backfill", "data_only", selectedReadiness.cell?.date || "", selectedReadiness.cell?.date || "")}
+                  onBackfillRange={() => submitRecovery("backfill", "data_only", range.dateFrom, range.dateTo)}
+                  onReplayDownstream={() => submitRecovery("replay", "data_plus_downstream", range.dateFrom, range.dateTo)}
+                  onReplayFullChain={() => submitRecovery("replay", "full_replay", range.dateFrom, range.dateTo)}
+                  onDryRun={loadReplayPlan}
+                />
+              ) : null
+            }
+          />
         </div>
       )}
 
