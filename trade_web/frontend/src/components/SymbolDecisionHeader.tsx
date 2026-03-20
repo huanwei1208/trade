@@ -12,9 +12,11 @@ type SymbolDecisionHeaderProps = {
   explanation?: DecisionExplanation | null;
   state?: WorldState | null;
   onBack: () => void;
+  onOpenReadiness: () => void;
+  onOpenRecovery: () => void;
 };
 
-export function SymbolDecisionHeader({ symbol, kline, explanation, state, onBack }: SymbolDecisionHeaderProps) {
+export function SymbolDecisionHeader({ symbol, kline, explanation, state, onBack, onOpenReadiness, onOpenRecovery }: SymbolDecisionHeaderProps) {
   const { locale, t } = useI18n();
   const conclusionMode = getConclusionModeText(locale, {
     global_blocked: Boolean(state?.blockers?.length || explanation?.warnings?.length || explanation?.input_warnings?.length),
@@ -54,6 +56,14 @@ export function SymbolDecisionHeader({ symbol, kline, explanation, state, onBack
           <StatusPill label={`${t("symbol.chartReadiness")} · ${chartReadiness.label}`} tone={chartReadiness.tone} subtle />
           <StatusPill label={`${t("symbol.modelInputs")} · ${modelInputReadiness.label}`} tone={modelInputReadiness.tone} subtle />
           <StatusPill label={`${t("symbol.conclusionMode")} · ${conclusionMode.label}`} tone={conclusionMode.tone} subtle />
+        </div>
+        <div className="symbol-header__actions">
+          <button type="button" className="button button--ghost" onClick={onOpenReadiness}>
+            {t("symbol.inspectDayReadiness")}
+          </button>
+          <button type="button" className="button button--ghost" onClick={onOpenRecovery}>
+            {t("symbol.openRecovery")}
+          </button>
         </div>
         <div className="symbol-header__invalidators">
           {(explanation?.invalidators || []).slice(0, 3).map((item) => (

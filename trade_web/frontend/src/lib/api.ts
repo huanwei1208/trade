@@ -343,6 +343,21 @@ export type ReadinessHistoryPayload = {
   }>;
 };
 
+export type ReadinessChangePayload = {
+  dataset: string;
+  date_from: string;
+  date_to: string;
+  items: Array<{
+    dataset: string;
+    date: string;
+    current_fingerprint?: string | null;
+    previous_fingerprint?: string | null;
+    changed: boolean;
+    last_action_id?: number | null;
+    last_action_status?: string | null;
+  }>;
+};
+
 export type EventsPagePayload = {
   as_of?: string;
   workflows?: WorkflowSummary[];
@@ -607,6 +622,14 @@ export function postReadinessBackfill(payload: { dataset: string; date_from: str
 
 export function postReadinessReplay(payload: { dataset: string; date_from: string; date_to: string; mode: "data_only" | "data_plus_downstream" | "full_replay" }) {
   return fetchJson<ReadinessActionResponse>("/api/readiness/replay", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function postReadinessDetectChanges(payload: { dataset: string; date_from: string; date_to: string }) {
+  return fetchJson<ReadinessChangePayload>("/api/readiness/detect-changes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

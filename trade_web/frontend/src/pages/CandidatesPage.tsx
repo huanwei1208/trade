@@ -16,13 +16,14 @@ type CandidatesPageProps = {
   refreshToken: number;
   onOpenSymbol: (symbol: string) => void;
   onOpenOps: () => void;
+  onOpenOpsFocus: (focus: { tab: "readiness" | "recovery"; date?: string; dataset?: string }) => void;
 };
 
 type ActionFilter = "ALL" | "ADD" | "PROBE" | "WATCH" | "NO_ACTION";
 type TrustFilter = "ALL" | "HIGH" | "MEDIUM" | "LOW";
 type AvailabilityFilter = "ACTIONABLE_ONLY" | "INCLUDE_BLOCKED";
 
-export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps }: CandidatesPageProps) {
+export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps, onOpenOpsFocus }: CandidatesPageProps) {
   const { t } = useI18n();
   const resource = useApiResource<SignalsPageData>("/api/signals-page", {
     deps: [refreshToken],
@@ -104,6 +105,13 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps }: Candid
         <div className="page-banner page-banner--muted">
           <strong>{t("candidates.browseOnly")}</strong>
           <span>{t("candidates.globalConstraint")}</span>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => onOpenOpsFocus({ tab: "readiness", date: resource.data?.as_of, dataset: "signals" })}
+          >
+            {t("common.openReadiness")}
+          </button>
         </div>
       )}
 
@@ -176,6 +184,8 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps }: Candid
             onRetry={explainResource.retry}
             onOpenSymbol={onOpenSymbol}
             onOpenOps={onOpenOps}
+            onOpenReadiness={() => onOpenOpsFocus({ tab: "readiness", date: resource.data?.as_of, dataset: "signals" })}
+            onOpenRecovery={() => onOpenOpsFocus({ tab: "recovery", date: resource.data?.as_of, dataset: "signals" })}
           />
         </div>
       </div>

@@ -19,6 +19,8 @@ type CandidateQuickPanelProps = {
   onRetry: () => void;
   onOpenSymbol: (symbol: string) => void;
   onOpenOps: () => void;
+  onOpenReadiness: () => void;
+  onOpenRecovery: () => void;
 };
 
 export function CandidateQuickPanel({
@@ -30,6 +32,8 @@ export function CandidateQuickPanel({
   onRetry,
   onOpenSymbol,
   onOpenOps,
+  onOpenReadiness,
+  onOpenRecovery,
 }: CandidateQuickPanelProps) {
   const { locale, t } = useI18n();
   const constrainedNoAction = String(candidate?.action || explanation?.action || "").toUpperCase() === "NO_ACTION";
@@ -136,9 +140,17 @@ export function CandidateQuickPanel({
         <button type="button" className="button button--primary" onClick={() => candidate.symbol && onOpenSymbol(candidate.symbol)}>
           {t("common.openWorkspace")}
         </button>
-        <button type="button" className="button button--ghost" onClick={onOpenOps}>
-          {t("common.openOps")}
-        </button>
+        <div className="candidate-quick-panel__footer-actions">
+          <button type="button" className="button button--ghost" onClick={onOpenReadiness}>
+            {t("common.openReadiness")}
+          </button>
+          <button type="button" className="button button--ghost" onClick={onOpenRecovery}>
+            {t("common.openRecovery")}
+          </button>
+          <button type="button" className="button button--ghost" onClick={onOpenOps}>
+            {t("common.openOps")}
+          </button>
+        </div>
       </div>
     </PanelCard>
   );

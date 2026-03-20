@@ -19,9 +19,10 @@ import { getTodayCall, isActionable } from "../lib/ui";
 type TodayPageProps = {
   refreshToken: number;
   onOpenSymbol: (symbol: string) => void;
+  onOpenOpsFocus: (focus: { tab: "readiness" | "recovery"; date?: string; dataset?: string }) => void;
 };
 
-export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
+export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus }: TodayPageProps) {
   const { locale, t } = useI18n();
   const todayResource = useApiResource<TodayPageData>("/api/today-page", {
     deps: [refreshToken],
@@ -64,7 +65,15 @@ export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
 
   return (
     <div className="page-stack page-today">
-      <DecisionHero today={today} todayCall={todayCall} />
+      <DecisionHero
+        today={today}
+        todayCall={todayCall}
+        onOpenReadiness={() => onOpenOpsFocus({
+          tab: "readiness",
+          date: today.as_of,
+          dataset: today.blocker_details?.[0]?.dataset || "signals",
+        })}
+      />
 
       {todayResource.error && todayResource.data && (
         <RetryInline message={t("today.showingStale")} onRetry={todayResource.retry} />
@@ -104,6 +113,17 @@ export function TodayPage({ refreshToken, onOpenSymbol }: TodayPageProps) {
                 </span>
               ))}
             </div>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={() => onOpenOpsFocus({
+                tab: "readiness",
+                date: today.as_of,
+                dataset: today.blocker_details?.[0]?.dataset || "signals",
+              })}
+            >
+              {t("common.openReadiness")}
+            </button>
           </PanelCard>
         )}
       </section>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -90,6 +91,19 @@ def _to_datetime(value: Any) -> datetime | None:
 def _daterange(end_day: date, days: int) -> list[date]:
     start_day = end_day - timedelta(days=max(0, days - 1))
     return [start_day + timedelta(days=offset) for offset in range(days)]
+
+
+def _iter_day_strings(date_from: str, date_to: str) -> list[str]:
+    start_day = _to_date(date_from) or date.today()
+    end_day = _to_date(date_to) or start_day
+    if end_day < start_day:
+        start_day, end_day = end_day, start_day
+    values: list[str] = []
+    cursor = start_day
+    while cursor <= end_day:
+        values.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return values
 
 
 def _coverage_status(coverage_pct: float | None, *, lag_days: int | None = None, exists: bool | None = None) -> str:
@@ -409,6 +423,22 @@ def _signal_expected_count(signal_counts: dict[str, int], total_symbols: int) ->
     return max(max_signal, total_symbols, 1)
 
 
+def _hash_cell_snapshot(dataset: str, day: str, cell: dict[str, Any], base_fingerprint: str | None = None) -> str:
+    raw = {
+        "dataset": dataset,
+        "day": day,
+        "status": cell.get("status"),
+        "row_count": cell.get("row_count"),
+        "expected_count": cell.get("expected_count"),
+        "coverage_pct": cell.get("coverage_pct"),
+        "lag_days": cell.get("lag_days"),
+        "source_last_date": cell.get("source_last_date"),
+        "reason_codes": cell.get("reason_codes"),
+        "base_fingerprint": base_fingerprint,
+    }
+    return hashlib.sha1(json.dumps(raw, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def _action_history_summary(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for row in history[:5]:
@@ -465,6 +495,7 @@ def build_readiness_grid(
     days: int = 30,
     end_date: str | None = None,
     datasets: list[str] | None = None,
+    include_actions: bool = True,
 ) -> dict[str, Any]:
     end_day = _to_date(end_date) or date.today()
     day_list = _daterange(end_day, max(1, min(days, 90)))
@@ -508,7 +539,7 @@ def build_readiness_grid(
     signal_expected = _signal_expected_count(signal_counts, total_symbols)
     belief_expected = max(max(belief_counts.values()) if belief_counts else 0, 1)
     recommendation_expected = max(max(recommendation_counts.values()) if recommendation_counts else 0, 1)
-    recovery_by_cell, recovery_by_dataset = _collect_recovery_actions(db, date_from, date_to)
+    recovery_by_cell, recovery_by_dataset = _collect_recovery_actions(db, date_from, date_to) if include_actions else ({}, {})
 
     rows: list[dict[str, Any]] = []
     unstable: list[tuple[int, str]] = []
@@ -742,13 +773,24 @@ def build_readiness_grid(
                 if dataset.key in {"fund_flow", "fundamental", "sentiment_gold", "signals", "recommendation"}
                 else None
             )
-            cell["fingerprint"] = fingerprint
+            cell["fingerprint"] = _hash_cell_snapshot(dataset.key, day_iso, cell, fingerprint)
             if recovery_history:
                 latest_action = recovery_history[0]
                 action_status = str(latest_action.get("status") or "")
+                fingerprint_before = str(latest_action.get("fingerprint_before") or "") or None
+                fingerprint_after = str(latest_action.get("fingerprint_after") or "") or None
+                current_fingerprint = str(cell.get("fingerprint") or "") or None
+                changed = bool(
+                    (fingerprint_before and fingerprint_after and fingerprint_before != fingerprint_after)
+                    or (fingerprint_after and current_fingerprint and fingerprint_after != current_fingerprint)
+                )
                 if action_status in {"queued", "running"}:
                     cell["status"] = "REPLAYING"
-                elif action_status == "ok" and str(latest_action.get("action_type") or "") in {"replay", "backfill"}:
+                elif action_status == "ok" and str(latest_action.get("action_type") or "") == "replay":
+                    cell["status"] = "REPLAYED"
+                elif action_status == "ok" and changed:
+                    cell["status"] = "CHANGED"
+                elif action_status == "ok" and str(latest_action.get("action_type") or "") == "backfill" and str(latest_action.get("mode") or "") == "full_replay":
                     cell["status"] = "REPLAYED"
                 elif action_status == "error":
                     cell["status"] = "CHANGED"
@@ -756,7 +798,7 @@ def build_readiness_grid(
                 cell["history"] = action_history = _action_history_summary(recovery_history)
                 if cell_history:
                     cell["history"] = (action_history + _history_summary(cell_history))[:6]
-                cell["changed_since_last_ready"] = bool(action_status in {"error"})
+                cell["changed_since_last_ready"] = bool(action_status in {"error"} or changed)
             elif cell_history:
                 cell["history"] = _history_summary(cell_history)
 
@@ -872,6 +914,60 @@ def build_replay_plan(db, dataset: str, *, date_from: str, date_to: str) -> dict
         "date_from": date_from,
         "date_to": date_to,
         "estimated_duration_ms": sum(avg_durations.get(job_name, 0) for job_name in full_chain),
+    }
+
+
+def compute_readiness_fingerprint(data_root: str | Path, db, *, dataset: str, day: str) -> str | None:
+    payload = build_readiness_grid(
+        data_root,
+        db,
+        days=1,
+        end_date=day,
+        datasets=[dataset],
+        include_actions=False,
+    )
+    row = (payload.get("rows") or [{}])[0]
+    cell = (row.get("cells") or [{}])[0]
+    if not cell:
+        return None
+    return str(cell.get("fingerprint") or "") or None
+
+
+def detect_changed_data(
+    data_root: str | Path,
+    db,
+    *,
+    dataset: str,
+    date_from: str,
+    date_to: str,
+) -> dict[str, Any]:
+    history = list_recovery_history(db, dataset=dataset, limit=200)
+    items: list[dict[str, Any]] = []
+    for day_str in _iter_day_strings(date_from, date_to):
+        current_fingerprint = compute_readiness_fingerprint(data_root, db, dataset=dataset, day=day_str)
+        latest_ok = next(
+            (
+                item for item in history
+                if item.get("status") == "ok"
+                and str(item.get("date_from") or "") <= day_str <= str(item.get("date_to") or "")
+            ),
+            None,
+        )
+        previous_fingerprint = str((latest_ok or {}).get("fingerprint_after") or "") or None
+        items.append({
+            "dataset": dataset,
+            "date": day_str,
+            "current_fingerprint": current_fingerprint,
+            "previous_fingerprint": previous_fingerprint,
+            "changed": bool(previous_fingerprint and current_fingerprint and previous_fingerprint != current_fingerprint),
+            "last_action_id": latest_ok.get("id") if latest_ok else None,
+            "last_action_status": latest_ok.get("status") if latest_ok else None,
+        })
+    return {
+        "dataset": dataset,
+        "date_from": date_from,
+        "date_to": date_to,
+        "items": items,
     }
 
 
@@ -1012,12 +1108,14 @@ def execute_recovery_action(
 
     try:
         if not deduped_jobs:
+            fingerprint_after = compute_readiness_fingerprint(str(data_root), db, dataset=dataset, day=date_to)
             update_recovery_action(
                 db,
                 action_id,
                 status="ok",
                 result_payload={"steps": [], "duration_ms": 0},
                 summary="no-op replay plan",
+                fingerprint_after=fingerprint_after,
             )
             return
 
@@ -1039,12 +1137,14 @@ def execute_recovery_action(
                 summary=summary,
             )
 
+        fingerprint_after = compute_readiness_fingerprint(str(data_root), db, dataset=dataset, day=date_to)
         update_recovery_action(
             db,
             action_id,
             status="ok",
             result_payload={"steps": steps, "duration_ms": int((datetime.utcnow() - started_at).total_seconds() * 1000)},
             summary=steps[-1]["summary"] if steps else "ok",
+            fingerprint_after=fingerprint_after,
         )
     except Exception as exc:
         logger.exception("readiness recovery action %s failed", action_id)

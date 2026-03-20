@@ -12,6 +12,7 @@ type BackfillActionPanelProps = {
   error?: string | null;
   successMessage?: string | null;
   lastActionAt?: string | null;
+  changed?: boolean | null;
   onChangeRange: (next: { dateFrom: string; dateTo: string }) => void;
   onBackfillDay: () => void;
   onBackfillRange: () => void;
@@ -28,6 +29,7 @@ export function BackfillActionPanel({
   error,
   successMessage,
   lastActionAt,
+  changed,
   onChangeRange,
   onBackfillDay,
   onBackfillRange,
@@ -72,6 +74,7 @@ export function BackfillActionPanel({
 
       {error && <div className="note-card note-card--danger">{error}</div>}
       {successMessage && <div className="note-card note-card--warning">{successMessage}</div>}
+      {changed ? <div className="note-card note-card--warning">{t("recovery.changedDetected")}</div> : null}
 
       <div className="readiness-inspector__subtle">
         {t("recovery.lastAction")} {lastActionAt ? formatDateTime(lastActionAt, locale === "zh-CN" ? "zh-CN" : "en-US") : "—"}

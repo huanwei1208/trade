@@ -1,7 +1,7 @@
 # EBRT_08 — Readiness, Recovery, and Auditability Upgrade
 
 **Date**: 2026-03-20
-**Status**: 🔄 In Progress
+**Status**: ✅ Completed
 
 ---
 
@@ -61,11 +61,11 @@ This pass upgrades TradeDB from a strong-looking decision workspace into an audi
 
 ### Phase 4 — changed-data detection + deep-link integration
 
-- [ ] Add backend changed-data detection endpoint / derived state
-- [ ] Surface `changed`, `replaying`, `replayed` in readiness model
-- [ ] Add deep links from Today / Candidates / Symbol into Ops readiness/recovery
-- [ ] Preserve focused date/dataset/tab state through query string and local storage
-- [ ] Final verification and commit Phase 4
+- [x] Add backend changed-data detection endpoint / derived state
+- [x] Surface `changed`, `replaying`, `replayed` in readiness model
+- [x] Add deep links from Today / Candidates / Symbol into Ops readiness/recovery
+- [x] Preserve focused date/dataset/tab state through query string and local storage
+- [x] Final verification and commit Phase 4
 
 ---
 
@@ -135,3 +135,11 @@ Planned additions:
 - Added recovery action panel with dry-run / backfill / replay controls in the Ops inspector
 - Verified `cd trade_web/frontend && npm run build`
 - Verified `python -m compileall trade_web/backend/app.py trade_web/backend/readiness.py trade_py/jobs/__init__.py trade_py/db/trade_db.py`
+- Started Phase 4
+- Added fingerprint-based changed-data detection endpoint and action fingerprints before/after recovery execution
+- Surfaced `changed`, `replaying`, and `replayed` in readiness cell resolution
+- Added App-level deep-link state for `opsTab/date/dataset`
+- Added Today / Candidates / Symbol CTAs that jump directly into focused Ops readiness or recovery context
+- Preserved focused Ops tab + selected dataset/day in local storage and query string
+- Re-verified `cd trade_web/frontend && npm run build`
+- Re-verified `python -m compileall trade_web/backend/app.py trade_web/backend/readiness.py trade_py/jobs/__init__.py trade_py/db/trade_db.py`

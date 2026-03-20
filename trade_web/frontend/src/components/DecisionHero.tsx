@@ -11,9 +11,10 @@ import { TrustBadge } from "./TrustBadge";
 type DecisionHeroProps = {
   today: TodayPageData;
   todayCall: TodayCall;
+  onOpenReadiness?: () => void;
 };
 
-export function DecisionHero({ today, todayCall }: DecisionHeroProps) {
+export function DecisionHero({ today, todayCall, onOpenReadiness }: DecisionHeroProps) {
   const { locale, t } = useI18n();
   const freshnessIssues = today.blocker_details || [];
   const marketRegime = getMarketRegimeText(locale, today.market_regime);
@@ -103,6 +104,13 @@ export function DecisionHero({ today, todayCall }: DecisionHeroProps) {
               <StatusPill key={item} label={item} tone="info" subtle />
             ))}
           </div>
+          {onOpenReadiness && (
+            <div className="decision-hero__actions">
+              <button type="button" className="button button--ghost" onClick={onOpenReadiness}>
+                {t("common.openReadiness")}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

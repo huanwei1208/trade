@@ -18,9 +18,10 @@ type SymbolPageProps = {
   symbol?: string;
   refreshToken: number;
   onBack: () => void;
+  onOpenOpsFocus: (focus: { tab: "readiness" | "recovery"; date?: string; dataset?: string }) => void;
 };
 
-export function SymbolPage({ symbol, refreshToken, onBack }: SymbolPageProps) {
+export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: SymbolPageProps) {
   const { locale, t } = useI18n();
   const [activeEvidenceSource, setActiveEvidenceSource] = useState<string | null>(null);
   const [markerKey, setMarkerKey] = useState<string | null>(null);
@@ -66,7 +67,23 @@ export function SymbolPage({ symbol, refreshToken, onBack }: SymbolPageProps) {
 
   return (
     <div className="page-stack page-symbol">
-      <SymbolDecisionHeader symbol={symbol} kline={klineResource.data} explanation={explanation} state={stateResource.data} onBack={onBack} />
+      <SymbolDecisionHeader
+        symbol={symbol}
+        kline={klineResource.data}
+        explanation={explanation}
+        state={stateResource.data}
+        onBack={onBack}
+        onOpenReadiness={() => onOpenOpsFocus({
+          tab: "readiness",
+          date: explanation?.as_of || klineResource.data?.as_of || stateResource.data?.as_of_date,
+          dataset: klineResource.data?.ohlcv?.length ? "signals" : "kline",
+        })}
+        onOpenRecovery={() => onOpenOpsFocus({
+          tab: "recovery",
+          date: explanation?.as_of || klineResource.data?.as_of || stateResource.data?.as_of_date,
+          dataset: klineResource.data?.ohlcv?.length ? "signals" : "kline",
+        })}
+      />
 
       <div className="symbol-layout">
         <div className="symbol-layout__chart">

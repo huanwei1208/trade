@@ -719,6 +719,14 @@
   margin-top: var(--space-4);
 }
 
+.candidate-quick-panel__footer-actions,
+.symbol-header__actions,
+.decision-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .candidate-quick-panel__label,
 .symbol-chart__footer-label,
 .explanation-rail__section-title {
@@ -1092,5 +1100,11 @@
   .timeline-list__row,
   .today-blocker-card__item {
     flex-direction: column;
+  }
+
+  .candidate-quick-panel__footer-actions,
+  .symbol-header__actions,
+  .decision-hero__actions {
+    width: 100%;
   }
 }

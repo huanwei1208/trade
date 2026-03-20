@@ -146,7 +146,9 @@ def create_app():
     from trade_web.backend.readiness import (
         build_readiness_grid,
         build_replay_plan,
+        compute_readiness_fingerprint,
         create_recovery_action,
+        detect_changed_data,
         execute_recovery_action,
         list_recovery_history,
     )
@@ -1588,6 +1590,17 @@ def create_app():
             "items": list_recovery_history(_db(), dataset=dataset.strip() if dataset else None, date=date, limit=limit),
         }
 
+    @app.post("/api/readiness/detect-changes")
+    async def post_readiness_detect_changes(req: dict = Body(...)):
+        dataset = str(req.get("dataset") or "").strip()
+        if not dataset:
+            raise HTTPException(status_code=400, detail="dataset is required")
+        date_from = str(req.get("date_from") or req.get("date") or "").strip()
+        date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
+        if not date_from:
+            raise HTTPException(status_code=400, detail="date_from is required")
+        return detect_changed_data(data_root, _db(), dataset=dataset, date_from=date_from, date_to=date_to)
+
     @app.post("/api/readiness/backfill")
     async def post_readiness_backfill(req: dict = Body(...)):
         dataset = str(req.get("dataset") or "").strip()
@@ -1602,6 +1615,7 @@ def create_app():
             raise HTTPException(status_code=400, detail="date_from is required")
         db = _db()
         plan = build_replay_plan(db, dataset, date_from=date_from, date_to=date_to)
+        fingerprint_before = compute_readiness_fingerprint(data_root, db, dataset=dataset, day=date_to)
         job_names = [plan.get("job_name")] if plan.get("job_name") else []
         if mode in {"data_plus_downstream", "full_replay"}:
             job_names.extend(str(item.get("job_name") or "") for item in plan.get("downstream_nodes", []))
@@ -1617,6 +1631,7 @@ def create_app():
             job_names=[job for job in job_names if job],
             affected_outputs=list(plan.get("affected_outputs") or []),
             request_payload=req,
+            fingerprint_before=fingerprint_before,
         )
 
         def _run() -> None:
@@ -1648,6 +1663,7 @@ def create_app():
             raise HTTPException(status_code=400, detail="date_from is required")
         db = _db()
         plan = build_replay_plan(db, dataset, date_from=date_from, date_to=date_to)
+        fingerprint_before = compute_readiness_fingerprint(data_root, db, dataset=dataset, day=date_to)
         action_id = create_recovery_action(
             db,
             dataset=dataset,
@@ -1658,6 +1674,7 @@ def create_app():
             job_names=[str(item.get("job_name") or "") for item in plan.get("downstream_nodes", [])],
             affected_outputs=list(plan.get("affected_outputs") or []),
             request_payload=req,
+            fingerprint_before=fingerprint_before,
         )
 
         def _run() -> None:

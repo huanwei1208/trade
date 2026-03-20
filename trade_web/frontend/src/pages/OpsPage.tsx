@@ -10,7 +10,7 @@ import { ReadinessSummaryCards } from "../components/ReadinessSummaryCards";
 import { RecoveryTimeline } from "../components/RecoveryTimeline";
 import { SectionHeader } from "../components/SectionHeader";
 import { StatusPill } from "../components/StatusPill";
-import { getReadinessReplayPlan, postReadinessBackfill, postReadinessReplay, useApiResource, type DagRuntime, type EventsPagePayload, type ReadinessCell, type ReadinessGridPayload, type ReadinessRow, type ReplayPlanPayload, type StatusPayload, type TrustOverview, type WorkflowSummary } from "../lib/api";
+import { getReadinessReplayPlan, postReadinessBackfill, postReadinessDetectChanges, postReadinessReplay, useApiResource, type DagRuntime, type EventsPagePayload, type ReadinessCell, type ReadinessGridPayload, type ReadinessRow, type ReplayPlanPayload, type StatusPayload, type TrustOverview, type WorkflowSummary } from "../lib/api";
 import { formatDateTime, formatPercent, shortText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { getDatasetText } from "../lib/statusText";
@@ -19,11 +19,17 @@ import { useLocalStorageState } from "../lib/ui";
 
 type OpsPageProps = {
   refreshToken: number;
+  focus?: {
+    tab?: OpsTab;
+    date?: string;
+    dataset?: string;
+  };
+  onFocusChange?: (focus: { tab?: OpsTab; date?: string; dataset?: string }) => void;
 };
 
 type OpsTab = "overview" | "readiness" | "recovery" | "pipeline" | "trust" | "workflows";
 
-export function OpsPage({ refreshToken }: OpsPageProps) {
+export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   const { locale, t } = useI18n();
   const [tab, setTab] = useLocalStorageState<OpsTab>("trade-web:ops-tab", "overview");
   const [readinessDays, setReadinessDays] = useState<30 | 60 | 90>(30);
@@ -33,6 +39,7 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [recoverySuccess, setRecoverySuccess] = useState<string | null>(null);
+  const [changeDetected, setChangeDetected] = useState<boolean | null>(null);
   const [pollCount, setPollCount] = useState(0);
 
   const status = useApiResource<StatusPayload>("/api/status", { deps: [refreshToken], cacheKey: "trade-web:status" });
@@ -58,6 +65,24 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
   }, [readiness.data, selectedReadiness.cell]);
 
   useEffect(() => {
+    if (!focus?.tab) {
+      return;
+    }
+    setTab(focus.tab);
+  }, [focus?.tab, setTab]);
+
+  useEffect(() => {
+    if (!focus?.dataset || !focus?.date || !readiness.data?.rows?.length) {
+      return;
+    }
+    const targetRow = readiness.data.rows.find((row) => row.dataset === focus.dataset);
+    const targetCell = targetRow?.cells.find((cell) => cell.date === focus.date);
+    if (targetCell && targetCell.id !== selectedCellId) {
+      setSelectedCellId(targetCell.id);
+    }
+  }, [focus?.dataset, focus?.date, readiness.data, selectedCellId]);
+
+  useEffect(() => {
     if (!selectedReadiness.cell) {
       return;
     }
@@ -65,6 +90,7 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
     setRecoveryPlan(null);
     setRecoveryError(null);
     setRecoverySuccess(null);
+    setChangeDetected(null);
   }, [selectedReadiness.cell?.id]);
 
   useEffect(() => {
@@ -77,6 +103,43 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
     }, 2000);
     return () => window.clearTimeout(timer);
   }, [pollCount, readiness]);
+
+  useEffect(() => {
+    if (!selectedReadiness.row || !range.dateFrom || !range.dateTo) {
+      return;
+    }
+    let cancelled = false;
+    postReadinessDetectChanges({
+      dataset: selectedReadiness.row.dataset,
+      date_from: range.dateFrom,
+      date_to: range.dateTo,
+    })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setChangeDetected(Boolean(payload.items?.some((item) => item.changed)));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setChangeDetected(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedReadiness.row, range.dateFrom, range.dateTo]);
+
+  useEffect(() => {
+    if (!selectedReadiness.row || !selectedReadiness.cell || !onFocusChange) {
+      return;
+    }
+    onFocusChange({
+      tab,
+      date: selectedReadiness.cell.date,
+      dataset: selectedReadiness.row.dataset,
+    });
+  }, [tab, selectedReadiness.row, selectedReadiness.cell, onFocusChange]);
 
   const latestRecoveryAt = selectedReadiness.cell?.history?.[0]?.ts || readiness.data?.recovery_history?.[selectedReadiness.row?.dataset || ""]?.[0]?.ts || null;
 
@@ -256,6 +319,7 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
                         error={recoveryError}
                         successMessage={recoverySuccess}
                         lastActionAt={latestRecoveryAt}
+                        changed={changeDetected}
                         onChangeRange={setRange}
                         onBackfillDay={() => submitRecovery("backfill", "data_only", selectedReadiness.cell?.date || "", selectedReadiness.cell?.date || "")}
                         onBackfillRange={() => submitRecovery("backfill", "data_only", range.dateFrom, range.dateTo)}
@@ -328,6 +392,7 @@ export function OpsPage({ refreshToken }: OpsPageProps) {
                   error={recoveryError}
                   successMessage={recoverySuccess}
                   lastActionAt={latestRecoveryAt}
+                  changed={changeDetected}
                   onChangeRange={setRange}
                   onBackfillDay={() => submitRecovery("backfill", "data_only", selectedReadiness.cell?.date || "", selectedReadiness.cell?.date || "")}
                   onBackfillRange={() => submitRecovery("backfill", "data_only", range.dateFrom, range.dateTo)}
