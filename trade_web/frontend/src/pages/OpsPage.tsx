@@ -80,10 +80,13 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     }
     const targetRow = readiness.data.rows.find((row) => row.dataset === focus.dataset);
     const targetCell = targetRow?.cells.find((cell) => cell.date === focus.date);
-    if (targetCell && targetCell.id !== selectedCellId) {
+    // Only override selection when an external navigation request changes focus.
+    // Do NOT include selectedCellId in deps — that would fight user cell clicks.
+    if (targetCell) {
       setSelectedCellId(targetCell.id);
     }
-  }, [focus?.dataset, focus?.date, readiness.data, selectedCellId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.dataset, focus?.date, readiness.data]);
 
   useEffect(() => {
     if (!selectedReadiness.cell) {
@@ -113,32 +116,25 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   }, [pollCount]);
 
   useEffect(() => {
-    const isDefaultSingleDayRange = selectedDate && range.dateFrom === selectedDate && range.dateTo === selectedDate;
-    const shouldCheckChanges = Boolean(selectedDataset && range.dateFrom && range.dateTo && (tab === "recovery" || !isDefaultSingleDayRange));
-    if (!selectedDataset || !range.dateFrom || !range.dateTo || !shouldCheckChanges) {
+    const isDefaultSingleDayRange = Boolean(selectedDate && range.dateFrom === selectedDate && range.dateTo === selectedDate);
+    if (!selectedDataset || !range.dateFrom || !range.dateTo || isDefaultSingleDayRange) {
       return;
     }
-    let cancelled = false;
-    postReadinessDetectChanges({
-      dataset: selectedDataset,
-      date_from: range.dateFrom,
-      date_to: range.dateTo,
-    })
-      .then((payload) => {
-        if (cancelled) {
-          return;
-        }
-        setChangeDetected(Boolean(payload.items?.some((item) => item.changed)));
+    const timer = window.setTimeout(() => {
+      postReadinessDetectChanges({
+        dataset: selectedDataset,
+        date_from: range.dateFrom,
+        date_to: range.dateTo,
       })
-      .catch(() => {
-        if (!cancelled) {
+        .then((payload) => {
+          setChangeDetected(Boolean(payload.items?.some((item) => item.changed)));
+        })
+        .catch(() => {
           setChangeDetected(null);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedDataset, selectedDate, range.dateFrom, range.dateTo, tab]);
+        });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [selectedDataset, selectedDate, range.dateFrom, range.dateTo]);
 
   useEffect(() => {
     if (!selectedDataset || !selectedDate || !onFocusChange) {
