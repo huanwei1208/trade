@@ -23,6 +23,7 @@ Routes:
   GET  /api/today-page           → market snapshot + pipeline health + trust_gate + top 5 picks
   GET  /api/signals-page         → top 50 picks with belief delta + top evidence (EBRT)
   GET  /api/belief/{symbol}      → BeliefState history + top AttentionScores (EBRT)
+  GET  /api/belief-graph/{symbol} → Layered belief structure (final/sub-beliefs/factors/history)
   GET  /api/kline/{symbol}       → OHLCV + indicators + event markers + belief_overlay (EBRT)
   GET  /api/state/{symbol}       → WorldState (regime labels, blockers, signals)
   GET  /api/explain/{symbol}     → DecisionExplanation (4-layer, unified)
@@ -1841,7 +1842,7 @@ def create_app():
             raise HTTPException(status_code=400, detail="symbol required")
 
         db = _db()
-        today = date.today().isoformat()
+        today = _current_asof(db)
 
         # Belief history (last N days)
         history: list[dict] = []
@@ -2096,6 +2097,213 @@ def create_app():
             "trust_scalar":  latest.get("trust_scalar"),
             "coverage":      latest.get("coverage"),
             "trend":         trend,
+        }
+
+    # ── API: belief-graph/{symbol} ────────────────────────────────────────────
+
+    @app.get("/api/belief-graph/{symbol}")
+    async def get_belief_graph(symbol: str, days: int = 30):
+        """Return layered belief structure for the Symbol Belief workspace tab.
+
+        Composes from:
+          - Belief history (existing /api/belief data)
+          - Trust components from DecisionExplanation
+          - Top attention scores as factor nodes
+          - Provenance edges connecting factors to sub-beliefs
+        """
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+
+        db = _db()
+        today = _current_asof(db)
+        from datetime import timedelta as _td
+
+        # ── 1. Belief history ─────────────────────────────────────────────────
+        history: list[dict] = []
+        try:
+            cur = date.today()
+            for _ in range(days):
+                row = db.belief_state_get(cur.isoformat(), symbol)
+                if row:
+                    bv = row.get("belief_vec") or {}
+                    bt = db.belief_transition_get(symbol, cur.isoformat())
+                    delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0)) if bt else 0.0
+                    history.append({
+                        "date": cur.isoformat(),
+                        "mu": float(bv.get("mu", 0.0)),
+                        "sigma": float(bv.get("sigma", 0.3)),
+                        "confidence": float(row.get("confidence") or 0.3),
+                        "delta_mu": round(delta_mu, 4),
+                    })
+                cur -= _td(days=1)
+            history = list(reversed(history))
+        except Exception:
+            pass
+
+        # ── 2. Latest belief state ────────────────────────────────────────────
+        final_belief: dict = {}
+        try:
+            bs = db.belief_state_get(today, symbol)
+            if bs:
+                bv = bs.get("belief_vec") or {}
+                delta = 0.0
+                if len(history) >= 2:
+                    delta = history[-1]["mu"] - history[-2]["mu"]
+                final_belief = {
+                    "score": float(bv.get("mu", 0.0)),
+                    "confidence": float(bs.get("confidence") or 0.3),
+                    "trust": 0.0,  # filled from recommendation below
+                    "delta": round(delta, 4),
+                }
+        except Exception:
+            pass
+
+        # ── 3. Trust via ExplanationService ──────────────────────────────────
+        trust_components: dict = {}
+        trust_score = 0.0
+        belief_vec_latest: dict = {}
+        try:
+            exp = _explain_svc.explain(symbol, as_of_date=None)
+            # DecisionExplanation has flat attrs: trust_score, trust_level, trust_components
+            trust_score = float(getattr(exp, "trust_score", 0.0) or 0.0)
+            trust_components = dict(getattr(exp, "trust_components", {}) or {})
+            if final_belief:
+                final_belief["trust"] = trust_score
+        except Exception:
+            pass
+
+        # Pull latest belief_vec for time-horizon sub-belief fallback
+        try:
+            bs = db.belief_state_get(today, symbol)
+            if bs:
+                belief_vec_latest = bs.get("belief_vec") or {}
+        except Exception:
+            pass
+
+        # ── 4. Sub-beliefs ────────────────────────────────────────────────────
+        # Primary: from InferenceService trust components (feature_coverage, data_freshness)
+        # Fallback: belief_vec time horizons (mu_1d, mu_5d, mu_20d) show how belief
+        #           changes across holding horizons — this is always available when
+        #           BeliefState has been computed.
+        _SUB_BELIEF_NAMES = {
+            "feature_coverage":  {"zh": "特征覆盖度", "en": "Feature Coverage"},
+            "data_freshness":    {"zh": "数据新鲜度", "en": "Data Freshness"},
+            "data_quality":      {"zh": "数据质量",   "en": "Data Quality"},
+            "kline":             {"zh": "技术面",     "en": "Technical"},
+            "sentiment":         {"zh": "市场情绪",   "en": "Sentiment"},
+            "events":            {"zh": "事件信号",   "en": "Events"},
+            "fundamentals":      {"zh": "基本面",     "en": "Fundamentals"},
+            "uncertainty":       {"zh": "不确定性",   "en": "Uncertainty"},
+            "mu_1d":             {"zh": "1日预期",    "en": "1-Day Horizon"},
+            "mu_5d":             {"zh": "5日预期",    "en": "5-Day Horizon"},
+            "mu_20d":            {"zh": "20日预期",   "en": "20-Day Horizon"},
+        }
+        _SUB_BELIEF_WEIGHTS = {
+            "feature_coverage": 0.25, "data_freshness": 0.25,
+            "data_quality": 0.20, "kline": 0.30, "sentiment": 0.20,
+            "events": 0.15, "fundamentals": 0.10, "uncertainty": 0.05,
+            "mu_1d": 0.20, "mu_5d": 0.45, "mu_20d": 0.35,
+        }
+        sub_beliefs: list[dict] = []
+
+        if trust_components:
+            # Use trust breakdown from InferenceService
+            for key, val in trust_components.items():
+                names = _SUB_BELIEF_NAMES.get(key, {"zh": key, "en": key})
+                sub_beliefs.append({
+                    "id": key,
+                    "name_zh": names["zh"],
+                    "name_en": names["en"],
+                    "score": round(float(val), 4),
+                    "weight": _SUB_BELIEF_WEIGHTS.get(key, 0.1),
+                    "source": "trust_components",
+                })
+        elif belief_vec_latest:
+            # Fallback: use belief time horizons as sub-beliefs
+            for key in ("mu_1d", "mu_5d", "mu_20d"):
+                val = belief_vec_latest.get(key)
+                if val is not None:
+                    names = _SUB_BELIEF_NAMES[key]
+                    # mu is a raw belief score; clip to [0,1] for display
+                    score = float(val)
+                    score_display = max(0.0, min(1.0, (score + 1.0) / 2.0))
+                    sub_beliefs.append({
+                        "id": key,
+                        "name_zh": names["zh"],
+                        "name_en": names["en"],
+                        "score": round(score_display, 4),
+                        "weight": _SUB_BELIEF_WEIGHTS.get(key, 0.1),
+                        "source": "belief_vec",
+                        "raw_mu": round(score, 4),
+                    })
+
+        # ── 5. Factors from top attention ─────────────────────────────────────
+        factors: list[dict] = []
+        try:
+            attn_rows = db.attention_list(symbol, today, top_n=10)
+            for a in attn_rows:
+                ev_type = "unknown"
+                ev_direction = 0.0
+                try:
+                    row = db._conn.execute(
+                        "SELECT evidence_type, direction FROM Evidence WHERE evidence_id=?",
+                        (a.get("evidence_id", ""),),
+                    ).fetchone()
+                    if row:
+                        ev_type = row[0] or "unknown"
+                        ev_direction = float(row[1] or 0.0)
+                except Exception:
+                    pass
+                weight = float(a.get("weight") or 0.0)
+                factors.append({
+                    "id": str(a.get("evidence_id", f"factor_{len(factors)}")),
+                    "name": ev_type,
+                    "score": round(0.5 + ev_direction * 0.5, 3),
+                    "weight": round(weight, 4),
+                    "direction": round(ev_direction, 2),
+                    "evidence_type": ev_type,
+                })
+        except Exception:
+            pass
+
+        # ── 6. Provenance edges ───────────────────────────────────────────────
+        # Connect factor → sub_belief based on evidence_type prefix
+        _TYPE_TO_SUB = {
+            "sentiment": "sentiment",
+            "social": "sentiment",
+            "news": "events",
+            "event": "events",
+            "kg": "events",
+            "technical": "kline",
+            "momentum": "kline",
+            "fundamental": "fundamentals",
+            "macro": "fundamentals",
+        }
+        provenance_edges: list[dict] = []
+        sub_ids = {s["id"] for s in sub_beliefs}
+        for f in factors:
+            ev_type_lower = str(f.get("evidence_type", "")).lower()
+            target = None
+            for prefix, sub_id in _TYPE_TO_SUB.items():
+                if prefix in ev_type_lower and sub_id in sub_ids:
+                    target = sub_id
+                    break
+            if target and f.get("weight", 0) > 0.01:
+                provenance_edges.append({
+                    "from": f["id"],
+                    "to": target,
+                    "weight": f["weight"],
+                })
+
+        return {
+            "symbol": symbol,
+            "as_of": today,
+            "final_belief": final_belief,
+            "sub_beliefs": sub_beliefs,
+            "factors": factors,
+            "history": history,
+            "provenance_edges": provenance_edges,
         }
 
     # ── API: kline/{symbol} ───────────────────────────────────────────────────

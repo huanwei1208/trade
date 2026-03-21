@@ -12,6 +12,8 @@ type ExplanationRailProps = {
   markerActive?: boolean;
   onEvidenceHover: (source: string | null) => void;
   onInvalidatorClick: () => void;
+  /** Slim mode: hides scenario, trust components, and data quality sections */
+  slim?: boolean;
 };
 
 type EvidenceSectionProps = {
@@ -59,6 +61,7 @@ export function ExplanationRail({
   markerActive,
   onEvidenceHover,
   onInvalidatorClick,
+  slim = false,
 }: ExplanationRailProps) {
   const { locale, t } = useI18n();
   if (!explanation) {
@@ -126,7 +129,7 @@ export function ExplanationRail({
           </div>
         </section>
 
-        {scenario && (
+        {!slim && scenario && (
           <section className="explanation-rail__section">
             <div className="explanation-rail__section-title">{t("explain.scenarioSummary")}</div>
             <div className="scenario-stack">
@@ -154,37 +157,41 @@ export function ExplanationRail({
           </section>
         )}
 
-        <section className="explanation-rail__section">
-          <div className="explanation-rail__section-title">{t("explain.dataTrustNotes")}</div>
-          <div className="note-stack">
-            {(explanation.data_quality_notes || []).map((item) => (
-              <div className="note-card note-card--warning" key={item}>
-                {item}
+        {!slim && (
+          <>
+            <section className="explanation-rail__section">
+              <div className="explanation-rail__section-title">{t("explain.dataTrustNotes")}</div>
+              <div className="note-stack">
+                {(explanation.data_quality_notes || []).map((item) => (
+                  <div className="note-card note-card--warning" key={item}>
+                    {item}
+                  </div>
+                ))}
+                {(explanation.input_warnings || []).map((item) => (
+                  <div className="note-card note-card--danger" key={item}>
+                    {item}
+                  </div>
+                ))}
               </div>
-            ))}
-            {(explanation.input_warnings || []).map((item) => (
-              <div className="note-card note-card--danger" key={item}>
-                {item}
-              </div>
-            ))}
-          </div>
-        </section>
+            </section>
 
-        <section className="explanation-rail__section">
-          <div className="explanation-rail__section-title">{t("explain.trustComponents")}</div>
-          <div className="trust-components">
-            {trustComponents.length === 0 && <div className="note-card">{t("explain.noTrustVector")}</div>}
-            {trustComponents.map(([key, value]) => (
-              <div className="trust-components__row" key={key}>
-                <span>{humanizeEnum(key)}</span>
-                <div className="trust-components__bar">
-                  <div className="trust-components__fill" style={{ width: `${Math.max(4, Number(value) * 100)}%` }} />
-                </div>
-                <strong>{formatPercent(value, 0)}</strong>
+            <section className="explanation-rail__section">
+              <div className="explanation-rail__section-title">{t("explain.trustComponents")}</div>
+              <div className="trust-components">
+                {trustComponents.length === 0 && <div className="note-card">{t("explain.noTrustVector")}</div>}
+                {trustComponents.map(([key, value]) => (
+                  <div className="trust-components__row" key={key}>
+                    <span>{humanizeEnum(key)}</span>
+                    <div className="trust-components__bar">
+                      <div className="trust-components__fill" style={{ width: `${Math.max(4, Number(value) * 100)}%` }} />
+                    </div>
+                    <strong>{formatPercent(value, 0)}</strong>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </section>
+            </section>
+          </>
+        )}
       </div>
     </div>
   );

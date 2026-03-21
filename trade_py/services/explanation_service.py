@@ -313,10 +313,10 @@ class ExplanationService:
             if rows:
                 last = rows[-1]
                 latest_price = last.get("close")
-                prev_close = last.get("prev_close")
-                # Fallback: use second-to-last close if no prev_close column
-                if prev_close is None and len(rows) >= 2:
-                    prev_close = rows[-2].get("close")
+                prev_close = last.get("prev_close") or None
+                # Fallback: use second-to-last close if prev_close absent or zero
+                if not prev_close and len(rows) >= 2:
+                    prev_close = rows[-2].get("close") or None
                 if latest_price is not None and prev_close is not None and prev_close > 0:
                     chg = latest_price - prev_close
                     chg_pct = chg / prev_close
@@ -332,7 +332,8 @@ class ExplanationService:
                     "low":          last.get("low"),
                     "volume":       last.get("volume"),
                     "amount":       last.get("amount"),
-                    "turnover":     last.get("turnover_rate"),
+                    # turnover_rate can be negative (akshare delta artifact) — treat as absent
+                    "turnover":     last.get("turnover_rate") if (last.get("turnover_rate") or 0) > 0 else None,
                     "vwap":         last.get("vwap"),
                     "as_of":        last.get("date"),
                 }

@@ -263,6 +263,60 @@ export type KlineResponse = {
   explanation?: Partial<DecisionExplanation>;
 };
 
+// ── Belief graph types ────────────────────────────────────────────────────────
+
+export type BeliefHistoryPoint = {
+  date?: string;
+  mu?: number;
+  sigma?: number;
+  confidence?: number;
+  delta_mu?: number;
+};
+
+export type FinalBeliefNode = {
+  score?: number;
+  confidence?: number;
+  trust?: number;
+  delta?: number;
+};
+
+export type SubBeliefNode = {
+  id?: string;
+  name_zh?: string;
+  name_en?: string;
+  score?: number;
+  weight?: number;
+  source?: string;
+};
+
+export type FactorNode = {
+  id?: string;
+  name?: string;
+  score?: number;
+  weight?: number;
+  direction?: number;
+  evidence_type?: string;
+};
+
+export type ProvenanceEdge = {
+  from?: string;
+  to?: string;
+  weight?: number;
+};
+
+export type BeliefGraphResponse = {
+  symbol?: string;
+  as_of?: string;
+  final_belief?: FinalBeliefNode;
+  sub_beliefs?: SubBeliefNode[];
+  factors?: FactorNode[];
+  history?: BeliefHistoryPoint[];
+  provenance_edges?: ProvenanceEdge[];
+};
+
+// Workspace tab type
+export type WorkspaceTab = "decision" | "belief" | "timeline" | "data-trust";
+
 export type TrustOverview = {
   as_of?: string;
   trust_scalar?: number | null;

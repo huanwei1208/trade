@@ -1493,3 +1493,541 @@ details[open] .symbol-advanced__summary::before {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================
+   SYMBOL WORKSPACE TABS (EBRT-13)
+   ========================================== */
+
+.symbol-workspace-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  padding: 0 var(--space-4);
+  overflow-x: auto;
+}
+
+.symbol-workspace-tabs__tab {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+
+.symbol-workspace-tabs__tab:hover {
+  color: var(--text-1);
+}
+
+.symbol-workspace-tabs__tab.is-active {
+  color: var(--text-1);
+  border-bottom-color: var(--accent, #3b82f6);
+  font-weight: 600;
+}
+
+/* ── Tab body ──────────────────────────────────────────────────────────── */
+
+.symbol-tab-body {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.symbol-decision-rail {
+  max-width: 720px;
+}
+
+/* ==========================================
+   DECISION CHANGE STRIP (EBRT-13)
+   ========================================== */
+
+.decision-change-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.decision-change-strip__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 6px;
+  font-size: var(--text-xs);
+}
+
+.decision-change-strip__item--positive {
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.decision-change-strip__item--negative {
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+}
+.decision-change-strip__item--neutral {
+  background: var(--surface-2, rgba(128,128,128,0.06));
+}
+.decision-change-strip__item--warning {
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.decision-change-strip__label {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.decision-change-strip__value {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.decision-change-strip__item--positive .decision-change-strip__value { color: var(--ok); }
+.decision-change-strip__item--negative .decision-change-strip__value { color: var(--err); }
+.decision-change-strip__item--warning .decision-change-strip__value { color: var(--warn); }
+
+/* ==========================================
+   BELIEF WORKSPACE (EBRT-13)
+   ========================================== */
+
+.belief-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.belief-workspace--empty,
+.belief-workspace--loading {
+  padding: var(--space-6) 0;
+}
+
+.belief-workspace__toolbar {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.belief-workspace__view-btn {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.belief-workspace__view-btn.is-active {
+  color: var(--text-1);
+  background: var(--surface-2, rgba(128,128,128,0.1));
+  font-weight: 600;
+}
+
+.belief-workspace__body {
+  min-height: 200px;
+}
+
+/* ── Belief funnel ──────────────────────────────────────────────────────── */
+
+.belief-funnel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.belief-funnel__layer-label {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--space-3);
+}
+
+.belief-funnel__final-row {
+  display: flex;
+  gap: var(--space-5);
+}
+
+.belief-funnel__score-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.belief-funnel__score-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text-1);
+  line-height: 1;
+}
+.belief-funnel__score-value--trust { color: var(--text-2); font-size: 1.4rem; }
+
+.belief-funnel__score-label {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+.belief-funnel__delta {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.belief-funnel__delta--up { color: var(--ok); }
+.belief-funnel__delta--down { color: var(--err); }
+
+.belief-funnel__sub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-3);
+}
+
+.belief-sub-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+  text-align: left;
+}
+.belief-sub-card.is-selected {
+  border-color: var(--accent, #3b82f6);
+}
+.belief-sub-card:hover { border-color: var(--text-3); }
+
+.belief-sub-card__name {
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+.belief-sub-card__score {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-1);
+}
+.belief-sub-card__bar {
+  height: 4px;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.belief-sub-card__bar-fill {
+  height: 100%;
+  background: var(--accent, #3b82f6);
+  border-radius: 2px;
+}
+.belief-sub-card__weight {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+/* ── Belief node inspector ─────────────────────────────────────────────── */
+
+.belief-node-inspector {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-2, rgba(128,128,128,0.06));
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.belief-node-inspector__title {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-3);
+}
+.belief-node-inspector__score {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  font-weight: 400;
+}
+.belief-node-inspector__factors-label {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  margin-bottom: var(--space-2);
+}
+.belief-node-inspector__factor-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--text-xs);
+}
+.belief-node-inspector__factor-name { flex: 1; color: var(--text-2); }
+.belief-node-inspector__factor-dir { font-weight: 700; }
+.belief-node-inspector__factor-dir.is-pos { color: var(--ok); }
+.belief-node-inspector__factor-dir.is-neg { color: var(--err); }
+.belief-node-inspector__factor-weight { color: var(--text-3); }
+
+/* ── Belief waterfall ─────────────────────────────────────────────────── */
+
+.belief-waterfall {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.belief-waterfall__label {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--space-2);
+}
+.belief-waterfall__row {
+  display: grid;
+  grid-template-columns: 140px 1fr 160px;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+.belief-waterfall__name { font-size: var(--text-xs); color: var(--text-2); }
+.belief-waterfall__bar-track {
+  height: 8px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.belief-waterfall__bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+.belief-waterfall__bar-fill--pos { background: var(--ok); }
+.belief-waterfall__bar-fill--neg { background: var(--err); }
+.belief-waterfall__values {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  text-align: right;
+}
+.belief-waterfall__score { font-weight: 600; color: var(--text-1); }
+.belief-waterfall__contribution { color: var(--text-3); }
+
+/* ── Belief compare ───────────────────────────────────────────────────── */
+
+.belief-compare {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.belief-compare__label {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--space-2);
+}
+.belief-compare__row {
+  display: grid;
+  grid-template-columns: 160px 1fr 60px;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+.belief-compare__name { font-size: var(--text-xs); color: var(--text-2); }
+.belief-compare__bar-track {
+  height: 6px;
+  background: var(--line);
+  border-radius: 3px;
+  position: relative;
+}
+.belief-compare__bar-mid {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--text-3);
+}
+.belief-compare__bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  position: absolute;
+}
+.belief-compare__bar-fill--pos { background: var(--ok); }
+.belief-compare__bar-fill--neg { background: var(--err); }
+.belief-compare__dir { font-size: var(--text-xs); font-weight: 600; text-align: right; }
+.belief-compare__dir--pos { color: var(--ok); }
+.belief-compare__dir--neg { color: var(--err); }
+
+/* ==========================================
+   BELIEF CAUSAL TIMELINE (EBRT-13)
+   ========================================== */
+
+.belief-causal-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.belief-causal-timeline--empty {
+  padding: var(--space-6) 0;
+}
+
+.belief-causal-timeline__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.belief-causal-timeline__section-title {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.belief-causal-timeline__trend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.belief-trend-line {
+  width: 100%;
+  height: 80px;
+  display: block;
+}
+
+.belief-trend-line__path {
+  stroke: var(--accent, #3b82f6);
+  stroke-width: 1.5;
+  fill: none;
+}
+.belief-trend-line__midline {
+  stroke: var(--line);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+.belief-trend-line__date-label {
+  font-size: 9px;
+  fill: var(--text-3);
+}
+
+.belief-causal-timeline__trend-stats {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.belief-causal-timeline__stat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+}
+.belief-causal-timeline__stat-label { color: var(--text-3); }
+
+.belief-causal-timeline__events {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.belief-causal-event-card {
+  padding: var(--space-3);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.belief-causal-event-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-1);
+}
+
+.belief-causal-event-card__date {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+.belief-causal-event-card__type {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-2);
+  padding: 1px var(--space-2);
+  background: var(--surface-2, rgba(128,128,128,0.06));
+  border-radius: 4px;
+}
+.belief-causal-event-card__score {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  margin-left: auto;
+}
+.belief-causal-event-card__title {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+/* ==========================================
+   DATA TRUST PANEL (EBRT-13)
+   ========================================== */
+
+.data-trust-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  max-width: 900px;
+}
+
+.data-trust-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.data-trust-panel__section-title {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.data-trust-panel__trust-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.data-trust-panel__sub-beliefs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.data-trust-panel__provenance-row {
+  display: grid;
+  grid-template-columns: 160px 1fr 60px;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.data-trust-panel__provenance-name {
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+
+/* ==========================================
+   RESPONSIVE — WORKSPACE TABS
+   ========================================== */
+
+@media (max-width: 1100px) {
+  .belief-waterfall__row {
+    grid-template-columns: 100px 1fr 120px;
+  }
+  .belief-compare__row {
+    grid-template-columns: 120px 1fr 50px;
+  }
+  .data-trust-panel__provenance-row {
+    grid-template-columns: 120px 1fr 50px;
+  }
+}
