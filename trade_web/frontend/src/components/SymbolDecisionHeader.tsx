@@ -15,9 +15,19 @@ type SymbolDecisionHeaderProps = {
   onBack: () => void;
   onOpenReadiness: () => void;
   onOpenRecovery: () => void;
+  showBackButton?: boolean;
 };
 
-export function SymbolDecisionHeader({ symbol, kline, explanation, state, onBack, onOpenReadiness, onOpenRecovery }: SymbolDecisionHeaderProps) {
+export function SymbolDecisionHeader({
+  symbol,
+  kline,
+  explanation,
+  state,
+  onBack,
+  onOpenReadiness,
+  onOpenRecovery,
+  showBackButton = true,
+}: SymbolDecisionHeaderProps) {
   const { locale, t } = useI18n();
   const conclusionMode = getConclusionModeText(locale, {
     global_blocked: Boolean(state?.blockers?.length || explanation?.warnings?.length || explanation?.input_warnings?.length),
@@ -40,9 +50,11 @@ export function SymbolDecisionHeader({ symbol, kline, explanation, state, onBack
   return (
     <div className="symbol-header">
       <div className="symbol-header__identity">
-        <button type="button" className="button button--ghost" onClick={onBack}>
-          {t("common.back")}
-        </button>
+        {showBackButton && (
+          <button type="button" className="button button--ghost" onClick={onBack}>
+            {t("common.back")}
+          </button>
+        )}
         <div>
           <div className="symbol-header__symbol">
             {symbol}

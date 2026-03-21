@@ -9,6 +9,7 @@ import { LoadingSkeleton } from "../components/LoadingSkeleton";
 import { SymbolChart } from "../components/SymbolChart";
 import { SymbolChartToolbar } from "../components/SymbolChartToolbar";
 import { SymbolDataOpsTab } from "../components/SymbolDataOpsTab";
+import { SymbolDecisionHeader } from "../components/SymbolDecisionHeader";
 import { SymbolDecisionPanel } from "../components/SymbolDecisionPanel";
 import { SymbolEvidenceTab } from "../components/SymbolEvidenceTab";
 import { SymbolFreshnessBanner } from "../components/SymbolFreshnessBanner";
@@ -28,7 +29,6 @@ import type {
 } from "../lib/api";
 import { useApiResource } from "../lib/api";
 import { useI18n } from "../lib/i18n";
-import { getDatasetText } from "../lib/statusText";
 
 type SymbolPageProps = {
   symbol?: string;
@@ -131,6 +131,15 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
     explainResource.retry();
     stateResource.retry();
   }
+  function openEvidenceTab() {
+    setActiveTab("evidence");
+  }
+  function openBeliefTab() {
+    setActiveTab("belief");
+  }
+  function openDataOpsTab() {
+    setActiveTab("data-ops");
+  }
 
   // Merge reason_groups from kline response and from explanation
   const reasonGroups = klineResource.data?.reason_groups || explanation?.reason_groups || null;
@@ -144,6 +153,17 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
         quote={klineResource.data?.quote}
         priceBasis={klineResource.data?.price_basis}
         onBack={onBack}
+      />
+
+      <SymbolDecisionHeader
+        symbol={symbol}
+        kline={klineResource.data}
+        explanation={explanation}
+        state={stateResource.data}
+        onBack={onBack}
+        onOpenReadiness={openReadiness}
+        onOpenRecovery={openRecovery}
+        showBackButton={false}
       />
 
       {/* Always visible: Freshness Banner */}
@@ -216,7 +236,9 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
           {explanation && (
             <div className="symbol-decision-rail">
               <ExplanationRail
+                kline={klineResource.data}
                 explanation={explanation}
+                state={stateResource.data}
                 activeEvidenceSource={activeEvidenceSource}
                 markerActive={Boolean(markerKey)}
                 onEvidenceHover={setActiveEvidenceSource}
@@ -224,6 +246,11 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
                   setInvalidationFocused(true);
                   window.setTimeout(() => setInvalidationFocused(false), 1200);
                 }}
+                onOpenReadiness={openReadiness}
+                onOpenRecovery={openRecovery}
+                onOpenEvidenceTab={openEvidenceTab}
+                onOpenBeliefTab={openBeliefTab}
+                onOpenDataOpsTab={openDataOpsTab}
                 slim
               />
             </div>

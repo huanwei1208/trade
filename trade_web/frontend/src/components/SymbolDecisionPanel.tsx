@@ -29,7 +29,6 @@ export function SymbolDecisionPanel({
   const asOf = explanation?.as_of || state?.as_of_date;
   const blockers = state?.blockers || explanation?.warnings || [];
   const visibleBlockers = blockers.filter((b) => !b.startsWith("resolve:missing_datasets:"));
-  const nextTriggers = explanation?.next_triggers || [];
   const isDegraded = Boolean(
     (explanation?.input_warnings?.length ?? 0) > 0 ||
     (explanation?.data_quality_notes ?? []).some((n) => n.includes("missing") || n.includes("stale"))
@@ -104,18 +103,6 @@ export function SymbolDecisionPanel({
         </div>
       ) : (
         <div className="symbol-decision-panel__no-blockers">{t("symbol.decision.noBlockers")}</div>
-      )}
-
-      {/* Next triggers */}
-      {nextTriggers.length > 0 && (
-        <div className="symbol-decision-panel__triggers">
-          <div className="symbol-decision-panel__triggers-label">{t("symbol.decision.nextTrigger")}</div>
-          <div className="tag-cluster">
-            {nextTriggers.slice(0, 3).map((trig) => (
-              <span key={trig} className="tag-chip">{trig}</span>
-            ))}
-          </div>
-        </div>
       )}
 
       {/* Actions */}

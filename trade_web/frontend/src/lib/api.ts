@@ -178,6 +178,7 @@ export type ScenarioCase = {
   required_confirmations?: string[];
   invalidators?: string[];
   next_triggers?: string[];
+  next_trigger_details?: NextTriggerDetail[];
 };
 
 export type ScenarioSummary = {
@@ -189,6 +190,56 @@ export type ScenarioSummary = {
   scenario_confidence?: number;
   dominant_scenario?: string;
   world_state_summary?: string;
+};
+
+export type NextTriggerDetail = {
+  key?: string;
+  current_value?: number | null;
+  target_value?: number | null;
+  unit?: string | null;
+};
+
+export type WorldMarketState = {
+  regime?: string;
+  window_score?: number | null;
+  vol_ratio?: number | null;
+  rationale?: string;
+};
+
+export type WorldEventState = {
+  regime?: string;
+  kg_score?: number | null;
+  top_event_type?: string;
+  event_count_recent?: number | null;
+  rationale?: string;
+};
+
+export type WorldSentimentState = {
+  regime?: string;
+  belief_mu?: number | null;
+  net_sentiment?: number | null;
+  belief_sigma?: number | null;
+  rationale?: string;
+};
+
+export type WorldTechnicalState = {
+  regime?: string;
+  rsi_14?: number | null;
+  macd_signal?: number | null;
+  rationale?: string;
+};
+
+export type WorldLiquidityState = {
+  regime?: string;
+  vol_ratio?: number | null;
+  rationale?: string;
+};
+
+export type WorldUncertaintyState = {
+  level?: string;
+  belief_sigma?: number | null;
+  trust_score?: number | null;
+  rationale?: string;
 };
 
 export type WorldState = {
@@ -207,12 +258,12 @@ export type WorldState = {
   blockers?: string[];
   supporting_signals?: Array<Record<string, unknown>>;
   opposing_signals?: Array<Record<string, unknown>>;
-  market_state?: Record<string, unknown>;
-  event_state?: Record<string, unknown>;
-  sentiment_state?: Record<string, unknown>;
-  technical_state?: Record<string, unknown>;
-  liquidity_state?: Record<string, unknown>;
-  uncertainty_state?: Record<string, unknown>;
+  market_state?: WorldMarketState;
+  event_state?: WorldEventState;
+  sentiment_state?: WorldSentimentState;
+  technical_state?: WorldTechnicalState;
+  liquidity_state?: WorldLiquidityState;
+  uncertainty_state?: WorldUncertaintyState;
   data_quality_state?: {
     score?: number;
     freshness_score?: number;
@@ -241,6 +292,7 @@ export type DecisionExplanation = {
   evidence_against?: EvidenceItem[];
   invalidators?: string[];
   next_triggers?: string[];
+  next_trigger_details?: NextTriggerDetail[];
   scenario_summary?: ScenarioSummary | null;
   world_state?: WorldState | null;
   warnings?: string[];

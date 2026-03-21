@@ -1,17 +1,25 @@
-import type { DecisionExplanation } from "../lib/api";
+import type { DecisionExplanation, KlineResponse, WorldState } from "../lib/api";
 import { formatPercent, humanizeEnum } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { getActionText } from "../lib/statusText";
 import { classNames } from "../lib/ui";
+import { NextTriggerPanel } from "./NextTriggerPanel";
 import { StatusPill } from "./StatusPill";
 import { TrustBadge } from "./TrustBadge";
 
 type ExplanationRailProps = {
+  kline?: KlineResponse | null;
   explanation?: DecisionExplanation | null;
+  state?: WorldState | null;
   activeEvidenceSource?: string | null;
   markerActive?: boolean;
   onEvidenceHover: (source: string | null) => void;
   onInvalidatorClick: () => void;
+  onOpenReadiness?: () => void;
+  onOpenRecovery?: () => void;
+  onOpenEvidenceTab?: () => void;
+  onOpenBeliefTab?: () => void;
+  onOpenDataOpsTab?: () => void;
   /** Slim mode: hides scenario, trust components, and data quality sections */
   slim?: boolean;
 };
@@ -56,11 +64,18 @@ function EvidenceSection({ title, items, tone, activeEvidenceSource, markerActiv
 }
 
 export function ExplanationRail({
+  kline,
   explanation,
+  state,
   activeEvidenceSource,
   markerActive,
   onEvidenceHover,
   onInvalidatorClick,
+  onOpenReadiness,
+  onOpenRecovery,
+  onOpenEvidenceTab,
+  onOpenBeliefTab,
+  onOpenDataOpsTab,
   slim = false,
 }: ExplanationRailProps) {
   const { locale, t } = useI18n();
@@ -118,16 +133,16 @@ export function ExplanationRail({
           </div>
         </section>
 
-        <section className="explanation-rail__section">
-          <div className="explanation-rail__section-title">{t("explain.nextTriggers")}</div>
-          <div className="tag-cluster">
-            {(explanation.next_triggers || []).map((item) => (
-              <span className="tag-chip" key={item}>
-                {item}
-              </span>
-            ))}
-          </div>
-        </section>
+        <NextTriggerPanel
+          kline={kline}
+          explanation={explanation}
+          state={state}
+          onOpenReadiness={onOpenReadiness}
+          onOpenRecovery={onOpenRecovery}
+          onOpenEvidenceTab={onOpenEvidenceTab}
+          onOpenBeliefTab={onOpenBeliefTab}
+          onOpenDataOpsTab={onOpenDataOpsTab}
+        />
 
         {!slim && scenario && (
           <section className="explanation-rail__section">
