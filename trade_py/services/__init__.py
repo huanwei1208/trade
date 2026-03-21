@@ -4,5 +4,6 @@ from __future__ import annotations
 from trade_py.services.state_service import StateService
 from trade_py.services.decision_service import DecisionService
 from trade_py.services.explanation_service import ExplanationService
+from trade_py.services.causal_service import CausalService
 
-__all__ = ["StateService", "DecisionService", "ExplanationService"]
+__all__ = ["StateService", "DecisionService", "ExplanationService", "CausalService"]

@@ -29,10 +29,20 @@ class ExplanationService:
         Optional InferenceService for trust enrichment.
     """
 
-    def __init__(self, state_svc, decision_svc, inference=None) -> None:
+    def __init__(self, state_svc, decision_svc, inference=None, causal_svc=None) -> None:
         self._state_svc    = state_svc
         self._decision_svc = decision_svc
         self._inference    = inference
+        if causal_svc is None:
+            from trade_py.services.causal_service import CausalService
+
+            causal_svc = CausalService(
+                state_svc,
+                decision_svc,
+                inference=inference,
+                data_root=getattr(state_svc, "_data_root", "data"),
+            )
+        self._causal_svc = causal_svc
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -43,6 +53,7 @@ class ExplanationService:
         as_of_date: str | None = None,
         has_position: bool = False,
         raw_reasons: list[dict] | None = None,
+        include_causal_chain: bool = True,
     ):
         """Return a DecisionExplanation for *symbol*.
 
@@ -74,7 +85,81 @@ class ExplanationService:
             scenario=scenario,
             raw_reasons=raw_reasons,
         )
+        if include_causal_chain:
+            causal_chain = self._causal_svc.build_from_components(
+                symbol=symbol,
+                as_of_date=as_of,
+                ws=ws,
+                scenario=scenario,
+                action=action,
+                trust_breakdown=trust_breakdown,
+                db=db,
+                persist=False,
+                include_validation=False,
+            )
+            exp.causal_chain = causal_chain.to_dict()
         return exp
+
+    def causal_chain(
+        self,
+        symbol: str,
+        *,
+        as_of_date: str | None = None,
+        has_position: bool = False,
+        persist: bool = False,
+        include_validation: bool = False,
+        validation_horizons: tuple[int, ...] = (1, 5, 20),
+    ) -> dict[str, Any]:
+        """Return explicit causal-chain payload for a symbol."""
+        db = self._state_svc._db or self._state_svc._open_db()
+        as_of = as_of_date
+        if not as_of:
+            try:
+                as_of = db.get_latest_market_asof()
+            except Exception:
+                as_of = None
+        as_of = as_of or date.today().isoformat()
+        chain = self._causal_svc.build_for_symbol(
+            symbol,
+            as_of_date=as_of,
+            has_position=has_position,
+            db=db,
+            persist=persist,
+            include_validation=include_validation,
+            validation_horizons=validation_horizons,
+        )
+        return chain.to_dict()
+
+    def causal_validation(
+        self,
+        symbol: str,
+        *,
+        snapshot_id: str | None = None,
+        as_of_date: str | None = None,
+        horizons: tuple[int, ...] = (1, 5, 20),
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        """Validate an existing or freshly-built causal snapshot."""
+        db = self._state_svc._db or self._state_svc._open_db()
+        if snapshot_id:
+            return self._causal_svc.validate_snapshot(
+                db,
+                snapshot_id=snapshot_id,
+                horizons=horizons,
+                persist=persist,
+            )
+        chain = self.causal_chain(
+            symbol,
+            as_of_date=as_of_date,
+            persist=True,
+            include_validation=False,
+        )
+        return self._causal_svc.validate_snapshot(
+            db,
+            snapshot_id=chain.get("snapshot_id"),
+            horizons=horizons,
+            persist=persist,
+        )
 
     def build_kline_context(
         self,

@@ -2031,6 +2031,64 @@ def create_app():
             logger.exception("get_explain error for %s: %s", symbol, exc)
             raise HTTPException(status_code=500, detail=str(exc))
 
+    @app.get("/api/causal/{symbol}")
+    async def get_causal_chain(
+        symbol: str,
+        date: str | None = None,
+        persist: bool = False,
+        validate: bool = False,
+        horizons: str = "1,5,20",
+    ):
+        """Return the machine-readable causal chain for a symbol."""
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+        try:
+            parsed_horizons = tuple(
+                int(item.strip())
+                for item in horizons.split(",")
+                if item.strip().isdigit()
+            ) or (1, 5, 20)
+            return _explain_svc.causal_chain(
+                symbol,
+                as_of_date=date,
+                persist=persist,
+                include_validation=validate,
+                validation_horizons=parsed_horizons,
+            )
+        except Exception as exc:
+            logger.exception("get_causal_chain error for %s: %s", symbol, exc)
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    @app.get("/api/causal/{symbol}/validation")
+    async def get_causal_validation(
+        symbol: str,
+        date: str | None = None,
+        snapshot_id: str | None = None,
+        horizons: str = "1,5,20",
+        persist: bool = True,
+    ):
+        """Validate the latest causal snapshot for a symbol."""
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+        try:
+            parsed_horizons = tuple(
+                int(item.strip())
+                for item in horizons.split(",")
+                if item.strip().isdigit()
+            ) or (1, 5, 20)
+            return _explain_svc.causal_validation(
+                symbol,
+                snapshot_id=snapshot_id,
+                as_of_date=date,
+                horizons=parsed_horizons,
+                persist=persist,
+            )
+        except Exception as exc:
+            logger.exception("get_causal_validation error for %s: %s", symbol, exc)
+            raise HTTPException(status_code=500, detail=str(exc))
+
     # ── API: actions-page ─────────────────────────────────────────────────────
 
     @app.get("/api/actions-page")

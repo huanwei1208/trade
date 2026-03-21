@@ -511,6 +511,59 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             CREATE INDEX IF NOT EXISTS idx_recovery_actions_status
                 ON readiness_recovery_actions(status, requested_at DESC);
 
+            CREATE TABLE IF NOT EXISTS causal_decision_snapshots (
+                snapshot_id          TEXT PRIMARY KEY,
+                symbol               TEXT NOT NULL,
+                as_of_date           TEXT NOT NULL,
+                action               TEXT,
+                decision_confidence  REAL,
+                data_model_trust     REAL,
+                inferred_state_json  TEXT NOT NULL,
+                chain_json           TEXT NOT NULL,
+                created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, as_of_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_causal_snapshots_symbol_date
+                ON causal_decision_snapshots(symbol, as_of_date DESC);
+
+            CREATE TABLE IF NOT EXISTS causal_validation_outcomes (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id          TEXT NOT NULL REFERENCES causal_decision_snapshots(snapshot_id),
+                symbol               TEXT NOT NULL,
+                decision_as_of       TEXT NOT NULL,
+                evaluation_date      TEXT,
+                horizon              TEXT NOT NULL,
+                predicted_direction  TEXT,
+                realized_return      REAL,
+                realized_volatility  REAL,
+                invalidator_hit      INTEGER,
+                calibration_error    REAL,
+                decision_correctness TEXT,
+                notes                TEXT,
+                payload_json         TEXT NOT NULL,
+                created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(snapshot_id, horizon)
+            );
+            CREATE INDEX IF NOT EXISTS idx_causal_validation_snapshot
+                ON causal_validation_outcomes(snapshot_id, horizon);
+
+            CREATE TABLE IF NOT EXISTS causal_reward_punishment (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id                 TEXT NOT NULL REFERENCES causal_decision_snapshots(snapshot_id),
+                target_type                 TEXT NOT NULL,
+                target_id                   TEXT NOT NULL,
+                reward_score                REAL,
+                punishment_score            REAL,
+                rationale                   TEXT,
+                evaluation_horizon          TEXT NOT NULL,
+                derived_from_validation_id  TEXT,
+                payload_json                TEXT NOT NULL,
+                created_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_causal_reward_snapshot
+                ON causal_reward_punishment(snapshot_id, evaluation_horizon);
+
             -- CFG: pipeline_dag
             CREATE TABLE IF NOT EXISTS pipeline_dag (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2542,6 +2595,167 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 ),
             )
             self._conn.commit()
+
+    # ── Causal snapshots / validation ───────────────────────────────────────
+
+    def causal_snapshot_upsert(
+        self,
+        *,
+        snapshot_id: str,
+        symbol: str,
+        as_of_date: str,
+        action: str | None,
+        decision_confidence: float | None,
+        data_model_trust: float | None,
+        inferred_state: dict[str, Any],
+        chain: dict[str, Any],
+    ) -> None:
+        with self._conn_lock:
+            self._conn.execute(
+                """
+                INSERT INTO causal_decision_snapshots
+                    (snapshot_id, symbol, as_of_date, action, decision_confidence,
+                     data_model_trust, inferred_state_json, chain_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol, as_of_date) DO UPDATE SET
+                    snapshot_id=excluded.snapshot_id,
+                    action=excluded.action,
+                    decision_confidence=excluded.decision_confidence,
+                    data_model_trust=excluded.data_model_trust,
+                    inferred_state_json=excluded.inferred_state_json,
+                    chain_json=excluded.chain_json,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    snapshot_id,
+                    symbol,
+                    as_of_date,
+                    action,
+                    decision_confidence,
+                    data_model_trust,
+                    json.dumps(inferred_state, ensure_ascii=False),
+                    json.dumps(chain, ensure_ascii=False),
+                ),
+            )
+            self._conn.commit()
+
+    def causal_snapshot_get(self, snapshot_id: str) -> dict[str, Any] | None:
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT * FROM causal_decision_snapshots WHERE snapshot_id=? LIMIT 1",
+                (snapshot_id,),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["inferred_state"] = _json_loads_safe(data.get("inferred_state_json"), {})
+        data["chain"] = _json_loads_safe(data.get("chain_json"), {})
+        return data
+
+    def causal_snapshot_get_latest(self, symbol: str, *, as_of_date: str | None = None) -> dict[str, Any] | None:
+        query = "SELECT * FROM causal_decision_snapshots WHERE symbol=?"
+        params: list[Any] = [symbol]
+        if as_of_date:
+            query += " AND as_of_date<=?"
+            params.append(as_of_date)
+        query += " ORDER BY as_of_date DESC LIMIT 1"
+        with self._conn_lock:
+            row = self._conn.execute(query, tuple(params)).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["inferred_state"] = _json_loads_safe(data.get("inferred_state_json"), {})
+        data["chain"] = _json_loads_safe(data.get("chain_json"), {})
+        return data
+
+    def causal_validation_replace(self, snapshot_id: str, outcomes: list[dict[str, Any]]) -> None:
+        with self._conn_lock:
+            self._conn.execute(
+                "DELETE FROM causal_validation_outcomes WHERE snapshot_id=?",
+                (snapshot_id,),
+            )
+            for item in outcomes:
+                self._conn.execute(
+                    """
+                    INSERT INTO causal_validation_outcomes
+                        (snapshot_id, symbol, decision_as_of, evaluation_date, horizon,
+                         predicted_direction, realized_return, realized_volatility,
+                         invalidator_hit, calibration_error, decision_correctness,
+                         notes, payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        snapshot_id,
+                        item.get("symbol"),
+                        item.get("decision_as_of"),
+                        item.get("evaluation_date"),
+                        item.get("horizon"),
+                        item.get("predicted_direction"),
+                        item.get("realized_return"),
+                        item.get("realized_volatility"),
+                        None if item.get("invalidator_hit") is None else (1 if item.get("invalidator_hit") else 0),
+                        item.get("calibration_error"),
+                        item.get("decision_correctness"),
+                        item.get("notes"),
+                        json.dumps(item, ensure_ascii=False),
+                    ),
+                )
+            self._conn.commit()
+
+    def causal_validation_list(self, snapshot_id: str) -> list[dict[str, Any]]:
+        with self._conn_lock:
+            rows = self._conn.execute(
+                "SELECT * FROM causal_validation_outcomes WHERE snapshot_id=? ORDER BY horizon",
+                (snapshot_id,),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["payload"] = _json_loads_safe(data.get("payload_json"), {})
+            result.append(data)
+        return result
+
+    def causal_reward_records_replace(self, snapshot_id: str, records: list[dict[str, Any]]) -> None:
+        with self._conn_lock:
+            self._conn.execute(
+                "DELETE FROM causal_reward_punishment WHERE snapshot_id=?",
+                (snapshot_id,),
+            )
+            for item in records:
+                self._conn.execute(
+                    """
+                    INSERT INTO causal_reward_punishment
+                        (snapshot_id, target_type, target_id, reward_score, punishment_score,
+                         rationale, evaluation_horizon, derived_from_validation_id,
+                         payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        snapshot_id,
+                        item.get("target_type"),
+                        item.get("target_id"),
+                        item.get("reward_score"),
+                        item.get("punishment_score"),
+                        item.get("rationale"),
+                        item.get("evaluation_horizon"),
+                        item.get("derived_from_validation_id"),
+                        json.dumps(item, ensure_ascii=False),
+                    ),
+                )
+            self._conn.commit()
+
+    def causal_reward_records_list(self, snapshot_id: str) -> list[dict[str, Any]]:
+        with self._conn_lock:
+            rows = self._conn.execute(
+                "SELECT * FROM causal_reward_punishment WHERE snapshot_id=? ORDER BY evaluation_horizon, id",
+                (snapshot_id,),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["payload"] = _json_loads_safe(data.get("payload_json"), {})
+            result.append(data)
+        return result
 
     # ── Model Registry ─────────────────────────────────────────────────────────
 

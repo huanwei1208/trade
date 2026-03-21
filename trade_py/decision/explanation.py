@@ -148,6 +148,9 @@ class DecisionExplanation:
     # Grouped factual reasons for Symbol workspace (populated by ExplanationService)
     reason_groups: dict[str, list["ReasonItem"]] = field(default_factory=dict)
 
+    # Explicit causal-chain payload for auditability / future UI use
+    causal_chain: dict[str, Any] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "symbol": self.symbol,
@@ -183,6 +186,7 @@ class DecisionExplanation:
                 group: [item.to_dict() for item in items]
                 for group, items in self.reason_groups.items()
             },
+            "causal_chain": self.causal_chain,
         }
 
     def to_summary_dict(self) -> dict[str, Any]:
