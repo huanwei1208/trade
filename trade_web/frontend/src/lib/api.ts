@@ -531,6 +531,149 @@ export type DataHealthPayload = {
 };
 
 export type WorkflowSummary = Record<string, unknown>;
+export type WorkflowDetailPayload = WorkflowSummary & {
+  root_event_id?: number;
+  title?: string;
+  topic?: string;
+  status?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  progress?: {
+    total?: number;
+    completed?: number;
+    running?: number;
+    error?: number;
+  };
+  nodes?: Array<Record<string, unknown>>;
+};
+
+export type OpsNodeType = "source" | "feature" | "factor" | "model" | "decision" | "workflow";
+export type OpsLayerKey = OpsNodeType;
+export type OpsRuntimeStatus = "ok" | "running" | "partial" | "error" | "unknown";
+
+export type OpsOutputSummary = {
+  primary?: string;
+  secondary?: string | null;
+  metric?: number | string | null;
+  changed?: boolean | null;
+};
+
+export type OpsComputeNode = {
+  id: string;
+  name: string;
+  type: OpsNodeType;
+  layer: OpsLayerKey;
+  description?: string;
+  latest_status?: OpsRuntimeStatus;
+  last_run_at?: string | null;
+  latest_output_summary?: OpsOutputSummary | null;
+  previous_output_summary?: OpsOutputSummary | null;
+  delta_summary?: string | null;
+  upstream_ids?: string[];
+  downstream_ids?: string[];
+  can_backfill?: boolean;
+  can_replay?: boolean;
+  can_compare?: boolean;
+  mapped_dataset?: string | null;
+  mapped_job_names?: string[];
+  representative_symbol?: string | null;
+};
+
+export type OpsLayerGroup = {
+  key: OpsLayerKey;
+  label: string;
+  nodes: OpsComputeNode[];
+};
+
+export type OpsComputeLayersPayload = {
+  as_of?: string;
+  previous_as_of?: string | null;
+  representative_symbol?: string | null;
+  layers: OpsLayerGroup[];
+  nodes: OpsComputeNode[];
+};
+
+export type OpsDependencyNode = {
+  id: string;
+  name: string;
+  type: OpsNodeType;
+  layer: OpsLayerKey;
+  description?: string;
+};
+
+export type OpsDependencyEdge = {
+  from: string;
+  to: string;
+};
+
+export type OpsDependencyPathPayload = {
+  selected_node_ids: string[];
+  nodes: OpsDependencyNode[];
+  edges: OpsDependencyEdge[];
+  upstream_ids: string[];
+  downstream_ids: string[];
+};
+
+export type OpsNodeResultPayload = OpsComputeNode & {
+  as_of?: string;
+  previous_as_of?: string | null;
+  representative_symbol?: string | null;
+  dependency_path?: OpsDependencyPathPayload;
+  details?: Record<string, unknown> & { kind?: string };
+};
+
+export type OpsReplayMode = "selected_only" | "selected_plus_downstream" | "full_chain";
+export type OpsReplayAction = "repair" | "recompute";
+
+export type OpsSelectedCell = {
+  id?: string;
+  dataset?: string;
+  date?: string;
+};
+
+export type OpsReplayJob = {
+  job_name?: string;
+  mapped_from?: string;
+  layer?: OpsLayerKey;
+  node_type?: OpsNodeType;
+  avg_duration_ms?: number | null;
+};
+
+export type OpsReplayPreviewPayload = {
+  selected_nodes: Array<{
+    id: string;
+    name: string;
+    type: OpsNodeType;
+    layer: OpsLayerKey;
+  }>;
+  selected_cells: OpsSelectedCell[];
+  mode: OpsReplayMode;
+  action: OpsReplayAction;
+  date_from: string;
+  date_to: string;
+  nodes_to_run: OpsReplayJob[];
+  downstream_affected: Array<{
+    id: string;
+    name: string;
+    type: OpsNodeType;
+    layer: OpsLayerKey;
+  }>;
+  warnings: string[];
+  estimated_scope: {
+    selected_count?: number;
+    node_count?: number;
+    job_count?: number;
+    layers?: OpsLayerKey[];
+    estimated_duration_ms?: number | null;
+  };
+};
+
+export type OpsReplayExecuteResponse = {
+  accepted: boolean;
+  workflow_event_id: number;
+  preview: OpsReplayPreviewPayload;
+};
 
 export type ReadinessStatus = "READY" | "LATE_READY" | "PARTIAL" | "MISSING" | "CHANGED" | "REPLAYING" | "REPLAYED" | "UNKNOWN";
 
@@ -901,6 +1044,10 @@ export function getWorkflows() {
   return fetchJson<WorkflowSummary[]>("/api/workflows");
 }
 
+export function getWorkflowDetail(rootEventId: number) {
+  return fetchJson<WorkflowDetailPayload>(`/api/workflows/${rootEventId}`);
+}
+
 export function getEventsPage() {
   return fetchJson<EventsPagePayload>("/api/events-page");
 }
@@ -911,6 +1058,59 @@ export function getReadinessGrid(days = 30, endDate?: string) {
     query.set("end_date", endDate);
   }
   return fetchJson<ReadinessGridPayload>(`/api/readiness-grid?${query.toString()}`);
+}
+
+export function getOpsComputeLayers(date?: string) {
+  const query = new URLSearchParams();
+  if (date) {
+    query.set("date", date);
+  }
+  const suffix = query.toString();
+  return fetchJson<OpsComputeLayersPayload>(`/api/ops/compute-layers${suffix ? `?${suffix}` : ""}`);
+}
+
+export function getOpsNodeResult(nodeId: string, date?: string) {
+  const query = new URLSearchParams();
+  if (date) {
+    query.set("date", date);
+  }
+  const suffix = query.toString();
+  return fetchJson<OpsNodeResultPayload>(`/api/ops/node/${encodeURIComponent(nodeId)}${suffix ? `?${suffix}` : ""}`);
+}
+
+export function getOpsDependencyPath(nodeIds: string[]) {
+  const query = new URLSearchParams({ node_ids: nodeIds.join(",") });
+  return fetchJson<OpsDependencyPathPayload>(`/api/ops/dependency-path?${query.toString()}`);
+}
+
+export function postOpsReplayPreview(payload: {
+  selected_node_ids?: string[];
+  selected_cells?: OpsSelectedCell[];
+  date_from: string;
+  date_to: string;
+  mode: OpsReplayMode;
+  action: OpsReplayAction;
+}) {
+  return fetchJson<OpsReplayPreviewPayload>("/api/ops/replay/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function postOpsReplayExecute(payload: {
+  selected_node_ids?: string[];
+  selected_cells?: OpsSelectedCell[];
+  date_from: string;
+  date_to: string;
+  mode: OpsReplayMode;
+  action: OpsReplayAction;
+}) {
+  return fetchJson<OpsReplayExecuteResponse>("/api/ops/replay/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function getReadinessReplayPlan(dataset: string, dateFrom: string, dateTo?: string) {
@@ -956,6 +1156,10 @@ export function postReadinessDetectChanges(payload: { dataset: string; date_from
 export function isTerminalRecoveryStatus(status?: string | null) {
   const normalized = String(status || "").trim().toLowerCase();
   return normalized === "ok" || normalized === "error";
+}
+
+export function isTerminalWorkflowStatus(status?: string | null) {
+  return isTerminalRecoveryStatus(status);
 }
 
 export function extractRecoverySteps(action?: { result?: RecoveryActionResult | null } | null) {

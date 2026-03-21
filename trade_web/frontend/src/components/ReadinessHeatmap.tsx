@@ -1,10 +1,11 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
-import type { ReadinessCell, ReadinessRow } from "../lib/api";
+import type { OpsLayerKey, OpsNodeType, ReadinessCell, ReadinessRow } from "../lib/api";
 import { formatDate, formatPercent } from "../lib/format";
 import { useI18n } from "../lib/i18n";
+import { getDatasetText, getOpsLayerText, getReadinessStatusText } from "../lib/statusText";
 import { classNames } from "../lib/ui";
-import { getDatasetText, getReadinessStatusText } from "../lib/statusText";
+import { NodeTypeBadge } from "./NodeTypeBadge";
 
 type HoverState = {
   cell: ReadinessCell;
@@ -13,11 +14,24 @@ type HoverState = {
   left: number;
 };
 
+export type ReadinessRowMeta = {
+  nodeId?: string | null;
+  nodeType?: OpsNodeType | string | null;
+  layer?: OpsLayerKey | string | null;
+  description?: string | null;
+};
+
 type ReadinessHeatmapProps = {
   rows: ReadinessRow[];
   dates: string[];
-  selectedCellId?: string | null;
-  onSelect: (row: ReadinessRow, cell: ReadinessCell) => void;
+  activeCellId?: string | null;
+  selectedCellIds?: string[];
+  selectedNodeIds?: string[];
+  rowMeta?: Record<string, ReadinessRowMeta>;
+  collapsedGroups?: Record<string, boolean>;
+  onToggleGroup?: (groupKey: string) => void;
+  onSelect: (row: ReadinessRow, cell: ReadinessCell, options?: { append?: boolean }) => void;
+  onToggleRow?: (row: ReadinessRow) => void;
 };
 
 function cellClass(status?: string | null) {
@@ -28,14 +42,37 @@ function cellClass(status?: string | null) {
   return `readiness-cell--${normalized.replace(/_/g, "-")}`;
 }
 
-export function ReadinessHeatmap({ rows, dates, selectedCellId, onSelect }: ReadinessHeatmapProps) {
+export function ReadinessHeatmap({
+  rows,
+  dates,
+  activeCellId,
+  selectedCellIds = [],
+  selectedNodeIds = [],
+  rowMeta = {},
+  collapsedGroups = {},
+  onToggleGroup,
+  onSelect,
+  onToggleRow,
+}: ReadinessHeatmapProps) {
   const { locale, t } = useI18n();
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [hovered, setHovered] = useState<HoverState | null>(null);
 
+  const groupedRows = useMemo(() => {
+    const order: OpsLayerKey[] = ["source", "feature", "factor", "model", "decision", "workflow"];
+    return order
+      .map((layer) => ({
+        key: layer,
+        label: getOpsLayerText(locale, layer),
+        rows: rows.filter((row) => String(rowMeta[row.dataset]?.layer || "source") === layer),
+      }))
+      .filter((group) => group.rows.length > 0);
+  }, [locale, rowMeta, rows]);
+
   return (
     <div className="readiness-heatmap-shell" ref={shellRef}>
       <div className="readiness-heatmap-range">
+        <div className="readiness-heatmap-range__anchor" />
         {dates.map((day, index) => (
           <div className="readiness-heatmap-range__item" key={day}>
             {index % 7 === 0 ? formatDate(day, locale === "zh-CN" ? "zh-CN" : "en-US") : ""}
@@ -44,38 +81,76 @@ export function ReadinessHeatmap({ rows, dates, selectedCellId, onSelect }: Read
       </div>
 
       <div className="readiness-heatmap-grid">
-        {rows.map((row) => (
-          <div className="readiness-heatmap-row" key={row.dataset}>
-            <div className="readiness-dataset-label">
-              <strong>{getDatasetText(locale, row.dataset, row.label)}</strong>
-              <span>{row.critical ? t("readiness.critical") : row.job_name || ""}</span>
-            </div>
-            <div className="readiness-heatmap-row__cells">
-              {row.cells.map((cell) => (
-                <button
-                  key={cell.id}
-                  type="button"
-                  className={classNames("readiness-cell", cellClass(cell.status), selectedCellId === cell.id && "is-selected")}
-                  onClick={() => onSelect(row, cell)}
-                  onMouseEnter={(event) => {
-                    const container = shellRef.current?.getBoundingClientRect();
-                    const target = event.currentTarget.getBoundingClientRect();
-                    if (!container) {
-                      return;
-                    }
-                    setHovered({
-                      cell,
-                      row,
-                      top: target.top - container.top + target.height + 10,
-                      left: Math.max(0, target.left - container.left - 120),
-                    });
-                  }}
-                  onMouseLeave={() => setHovered((current) => (current?.cell.id === cell.id ? null : current))}
-                  aria-label={`${row.label} ${cell.date} ${cell.status}`}
-                />
-              ))}
-            </div>
-          </div>
+        {groupedRows.map((group) => (
+          <section className="readiness-group" key={group.key}>
+            <button type="button" className="readiness-group__header" onClick={() => onToggleGroup?.(group.key)}>
+              <div>
+                <strong>{group.label}</strong>
+                <span>{group.rows.length} {t("ops.nodes")}</span>
+              </div>
+              <span>{collapsedGroups[group.key] ? "+" : "−"}</span>
+            </button>
+
+            {!collapsedGroups[group.key] && group.rows.map((row) => {
+              const meta = rowMeta[row.dataset] || {};
+              const nodeId = meta.nodeId || undefined;
+              const rowSelected = Boolean(nodeId && selectedNodeIds.includes(nodeId));
+
+              return (
+                <div className="readiness-heatmap-row" key={row.dataset}>
+                  <div className="readiness-dataset-label">
+                    <div className="readiness-dataset-label__head">
+                      <label className="selection-check">
+                        <input
+                          type="checkbox"
+                          checked={rowSelected}
+                          onChange={() => onToggleRow?.(row)}
+                        />
+                        <span />
+                      </label>
+                      <NodeTypeBadge type={meta.nodeType || "source"} subtle />
+                    </div>
+                    <strong>{getDatasetText(locale, row.dataset, row.label)}</strong>
+                    <span>{row.critical ? t("readiness.critical") : row.job_name || meta.description || ""}</span>
+                  </div>
+                  <div className="readiness-heatmap-row__cells">
+                    {row.cells.map((cell) => (
+                      <button
+                        key={cell.id}
+                        type="button"
+                        className={classNames(
+                          "readiness-cell",
+                          cellClass(cell.status),
+                          activeCellId === cell.id && "is-active",
+                          selectedCellIds.includes(cell.id) && "is-marked",
+                        )}
+                        onClick={(event) =>
+                          onSelect(row, cell, {
+                            append: event.metaKey || event.ctrlKey || event.shiftKey,
+                          })
+                        }
+                        onMouseEnter={(event) => {
+                          const container = shellRef.current?.getBoundingClientRect();
+                          const target = event.currentTarget.getBoundingClientRect();
+                          if (!container) {
+                            return;
+                          }
+                          setHovered({
+                            cell,
+                            row,
+                            top: target.top - container.top + target.height + 10,
+                            left: Math.max(0, target.left - container.left - 120),
+                          });
+                        }}
+                        onMouseLeave={() => setHovered((current) => (current?.cell.id === cell.id ? null : current))}
+                        aria-label={`${row.label} ${cell.date} ${cell.status}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </section>
         ))}
       </div>
 

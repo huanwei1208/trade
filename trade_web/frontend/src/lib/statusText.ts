@@ -1,4 +1,4 @@
-import type { Locale, TodayPageData } from "./api";
+import type { Locale, OpsLayerKey, OpsNodeType, TodayPageData } from "./api";
 import { translate } from "./i18n";
 
 export type SemanticTone = "ok" | "warn" | "err" | "info" | "muted";
@@ -197,6 +197,24 @@ export function getDatasetText(locale: Locale, dataset?: string | null, fallback
 
 export function getImpactText(locale: Locale, key?: string | null) {
   return translate(locale, `impact.${String(key || "").trim()}`);
+}
+
+export function getOpsNodeTypeText(locale: Locale, raw?: OpsNodeType | string | null) {
+  const type = normalizeLower(raw);
+  const key = `ops.nodeType.${type}`;
+  const translated = translate(locale, key);
+  return translated === key ? type : translated;
+}
+
+export function getOpsLayerText(locale: Locale, raw?: OpsLayerKey | string | null) {
+  const layer = normalizeLower(raw);
+  const key = `ops.layer.${layer}`;
+  const translated = translate(locale, key);
+  return translated === key ? layer : translated;
+}
+
+export function getOpsRuntimeStatusText(locale: Locale, raw?: string | null): SemanticText {
+  return getGateStatusText(locale, raw);
 }
 
 export function getTodayUsageCopy(locale: Locale, today?: TodayPageData | null) {

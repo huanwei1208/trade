@@ -105,6 +105,82 @@
   border-color: var(--line);
 }
 
+.node-type-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-pill);
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1px solid var(--line);
+  color: var(--text-1);
+  background: rgba(112, 156, 214, 0.08);
+}
+
+.node-type-badge--source {
+  color: var(--accent-cyan);
+  background: rgba(61, 217, 214, 0.12);
+}
+
+.node-type-badge--feature {
+  color: var(--accent-blue);
+  background: rgba(42, 157, 255, 0.12);
+}
+
+.node-type-badge--factor {
+  color: var(--warn);
+  background: rgba(255, 180, 50, 0.12);
+}
+
+.node-type-badge--model {
+  color: var(--accent-indigo);
+  background: rgba(108, 124, 255, 0.12);
+}
+
+.node-type-badge--decision {
+  color: var(--ok);
+  background: rgba(40, 200, 100, 0.12);
+}
+
+.node-type-badge--workflow {
+  color: var(--accent-violet);
+  background: rgba(139, 116, 255, 0.12);
+}
+
+.node-type-badge.is-subtle {
+  border-color: rgba(112, 156, 214, 0.14);
+}
+
+.selection-check {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.selection-check input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+}
+
+.selection-check span {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  border: 1px solid var(--line-strong);
+  background: rgba(6, 17, 31, 0.65);
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.selection-check input:checked + span {
+  border-color: rgba(42, 157, 255, 0.4);
+  background: rgba(42, 157, 255, 0.16);
+  box-shadow: 0 0 0 1px rgba(42, 157, 255, 0.16);
+}
+
 .action-chip--add {
   background: var(--ok-soft);
   color: var(--ok);

@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
 
-import type { ReadinessActionDetail, ReadinessCell, ReadinessHistoryItem, ReadinessRow } from "../lib/api";
+import type { OpsLayerKey, OpsNodeType, ReadinessActionDetail, ReadinessCell, ReadinessHistoryItem, ReadinessRow } from "../lib/api";
 import { formatDate, formatDateTime, formatPercent } from "../lib/format";
 import { useI18n } from "../lib/i18n";
-import { getDatasetText, getImpactText, getReadinessStatusText } from "../lib/statusText";
+import { getDatasetText, getImpactText, getOpsLayerText, getReadinessStatusText } from "../lib/statusText";
 import { EmptyState } from "./EmptyState";
+import { NodeTypeBadge } from "./NodeTypeBadge";
 import { PanelCard } from "./PanelCard";
 import { RecoveryTimeline } from "./RecoveryTimeline";
 import { StatusPill } from "./StatusPill";
@@ -14,9 +15,15 @@ type ReadinessInspectorProps = {
   cell?: ReadinessCell | null;
   historyItems?: Array<ReadinessHistoryItem | ReadinessActionDetail>;
   actions?: ReactNode;
+  nodeMeta?: {
+    nodeId?: string | null;
+    nodeType?: OpsNodeType | string | null;
+    layer?: OpsLayerKey | string | null;
+    description?: string | null;
+  } | null;
 };
 
-export function ReadinessInspector({ row, cell, historyItems, actions }: ReadinessInspectorProps) {
+export function ReadinessInspector({ row, cell, historyItems, actions, nodeMeta }: ReadinessInspectorProps) {
   const { locale, t } = useI18n();
 
   if (!row || !cell) {
@@ -33,8 +40,13 @@ export function ReadinessInspector({ row, cell, historyItems, actions }: Readine
     <PanelCard className="readiness-inspector">
       <div className="readiness-inspector__section">
         <div className="readiness-inspector__label">{t("readiness.dataset")}</div>
+        <div className="readiness-inspector__pill-row">
+          <NodeTypeBadge type={nodeMeta?.nodeType || "source"} subtle />
+          <StatusPill label={getOpsLayerText(locale, nodeMeta?.layer || "source")} tone="muted" subtle />
+        </div>
         <div className="readiness-inspector__value">{getDatasetText(locale, row.dataset, row.label)}</div>
         <div className="readiness-inspector__subtle">{formatDate(cell.date, locale === "zh-CN" ? "zh-CN" : "en-US")}</div>
+        {nodeMeta?.description && <div className="readiness-inspector__subtle">{nodeMeta.description}</div>}
       </div>
 
       <div className="readiness-inspector__section">
@@ -48,6 +60,7 @@ export function ReadinessInspector({ row, cell, historyItems, actions }: Readine
 
       <div className="readiness-inspector__section">
         <div className="readiness-inspector__label">{t("readiness.whyState")}</div>
+        <div className="readiness-inspector__subtle">{t("ops.readinessVsResult")}</div>
         <div className="inspector-metric-grid">
           <div className="inspector-metric">
             <span>{t("readiness.coverage")}</span>

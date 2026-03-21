@@ -11,7 +11,7 @@ import { SymbolPage } from "./pages/SymbolPage";
 import { TodayPage } from "./pages/TodayPage";
 
 type OpsFocus = {
-  tab?: "overview" | "readiness" | "recovery" | "pipeline" | "trust" | "workflows";
+  tab?: "overview" | "readiness" | "compute" | "replay" | "trust" | "audit" | "recovery" | "pipeline" | "workflows";
   date?: string;
   dataset?: string;
 };

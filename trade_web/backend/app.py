@@ -150,6 +150,13 @@ def create_app():
     from trade_py.services.state_service import StateService
     from trade_py.services.decision_service import DecisionService
     from trade_py.services.explanation_service import ExplanationService
+    from trade_web.backend.ops_workspace import (
+        build_ops_compute_layers,
+        build_ops_dependency_path,
+        build_ops_replay_preview,
+        execute_ops_replay,
+        get_ops_node_result,
+    )
     from trade_web.backend.readiness import (
         build_readiness_grid,
         build_replay_plan,
@@ -1754,6 +1761,84 @@ def create_app():
 
         Thread(target=_run, name=f"readiness-replay-{action_id}", daemon=True).start()
         return {"accepted": True, "action_id": action_id, "plan": plan}
+
+    @app.get("/api/ops/compute-layers")
+    async def get_ops_compute_layers_api(date: str | None = None):
+        return build_ops_compute_layers(
+            data_root,
+            _db(),
+            _state_svc,
+            _explain_svc,
+            as_of_date=date,
+        )
+
+    @app.get("/api/ops/node/{node_id:path}/result")
+    async def get_ops_node_result_api(node_id: str, date: str | None = None):
+        try:
+            return get_ops_node_result(
+                data_root,
+                _db(),
+                _state_svc,
+                _explain_svc,
+                node_id=node_id,
+                as_of_date=date,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.get("/api/ops/dependency-path")
+    async def get_ops_dependency_path_api(node_ids: str):
+        ids = [item.strip() for item in str(node_ids or "").split(",") if item.strip()]
+        if not ids:
+            raise HTTPException(status_code=400, detail="node_ids is required")
+        return build_ops_dependency_path(ids)
+
+    @app.post("/api/ops/replay/preview")
+    async def post_ops_replay_preview_api(req: dict = Body(...)):
+        selected_node_ids = [str(item).strip() for item in (req.get("selected_node_ids") or []) if str(item).strip()]
+        selected_cells = list(req.get("selected_cells") or [])
+        date_from = str(req.get("date_from") or req.get("date") or "").strip()
+        date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
+        mode = str(req.get("mode") or "selected_plus_downstream").strip().lower()
+        action = str(req.get("action") or "recompute").strip().lower()
+        if not date_from:
+            raise HTTPException(status_code=400, detail="date_from is required")
+        try:
+            return build_ops_replay_preview(
+                _db(),
+                selected_node_ids=selected_node_ids,
+                selected_cells=selected_cells,
+                date_from=date_from,
+                date_to=date_to,
+                mode=mode,
+                action=action,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/ops/replay/execute")
+    async def post_ops_replay_execute_api(req: dict = Body(...)):
+        selected_node_ids = [str(item).strip() for item in (req.get("selected_node_ids") or []) if str(item).strip()]
+        selected_cells = list(req.get("selected_cells") or [])
+        date_from = str(req.get("date_from") or req.get("date") or "").strip()
+        date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
+        mode = str(req.get("mode") or "selected_plus_downstream").strip().lower()
+        action = str(req.get("action") or "recompute").strip().lower()
+        if not date_from:
+            raise HTTPException(status_code=400, detail="date_from is required")
+        try:
+            return execute_ops_replay(
+                data_root,
+                _db(),
+                selected_node_ids=selected_node_ids,
+                selected_cells=selected_cells,
+                date_from=date_from,
+                date_to=date_to,
+                mode=mode,
+                action=action,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/api/events/stream")
     async def stream_events(request: FastAPIRequest, after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):

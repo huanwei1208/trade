@@ -1,40 +1,95 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { BackfillActionPanel } from "../components/BackfillActionPanel";
+import { ComputeLayersView } from "../components/ComputeLayersView";
+import { ComputeNodeInspector } from "../components/ComputeNodeInspector";
 import { ErrorState } from "../components/ErrorState";
 import { ExecutionRunCard } from "../components/ExecutionRunCard";
 import { LoadingSkeleton } from "../components/LoadingSkeleton";
+import { OpsLayerFilterBar } from "../components/OpsLayerFilterBar";
 import { PanelCard } from "../components/PanelCard";
-import { ReadinessHeatmap } from "../components/ReadinessHeatmap";
+import { ReadinessHeatmap, type ReadinessRowMeta } from "../components/ReadinessHeatmap";
 import { ReadinessInspector } from "../components/ReadinessInspector";
 import { ReadinessSummaryCards } from "../components/ReadinessSummaryCards";
 import { RecoveryTimeline } from "../components/RecoveryTimeline";
+import { ReplayBuilder } from "../components/ReplayBuilder";
 import { SectionHeader } from "../components/SectionHeader";
 import { StatusPill } from "../components/StatusPill";
-import { getReadinessHistory, getReadinessReplayPlan, isTerminalRecoveryStatus, postReadinessBackfill, postReadinessDetectChanges, postReadinessReplay, useApiResource, type DagRuntime, type EventsPagePayload, type ReadinessActionDetail, type ReadinessCell, type ReadinessGridPayload, type ReadinessHistoryPayload, type ReadinessRow, type ReplayPlanPayload, type StatusPayload, type TrustOverview, type WorkflowSummary } from "../lib/api";
+import {
+  fetchJson,
+  getOpsDependencyPath,
+  getOpsNodeResult,
+  getReadinessHistory,
+  getReadinessReplayPlan,
+  getWorkflowDetail,
+  isTerminalRecoveryStatus,
+  isTerminalWorkflowStatus,
+  postOpsReplayExecute,
+  postOpsReplayPreview,
+  postReadinessBackfill,
+  postReadinessDetectChanges,
+  postReadinessReplay,
+  type DagRuntime,
+  type EventsPagePayload,
+  type OpsComputeLayersPayload,
+  type OpsDependencyPathPayload,
+  type OpsNodeResultPayload,
+  type OpsReplayAction,
+  type OpsReplayMode,
+  type ReadinessActionDetail,
+  type ReadinessCell,
+  type ReadinessGridPayload,
+  type ReadinessHistoryPayload,
+  type ReadinessRow,
+  type ReplayPlanPayload,
+  type StatusPayload,
+  type TrustOverview,
+  type WorkflowDetailPayload,
+  type WorkflowSummary,
+  useApiResource,
+} from "../lib/api";
 import { formatDateTime, formatPercent, shortText } from "../lib/format";
 import { useI18n } from "../lib/i18n";
-import { getDatasetText } from "../lib/statusText";
-import { getGateStatusText } from "../lib/statusText";
+import {
+  getDatasetText,
+  getGateStatusText,
+  getOpsNodeTypeText,
+} from "../lib/statusText";
 import { useLocalStorageState } from "../lib/ui";
+
+type OpsTab = "overview" | "readiness" | "compute" | "replay" | "trust" | "audit";
+type OpsTabLike = OpsTab | "recovery" | "pipeline" | "workflows";
 
 type OpsPageProps = {
   refreshToken: number;
   focus?: {
-    tab?: OpsTab;
+    tab?: OpsTabLike;
     date?: string;
     dataset?: string;
   };
   onFocusChange?: (focus: { tab?: OpsTab; date?: string; dataset?: string }) => void;
 };
 
-type OpsTab = "overview" | "readiness" | "recovery" | "pipeline" | "trust" | "workflows";
+type SelectionMode = "cell" | "node" | "subtree";
+type OpsStatusFilter = "all" | "healthy" | "degraded" | "broken" | "stale" | "partial";
 
 export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   const { locale, t } = useI18n();
-  const [tab, setTab] = useLocalStorageState<OpsTab>("trade-web:ops-tab", "readiness");
+  const [storedTab, setStoredTab] = useLocalStorageState<OpsTabLike>("trade-web:ops-tab", "readiness");
+  const tab = normalizeOpsTab(storedTab);
+
   const [readinessDays, setReadinessDays] = useState<30 | 60 | 90>(30);
-  const [selectedCellId, setSelectedCellId] = useState("");
+  const [activeCellId, setActiveCellId] = useState("");
+  const [selectedCellIds, setSelectedCellIds] = useState<string[]>([]);
+  const [activeNodeId, setActiveNodeId] = useState("");
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>("cell");
+  const [replayMode, setReplayMode] = useState<OpsReplayMode>("selected_plus_downstream");
+  const [actionMode, setActionMode] = useState<OpsReplayAction>("recompute");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<OpsStatusFilter>("all");
+  const [collapsedReadinessGroups, setCollapsedReadinessGroups] = useState<Record<string, boolean>>({});
+  const [collapsedComputeGroups, setCollapsedComputeGroups] = useState<Record<string, boolean>>({});
   const [range, setRange] = useState({ dateFrom: "", dateTo: "" });
   const [recoveryPlan, setRecoveryPlan] = useState<ReplayPlanPayload | null>(null);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
@@ -45,6 +100,15 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyVersion, setHistoryVersion] = useState(0);
+  const [nodeResult, setNodeResult] = useState<OpsNodeResultPayload | null>(null);
+  const [nodeLoading, setNodeLoading] = useState(false);
+  const [nodeError, setNodeError] = useState<string | null>(null);
+  const [dependencyPath, setDependencyPath] = useState<OpsDependencyPathPayload | null>(null);
+  const [workflowDetail, setWorkflowDetail] = useState<WorkflowDetailPayload | null>(null);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [currentWorkflowId, setCurrentWorkflowId] = useState<number | null>(null);
+  const [replayPreview, setReplayPreview] = useState<Awaited<ReturnType<typeof postOpsReplayPreview>> | null>(null);
   const terminalRefreshKeyRef = useRef("");
 
   const status = useApiResource<StatusPayload>("/api/status", { deps: [refreshToken], cacheKey: "trade-web:status" });
@@ -56,13 +120,58 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     deps: [refreshToken, readinessDays],
     cacheKey: `trade-web:readiness-grid:${readinessDays}`,
   });
+  const computeDate = focus?.date || "";
+  const compute = useApiResource<OpsComputeLayersPayload>(computeDate ? `/api/ops/compute-layers?date=${computeDate}` : "/api/ops/compute-layers", {
+    deps: [refreshToken, computeDate],
+    cacheKey: `trade-web:ops-compute:${computeDate || "latest"}`,
+  });
 
-  const selectedReadiness = findSelectedReadiness(readiness.data?.rows || [], selectedCellId);
+  const rowMetaByDataset = useMemo(() => buildReadinessRowMeta(compute.data?.nodes || []), [compute.data?.nodes]);
+  const computeNodes = compute.data?.nodes || [];
+  const filteredReadinessRows = useMemo(
+    () => filterReadinessRows(readiness.data?.rows || [], rowMetaByDataset, typeFilter, statusFilter),
+    [readiness.data?.rows, rowMetaByDataset, statusFilter, typeFilter],
+  );
+  const filteredComputePayload = useMemo(
+    () => filterComputePayload(compute.data, typeFilter, statusFilter),
+    [compute.data, statusFilter, typeFilter],
+  );
+
+  const selectedReadiness = findSelectedReadiness(readiness.data?.rows || [], activeCellId);
   const selectedDataset = selectedReadiness.row?.dataset || "";
   const selectedDate = selectedReadiness.cell?.date || "";
   const selectedCellChanged = selectedReadiness.cell?.changed_since_last_ready;
-  const historyItems = historyPayload?.items || [];
-  const latestRecovery = historyItems.find((item) => !isTerminalRecoveryStatus(item.status)) || historyItems[0] || null;
+  const selectedNodeMeta = rowMetaByDataset[selectedDataset] || null;
+  const selectedCellPayloads = useMemo(
+    () => collectSelectedCells(readiness.data?.rows || [], selectedCellIds),
+    [readiness.data?.rows, selectedCellIds],
+  );
+  const selectedComputeNodes = useMemo(
+    () => computeNodes.filter((node) => selectedNodeIds.includes(node.id)),
+    [computeNodes, selectedNodeIds],
+  );
+  const latestHistoryItems = historyPayload?.items || [];
+  const latestRecovery = latestHistoryItems.find((item) => !isTerminalRecoveryStatus(item.status)) || latestHistoryItems[0] || null;
+  const latestRecoveryAt = latestRecovery?.updated_at || latestRecovery?.requested_at || selectedReadiness.cell?.history?.[0]?.ts || readiness.data?.recovery_history?.[selectedReadiness.row?.dataset || ""]?.[0]?.ts || null;
+  const richHistoryItems =
+    latestHistoryItems.length > 0
+      ? latestHistoryItems
+      : selectedReadiness.row
+        ? readiness.data?.recovery_history?.[selectedReadiness.row.dataset] || selectedReadiness.cell?.history || []
+        : [];
+
+  const effectiveNodeIds = useMemo(() => {
+    if (selectedNodeIds.length > 0) {
+      return selectedNodeIds;
+    }
+    if (activeNodeId) {
+      return [activeNodeId];
+    }
+    if (selectedNodeMeta?.nodeId) {
+      return [selectedNodeMeta.nodeId];
+    }
+    return [];
+  }, [activeNodeId, selectedNodeIds, selectedNodeMeta?.nodeId]);
 
   useEffect(() => {
     if (selectedReadiness.cell || !readiness.data?.rows?.length) {
@@ -70,16 +179,30 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     }
     const fallback = pickDefaultReadinessCell(readiness.data.rows);
     if (fallback) {
-      setSelectedCellId(fallback.id);
+      setActiveCellId(fallback.id);
+      setSelectedCellIds([fallback.id]);
     }
   }, [readiness.data, selectedReadiness.cell]);
+
+  useEffect(() => {
+    if (!compute.data?.nodes?.length) {
+      return;
+    }
+    if (activeNodeId && compute.data.nodes.some((node) => node.id === activeNodeId)) {
+      return;
+    }
+    const suggested = selectedNodeMeta?.nodeId || compute.data.nodes[0]?.id;
+    if (suggested) {
+      setActiveNodeId(suggested);
+    }
+  }, [activeNodeId, compute.data?.nodes, selectedNodeMeta?.nodeId]);
 
   useEffect(() => {
     if (!focus?.tab) {
       return;
     }
-    setTab(focus.tab);
-  }, [focus?.tab, setTab]);
+    setStoredTab(normalizeOpsTab(focus.tab));
+  }, [focus?.tab, setStoredTab]);
 
   useEffect(() => {
     if (!focus?.dataset || !focus?.date || !readiness.data?.rows?.length) {
@@ -87,12 +210,10 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     }
     const targetRow = readiness.data.rows.find((row) => row.dataset === focus.dataset);
     const targetCell = targetRow?.cells.find((cell) => cell.date === focus.date);
-    // Only override selection when an external navigation request changes focus.
-    // Do NOT include selectedCellId in deps — that would fight user cell clicks.
     if (targetCell) {
-      setSelectedCellId(targetCell.id);
+      setActiveCellId(targetCell.id);
+      setSelectedCellIds([targetCell.id]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.dataset, focus?.date, readiness.data]);
 
   useEffect(() => {
@@ -121,17 +242,15 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     setHistoryLoading(true);
     getReadinessHistory(selectedDataset, selectedDate)
       .then((payload) => {
-        if (cancelled) {
-          return;
+        if (!cancelled) {
+          setHistoryPayload(payload);
+          setHistoryError(null);
         }
-        setHistoryPayload(payload);
-        setHistoryError(null);
       })
       .catch((error) => {
-        if (cancelled) {
-          return;
+        if (!cancelled) {
+          setHistoryError(error instanceof Error ? error.message : t("recovery.historyUnavailable"));
         }
-        setHistoryError(error instanceof Error ? error.message : t("recovery.historyUnavailable"));
       })
       .finally(() => {
         if (!cancelled) {
@@ -152,7 +271,7 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
       setHistoryVersion((current) => current + 1);
     }, 1800);
     return () => window.clearTimeout(timer);
-  }, [latestRecovery?.id, latestRecovery?.status]);
+  }, [latestRecovery?.id, latestRecovery?.status, readiness]);
 
   useEffect(() => {
     if (!latestRecovery || !isTerminalRecoveryStatus(latestRecovery.status)) {
@@ -165,7 +284,8 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     }
     terminalRefreshKeyRef.current = refreshKey;
     readiness.retry();
-  }, [latestRecovery?.id, latestRecovery?.status, latestRecovery?.updated_at]);
+    compute.retry();
+  }, [compute, latestRecovery?.id, latestRecovery?.status, latestRecovery?.updated_at, readiness]);
 
   useEffect(() => {
     const isDefaultSingleDayRange = Boolean(selectedDate && range.dateFrom === selectedDate && range.dateTo === selectedDate);
@@ -178,18 +298,14 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
         date_from: range.dateFrom,
         date_to: range.dateTo,
       })
-        .then((payload) => {
-          setChangeDetected(Boolean(payload.items?.some((item) => item.changed)));
-        })
-        .catch(() => {
-          setChangeDetected(null);
-        });
+        .then((payload) => setChangeDetected(Boolean(payload.items?.some((item) => item.changed))))
+        .catch(() => setChangeDetected(null));
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [selectedDataset, selectedDate, range.dateFrom, range.dateTo]);
+  }, [range.dateFrom, range.dateTo, selectedDataset, selectedDate]);
 
   useEffect(() => {
-    if (!selectedDataset || !selectedDate || !onFocusChange) {
+    if (!selectedDate || !onFocusChange) {
       return;
     }
     if (focus?.tab === tab && focus?.date === selectedDate && focus?.dataset === selectedDataset) {
@@ -202,6 +318,119 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     });
   }, [focus?.dataset, focus?.date, focus?.tab, onFocusChange, selectedDataset, selectedDate, tab]);
 
+  useEffect(() => {
+    if (!activeNodeId) {
+      setNodeResult(null);
+      setNodeError(null);
+      return;
+    }
+    let cancelled = false;
+    setNodeLoading(true);
+    getOpsNodeResult(activeNodeId, selectedDate || compute.data?.as_of)
+      .then((payload) => {
+        if (!cancelled) {
+          setNodeResult(payload);
+          setNodeError(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setNodeError(error instanceof Error ? error.message : t("ops.nodeUnavailable"));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setNodeLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNodeId, compute.data?.as_of, selectedDate, t]);
+
+  useEffect(() => {
+    const nodeIds = Array.from(new Set([
+      ...effectiveNodeIds,
+      ...selectedCellPayloads
+        .map((cell) => rowMetaByDataset[String(cell.dataset || "")]?.nodeId || "")
+        .filter(Boolean),
+    ]));
+    if (nodeIds.length === 0) {
+      setDependencyPath(null);
+      return;
+    }
+    let cancelled = false;
+    getOpsDependencyPath(nodeIds)
+      .then((payload) => {
+        if (!cancelled) {
+          setDependencyPath(payload);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDependencyPath(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveNodeIds, rowMetaByDataset, selectedCellPayloads]);
+
+  useEffect(() => {
+    if (!currentWorkflowId) {
+      setWorkflowDetail(null);
+      setWorkflowError(null);
+      return;
+    }
+    let cancelled = false;
+    setWorkflowLoading(true);
+    getWorkflowDetail(currentWorkflowId)
+      .then((payload) => {
+        if (!cancelled) {
+          setWorkflowDetail(payload);
+          setWorkflowError(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setWorkflowError(error instanceof Error ? error.message : t("ops.workflowUnavailable"));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setWorkflowLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentWorkflowId, t]);
+
+  useEffect(() => {
+    if (!workflowDetail || isTerminalWorkflowStatus(String(workflowDetail.status || ""))) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (currentWorkflowId) {
+        getWorkflowDetail(currentWorkflowId)
+          .then((payload) => {
+            setWorkflowDetail(payload);
+            if (isTerminalWorkflowStatus(String(payload.status || ""))) {
+              readiness.retry();
+              compute.retry();
+              runtime.retry();
+              workflows.retry();
+              events.retry();
+            }
+          })
+          .catch((error) => {
+            setWorkflowError(error instanceof Error ? error.message : t("ops.workflowUnavailable"));
+          });
+      }
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [compute, currentWorkflowId, events, readiness, runtime, t, workflowDetail, workflows]);
+
   async function loadReplayPlan() {
     if (!selectedReadiness.row) {
       return;
@@ -209,7 +438,11 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     setRecoveryBusy(true);
     setRecoveryError(null);
     try {
-      const plan = await getReadinessReplayPlan(selectedReadiness.row.dataset, range.dateFrom || selectedReadiness.cell?.date || "", range.dateTo || range.dateFrom || selectedReadiness.cell?.date || "");
+      const plan = await getReadinessReplayPlan(
+        selectedReadiness.row.dataset,
+        range.dateFrom || selectedReadiness.cell?.date || "",
+        range.dateTo || range.dateFrom || selectedReadiness.cell?.date || "",
+      );
       setRecoveryPlan(plan);
     } catch (error) {
       setRecoveryError(error instanceof Error ? error.message : t("recovery.submitFailed"));
@@ -236,6 +469,7 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
       setRecoveryPlan(response.plan);
       setRecoverySuccess(t("recovery.requestAccepted"));
       readiness.retry();
+      compute.retry();
       setHistoryVersion((current) => current + 1);
     } catch (error) {
       setRecoveryError(error instanceof Error ? error.message : t("recovery.submitFailed"));
@@ -244,8 +478,65 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     }
   }
 
-  const latestRecoveryAt = latestRecovery?.updated_at || latestRecovery?.requested_at || selectedReadiness.cell?.history?.[0]?.ts || readiness.data?.recovery_history?.[selectedReadiness.row?.dataset || ""]?.[0]?.ts || null;
-  const richHistoryItems = historyItems.length > 0 ? historyItems : (selectedReadiness.row ? readiness.data?.recovery_history?.[selectedReadiness.row.dataset] || selectedReadiness.cell?.history || [] : []);
+  async function previewSelection(nextAction = actionMode, nextMode = replayMode) {
+    const payload = buildReplayRequest({
+      effectiveNodeIds,
+      selectedCells: selectedCellPayloads,
+      selectedReadiness,
+      range,
+      action: nextAction,
+      mode: nextMode,
+    });
+    if (!payload) {
+      setRecoveryError(t("ops.noSelection"));
+      return;
+    }
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    try {
+      const preview = await postOpsReplayPreview(payload);
+      setReplayPreview(preview);
+    } catch (error) {
+      setRecoveryError(error instanceof Error ? error.message : t("ops.previewFailed"));
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }
+
+  async function executeSelection(nextAction: OpsReplayAction, nextMode: OpsReplayMode) {
+    const payload = buildReplayRequest({
+      effectiveNodeIds,
+      selectedCells: selectedCellPayloads,
+      selectedReadiness,
+      range,
+      action: nextAction,
+      mode: nextMode,
+    });
+    if (!payload) {
+      setRecoveryError(t("ops.noSelection"));
+      return;
+    }
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    setRecoverySuccess(null);
+    try {
+      const response = await postOpsReplayExecute(payload);
+      setReplayPreview(response.preview);
+      setCurrentWorkflowId(response.workflow_event_id);
+      setWorkflowDetail(null);
+      setRecoverySuccess(t("ops.replayAccepted"));
+      setTabAndStore(setStoredTab, "audit");
+    } catch (error) {
+      setRecoveryError(error instanceof Error ? error.message : t("ops.executeFailed"));
+    } finally {
+      setRecoveryBusy(false);
+    }
+  }
+
+  function setTabAndStore(setter: (value: OpsTabLike) => void, nextTab: OpsTab) {
+    setter(nextTab);
+  }
+
   const recoveryActionBlock =
     selectedReadiness.row && selectedReadiness.cell ? (
       <>
@@ -269,8 +560,8 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
           onChangeRange={setRange}
           onBackfillDay={() => submitRecovery("backfill", "data_only", selectedReadiness.cell?.date || "", selectedReadiness.cell?.date || "")}
           onBackfillRange={() => submitRecovery("backfill", "data_only", range.dateFrom, range.dateTo)}
-          onReplayDownstream={() => submitRecovery("backfill", "data_plus_downstream", range.dateFrom, range.dateTo)}
-          onReplayFullChain={() => submitRecovery("backfill", "full_replay", range.dateFrom, range.dateTo)}
+          onReplayDownstream={() => submitRecovery("replay", "data_plus_downstream", range.dateFrom, range.dateTo)}
+          onReplayFullChain={() => submitRecovery("replay", "full_replay", range.dateFrom, range.dateTo)}
           onDryRun={loadReplayPlan}
         />
       </>
@@ -281,7 +572,14 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   }
 
   if (status.error && !status.data) {
-    return <ErrorState title={t("ops.viewUnavailable")} body={t("ops.viewUnavailableCopy")} detail={status.error.message} action={<button type="button" className="button button--primary" onClick={status.retry}>{t("common.retry")}</button>} />;
+    return (
+      <ErrorState
+        title={t("ops.viewUnavailable")}
+        body={t("ops.viewUnavailableCopy")}
+        detail={status.error.message}
+        action={<button type="button" className="button button--primary" onClick={status.retry}>{t("common.retry")}</button>}
+      />
+    );
   }
 
   return (
@@ -290,18 +588,44 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
 
       <div className="filter-bar filter-bar--ops">
         {([
-          ["readiness", t("ops.tabs.readiness")],
-          ["recovery", t("ops.tabs.recovery")],
           ["overview", t("ops.tabs.overview")],
-          ["pipeline", t("ops.tabs.pipeline")],
+          ["readiness", t("ops.tabs.readiness")],
+          ["compute", t("ops.tabs.compute")],
+          ["replay", t("ops.tabs.replayBuilder")],
           ["trust", t("ops.tabs.trust")],
-          ["workflows", t("ops.tabs.workflows")],
+          ["audit", t("ops.tabs.audit")],
         ] as const).map(([key, label]) => (
-          <button key={key} type="button" className={tab === key ? "is-active" : ""} onClick={() => setTab(key)}>
+          <button key={key} type="button" className={tab === key ? "is-active" : ""} onClick={() => setTabAndStore(setStoredTab, key)}>
             {label}
           </button>
         ))}
       </div>
+
+      {(tab === "readiness" || tab === "compute") && (
+        <OpsLayerFilterBar
+          typeFilter={typeFilter}
+          statusFilter={statusFilter}
+          onTypeFilter={setTypeFilter}
+          onStatusFilter={(value) => setStatusFilter(value as OpsStatusFilter)}
+          typeOptions={[
+            { value: "all", label: t("ops.filter.all") },
+            { value: "source", label: t("ops.filter.source") },
+            { value: "feature", label: t("ops.filter.feature") },
+            { value: "factor", label: t("ops.filter.factor") },
+            { value: "model", label: t("ops.filter.model") },
+            { value: "decision", label: t("ops.filter.decision") },
+            { value: "workflow", label: t("ops.filter.workflow") },
+          ]}
+          statusOptions={[
+            { value: "all", label: t("ops.statusFilter.all") },
+            { value: "healthy", label: t("ops.statusFilter.healthy") },
+            { value: "degraded", label: t("ops.statusFilter.degraded") },
+            { value: "broken", label: t("ops.statusFilter.broken") },
+            { value: "stale", label: t("ops.statusFilter.stale") },
+            { value: "partial", label: t("ops.statusFilter.partial") },
+          ]}
+        />
+      )}
 
       {tab === "overview" && (
         <div className="compact-grid">
@@ -380,7 +704,7 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
                   <span>
                     {(readiness.data.summary.today_impact?.datasets || [])
                       .slice(0, 3)
-                      .map((item) => getDatasetText(locale, item.dataset, item.label))
+                      .map((item) => `${getDatasetText(locale, item.dataset, item.label)} · ${getOpsNodeTypeText(locale, rowMetaByDataset[item.dataset || ""]?.nodeType || "source")}`)
                       .join(" · ")}
                   </span>
                 </div>
@@ -389,67 +713,113 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
               <div className="readiness-shell">
                 <PanelCard title={t("ops.tabs.readiness")} subdued>
                   <ReadinessHeatmap
-                    rows={readiness.data.rows}
+                    rows={filteredReadinessRows}
                     dates={readiness.data.range.dates}
-                    selectedCellId={selectedReadiness.cell?.id}
-                    onSelect={(row, cell) => setSelectedCellId(cell.id)}
+                    activeCellId={activeCellId}
+                    selectedCellIds={selectedCellIds}
+                    selectedNodeIds={selectedNodeIds}
+                    rowMeta={rowMetaByDataset}
+                    collapsedGroups={collapsedReadinessGroups}
+                    onToggleGroup={(groupKey) =>
+                      setCollapsedReadinessGroups((current) => ({
+                        ...current,
+                        [groupKey]: !current[groupKey],
+                      }))
+                    }
+                    onSelect={(row, cell, options) => {
+                      setActiveCellId(cell.id);
+                      setSelectedCellIds((current) => {
+                        if (options?.append) {
+                          return toggleId(current, cell.id);
+                        }
+                        return [cell.id];
+                      });
+                    }}
+                    onToggleRow={(row) => {
+                      const nodeId = rowMetaByDataset[row.dataset]?.nodeId;
+                      if (!nodeId) {
+                        return;
+                      }
+                      setActiveNodeId(nodeId);
+                      setSelectedNodeIds((current) => toggleId(current, nodeId));
+                    }}
                   />
                 </PanelCard>
                 <ReadinessInspector
                   row={selectedReadiness.row}
                   cell={selectedReadiness.cell}
+                  nodeMeta={selectedNodeMeta}
                   historyItems={richHistoryItems}
                   actions={recoveryActionBlock}
                 />
               </div>
             </>
           ) : (
-            <ErrorState title={t("ops.viewUnavailable")} body={t("ops.viewUnavailableCopy")} action={<button type="button" className="button button--primary" onClick={readiness.retry}>{t("common.retry")}</button>} />
+            <ErrorState
+              title={t("ops.viewUnavailable")}
+              body={t("ops.viewUnavailableCopy")}
+              action={<button type="button" className="button button--primary" onClick={readiness.retry}>{t("common.retry")}</button>}
+            />
           )}
         </div>
       )}
 
-      {tab === "pipeline" && (
-        <PanelCard title={t("ops.pipelineRuntime")} subdued>
-          <div className="pipeline-list">
-            {(runtime.data?.nodes || []).slice(0, 18).map((node, index) => (
-              <div className="pipeline-list__row" key={`${node.job_name || node.id || index}`}>
-                <div>
-                  <div className="pipeline-list__title">{String(node.job_name || "Unknown node")}</div>
-                  <div className="pipeline-list__subtitle">{String(node.stage || "unknown stage")}</div>
-                </div>
-                <div className="pipeline-list__meta">
-                  <StatusPill label={getGateStatusText(locale, String(node.status || "unknown")).label} tone={String(node.status) === "ok" ? "ok" : String(node.status) === "error" ? "err" : "info"} subtle />
-                  <span>{shortText(String(node.error_detail || node.result_summary || ""), 70)}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </PanelCard>
+      {tab === "compute" && compute.data && (
+        <ComputeLayersView
+          payload={filteredComputePayload}
+          activeNodeId={activeNodeId}
+          selectedNodeIds={selectedNodeIds}
+          collapsedGroups={collapsedComputeGroups}
+          onToggleGroup={(groupKey) =>
+            setCollapsedComputeGroups((current) => ({
+              ...current,
+              [groupKey]: !current[groupKey],
+            }))
+          }
+          onActivateNode={(nodeId) => {
+            setActiveNodeId(nodeId);
+            if (selectionMode !== "cell" && selectedNodeIds.length === 0) {
+              setSelectedNodeIds([nodeId]);
+            }
+          }}
+          onToggleNode={(nodeId) => {
+            if (selectionMode === "subtree") {
+              const expanded = expandSubtree(nodeId, computeNodes);
+              setSelectedNodeIds((current) => toggleManyIds(current, expanded));
+              return;
+            }
+            setSelectedNodeIds((current) => toggleId(current, nodeId));
+          }}
+          inspector={<ComputeNodeInspector node={nodeResult} loading={nodeLoading} error={nodeError} />}
+        />
       )}
 
-      {tab === "recovery" && (
-        <div className="readiness-shell">
-          <PanelCard title={t("ops.tabs.recovery")} subdued>
-            <div className="note-stack">
-              <div className="note-card note-card--warning">
-                {selectedReadiness.row && selectedReadiness.cell
-                  ? `${getDatasetText(locale, selectedReadiness.row.dataset, selectedReadiness.row.label)} · ${selectedReadiness.cell.date}`
-                  : t("readiness.selectCellCopy")}
-              </div>
-              {historyError && <div className="note-card note-card--danger">{historyError}</div>}
-              <PanelCard title={t("readiness.auditHistory")} subdued>
-                {historyLoading && historyItems.length === 0 ? <LoadingSkeleton variant="panel" /> : <RecoveryTimeline items={richHistoryItems} />}
-              </PanelCard>
-            </div>
-          </PanelCard>
-          <ReadinessInspector
-            row={selectedReadiness.row}
-            cell={selectedReadiness.cell}
-            historyItems={richHistoryItems}
-            actions={recoveryActionBlock}
-          />
-        </div>
+      {tab === "replay" && (
+        <ReplayBuilder
+          selectionMode={selectionMode}
+          replayMode={replayMode}
+          actionMode={actionMode}
+          selectedNodes={selectedComputeNodes}
+          selectedCells={selectedCellPayloads}
+          dependencyPath={dependencyPath}
+          preview={replayPreview}
+          workflow={workflowDetail}
+          loading={recoveryBusy || workflowLoading}
+          error={recoveryError || workflowError}
+          onSelectionMode={setSelectionMode}
+          onReplayMode={setReplayMode}
+          onActionMode={setActionMode}
+          onPreview={() => previewSelection(actionMode, replayMode)}
+          onRepair={() => executeSelection("repair", replayMode)}
+          onRecompute={() => executeSelection("recompute", "selected_plus_downstream")}
+          onFullChain={() => executeSelection("recompute", "full_chain")}
+          onCompare={() => setTabAndStore(setStoredTab, "compute")}
+          onClear={() => {
+            setSelectedCellIds([]);
+            setSelectedNodeIds([]);
+            setReplayPreview(null);
+          }}
+        />
       )}
 
       {tab === "trust" && (
@@ -468,26 +838,59 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
         </PanelCard>
       )}
 
-      {tab === "workflows" && (
-        <PanelCard title={t("ops.workflowTraces")} subdued>
-          <div className="list-stack">
-            {(workflows.data || []).slice(0, 12).map((workflow, index) => (
-              <div className="compact-row" key={`${workflow.root_event_id || index}`}>
-                <div>
-                  <div className="compact-row__title">{getWorkflowTitle(workflow)}</div>
-                  <div className="compact-row__subtitle">{shortText(getWorkflowSummary(workflow) || "", 90) || t("ops.noRootCause")}</div>
+      {tab === "audit" && (
+        <div className="compact-grid">
+          <PanelCard title={t("ops.workflowTraces")} subdued>
+            <div className="list-stack">
+              {workflowDetail && (
+                <div className="note-card">
+                  <strong>{String(workflowDetail.title || t("ops.currentWorkflow"))}</strong>
+                  <div className="readiness-inspector__subtle">
+                    {t("ops.workflowProgress", {
+                      completed: Number(workflowDetail.progress?.completed || 0),
+                      total: Number(workflowDetail.progress?.total || 0),
+                    })}
+                  </div>
                 </div>
-                <div className="compact-row__meta">
-                  <StatusPill label={getGateStatusText(locale, String(workflow.status || "unknown")).label} tone={String(workflow.status) === "ok" ? "ok" : String(workflow.status) === "error" ? "err" : "info"} subtle />
-                  <span>{formatDateTime(String(workflow.created_at || workflow.started_at || ""), locale === "zh-CN" ? "zh-CN" : "en-US")}</span>
+              )}
+              {(workflows.data || []).slice(0, 12).map((workflow, index) => (
+                <div className="compact-row" key={`${workflow.root_event_id || index}`}>
+                  <div>
+                    <div className="compact-row__title">{getWorkflowTitle(workflow)}</div>
+                    <div className="compact-row__subtitle">{shortText(getWorkflowSummary(workflow) || "", 90) || t("ops.noRootCause")}</div>
+                  </div>
+                  <div className="compact-row__meta">
+                    <StatusPill label={getGateStatusText(locale, String(workflow.status || "unknown")).label} tone={String(workflow.status) === "ok" ? "ok" : String(workflow.status) === "error" ? "err" : "info"} subtle />
+                    <span>{formatDateTime(String(workflow.created_at || workflow.started_at || ""), locale === "zh-CN" ? "zh-CN" : "en-US")}</span>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </PanelCard>
+              ))}
+            </div>
+          </PanelCard>
+
+          <PanelCard title={t("readiness.auditHistory")} subdued>
+            {historyLoading && richHistoryItems.length === 0 ? <LoadingSkeleton variant="panel" /> : <RecoveryTimeline items={richHistoryItems} />}
+          </PanelCard>
+        </div>
       )}
     </div>
   );
+}
+
+function normalizeOpsTab(tab?: string | null): OpsTab {
+  if (tab === "recovery") {
+    return "replay";
+  }
+  if (tab === "pipeline") {
+    return "overview";
+  }
+  if (tab === "workflows") {
+    return "audit";
+  }
+  if (tab === "overview" || tab === "readiness" || tab === "compute" || tab === "replay" || tab === "trust" || tab === "audit") {
+    return tab;
+  }
+  return "readiness";
 }
 
 function pickDefaultReadinessCell(rows: ReadinessRow[]) {
@@ -521,4 +924,171 @@ function getWorkflowSummary(workflow: WorkflowSummary) {
     return String(payload.message || payload.node || workflow.reason_summary || "");
   }
   return String(workflow.reason_summary || "");
+}
+
+function buildReadinessRowMeta(nodes: OpsComputeLayersPayload["nodes"]): Record<string, ReadinessRowMeta> {
+  const map: Record<string, ReadinessRowMeta> = {};
+  for (const node of nodes) {
+    if (!node.mapped_dataset) {
+      continue;
+    }
+    if (!map[node.mapped_dataset]) {
+      map[node.mapped_dataset] = {
+        nodeId: node.id,
+        nodeType: node.type,
+        layer: node.layer,
+        description: node.description,
+      };
+    }
+  }
+  return map;
+}
+
+function filterReadinessRows(rows: ReadinessRow[], rowMetaByDataset: Record<string, ReadinessRowMeta>, typeFilter: string, statusFilter: OpsStatusFilter) {
+  return rows.filter((row) => {
+    const meta = rowMetaByDataset[row.dataset];
+    const nodeType = String(meta?.nodeType || "source");
+    if (typeFilter !== "all" && nodeType !== typeFilter) {
+      return false;
+    }
+    if (statusFilter === "all") {
+      return true;
+    }
+    return row.cells.some((cell) => matchesReadinessStatus(cell.status, statusFilter));
+  });
+}
+
+function filterComputePayload(payload: OpsComputeLayersPayload | null, typeFilter: string, statusFilter: OpsStatusFilter): OpsComputeLayersPayload {
+  if (!payload) {
+    return { as_of: "", previous_as_of: null, representative_symbol: null, layers: [], nodes: [] };
+  }
+  const layers = payload.layers
+    .map((group) => ({
+      ...group,
+      nodes: group.nodes.filter((node) => {
+        if (typeFilter !== "all" && node.type !== typeFilter) {
+          return false;
+        }
+        return statusFilter === "all" ? true : matchesNodeStatus(String(node.latest_status || "unknown"), statusFilter);
+      }),
+    }))
+    .filter((group) => group.nodes.length > 0);
+  return {
+    ...payload,
+    layers,
+    nodes: layers.flatMap((group) => group.nodes),
+  };
+}
+
+function matchesReadinessStatus(status: string, filter: OpsStatusFilter) {
+  const normalized = status.toUpperCase();
+  if (filter === "healthy") {
+    return normalized === "READY" || normalized === "REPLAYED";
+  }
+  if (filter === "degraded") {
+    return normalized === "CHANGED" || normalized === "REPLAYING" || normalized === "UNKNOWN";
+  }
+  if (filter === "broken") {
+    return normalized === "MISSING";
+  }
+  if (filter === "stale") {
+    return normalized === "LATE_READY" || normalized === "CHANGED";
+  }
+  if (filter === "partial") {
+    return normalized === "PARTIAL";
+  }
+  return true;
+}
+
+function matchesNodeStatus(status: string, filter: OpsStatusFilter) {
+  const normalized = status.toLowerCase();
+  if (filter === "healthy") {
+    return normalized === "ok";
+  }
+  if (filter === "degraded") {
+    return normalized === "running" || normalized === "unknown";
+  }
+  if (filter === "broken") {
+    return normalized === "error";
+  }
+  if (filter === "stale" || filter === "partial") {
+    return normalized === "partial";
+  }
+  return true;
+}
+
+function collectSelectedCells(rows: ReadinessRow[], selectedIds: string[]) {
+  const items: Array<{ id: string; dataset: string; date: string }> = [];
+  for (const row of rows) {
+    for (const cell of row.cells) {
+      if (selectedIds.includes(cell.id)) {
+        items.push({ id: cell.id, dataset: row.dataset, date: cell.date });
+      }
+    }
+  }
+  return items;
+}
+
+function toggleId(current: string[], value: string) {
+  return current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
+}
+
+function toggleManyIds(current: string[], values: string[]) {
+  const allSelected = values.every((value) => current.includes(value));
+  if (allSelected) {
+    return current.filter((item) => !values.includes(item));
+  }
+  return Array.from(new Set([...current, ...values]));
+}
+
+function expandSubtree(nodeId: string, nodes: OpsComputeLayersPayload["nodes"]) {
+  const queue = [nodeId];
+  const seen = new Set(queue);
+  while (queue.length > 0) {
+    const current = queue.shift() || "";
+    const node = nodes.find((item) => item.id === current);
+    for (const child of node?.downstream_ids || []) {
+      if (!seen.has(child)) {
+        seen.add(child);
+        queue.push(child);
+      }
+    }
+  }
+  return Array.from(seen);
+}
+
+function buildReplayRequest({
+  effectiveNodeIds,
+  selectedCells,
+  selectedReadiness,
+  range,
+  action,
+  mode,
+}: {
+  effectiveNodeIds: string[];
+  selectedCells: Array<{ id: string; dataset: string; date: string }>;
+  selectedReadiness: { row: ReadinessRow | null; cell: ReadinessCell | null };
+  range: { dateFrom: string; dateTo: string };
+  action: OpsReplayAction;
+  mode: OpsReplayMode;
+}) {
+  const fallbackDate = selectedReadiness.cell?.date || "";
+  const dateFrom = range.dateFrom || fallbackDate;
+  const dateTo = range.dateTo || dateFrom;
+  if (!dateFrom) {
+    return null;
+  }
+  const cells = selectedCells.length > 0
+    ? selectedCells
+    : selectedReadiness.row && selectedReadiness.cell
+      ? [{ id: selectedReadiness.cell.id, dataset: selectedReadiness.row.dataset, date: selectedReadiness.cell.date }]
+      : [];
+  return {
+    selected_node_ids: effectiveNodeIds,
+    selected_cells: cells,
+    date_from: dateFrom,
+    date_to: dateTo,
+    action,
+    mode,
+  };
 }
