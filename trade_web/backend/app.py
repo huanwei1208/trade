@@ -2101,11 +2101,19 @@ def create_app():
     # ── API: kline/{symbol} ───────────────────────────────────────────────────
 
     @app.get("/api/kline/{symbol}")
-    async def get_kline(symbol: str, days: int = 60, date: str | None = None):
-        """Return OHLCV + indicators + event markers + recommendation context."""
+    async def get_kline(
+        symbol: str,
+        days: int = 60,
+        date: str | None = None,
+        adjust: str = "qfq",
+        timeframe: str = "daily",
+    ):
+        """Return OHLCV + per-bar indicators + quote + price_basis + reason_groups."""
         symbol = symbol.strip().upper()
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol required")
+        if adjust not in ("none", "qfq", "hfq"):
+            adjust = "qfq"
 
         db = _db()
 
@@ -2122,6 +2130,8 @@ def create_app():
             as_of_date=date,
             db=db,
             data_root=data_root,
+            adjust=adjust,
+            timeframe=timeframe,
         )
 
         # Decision explanation — primary truth source for Symbol page

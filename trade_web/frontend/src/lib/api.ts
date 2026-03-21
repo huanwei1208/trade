@@ -74,6 +74,49 @@ export type SignalsPageData = {
   source?: string;
 };
 
+// ── Symbol workspace types ───────────────────────────────────────────────────
+
+export type AdjustMode = "none" | "qfq" | "hfq";
+export type IndicatorMode = "rsi" | "macd" | "kdj" | "none";
+export type ReasonPolarity = "support" | "oppose" | "neutral" | "warning";
+
+export type ReasonItem = {
+  id: string;
+  group: string;
+  polarity: ReasonPolarity;
+  title: string;
+  description: string;
+  source?: string;
+  metric_name?: string;
+  metric_value?: number;
+  metric_unit?: string;
+  lookback?: string;
+  strength?: number;
+  sort_key?: number;
+};
+
+export type SymbolQuote = {
+  latest_price?: number;
+  prev_close?: number;
+  change?: number;
+  change_pct?: number;
+  open?: number;
+  high?: number;
+  low?: number;
+  volume?: number;
+  amount?: number;
+  turnover?: number;
+  vwap?: number;
+  as_of?: string;
+};
+
+export type PriceBasis = {
+  adjust?: AdjustMode;
+  timeframe?: string;
+  latest_trade_date?: string;
+  quote_as_of?: string;
+};
+
 export type KlineBar = {
   date?: string;
   open?: number;
@@ -81,6 +124,27 @@ export type KlineBar = {
   low?: number;
   close?: number;
   volume?: number;
+  amount?: number;
+  turnover_rate?: number;
+  prev_close?: number;
+  vwap?: number;
+  // Moving averages
+  ma5?: number;
+  ma10?: number;
+  ma20?: number;
+  ma60?: number;
+  // RSI
+  rsi14?: number;
+  // MACD
+  macd_dif?: number;
+  macd_dea?: number;
+  macd_hist?: number;
+  macd_cross?: number;
+  // KDJ
+  kdj_k?: number;
+  kdj_d?: number;
+  kdj_j?: number;
+  kdj_cross?: number;
 };
 
 export type EvidenceItem = {
@@ -164,6 +228,7 @@ export type DecisionExplanation = {
   scenario_summary?: ScenarioSummary | null;
   world_state?: WorldState | null;
   warnings?: string[];
+  reason_groups?: Record<string, ReasonItem[]>;
 };
 
 export type KlineResponse = {
@@ -172,6 +237,11 @@ export type KlineResponse = {
   name?: string;
   ohlcv?: KlineBar[];
   indicators?: Record<string, number>;
+  // New: per-symbol quote and price basis metadata
+  quote?: SymbolQuote;
+  price_basis?: PriceBasis;
+  // New: grouped factual reasons
+  reason_groups?: Record<string, ReasonItem[]>;
   event_markers?: Array<{ date?: string; event_type?: string; kg_score?: number; title?: string }>;
   belief_overlay?: Array<{ date?: string; mu?: number; sigma?: number }>;
   prediction?: Record<string, unknown>;

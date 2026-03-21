@@ -43,6 +43,55 @@ class EvidenceItem:
 
 
 @dataclass
+class ReasonItem:
+    """A structured, factual reason item for grouped display on the Symbol page.
+
+    Groups:
+        price_trend      — price change, MA relation
+        technical        — RSI, MACD, KDJ state
+        volume_liquidity — volume vs average
+        event_sentiment  — event/sentiment signals
+        belief_uncertainty — trust/uncertainty context
+        counter_argument — opposing signals
+        invalidation     — invalidation conditions
+    """
+
+    id: str
+    group: str           # one of the 7 groups above
+    polarity: str        # "support" | "oppose" | "neutral" | "warning"
+    title: str           # short title, e.g. "MA5 cross above MA20"
+    description: str     # concrete detail, e.g. "MA5 (10.72) crossed above MA20 (10.41) on 2026-03-18"
+    source: str = "technical"
+    metric_name: str | None = None   # e.g. "rsi14"
+    metric_value: float | None = None  # e.g. 28.1
+    metric_unit: str | None = None   # e.g. "%"
+    lookback: str | None = None      # e.g. "5d"
+    strength: float = 0.5
+    sort_key: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "id": self.id,
+            "group": self.group,
+            "polarity": self.polarity,
+            "title": self.title,
+            "description": self.description,
+            "source": self.source,
+            "strength": round(self.strength, 4),
+            "sort_key": self.sort_key,
+        }
+        if self.metric_name is not None:
+            d["metric_name"] = self.metric_name
+        if self.metric_value is not None:
+            d["metric_value"] = round(self.metric_value, 4)
+        if self.metric_unit is not None:
+            d["metric_unit"] = self.metric_unit
+        if self.lookback is not None:
+            d["lookback"] = self.lookback
+        return d
+
+
+@dataclass
 class DecisionExplanation:
     """Unified explanation for a symbol's decision on a given date.
 
@@ -96,6 +145,9 @@ class DecisionExplanation:
     # Structural warnings (e.g. conflicting signals, high uncertainty)
     warnings: list[str] = field(default_factory=list)
 
+    # Grouped factual reasons for Symbol workspace (populated by ExplanationService)
+    reason_groups: dict[str, list["ReasonItem"]] = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "symbol": self.symbol,
@@ -126,6 +178,11 @@ class DecisionExplanation:
             "world_state": self.world_state,
             # Structural
             "warnings": list(self.warnings),
+            # Grouped factual reasons for Symbol workspace
+            "reason_groups": {
+                group: [item.to_dict() for item in items]
+                for group, items in self.reason_groups.items()
+            },
         }
 
     def to_summary_dict(self) -> dict[str, Any]:
