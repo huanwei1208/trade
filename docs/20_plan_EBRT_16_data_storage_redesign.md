@@ -108,6 +108,11 @@ data/
 - C++ 引擎侧已增加 `kline_flat()`，CLI/train pipeline 都会先读 flat 文件，再回退到旧月目录。
 - 一次性迁移脚本 `scripts/migrate_kline_consolidate.py` 已落地，支持 `--dry-run`、`--parallel`、`--symbols`、`--limit`、`--archive-monthly`。
 - 新增回归测试 `tests/test_kline_storage_redesign.py`，覆盖 flat 写入、legacy 合并、manifest-first stats、gateway flat 优先读取。
+- 真实全量迁移已经完成：`370,723` 个月级 parquet 合并为 `5,702` 个 flat parquet + `1` 个 manifest，总行数 `7,363,135`，月目录归档到 `data_archive/kline_monthly/`。
+- 真实增量验证已经完成：
+  - `./trade event run kline_update` 成功跑完，当前数据已是最新，因此批量增量返回 `rows=0`
+  - 额外执行 `./trade data kline sync --mode full --start 2026-03-20 --end 2026-03-20 --symbols 603083.SH --provider tushare`
+  - 已确认 `data/market/kline/603083_SH.parquet` 与 `data/market/kline/_manifest.json` 的 mtime、`updated_at`、`last_compaction` 都随真实写入刷新
 
 ### 样本验证结果
 
@@ -120,7 +125,22 @@ data/
 ### 实现备注
 
 - 与原始计划相比，旧月份目录的 archive 位置改成 **data 根目录外侧的 sibling archive**，而不是 `market/kline/_archive/`。原因是很多消费者仍会对活跃 data root 做 `**/*.parquet` glob；如果把旧文件归档在活跃目录内，会造成重复读取。
-- 真实全量 `data/market/kline` 迁移尚未在本次回复内完整跑完，因为对 38 万小文件做真实 dry-run 本身就需要较长时间；样本迁移和代码路径已经验证通过。
+- 真实全量迁移结果：
+  - `symbols_total=5702`
+  - `source_files=370723`
+  - `total_rows=7363135`
+  - `source_bytes=2923245769`
+  - `output_bytes=387806697`
+  - `archived_month_dirs=75`
+  - `symbols_failed=0`
+- 真实全量迁移后再跑 `kline_stats('data')`，返回：
+  - `symbols=5702`
+  - `rows=7363135`
+  - `bytes=387806697`
+  - `min_date=2020-01-02`
+  - `max_date=2026-03-20`
+  - `layout=per_symbol`
+  - `manifest=True`
 
 ## TODO List
 
@@ -168,7 +188,7 @@ data/
 ### Phase 4 — 验证 & 清理
 
 - [x] **P4-1** 抽样验证迁移链路（样本 data root 下验证 603083.SH / 600150.SH 的 rows + date_min/date_max）
-- [ ] **P4-2** 运行完整增量更新（`trade event run kline_update`），确认 flat 写入 + manifest 更新正常
+- [x] **P4-2** 运行完整增量更新（`trade event run kline_update`），确认 flat 布局 no-op 增量正常；并通过 `603083.SH` 的 `full` 单标的重拉验证了真实 flat 写入 + manifest 更新路径
 - [x] **P4-3** 归档能力已实现并在样本 data root 验证：旧月份目录移动到 data 根目录外侧的 sibling archive，避免 `**/*.parquet` 重复读取
 - [ ] **P4-4** 2 周后无问题，删除 archive
 
