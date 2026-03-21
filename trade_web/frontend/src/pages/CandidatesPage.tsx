@@ -10,6 +10,7 @@ import { SectionHeader } from "../components/SectionHeader";
 import type { DecisionExplanation, SignalsPageData } from "../lib/api";
 import { useApiResource } from "../lib/api";
 import { useI18n } from "../lib/i18n";
+import type { CandidateSortKey } from "../lib/ui";
 import { searchCandidate, sortCandidates, useLocalStorageState } from "../lib/ui";
 
 type CandidatesPageProps = {
@@ -33,9 +34,21 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps, onOpenOp
   const [actionFilter, setActionFilter] = useState<ActionFilter>("ALL");
   const [trustFilter, setTrustFilter] = useState<TrustFilter>("ALL");
   const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilityFilter>("ACTIONABLE_ONLY");
-  const [sortBy, setSortBy] = useState<"confidence" | "trust" | "action" | "latest">("action");
+  const [sortBy, setSortBy] = useState<CandidateSortKey>("action");
+  const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
+
+  function handleSort(key: CandidateSortKey) {
+    if (key === sortBy) {
+      // Toggle direction on repeated click
+      setSortDir((current) => (current === "desc" ? "asc" : "desc"));
+    } else {
+      setSortBy(key);
+      // Risk sorts ascending by default (least risky first)
+      setSortDir(key === "risk" ? "asc" : "desc");
+    }
+  }
 
   const filtered = sortCandidates(
     (resource.data?.picks || []).filter((candidate) => {
@@ -54,6 +67,7 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps, onOpenOp
       return true;
     }),
     sortBy,
+    sortDir,
   );
 
   const selectedCandidate = filtered.find((candidate) => candidate.symbol === selectedSymbol) || filtered[0] || null;
@@ -144,10 +158,21 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps, onOpenOp
         </label>
         <label className="filter-bar__search filter-bar__sort">
           <span>{t("common.sort")}</span>
-          <select value={sortBy} onChange={(event) => setSortBy(event.target.value as "confidence" | "trust" | "action" | "latest")}>
+          <select
+            value={sortBy}
+            onChange={(event) => {
+              const next = event.target.value as CandidateSortKey;
+              setSortBy(next);
+              setSortDir(next === "risk" ? "asc" : "desc");
+            }}
+          >
             <option value="action">{t("candidates.sort.action")}</option>
             <option value="confidence">{t("candidates.sort.confidence")}</option>
             <option value="trust">{t("candidates.sort.trust")}</option>
+            <option value="belief">{t("candidates.sort.belief")}</option>
+            <option value="belief_delta">{t("candidates.sort.beliefDelta")}</option>
+            <option value="risk">{t("candidates.sort.risk")}</option>
+            <option value="risk_adjusted">{t("candidates.sort.riskAdjusted")}</option>
             <option value="latest">{t("candidates.sort.latest")}</option>
           </select>
         </label>
@@ -171,7 +196,15 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps, onOpenOp
               }
             />
           ) : (
-            <CandidateTable rows={filtered} selectedSymbol={selectedCandidate?.symbol} onSelect={(row) => row.symbol && setSelectedSymbol(row.symbol)} onOpenSymbol={onOpenSymbol} />
+            <CandidateTable
+              rows={filtered}
+              selectedSymbol={selectedCandidate?.symbol}
+              sortBy={sortBy}
+              sortDir={sortDir}
+              onSort={handleSort}
+              onSelect={(row) => row.symbol && setSelectedSymbol(row.symbol)}
+              onOpenSymbol={onOpenSymbol}
+            />
           )}
         </div>
         <div className="candidates-layout__panel">

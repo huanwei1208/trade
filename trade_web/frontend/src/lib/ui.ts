@@ -11,7 +11,15 @@ export type TodayCall = {
   summary: string;
 };
 
-export type CandidateSortKey = "confidence" | "trust" | "action" | "latest";
+export type CandidateSortKey =
+  | "action"
+  | "confidence"
+  | "trust"
+  | "belief"
+  | "belief_delta"
+  | "risk"
+  | "risk_adjusted"
+  | "latest";
 
 export function useLocalStorageState<T>(key: string, initialValue: T) {
   const [value, setValue] = useState<T>(() => {
@@ -94,21 +102,43 @@ export function getTrustLevel(score?: number | null, existing?: string | null) {
   return "LOW";
 }
 
-export function sortCandidates(rows: CandidateRow[], sortBy: CandidateSortKey) {
+export function sortCandidates(rows: CandidateRow[], sortBy: CandidateSortKey, dir: "desc" | "asc" = "desc") {
   const copy = [...rows];
+  const sign = dir === "asc" ? 1 : -1;
+
   copy.sort((left, right) => {
+    let diff = 0;
+
     if (sortBy === "action") {
-      return actionPriority(left.action) - actionPriority(right.action);
+      // action priority is always ascending (ADD < PROBE < WATCH ...)
+      diff = actionPriority(left.action) - actionPriority(right.action);
+      return dir === "asc" ? -diff : diff;
     }
     if (sortBy === "trust") {
-      return (right.trust_score || 0) - (left.trust_score || 0);
+      diff = (left.trust_score || 0) - (right.trust_score || 0);
+    } else if (sortBy === "confidence") {
+      const lv = typeof left.confidence === "number" ? left.confidence : actionPriority(left.action) === 0 ? 1 : 0.5;
+      const rv = typeof right.confidence === "number" ? right.confidence : actionPriority(right.action) === 0 ? 1 : 0.5;
+      diff = lv - rv;
+    } else if (sortBy === "belief") {
+      diff = (left.belief_mu ?? -99) - (right.belief_mu ?? -99);
+    } else if (sortBy === "belief_delta") {
+      diff = (left.belief_delta_mu ?? 0) - (right.belief_delta_mu ?? 0);
+    } else if (sortBy === "risk") {
+      // For risk: lower is better, so ascending means "least risky first"
+      diff = (left.risk ?? 0) - (right.risk ?? 0);
+      return dir === "asc" ? diff : -diff;
+    } else if (sortBy === "risk_adjusted") {
+      // score / (1 + risk) — higher is better
+      const ls = (left.score || 0) / (1 + (left.risk || 0));
+      const rs = (right.score || 0) / (1 + (right.risk || 0));
+      diff = ls - rs;
+    } else {
+      // fallback: action priority
+      diff = actionPriority(left.action) - actionPriority(right.action);
     }
-    if (sortBy === "confidence") {
-      const leftValue = typeof left.confidence === "number" ? left.confidence : actionPriority(left.action) === 0 ? 1 : 0.5;
-      const rightValue = typeof right.confidence === "number" ? right.confidence : actionPriority(right.action) === 0 ? 1 : 0.5;
-      return rightValue - leftValue;
-    }
-    return actionPriority(left.action) - actionPriority(right.action);
+
+    return -sign * diff;
   });
   return copy;
 }

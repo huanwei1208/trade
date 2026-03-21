@@ -1011,9 +1011,15 @@ def create_app():
                 try:
                     ws = _state_svc.build(sym, as_of_date=today_str)
                     _, act = _decision_svc.decide(ws)
+                    action_str = act.action.value
+                    rec_state = (
+                        "ACTIONABLE" if action_str in ("ADD", "PROBE")
+                        else "BROWSE_ONLY" if action_str in ("NO_ACTION", "avoid")
+                        else "CONSTRAINED"
+                    )
                     enriched = {
                         **pick,
-                        "action":        act.action.value,
+                        "action":        action_str,
                         "confidence":    act.confidence,
                         "thesis":        ws.state_summary,
                         "trust_score":   round(ws.trust_score, 4),
@@ -1023,6 +1029,12 @@ def create_app():
                         "world_state_summary": ws.state_summary,
                         "event_tags": _read_symbol_event_tags(db, sym, as_of=today_str, limit=2),
                         "sparkline": _read_symbol_sparkline(sym),
+                        "factor_summary": {
+                            "positive": list(act.supporting_factors[:2]),
+                            "negative": list(act.opposing_factors[:2]),
+                        },
+                        "data_risk_flag": ws.blockers[0] if ws.blockers else None,
+                        "recommendation_state": rec_state,
                     }
                     top_actions.append(enriched)
                     # First ADD/PROBE becomes today's thesis
@@ -1055,6 +1067,11 @@ def create_app():
                 str(trust_gate.get("research_status") or "").lower(),
             )
         )
+        # When globally blocked, downgrade all recommendation_states to CONSTRAINED
+        if global_blocked:
+            for ta in top_actions:
+                if ta.get("recommendation_state") == "ACTIONABLE":
+                    ta["recommendation_state"] = "CONSTRAINED"
         actionable_count = sum(
             1 for row in top_actions
             if str(row.get("action") or "") in {"ADD", "PROBE", "REDUCE"}
@@ -1146,6 +1163,9 @@ def create_app():
                 top_inv: list[str] = []
                 trust_score_val = 0.5
                 trust_level_val = "MEDIUM"
+                factor_summary_val: dict = {"positive": [], "negative": []}
+                data_risk_flag_val: str | None = None
+                rec_state_val = "CONSTRAINED"
                 if len(picks) < 20:
                     try:
                         ws = _state_svc.build(sym, as_of_date=today_str)
@@ -1157,8 +1177,26 @@ def create_app():
                         trust_score_val = round(ws.trust_score, 4)
                         trust_level_val = ("HIGH" if ws.trust_score > 0.70 else
                                            "MEDIUM" if ws.trust_score > 0.40 else "LOW")
+                        factor_summary_val = {
+                            "positive": list(act.supporting_factors[:2]),
+                            "negative": list(act.opposing_factors[:2]),
+                        }
+                        data_risk_flag_val = ws.blockers[0] if ws.blockers else None
+                        rec_state_val = (
+                            "ACTIONABLE" if action_val in ("ADD", "PROBE")
+                            else "BROWSE_ONLY" if action_val in ("NO_ACTION", "avoid")
+                            else "CONSTRAINED"
+                        )
                     except Exception:
                         pass
+                else:
+                    # For picks 21-50: derive recommendation_state from action directly
+                    raw_action = str(r.get("action") or "").upper()
+                    rec_state_val = (
+                        "ACTIONABLE" if raw_action in ("ADD", "PROBE")
+                        else "BROWSE_ONLY" if raw_action in ("NO_ACTION", "AVOID")
+                        else "CONSTRAINED"
+                    )
                 picks.append({
                     **r,
                     "name": name,
@@ -1174,6 +1212,9 @@ def create_app():
                     "top_invalidators":     top_inv,
                     "trust_score":          trust_score_val,
                     "trust_level":          trust_level_val,
+                    "factor_summary":       factor_summary_val,
+                    "data_risk_flag":       data_risk_flag_val,
+                    "recommendation_state": rec_state_val,
                 })
             return {
                 "as_of": today_str,

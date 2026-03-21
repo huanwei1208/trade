@@ -23,6 +23,15 @@ export type PipelineHealth = {
   status?: string;
 };
 
+export type RecommendationState = "ACTIONABLE" | "CONSTRAINED" | "BROWSE_ONLY";
+
+export type FactorSummary = {
+  /** Top positive supporting factors — display as summary chips on Candidates, full decomposition on Symbol */
+  positive?: string[];
+  /** Top negative opposing factors */
+  negative?: string[];
+};
+
 export type CandidateRow = {
   symbol?: string;
   name?: string;
@@ -42,6 +51,13 @@ export type CandidateRow = {
   belief_sigma?: number;
   belief_delta_mu?: number | null;
   status?: string;
+  // EBRT_15: richer candidate fields
+  /** Factor summary: show on Candidates as chips. Full decomposition belongs on Symbol page only. */
+  factor_summary?: FactorSummary;
+  /** First data blocker flag for this symbol, if any */
+  data_risk_flag?: string | null;
+  /** Whether this recommendation is currently executable */
+  recommendation_state?: RecommendationState;
 };
 
 export type TodayPageData = {

@@ -94,9 +94,26 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus, onOpenCa
 
   const todayCall = getTodayCall(todayResource.data, locale);
   const actions = todayResource.data?.top_actions || [];
-  const actionable = actions.filter((item) => isActionable(item.action) && String(item.action || "").toUpperCase() !== "WATCH");
 
-  const canRenderCards = actionable.length > 0 && !todayResource.data?.global_blocked;
+  // Split by recommendation state — ALWAYS show both groups, never hide recommendations.
+  // "Blocked" means constrained execution, not "no recommendations".
+  const actionableCards = actions.filter(
+    (item) => item.recommendation_state === "ACTIONABLE" || (
+      !item.recommendation_state && isActionable(item.action) && String(item.action || "").toUpperCase() !== "WATCH"
+    )
+  );
+  const constrainedCards = actions.filter(
+    (item) => item.recommendation_state === "CONSTRAINED" || item.recommendation_state === "BROWSE_ONLY" || (
+      !item.recommendation_state && (!isActionable(item.action) || String(item.action || "").toUpperCase() === "WATCH")
+    )
+  );
+
+  // When globally blocked, all actionable cards should be in constrained group
+  const isBlocked = Boolean(todayResource.data?.global_blocked);
+  const displayActionable = isBlocked ? [] : actionableCards;
+  const displayConstrained = isBlocked
+    ? [...actionableCards, ...constrainedCards]
+    : constrainedCards;
 
   if (todayResource.loading && !todayResource.data) {
     return <LoadingSkeleton variant="hero" />;
@@ -123,6 +140,7 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus, onOpenCa
   }
 
   const mode = getOperatingMode(today);
+  const hasAnyRecommendations = actions.length > 0;
 
   return (
     <div className="page-stack page-today">
@@ -155,19 +173,23 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus, onOpenCa
         <RetryInline message={t("today.showingStale")} onRetry={todayResource.retry} />
       )}
 
+      {/* ── Recommended symbols — ALWAYS rendered ──────────────────────────────
+          Blocked = constrained execution, NOT "no recommendations".
+          Always show what the system recommends, labelled clearly.
+      */}
       <section className="page-section">
         <SectionHeader
           title={t("today.topSetups")}
-          subtitle={canRenderCards ? t("today.topSetupsActionable") : t("today.topSetupsConstrained")}
+          subtitle={
+            !hasAnyRecommendations
+              ? t("today.topSetupsConstrained")
+              : displayActionable.length > 0
+                ? t("today.topSetupsActionable")
+                : t("today.topSetupsConstrained")
+          }
         />
 
-        {canRenderCards ? (
-          <div className="card-grid card-grid--actions">
-            {actions.slice(0, 6).map((item) => (
-              <ActionCard key={item.symbol || Math.random()} candidate={item} onOpenSymbol={onOpenSymbol} />
-            ))}
-          </div>
-        ) : (
+        {!hasAnyRecommendations && (
           <PanelCard title={t("today.blockers")} accent="red" className="today-blocker-card">
             <div className="today-blocker-card__copy">{t("today.blockersCopy")}</div>
             <div className="today-blocker-card__list">
@@ -180,13 +202,6 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus, onOpenCa
                     subtle
                   />
                 </div>
-              ))}
-            </div>
-            <div className="tag-cluster">
-              {(today.safe_to_view || []).map((item) => (
-                <span className="tag-chip" key={item}>
-                  {item}
-                </span>
               ))}
             </div>
             <button
@@ -203,6 +218,57 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus, onOpenCa
               {t("common.openReadiness")}
             </button>
           </PanelCard>
+        )}
+
+        {/* Actionable group */}
+        {displayActionable.length > 0 && (
+          <div className="today-rec-group">
+            <div className="today-rec-group__label today-rec-group__label--actionable">
+              {t("today.recGroupActionable")}
+            </div>
+            <div className="card-grid card-grid--actions">
+              {displayActionable.slice(0, 6).map((item) => (
+                <ActionCard key={item.symbol || Math.random()} candidate={item} constrained={false} onOpenSymbol={onOpenSymbol} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Constrained group — always shown when there are items */}
+        {displayConstrained.length > 0 && (
+          <div className="today-rec-group">
+            <div className="today-rec-group__label today-rec-group__label--constrained">
+              {isBlocked ? t("today.recGroupBlockedAll") : t("today.recGroupConstrained")}
+            </div>
+            {isBlocked && (today.blocker_details || []).length > 0 && (
+              <div className="today-constraint-hint">
+                {(today.blocker_details || []).slice(0, 2).map((item) => (
+                  <span key={`${item.dataset}-${item.status}`} className="today-constraint-hint__item">
+                    {getDatasetText(locale, item.dataset)}
+                    {item.lag_days != null ? ` · ${item.lag_days}d` : ""}
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  className="button button--ghost today-constraint-hint__action"
+                  onClick={() => onOpenOpsFocus({ tab: "readiness", date: today.as_of, dataset: today.blocker_details?.[0]?.dataset || "signals" })}
+                >
+                  {t("common.openReadiness")}
+                </button>
+              </div>
+            )}
+            <div className="card-grid card-grid--actions">
+              {displayConstrained.slice(0, 6).map((item) => (
+                <ActionCard
+                  key={item.symbol || Math.random()}
+                  candidate={item}
+                  constrained={true}
+                  constraintReason={item.data_risk_flag || (isBlocked ? today.blockers?.[0] : undefined)}
+                  onOpenSymbol={onOpenSymbol}
+                />
+              ))}
+            </div>
+          </div>
         )}
       </section>
 
@@ -237,12 +303,39 @@ export function TodayPage({ refreshToken, onOpenSymbol, onOpenOpsFocus, onOpenCa
   );
 }
 
-function ActionCard({ candidate, onOpenSymbol }: { candidate: CandidateRow; onOpenSymbol: (symbol: string) => void }) {
+function ActionCard({
+  candidate,
+  constrained,
+  constraintReason,
+  onOpenSymbol,
+}: {
+  candidate: CandidateRow;
+  constrained: boolean;
+  constraintReason?: string;
+  onOpenSymbol: (symbol: string) => void;
+}) {
   const { t } = useI18n();
   const hasBeliefDelta = candidate.belief_delta_mu !== null && candidate.belief_delta_mu !== undefined;
   const beliefDelta = Number(candidate.belief_delta_mu);
+  const recState = candidate.recommendation_state;
+
+  // Badge label based on state
+  const constraintLabel = (() => {
+    if (!constrained) return null;
+    if (recState === "BROWSE_ONLY") return t("today.cardBrowseOnly");
+    if (recState === "CONSTRAINED") return t("today.cardConstrained");
+    return t("today.cardWaitingRecovery");
+  })();
+
   return (
-    <PanelCard accent={String(candidate.action || "").toUpperCase() === "ADD" ? "green" : String(candidate.action || "").toUpperCase() === "PROBE" ? "cyan" : "amber"} className="action-card">
+    <PanelCard
+      accent={
+        constrained ? "amber" :
+        String(candidate.action || "").toUpperCase() === "ADD" ? "green" :
+        String(candidate.action || "").toUpperCase() === "PROBE" ? "cyan" : "amber"
+      }
+      className={classNames("action-card", constrained && "action-card--constrained")}
+    >
       <div className="action-card__head">
         <div>
           <div className="action-card__symbol">
@@ -253,6 +346,7 @@ function ActionCard({ candidate, onOpenSymbol }: { candidate: CandidateRow; onOp
         </div>
         <div className="action-card__meta">
           <ActionChip action={candidate.action} />
+          {/* Symbol-level trust */}
           <TrustBadge score={candidate.trust_score} level={candidate.trust_level} />
         </div>
       </div>
@@ -265,9 +359,17 @@ function ActionCard({ candidate, onOpenSymbol }: { candidate: CandidateRow; onOp
             {beliefDelta >= 0 ? "+" : ""}{formatScore(beliefDelta, 2)}μ
           </span>
         )}
+        {constraintLabel && (
+          <span className="action-card__constraint-badge">{constraintLabel}</span>
+        )}
       </div>
       <div className="action-card__footer">
-        <div className="action-card__invalidator">{shortText((candidate.top_invalidators || []).join(" · "), 80) || t("candidates.table.noInvalidator")}</div>
+        <div className="action-card__invalidator">
+          {constraintReason
+            ? <span className="action-card__constraint-reason">{constraintReason}</span>
+            : shortText((candidate.top_invalidators || []).join(" · "), 80) || t("candidates.table.noInvalidator")
+          }
+        </div>
         <button type="button" className="button button--ghost" onClick={() => candidate.symbol && onOpenSymbol(candidate.symbol)}>
           {t("common.openWorkspace")}
         </button>

@@ -94,6 +94,80 @@ def test_range_mode_keeps_trade_date_batch_for_sparse_gaps(tmp_path, monkeypatch
     assert captured["trade_dates"] == ["2026-01-01", "2026-01-02", "2026-01-05"]
 
 
+def test_full_mode_uses_chunked_trade_date_batch_and_persists_rows(tmp_path, monkeypatch) -> None:
+    service = KlineSyncService(tmp_path)
+    target_start = KlineSyncService._parse_date("2026-01-01")
+    target_end = KlineSyncService._parse_date("2026-01-06")
+    captured: dict[str, object] = {"chunks": [], "saved": []}
+
+    def fake_target_ranges(symbol: str, opts: KlineSyncOptions):
+        if symbol in {"000001.SZ", "000002.SZ"}:
+            return [(target_start, target_end)]
+        return []
+
+    class FakeBatchProvider:
+        def __init__(self, data_root: str) -> None:
+            captured["data_root"] = data_root
+
+        def fetch_batch_by_trade_date(self, symbols, trade_dates, adjust):
+            captured["chunks"].append(list(trade_dates))
+            frames = {}
+            for symbol in symbols:
+                frames[symbol] = pd.DataFrame(
+                    [
+                        {
+                            "symbol": symbol,
+                            "date": trade_date,
+                            "open": 1.0,
+                            "high": 1.0,
+                            "low": 1.0,
+                            "close": 1.0,
+                            "volume": 1.0,
+                            "amount": 100.0,
+                            "turnover_rate": 2.0,
+                            "prev_close": 1.0,
+                            "vwap": 1.0,
+                        }
+                        for trade_date in trade_dates
+                    ]
+                )
+            return types.SimpleNamespace(
+                frames=frames,
+                api_calls=len(trade_dates),
+                trade_dates=len(trade_dates),
+                days_with_hits=len(trade_dates),
+            )
+
+    monkeypatch.setattr(service, "_target_ranges", fake_target_ranges)
+    monkeypatch.setattr("trade_py.data.market.kline.service.TushareKlineProvider", FakeBatchProvider)
+    monkeypatch.setattr("trade_py.data.market.kline.service._TUSHARE_BATCH_TRADE_DATES_PER_PASS", 2)
+
+    def fake_save_parquet(symbol: str, frame: pd.DataFrame) -> None:
+        captured["saved"].append((symbol, frame["date"].tolist()))
+
+    monkeypatch.setattr(service._fetcher, "save_parquet", fake_save_parquet)
+
+    summary = service._try_tushare_trade_date_batch(
+        ["000001.SZ", "000002.SZ"],
+        KlineSyncOptions(mode="full", start="2026-01-01", end="2026-01-06"),
+    )
+
+    assert summary is not None
+    assert summary.sync_mode == "trade_date_batch"
+    assert captured["chunks"] == [
+        ["2026-01-01", "2026-01-02"],
+        ["2026-01-05", "2026-01-06"],
+    ]
+    assert captured["saved"] == [
+        ("000001.SZ", ["2026-01-01", "2026-01-02"]),
+        ("000002.SZ", ["2026-01-01", "2026-01-02"]),
+        ("000001.SZ", ["2026-01-05", "2026-01-06"]),
+        ("000002.SZ", ["2026-01-05", "2026-01-06"]),
+    ]
+    assert summary.total_rows == 8
+    assert summary.api_calls == 4
+
+
 def test_tushare_parse_preserves_prev_close_and_turnover_rate() -> None:
     raw = pd.DataFrame(
         [

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _TUSHARE_CHUNK_DAYS_DEFAULT = 3650  # ~10 years; keeps API call count low
 _DEFAULT_CHUNK_DAYS = 31
+_TUSHARE_BATCH_TRADE_DATES_PER_PASS = 22
 
 KlineMode = Literal["incremental", "range", "full"]
 KlineAdjust = Literal["hfq", "qfq", "none"]
@@ -166,6 +167,12 @@ class KlineSyncService:
             return []
         return [ts.strftime("%Y-%m-%d") for ts in pd.bdate_range(start_date, end_date)]
 
+    @staticmethod
+    def _chunk_trade_dates(trade_dates: list[str], chunk_size: int) -> list[list[str]]:
+        if chunk_size <= 0:
+            return [trade_dates]
+        return [trade_dates[i:i + chunk_size] for i in range(0, len(trade_dates), chunk_size)]
+
     @classmethod
     def _filter_frame_to_ranges(cls, frame: pd.DataFrame, ranges: list[tuple[date, date]]) -> pd.DataFrame:
         if frame.empty or not ranges:
@@ -198,32 +205,56 @@ class KlineSyncService:
 
         if len(active_symbols) <= 1 or not unique_trade_dates:
             return None
-        # Recovery range backfills prefer trade-date batching even when only a few symbols
-        # remain stale, otherwise we fall back to per-symbol provider chains too aggressively.
-        if opts.mode != "range" and len(unique_trade_dates) >= len(active_symbols):
-            return None
 
         batch_provider = TushareKlineProvider(str(self._data_root))
         ordered_dates = sorted(unique_trade_dates)
+        trade_date_chunks = self._chunk_trade_dates(ordered_dates, _TUSHARE_BATCH_TRADE_DATES_PER_PASS)
         logger.info(
-            "kline sync using tushare trade_date batch mode symbols=%d trade_dates=%d range=%s..%s",
+            "kline sync using tushare trade_date batch mode symbols=%d trade_dates=%d chunks=%d range=%s..%s",
             len(active_symbols),
             len(ordered_dates),
+            len(trade_date_chunks),
             ordered_dates[0],
             ordered_dates[-1],
         )
-        try:
-            batch = batch_provider.fetch_batch_by_trade_date(
-                active_symbols,
-                trade_dates=ordered_dates,
-                adjust=opts.adjust,
-            )
-        except Exception as exc:
-            logger.warning("kline batch fetch fallback to symbol loop: %s", exc, exc_info=True)
-            return None
 
         results: dict[str, SymbolSyncResult] = {}
         succeeded = failed = empty = total_rows = 0
+        api_calls = 0
+        trade_dates = 0
+        day_hits = 0
+        symbol_rows: dict[str, int] = {symbol: 0 for symbol in symbols}
+        symbol_min_date: dict[str, date] = {}
+        symbol_max_date: dict[str, date] = {}
+
+        for trade_date_chunk in trade_date_chunks:
+            try:
+                batch = batch_provider.fetch_batch_by_trade_date(
+                    active_symbols,
+                    trade_dates=trade_date_chunk,
+                    adjust=opts.adjust,
+                )
+            except Exception as exc:
+                logger.warning("kline batch fetch fallback to symbol loop: %s", exc, exc_info=True)
+                return None
+
+            api_calls += batch.api_calls
+            trade_dates += batch.trade_dates
+            day_hits += batch.days_with_hits
+            for symbol in active_symbols:
+                ranges = target_ranges[symbol]
+                frame = batch.frames.get(symbol, pd.DataFrame(columns=["date"]))
+                frame = self._filter_frame_to_ranges(frame, ranges)
+                if frame.empty:
+                    continue
+                merged = frame.drop_duplicates(subset=["date"], keep="last").sort_values("date").reset_index(drop=True)
+                self._fetcher.save_parquet(symbol, merged)
+                min_d = self._parse_date(str(merged["date"].min()))
+                max_d = self._parse_date(str(merged["date"].max()))
+                symbol_min_date[symbol] = min(min_d, symbol_min_date.get(symbol, min_d))
+                symbol_max_date[symbol] = max(max_d, symbol_max_date.get(symbol, max_d))
+                symbol_rows[symbol] += len(merged)
+
         for symbol in symbols:
             ranges = target_ranges[symbol]
             if not ranges:
@@ -237,23 +268,17 @@ class KlineSyncService:
                 )
                 empty += 1
                 continue
-            frame = batch.frames.get(symbol, pd.DataFrame(columns=["date"]))
-            frame = self._filter_frame_to_ranges(frame, ranges)
-            if not frame.empty:
-                merged = frame.drop_duplicates(subset=["date"], keep="last").sort_values("date").reset_index(drop=True)
-                self._fetcher.save_parquet(symbol, merged)
-                min_d = self._parse_date(str(merged["date"].min()))
-                max_d = self._parse_date(str(merged["date"].max()))
+            rows = symbol_rows.get(symbol, 0)
+            if rows > 0:
+                min_d = symbol_min_date[symbol]
+                max_d = symbol_max_date[symbol]
                 for src in ("tushare", "akshare", "baostock"):
                     self._db.set_watermark(src, "kline", symbol, max_d)
-                self._db.record_download(symbol, min_d, max_d, len(merged))
-                rows = len(merged)
+                self._db.record_download(symbol, min_d, max_d, rows)
                 total_rows += rows
-                succeeded += 1
             else:
-                rows = 0
-                succeeded += 1
                 empty += 1
+            succeeded += 1
             results[symbol] = SymbolSyncResult(
                 symbol=symbol,
                 ok=True,
@@ -265,9 +290,9 @@ class KlineSyncService:
         logger.info(
             "kline batch summary: symbols=%d api_calls=%d trade_dates=%d hit_days=%d rows=%d",
             len(active_symbols),
-            batch.api_calls,
-            batch.trade_dates,
-            batch.days_with_hits,
+            api_calls,
+            trade_dates,
+            day_hits,
             total_rows,
         )
         return SyncSummary(
@@ -278,7 +303,7 @@ class KlineSyncService:
             total_rows=total_rows,
             results=results,
             sync_mode="trade_date_batch",
-            api_calls=batch.api_calls,
+            api_calls=api_calls,
         )
 
     def _last_watermark(self, symbol: str) -> date | None:

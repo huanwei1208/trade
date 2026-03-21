@@ -2568,3 +2568,417 @@ details[open] .symbol-advanced__summary::before {
   border-left-color: var(--color-bearish, #ef4444);
   color: var(--color-bearish, #ef4444);
 }
+
+/* ==========================================
+   EBRT_15 — CANDIDATE TABLE ENHANCEMENTS
+   ========================================== */
+
+/* Column header buttons */
+
+.candidate-table__th {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: default;
+  text-align: left;
+}
+
+.candidate-table__th--sortable {
+  cursor: pointer;
+  color: var(--text-2);
+  transition: color var(--transition-fast);
+}
+
+.candidate-table__th--sortable:hover,
+.candidate-table__th--sortable.is-sorted {
+  color: var(--text-1);
+}
+
+.candidate-table__th--symbol {
+  justify-content: flex-start;
+}
+
+.candidate-table__th--pulse {
+  justify-content: center;
+}
+
+/* Sort state indicator */
+
+.sort-indicator {
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.sort-indicator--idle {
+  color: var(--text-3);
+  opacity: 0.5;
+}
+
+.sort-indicator--active {
+  color: var(--color-brand, #6366f1);
+}
+
+/* Row cells */
+
+.candidate-row__cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.candidate-row__cell--num {
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate-row__cell--factors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.candidate-row__spark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.candidate-row__spark svg {
+  width: 72px;
+  height: 28px;
+}
+
+.candidate-row__empty {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* Rec-state badges — inline in symbol cell */
+
+.rec-state-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.rec-state-badge--constrained {
+  background: rgba(234, 179, 8, 0.15);
+  color: #a16207;
+}
+
+.rec-state-badge--browse {
+  background: rgba(99, 102, 241, 0.12);
+  color: #6366f1;
+}
+
+/* Row-level constrained styles */
+
+.candidate-row--constrained {
+  opacity: 0.88;
+}
+
+.candidate-row--constrained .candidate-row__identity {
+  opacity: 0.9;
+}
+
+.candidate-row--browse-only {
+  opacity: 0.75;
+}
+
+/* Factor chips (compact, 1 pos + 1 neg in table) */
+
+.factor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.factor-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.factor-chip--positive {
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+}
+
+.factor-chip--negative {
+  background: rgba(239, 68, 68, 0.10);
+  color: #dc2626;
+}
+
+/* Belief μ numeric cell */
+
+.belief-mu {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.belief-mu.is-positive { color: var(--ok); }
+.belief-mu.is-negative { color: var(--err); }
+
+/* Risk badge */
+
+.risk-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.risk-badge--high {
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+}
+
+.risk-badge--med {
+  background: rgba(234, 179, 8, 0.12);
+  color: #a16207;
+}
+
+.risk-badge--low {
+  background: rgba(34, 197, 94, 0.10);
+  color: #16a34a;
+}
+
+/* ==========================================
+   EBRT_15 — CANDIDATE QUICK PANEL ADDITIONS
+   ========================================== */
+
+/* Quantitative metrics row */
+
+.candidate-quick-panel__quant-row {
+  display: flex;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--line);
+}
+
+.qp-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 52px;
+}
+
+.qp-metric__label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.qp-metric__value {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+
+.qp-metric__value.is-positive { color: var(--ok); }
+.qp-metric__value.is-negative { color: var(--err); }
+
+/* Recommendation-state badge in quick panel */
+
+.candidate-quick-panel__rec-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rec-state--constrained {
+  background: rgba(234, 179, 8, 0.10);
+  border: 1px solid rgba(234, 179, 8, 0.25);
+  color: #a16207;
+}
+
+.rec-state--browse {
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.20);
+  color: #6366f1;
+}
+
+.candidate-quick-panel__data-risk {
+  color: inherit;
+  opacity: 0.8;
+}
+
+/* Confidence value in header meta */
+
+.candidate-quick-panel__confidence {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+/* Factor summary panel (multi-chip) */
+
+.factor-summary-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.factor-summary-panel__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.factor-summary-panel__group-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* ==========================================
+   EBRT_15 — TODAY PAGE RECOMMENDATION GROUPS
+   ========================================== */
+
+.today-rec-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.today-rec-group__label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.today-rec-group__label::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.today-rec-group__label--actionable {
+  color: var(--ok);
+}
+
+.today-rec-group__label--actionable::before {
+  background: var(--ok);
+}
+
+.today-rec-group__label--constrained {
+  color: var(--warn, #eab308);
+}
+
+.today-rec-group__label--constrained::before {
+  background: var(--warn, #eab308);
+}
+
+/* Constraint hint below constrained group label */
+
+.today-constraint-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: rgba(234, 179, 8, 0.06);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.today-constraint-hint__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.today-constraint-hint__item::before {
+  content: "⚠";
+  font-size: 10px;
+  color: #a16207;
+}
+
+.today-constraint-hint__action {
+  margin-left: auto;
+}
+
+/* ==========================================
+   EBRT_15 — ACTION CARD CONSTRAINED STATE
+   ========================================== */
+
+.action-card--constrained {
+  opacity: 0.90;
+}
+
+.action-card--constrained .action-card__head {
+  opacity: 0.92;
+}
+
+.action-card__constraint-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(234, 179, 8, 0.12);
+  color: #a16207;
+  letter-spacing: 0.02em;
+}
+
+.action-card__constraint-reason {
+  font-size: 12px;
+  color: #a16207;
+  font-style: italic;
+}

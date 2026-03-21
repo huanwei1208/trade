@@ -270,10 +270,53 @@ def _job_window_score(data_root: str, config: dict | None = None,
     from trade_py.signals.window_scorer import score_universe
     days = _iter_target_dates(date_from, date_to)
     total_scored = 0
+    latest_factor_symbols = 0
+    latest_predictions = 0
     for day_str in days:
         scores = score_universe(data_root, date_str=day_str)
         total_scored = max(total_scored, len(scores))
-    return f"全市场评分完成: dates={len(days)} latest_symbols={total_scored}"
+        target_date, factor_symbols, predicted = _refresh_inference_artifacts(data_root, day_str)
+        if target_date:
+            latest_factor_symbols = factor_symbols
+            latest_predictions = predicted
+    return (
+        f"全市场评分完成: dates={len(days)} latest_symbols={total_scored} "
+        f"factors={latest_factor_symbols} predictions={latest_predictions}"
+    )
+
+
+def _refresh_inference_artifacts(data_root: str, day_str: str) -> tuple[str, int, int]:
+    from trade_py.analysis.propagation_runtime import materialize_inference_factors, sync_signal_predictions
+
+    target_date, n_symbols, _feature_cols, _freshness = materialize_inference_factors(data_root, day_str)
+    if not target_date:
+        return "", 0, 0
+    pred_date, updated = sync_signal_predictions(data_root, day_str)
+    return pred_date or target_date, int(n_symbols or 0), int(updated or 0)
+
+
+def _job_materialize_factors(data_root: str, config: dict | None = None,
+                             date_from: str | None = None, date_to: str | None = None) -> str:
+    from trade_py.analysis.propagation_runtime import materialize_inference_factors
+
+    latest_symbols = 0
+    latest_date = ""
+    days = _iter_target_dates(date_from, date_to)
+    for day_str in days:
+        latest_date, latest_symbols, _feature_cols, _freshness = materialize_inference_factors(data_root, day_str)
+    return f"推理特征物化完成: dates={len(days)} latest_date={latest_date or '-'} symbols={latest_symbols}"
+
+
+def _job_sync_signal_predictions(data_root: str, config: dict | None = None,
+                                 date_from: str | None = None, date_to: str | None = None) -> str:
+    from trade_py.analysis.propagation_runtime import sync_signal_predictions
+
+    latest_date = ""
+    latest_updated = 0
+    days = _iter_target_dates(date_from, date_to)
+    for day_str in days:
+        latest_date, latest_updated = sync_signal_predictions(data_root, day_str)
+    return f"信号模型分数同步完成: dates={len(days)} latest_date={latest_date or '-'} updated={latest_updated}"
 
 
 def _job_event_pipeline(data_root: str, config: dict | None = None,
@@ -287,9 +330,10 @@ def _job_event_pipeline(data_root: str, config: dict | None = None,
     return sync_events(data_root, **kwargs).format()
 
 
-def _job_event_backfill(data_root: str, config: dict | None = None) -> str:
+def _job_event_backfill(data_root: str, config: dict | None = None,
+                        date_from: str | None = None, date_to: str | None = None) -> str:
     from trade_py.event import backfill_events
-    return backfill_events(data_root)
+    return backfill_events(data_root, start=date_from, end=date_to)
 
 
 def _job_evaluate_daily(data_root: str, config: dict | None = None,
@@ -327,10 +371,11 @@ def _job_build_features(data_root: str, config: dict | None = None) -> str:
     return f"特征构建完成: {len(df)} 条传播记录, {labeled} 条有标签"
 
 
-def _job_build_labels(data_root: str, config: dict | None = None) -> str:
+def _job_build_labels(data_root: str, config: dict | None = None,
+                      date_from: str | None = None, date_to: str | None = None) -> str:
     """Ensure event_propagations.actual_return_5d/20d are filled via backfill."""
     from trade_py.event import backfill_events
-    result = backfill_events(data_root)
+    result = backfill_events(data_root, start=date_from, end=date_to)
     return f"标签构建完成: {result}"
 
 
@@ -450,7 +495,7 @@ def _job_kg_propagate(data_root: str, config: dict | None = None,
                        date_from: str | None = None, date_to: str | None = None) -> str:
     """KG propagation: backfill actual returns for event propagations."""
     from trade_py.event import backfill_events
-    return backfill_events(data_root)
+    return backfill_events(data_root, start=date_from, end=date_to)
 
 
 def _job_influence_score(data_root: str, config: dict | None = None) -> str:
@@ -562,6 +607,14 @@ JOB_REGISTRY: dict[str, JobDef] = {
     "window_score": JobDef(
         "window_score", _job_window_score, "全市场窗口评分",
         ["daily 07:35", "daily 15:30"], "compute", ["signal"],
+    ),
+    "materialize_factors": JobDef(
+        "materialize_factors", _job_materialize_factors, "推理特征物化",
+        [], "compute", ["signal", "model"],
+    ),
+    "sync_signal_predictions": JobDef(
+        "sync_signal_predictions", _job_sync_signal_predictions, "信号模型分数同步",
+        [], "compute", ["signal", "model"],
     ),
     "realtime_compute": JobDef(
         "realtime_compute", _job_realtime_compute, "盘中分钟因子计算",

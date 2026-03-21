@@ -552,7 +552,7 @@
 
 .candidate-table__head {
   display: grid;
-  grid-template-columns: 0.78fr 0.92fr 1.55fr 0.5fr;
+  grid-template-columns: minmax(160px, 2fr) 68px 64px 70px 60px 60px 50px 96px 72px;
   gap: var(--space-3);
   padding: 14px 16px;
   border-bottom: 1px solid var(--line);
@@ -575,8 +575,9 @@
   text-align: left;
   padding: var(--space-4);
   display: grid;
-  grid-template-columns: 0.78fr 0.92fr 1.55fr 0.5fr;
+  grid-template-columns: minmax(160px, 2fr) 68px 64px 70px 60px 60px 50px 96px 72px;
   gap: var(--space-3);
+  align-items: center;
   transition: background var(--transition-fast), box-shadow var(--transition-fast);
 }
 

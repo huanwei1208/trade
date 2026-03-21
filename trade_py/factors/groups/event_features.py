@@ -92,6 +92,17 @@ def build_event_group(
     df["breadth_code"] = df["breadth"].map(br_map).fillna(0).astype(int)
     df = df.drop(columns=["event_type", "breadth"], errors="ignore")
 
+    # Inference needs one event feature row per (date, symbol). Keep the most
+    # impactful propagation row so downstream factor materialization stays
+    # aligned with the single-row-per-symbol signal universe.
+    df["_kg_score_abs"] = df["kg_score"].abs()
+    df = df.sort_values(
+        ["date", "symbol", "_kg_score_abs", "confidence", "news_volume", "hop"],
+        ascending=[True, True, False, False, False, True],
+    )
+    df = df.drop_duplicates(subset=["date", "symbol"], keep="first").reset_index(drop=True)
+    df = df.drop(columns=["_kg_score_abs"], errors="ignore")
+
     # Track which columns used defaults (null before COALESCE)
     used_defaults: list[str] = []
     for col, default in _DEFAULTS.items():
