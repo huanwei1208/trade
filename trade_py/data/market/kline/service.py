@@ -198,7 +198,9 @@ class KlineSyncService:
 
         if len(active_symbols) <= 1 or not unique_trade_dates:
             return None
-        if len(unique_trade_dates) >= len(active_symbols):
+        # Recovery range backfills prefer trade-date batching even when only a few symbols
+        # remain stale, otherwise we fall back to per-symbol provider chains too aggressively.
+        if opts.mode != "range" and len(unique_trade_dates) >= len(active_symbols):
             return None
 
         batch_provider = TushareKlineProvider(str(self._data_root))

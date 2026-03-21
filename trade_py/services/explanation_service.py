@@ -50,7 +50,14 @@ class ExplanationService:
         """
         from trade_py.decision.explanation import build_explanation
 
-        as_of = as_of_date or date.today().isoformat()
+        db = self._state_svc._db or self._state_svc._open_db()
+        as_of = as_of_date
+        if not as_of:
+            try:
+                as_of = db.get_latest_market_asof()
+            except Exception:
+                as_of = None
+        as_of = as_of or date.today().isoformat()
 
         # 1. WorldState
         trust_score, trust_breakdown = self._get_trust(symbol)
@@ -74,6 +81,7 @@ class ExplanationService:
         symbol: str,
         *,
         days: int = 60,
+        as_of_date: str | None = None,
         db=None,
         data_root: str = "data",
     ) -> dict[str, Any]:
@@ -92,14 +100,20 @@ class ExplanationService:
         import math
 
         _db = db or self._state_svc._open_db()
-        today = date.today().isoformat()
-        as_of = today
+        as_of = as_of_date
+        if not as_of:
+            try:
+                as_of = _db.get_latest_market_asof()
+            except Exception:
+                as_of = None
+        as_of = as_of or date.today().isoformat()
+        today = as_of
 
         # ── OHLCV + technical indicators ──────────────────────────────────────
-        ohlcv_rows, indicators_meta = self._read_ohlcv(data_root, symbol, days)
+        ohlcv_rows, indicators_meta = self._read_ohlcv(data_root, symbol, days, end_date=as_of)
 
         # ── Event markers ─────────────────────────────────────────────────────
-        event_markers = self._read_event_markers(_db, symbol, days)
+        event_markers = self._read_event_markers(_db, symbol, days, today)
 
         # ── Belief overlay ────────────────────────────────────────────────────
         belief_overlay = self._read_belief_overlay(_db, symbol, days, today)
@@ -168,19 +182,14 @@ class ExplanationService:
             return None, None
 
     def _read_ohlcv(
-        self, data_root: str, symbol: str, days: int
+        self, data_root: str, symbol: str, days: int, *, end_date: str | None = None
     ) -> tuple[list[dict], dict[str, Any]]:
         """Read OHLCV rows from kline parquet for the last *days* trading days."""
         try:
-            from trade_py.data.market.kline import read_kline_range
-            end_date   = date.today()
-            start_date = end_date - timedelta(days=days * 2)  # buffer for non-trading days
-            df = read_kline_range(
-                data_root,
-                symbol,
-                start_date.isoformat(),
-                end_date.isoformat(),
-            )
+            from trade_py.data.access import DataGateway
+            resolved_end = date.fromisoformat(end_date) if end_date else date.today()
+            gateway = DataGateway(data_root)
+            df, _report = gateway.get_kline(symbol, lookback_bars=max(days, 60), end_date=resolved_end)
             df = df.tail(days)
             rows = df.to_dict(orient="records") if not df.empty else []
             meta: dict[str, Any] = {
@@ -194,21 +203,23 @@ class ExplanationService:
             return [], {}
 
     def _read_event_markers(
-        self, db, symbol: str, days: int
+        self, db, symbol: str, days: int, as_of: str
     ) -> list[dict[str, Any]]:
         """Read recent market_events for event markers overlay."""
         markers: list[dict[str, Any]] = []
         try:
-            cutoff = (date.today() - timedelta(days=days)).isoformat()
+            cutoff = (date.fromisoformat(as_of) - timedelta(days=days)).isoformat()
             with db._conn_lock:
                 rows = db._conn.execute(
                     """
-                    SELECT event_date, event_type, kg_score, title
-                    FROM market_events
-                    WHERE symbol = ? AND event_date >= ?
-                    ORDER BY event_date
+                    SELECT me.event_date, me.event_type, ep.kg_score, me.summary
+                    FROM event_propagations ep
+                    JOIN market_events me ON me.event_id = ep.event_id
+                    WHERE ep.symbol = ? AND me.event_date >= ? AND me.event_date <= ?
+                    ORDER BY me.event_date, ep.kg_score DESC
+                    LIMIT 24
                     """,
-                    (symbol, cutoff),
+                    (symbol, cutoff, as_of),
                 ).fetchall()
             for r in rows:
                 markers.append({
@@ -227,7 +238,7 @@ class ExplanationService:
         """Read belief_state history for overlay chart."""
         overlay: list[dict[str, Any]] = []
         try:
-            cur = date.today()
+            cur = date.fromisoformat(today)
             for _ in range(days):
                 dstr = cur.isoformat()
                 row = db.belief_state_get(dstr, symbol)

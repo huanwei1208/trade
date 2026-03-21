@@ -119,7 +119,7 @@ class BeliefEngine:
         return summary
 
     def _collect_symbols(self, data_path: Path, today: str) -> list[str]:
-        """Collect symbols that have Gold sentiment data for today."""
+        """Collect symbols that should participate in today's belief update."""
         symbols: set[str] = set()
 
         # From Gold parquet
@@ -156,6 +156,16 @@ class BeliefEngine:
                 (today,),
             ).fetchall()
             symbols.update(r[0] for r in rows if r[0] and r[0] != "_MARKET_")
+        except Exception:
+            pass
+
+        # From the latest signal universe for the target date.
+        try:
+            rows = self._db._conn.execute(
+                "SELECT DISTINCT symbol FROM signals WHERE date = ?",
+                (today,),
+            ).fetchall()
+            symbols.update(r[0] for r in rows if r[0])
         except Exception:
             pass
 

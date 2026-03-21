@@ -1238,6 +1238,71 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         cur = self._conn.execute("SELECT symbol FROM instruments ORDER BY symbol")
         return [row[0] for row in cur.fetchall()]
 
+    def get_active_symbols(self, *, include_suspended: bool = False) -> list[str]:
+        statuses = [_STATUS_NORMAL]
+        if include_suspended:
+            statuses.append(_STATUS_SUSPENDED)
+        placeholders = ", ".join(["?"] * len(statuses))
+        cur = self._conn.execute(
+            f"SELECT symbol FROM instruments WHERE status IN ({placeholders}) ORDER BY symbol",
+            statuses,
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    def get_latest_open_trade_date(self, *, on_or_before: str | None = None) -> str | None:
+        boundary = _normalize_date_text(on_or_before) or date.today().isoformat()
+        row = self._conn.execute(
+            """
+            SELECT MAX(trade_date)
+            FROM trading_calendar
+            WHERE trade_date <= ?
+              AND COALESCE(is_open, 1) = 1
+            """,
+            (boundary,),
+        ).fetchone()
+        value = row[0] if row else None
+        return _normalize_date_text(value)
+
+    def get_latest_market_asof(self, *, on_or_before: str | None = None) -> str | None:
+        boundary = _normalize_date_text(on_or_before) or date.today().isoformat()
+        candidates = [
+            self.get_latest_open_trade_date(on_or_before=boundary),
+            _normalize_date_text(
+                self._conn.execute(
+                    "SELECT MAX(date) FROM signals WHERE date <= ?",
+                    (boundary,),
+                ).fetchone()[0]
+            ),
+            _normalize_date_text(
+                self._conn.execute(
+                    "SELECT MAX(eval_date) FROM daily_quality_gate WHERE eval_date <= ?",
+                    (boundary,),
+                ).fetchone()[0]
+            ),
+            _normalize_date_text(
+                self._conn.execute(
+                    "SELECT MAX(eval_date) FROM QualityReport WHERE eval_date <= ?",
+                    (boundary,),
+                ).fetchone()[0]
+            ),
+            _normalize_date_text(
+                self._conn.execute(
+                    "SELECT MAX(as_of_date) FROM Recommendation WHERE as_of_date <= ?",
+                    (boundary,),
+                ).fetchone()[0]
+            ),
+            _normalize_date_text(
+                self._conn.execute(
+                    "SELECT MAX(as_of_date) FROM BeliefState WHERE as_of_date <= ?",
+                    (boundary,),
+                ).fetchone()[0]
+            ),
+        ]
+        for value in candidates:
+            if value:
+                return value
+        return boundary
+
     def get_symbols_by_sector(self, sector: Any) -> list[str]:
         rows = self._conn.execute(
             "SELECT symbol FROM sector_members WHERE industry_code = ?",

@@ -45,20 +45,33 @@ def _iter_target_dates(date_from: str | None = None, date_to: str | None = None)
 
 # ── FETCH jobs ─────────────────────────────────────────────────────────────────
 
-def _job_sentiment_pipeline(data_root: str, config: dict | None = None) -> str:
+def _job_sentiment_pipeline(
+    data_root: str,
+    config: dict | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
     from trade_py.engine import ingest_articles
     from trade_py.db.trade_db import TradeDB
 
+    cfg = config or {}
     db = TradeDB(data_root)
-    semantic_mode = str(db.get("sentiment.scheduler_semantic_mode", "base") or "base").strip().lower()
+    semantic_mode = str(
+        cfg.get("semantic_mode")
+        or db.get("sentiment.scheduler_semantic_mode", "base")
+        or "base"
+    ).strip().lower()
     if semantic_mode not in {"base", "hybrid", "llm"}:
         semantic_mode = "base"
+    fetch_mode = str(cfg.get("fetch_mode") or ("range" if (date_from or date_to) else "incremental")).strip().lower()
     result = ingest_articles(
         "rss", data_root,
-        fetch_mode="incremental",
+        fetch_mode=fetch_mode,
         semantic_mode=semantic_mode,
+        date_from=date_from,
+        date_to=date_to,
     )
-    return result.get("summary", f"情绪流水线完成: semantic_mode={semantic_mode}")
+    return result.get("summary", f"情绪流水线完成: fetch_mode={fetch_mode} semantic_mode={semantic_mode}")
 
 
 def _job_cross_asset(data_root: str, config: dict | None = None) -> str:
@@ -130,9 +143,12 @@ def _job_kline(data_root: str, config: dict | None = None,
     service = KlineSyncService(data_root)
     opts_kwargs: dict = {"mode": "incremental"}
     if date_from:
-        opts_kwargs["start_date"] = date_from
+        opts_kwargs["start"] = date_from
     if date_to:
-        opts_kwargs["end_date"] = date_to
+        opts_kwargs["end"] = date_to
+    if date_from or date_to:
+        # Recovery/backfill needs an explicit window instead of the incremental watermark path.
+        opts_kwargs["mode"] = "range"
     summary = service.sync(KlineSyncOptions(**opts_kwargs))
     return (
         f"K线同步: mode={summary.sync_mode} api_calls={summary.api_calls if summary.api_calls is not None else '-'} "
@@ -192,8 +208,12 @@ def _job_fund_flow(data_root: str, config: dict | None = None,
 
     db = TradeDB(data_root)
     fetcher = FundFlowFetcher(data_root)
-    watchlist = db.watchlist_get()
-    symbols = watchlist or db.get_all_symbols()[:50]
+    if date_from or date_to:
+        # Recovery/backfill must cover the full universe for the requested window.
+        symbols = db.get_all_symbols()
+    else:
+        watchlist = db.watchlist_get()
+        symbols = watchlist or db.get_all_symbols()[:50]
     logger.info("Updating fund flow for %d symbols", len(symbols))
     summary = fetcher.fetch_batch(symbols, start_date=date_from, end_date=date_to)
     return (
@@ -400,20 +420,18 @@ def _job_sentiment_fetch(data_root: str, config: dict | None = None,
 
 def _job_sentiment_silver(data_root: str, config: dict | None = None,
                            date_from: str | None = None, date_to: str | None = None) -> str:
-    """Bronze → Silver: per-article sentiment scoring (checkpoint)."""
-    from pathlib import Path
-    silver_root = Path(data_root) / "sentiment" / "silver"
-    files = list(silver_root.rglob("*.parquet")) if silver_root.exists() else []
-    return f"情绪 Silver 检查: {len(files)} 个 parquet 文件"
+    """Recover Silver by running the real sentiment pipeline for the requested window."""
+    cfg = dict(config or {})
+    cfg.setdefault("fetch_mode", "range" if (date_from or date_to) else "incremental")
+    return _job_sentiment_pipeline(data_root, config=cfg, date_from=date_from, date_to=date_to)
 
 
 def _job_sentiment_gold(data_root: str, config: dict | None = None,
                          date_from: str | None = None, date_to: str | None = None) -> str:
-    """Silver → Gold: per-symbol/date aggregation (checkpoint)."""
-    from pathlib import Path
-    gold_root = Path(data_root) / "sentiment" / "gold"
-    files = list(gold_root.rglob("*.parquet")) if gold_root.exists() else []
-    return f"情绪 Gold 检查: {len(files)} 个 parquet 文件"
+    """Recover Gold by running the real sentiment pipeline for the requested window."""
+    cfg = dict(config or {})
+    cfg.setdefault("fetch_mode", "range" if (date_from or date_to) else "incremental")
+    return _job_sentiment_pipeline(data_root, config=cfg, date_from=date_from, date_to=date_to)
 
 
 def _job_event_extract(data_root: str, config: dict | None = None,

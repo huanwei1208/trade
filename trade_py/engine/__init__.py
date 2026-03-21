@@ -117,12 +117,18 @@ def ingest_articles(
     args = [
         "--fetch-mode", fetch_mode,
         "--data-root", data_root,
+        "--source", source,
         "--semantic-mode", _sem_mode,
     ]
-    if date_from:
-        args.extend(["--date-from", date_from])
-    if date_to:
-        args.extend(["--date-to", date_to])
+    start = date_from or date_to
+    end = date_to or date_from
+    if start and end and start == end:
+        args.extend(["--date", start])
+    else:
+        if start:
+            args.extend(["--start", start])
+        if end:
+            args.extend(["--end", end])
     sentiment_main(args)
     return {"summary": f"情绪抓取完成: fetch_mode={fetch_mode} semantic_mode={_sem_mode}"}
 

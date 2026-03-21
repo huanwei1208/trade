@@ -110,6 +110,16 @@ def _iter_day_strings(date_from: str, date_to: str) -> list[str]:
     return values
 
 
+def _resolve_end_day(db, requested: str | None = None) -> date:
+    if requested:
+        return _to_date(requested) or date.today()
+    try:
+        resolved = db.get_latest_market_asof()
+    except Exception:
+        resolved = None
+    return _to_date(resolved) or date.today()
+
+
 def _coverage_status(coverage_pct: float | None, *, lag_days: int | None = None, exists: bool | None = None) -> str:
     if exists is False:
       return "MISSING"
@@ -366,6 +376,8 @@ def _collect_gap_ranges(db) -> dict[str, list[tuple[date | None, date | None, st
 
 
 def _collect_recovery_actions(db, date_from: str, date_to: str) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    window_start = _to_date(date_from)
+    window_end = _to_date(date_to)
     with db._conn_lock:
         rows = db._conn.execute(
             """
@@ -393,10 +405,14 @@ def _collect_recovery_actions(db, date_from: str, date_to: str) -> tuple[dict[tu
         by_dataset[dataset].append(item)
         start_day = _to_date(item.get("date_from"))
         end_day = _to_date(item.get("date_to"))
-        if not start_day or not end_day:
+        if not start_day or not end_day or not window_start or not window_end:
             continue
-        cursor = start_day
-        while cursor <= end_day and (cursor - start_day).days < 31:
+        clip_start = max(start_day, window_start)
+        clip_end = min(end_day, window_end)
+        if clip_end < clip_start:
+            continue
+        cursor = clip_start
+        while cursor <= clip_end and (cursor - clip_start).days < 31:
             bucket = by_cell[(dataset, cursor.isoformat())]
             if len(bucket) < 8:
                 bucket.append(item)
@@ -510,7 +526,7 @@ def build_readiness_grid(
     datasets: list[str] | None = None,
     include_actions: bool = True,
 ) -> dict[str, Any]:
-    end_day = _to_date(end_date) or date.today()
+    end_day = _resolve_end_day(db, end_date)
     day_list = _daterange(end_day, max(1, min(days, 90)))
     day_strings = [item.isoformat() for item in day_list]
     date_from = day_strings[0]
@@ -522,6 +538,8 @@ def build_readiness_grid(
     with db._conn_lock:
         total_symbols_row = db._conn.execute("SELECT COUNT(*) AS count FROM instruments").fetchone()
         total_symbols = int(total_symbols_row["count"] or 0)
+        active_symbols_row = db._conn.execute("SELECT COUNT(*) AS count FROM instruments WHERE status = 0").fetchone()
+        active_symbols = int(active_symbols_row["count"] or 0)
         active_models_row = db._conn.execute(
             "SELECT COUNT(*) AS count, MIN(substr(trained_at, 1, 10)) AS first_day, MAX(substr(trained_at, 1, 10)) AS last_day "
             "FROM model_registry WHERE COALESCE(is_active, 0) = 1 OR promotion_state = 'active'"
@@ -551,7 +569,7 @@ def build_readiness_grid(
     latest_gold = _latest_path_date(sentiment_gold_dates)
     latest_silver = _latest_path_date(sentiment_silver_dates)
 
-    signal_expected = _signal_expected_count(signal_counts, total_symbols)
+    signal_expected = _signal_expected_count(signal_counts, active_symbols or total_symbols)
     belief_expected = max(max(belief_counts.values()) if belief_counts else 0, 1)
     recommendation_expected = max(max(recommendation_counts.values()) if recommendation_counts else 0, 1)
     recovery_by_cell, recovery_by_dataset = _collect_recovery_actions(db, date_from, date_to) if include_actions else ({}, {})
@@ -873,7 +891,7 @@ def build_readiness_grid(
     }
 
     return {
-        "as_of": date.today().isoformat(),
+        "as_of": end_day.isoformat(),
         "range": {
             "days": len(day_strings),
             "end_date": day_strings[-1],

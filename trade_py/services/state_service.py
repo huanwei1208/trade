@@ -11,6 +11,7 @@ All DB reads are read-only.  No writes happen here.
 from __future__ import annotations
 
 import logging
+import json
 from datetime import date
 from typing import Any
 
@@ -34,6 +35,7 @@ class StateService:
     def __init__(self, data_root: str = "data", db=None) -> None:
         self._data_root = data_root
         self._db = db
+        self._signals_columns: set[str] | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -52,8 +54,14 @@ class StateService:
         - sync_state     → freshness per dataset
         - market_events  → recent event count + top event type
         """
-        as_of = as_of_date or date.today().isoformat()
         db = self._db or self._open_db()
+        as_of = as_of_date
+        if not as_of:
+            try:
+                as_of = db.get_latest_market_asof()
+            except Exception:
+                as_of = None
+        as_of = as_of or date.today().isoformat()
 
         # ── Signals row ───────────────────────────────────────────────────────
         sig = self._read_signals(db, symbol, as_of)
@@ -102,29 +110,63 @@ class StateService:
     def _read_signals(self, db, symbol: str, as_of: str) -> dict[str, Any]:
         """Read the most recent signals row for (symbol, as_of)."""
         try:
+            columns = self._signal_columns(db)
+            if not columns:
+                return {}
+            desired = [
+                "window_score",
+                "event_kg_score",
+                "rsi_14",
+                "net_sentiment",
+                "vol_ratio",
+                "macd_signal",
+                "event_type",
+            ]
+            present = [name for name in desired if name in columns]
             with db._conn_lock:
-                row = db._conn.execute(
+                rows = db._conn.execute(
                     """
-                    SELECT window_score, event_kg_score, rsi_14, net_sentiment,
-                           vol_ratio, macd_signal
+                    SELECT {columns}
                     FROM signals
                     WHERE symbol = ? AND date <= ?
-                    ORDER BY date DESC LIMIT 1
-                    """,
+                    ORDER BY date DESC LIMIT 5
+                    """.format(columns=", ".join(present)),
                     (symbol, as_of),
-                ).fetchone()
-            if row:
+                ).fetchall()
+            if rows:
+                latest = rows[0]
+                index = {name: pos for pos, name in enumerate(present)}
+
+                def _latest_non_null(idx: int):
+                    for row in rows:
+                        if row[idx] is not None:
+                            return row[idx]
+                    return None
                 return {
-                    "window_score":   row[0],
-                    "event_kg_score": row[1],
-                    "rsi_14":         row[2],
-                    "net_sentiment":  row[3],
-                    "vol_ratio":      row[4],
-                    "macd_signal":    row[5],
+                    "window_score":   latest[index["window_score"]] if "window_score" in index else None,
+                    "event_kg_score": _latest_non_null(index["event_kg_score"]) if "event_kg_score" in index else None,
+                    "rsi_14":         _latest_non_null(index["rsi_14"]) if "rsi_14" in index else None,
+                    "net_sentiment":  _latest_non_null(index["net_sentiment"]) if "net_sentiment" in index else None,
+                    "vol_ratio":      _latest_non_null(index["vol_ratio"]) if "vol_ratio" in index else None,
+                    "macd_signal":    _latest_non_null(index["macd_signal"]) if "macd_signal" in index else None,
+                    "event_type":     (_latest_non_null(index["event_type"]) or "") if "event_type" in index else "",
                 }
         except Exception as exc:
             logger.debug("state_service signals read failed for %s: %s", symbol, exc)
         return {}
+
+    def _signal_columns(self, db) -> set[str]:
+        if self._signals_columns is not None:
+            return self._signals_columns
+        columns: set[str] = set()
+        try:
+            with db._conn_lock:
+                rows = db._conn.execute("PRAGMA table_info(signals)").fetchall()
+            columns = {str(row[1]) for row in rows}
+        except Exception as exc:
+            logger.debug("state_service signal schema read failed: %s", exc)
+        self._signals_columns = columns
+        return columns
 
     def _read_belief(self, db, symbol: str, as_of: str) -> dict[str, Any]:
         """Read belief_state for (symbol, as_of) via TradeDB helper."""
@@ -146,10 +188,12 @@ class StateService:
             with db._conn_lock:
                 rows = db._conn.execute(
                     """
-                    SELECT event_type, kg_score
-                    FROM market_events
-                    WHERE symbol = ? AND event_date <= ?
-                    ORDER BY event_date DESC LIMIT 5
+                    SELECT me.event_type, ep.kg_score
+                    FROM event_propagations ep
+                    JOIN market_events me ON me.event_id = ep.event_id
+                    WHERE ep.symbol = ? AND me.event_date <= ?
+                    ORDER BY me.event_date DESC, ep.kg_score DESC
+                    LIMIT 5
                     """,
                     (symbol, as_of),
                 ).fetchall()
@@ -165,6 +209,16 @@ class StateService:
                 }
         except Exception as exc:
             logger.debug("state_service events read failed for %s: %s", symbol, exc)
+        try:
+            sig = self._read_signals(db, symbol, as_of)
+            if sig.get("event_kg_score") is not None or sig.get("event_type"):
+                return {
+                    "kg_score": sig.get("event_kg_score"),
+                    "top_event_type": str(sig.get("event_type") or ""),
+                    "event_count": 1 if sig.get("event_type") or sig.get("event_kg_score") is not None else 0,
+                }
+        except Exception:
+            pass
         return {}
 
     def _read_freshness(self, db, as_of: str) -> dict[str, Any]:
@@ -175,13 +229,37 @@ class StateService:
         stale:   list[str] = []
         score_acc = 0.0
         try:
+            snapshot_row = None
+            with db._conn_lock:
+                snapshot_row = db._conn.execute(
+                    """
+                    SELECT eval_date, metadata_json
+                    FROM dataset_snapshots
+                    WHERE eval_date <= ?
+                    ORDER BY eval_date DESC
+                    LIMIT 1
+                    """,
+                    (as_of,),
+                ).fetchone()
+            snapshot_day = str(snapshot_row["eval_date"]) if snapshot_row else None
+            snapshot_meta = {}
+            if snapshot_row and snapshot_row["metadata_json"]:
+                try:
+                    snapshot_meta = json.loads(snapshot_row["metadata_json"])
+                except Exception:
+                    snapshot_meta = {}
             for ds, w in zip(datasets, weights):
                 with db._conn_lock:
                     row = db._conn.execute(
-                        "SELECT MAX(last_date) FROM sync_state WHERE dataset = ?",
+                        "SELECT MAX(last_date) FROM sync_state WHERE source = ?",
                         (ds,),
                     ).fetchone()
                 last_date = row[0] if row else None
+                if not last_date and ds in {"tushare_fund_flow", "tushare_fundamental"} and snapshot_day:
+                    coverage_key = "fund_flow_coverage" if ds == "tushare_fund_flow" else "fundamental_coverage"
+                    coverage = snapshot_meta.get(coverage_key)
+                    if coverage is not None and float(coverage) > 0:
+                        last_date = snapshot_day
                 if not last_date:
                     missing.append(ds)
                     continue

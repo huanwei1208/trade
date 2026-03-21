@@ -30,17 +30,102 @@ _FRESHNESS_DATASETS = [
 ]
 
 
+def _latest_sync_date(
+    db: "TradeDB",
+    *,
+    datasets: tuple[str, ...] = (),
+    sources: tuple[str, ...] = (),
+    not_after: str | None = None,
+) -> str | None:
+    clauses: list[str] = []
+    params: list[str] = []
+    if datasets:
+        placeholders = ",".join("?" for _ in datasets)
+        clauses.append(f"dataset IN ({placeholders})")
+        params.extend(datasets)
+    if sources:
+        placeholders = ",".join("?" for _ in sources)
+        clauses.append(f"source IN ({placeholders})")
+        params.extend(sources)
+    if not clauses:
+        return None
+    filters = [f"({' OR '.join(clauses)})"]
+    if not_after:
+        filters.append("last_date <= ?")
+        params.append(not_after)
+    query = f"SELECT MAX(last_date) FROM sync_state WHERE {' AND '.join(filters)}"
+    row = db._conn.execute(query, params).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def _latest_sentiment_gold_date(data_root: str) -> str | None:
+    gold_root = Path(data_root) / "sentiment" / "gold"
+    if not gold_root.exists():
+        return None
+    latest: str | None = None
+    for path in gold_root.rglob("*.parquet"):
+        stem = path.stem
+        if len(stem) == 10 and stem[4] == "-" and stem[7] == "-":
+            latest = max(latest or stem, stem)
+    return latest
+
+
+def _snapshot_metadata_latest(db: "TradeDB", today: str) -> tuple[str | None, dict[str, Any]]:
+    row = db._conn.execute(
+        """
+        SELECT eval_date, metadata_json
+        FROM dataset_snapshots
+        WHERE eval_date <= ?
+        ORDER BY eval_date DESC
+        LIMIT 1
+        """,
+        (today,),
+    ).fetchone()
+    if not row:
+        return None, {}
+    try:
+        meta = json.loads(row[1] or "{}")
+    except Exception:
+        meta = {}
+    return row[0], meta if isinstance(meta, dict) else {}
+
+
 def _write_freshness(db: "TradeDB", today: str) -> None:
     """Write FreshnessStatus for known datasets."""
+    snapshot_day, snapshot_meta = _snapshot_metadata_latest(db, today)
     records = []
     for ds in _FRESHNESS_DATASETS:
+        freshness_date: str | None = None
+        coverage_pct: float | None = None
         try:
-            # Try to get last sync date from sync_state
-            row = db._conn.execute(
-                "SELECT MAX(last_date) as last_date FROM sync_state WHERE dataset=?",
-                (ds,),
-            ).fetchone()
-            freshness_date = row[0] if row and row[0] else None
+            if ds == "kline":
+                freshness_date = _latest_sync_date(
+                    db,
+                    datasets=("kline",),
+                    sources=("tushare_kline",),
+                    not_after=today,
+                )
+            elif ds == "fund_flow":
+                coverage = snapshot_meta.get("fund_flow_coverage")
+                if coverage is not None and float(coverage) > 0:
+                    freshness_date = snapshot_day
+                    coverage_pct = float(coverage)
+            elif ds == "sentiment_gold":
+                freshness_date = _latest_sentiment_gold_date(getattr(db, "_data_root", "data"))
+            elif ds == "market_events":
+                row = db._conn.execute("SELECT MAX(event_date) FROM market_events").fetchone()
+                freshness_date = row[0] if row and row[0] else None
+            elif ds == "factors":
+                row = db._conn.execute(
+                    """
+                    SELECT MAX(latest_date) FROM (
+                        SELECT MAX(date) AS latest_date FROM signals
+                        UNION ALL
+                        SELECT MAX(date) AS latest_date FROM factors
+                    )
+                    """
+                ).fetchone()
+                freshness_date = row[0] if row and row[0] else None
         except Exception:
             freshness_date = None
 
@@ -64,7 +149,7 @@ def _write_freshness(db: "TradeDB", today: str) -> None:
             "dataset": ds,
             "freshness_date": freshness_date,
             "lag_days": lag_days,
-            "coverage_pct": None,
+            "coverage_pct": coverage_pct,
             "status": status,
         })
 
@@ -105,6 +190,13 @@ def produce_recommendations(
         logger.info("produce_recommendations: no belief states for %s", today)
         return []
 
+    try:
+        active_symbols = set(db.get_active_symbols())
+    except Exception:
+        active_symbols = set()
+    if active_symbols:
+        belief_states = [row for row in belief_states if str(row.get("symbol") or "") in active_symbols]
+
     # Step 3: load signals
     signals: dict[str, dict] = {}
     try:
@@ -137,6 +229,14 @@ def produce_recommendations(
     ranked = rank_symbols(belief_states, signals)
 
     # Step 5: write recommendations
+    try:
+        with db._conn_lock:
+            db._conn.execute("DELETE FROM Recommendation WHERE as_of_date = ?", (today,))
+            db._conn.execute("DELETE FROM RecommendationTrace WHERE as_of_date = ?", (today,))
+            db._conn.commit()
+    except Exception as exc:
+        logger.warning("produce_recommendations: cleanup failed for %s: %s", today, exc)
+
     recs = []
     for item in ranked:
         symbol = item["symbol"]

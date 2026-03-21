@@ -158,12 +158,20 @@ def create_app():
 
     _payload_cache: dict[str, dict[str, Any]] = {}
     _payload_cache_lock = Lock()
+    _PAYLOAD_SCHEMA_VERSION = "2026-03-21-recommendation-recovery-v2"
 
     # ── DB helper ─────────────────────────────────────────────────────────────
 
     def _db():
         from trade_py.db.trade_db import TradeDB
         return TradeDB(data_root)
+
+    def _current_asof(db=None) -> str:
+        local_db = db or _db()
+        try:
+            return local_db.get_latest_market_asof() or date.today().isoformat()
+        except Exception:
+            return date.today().isoformat()
 
     def _payload_signature(kind: str) -> str:
         db = _db()
@@ -182,11 +190,14 @@ def create_app():
                     COALESCE((SELECT MAX(generated_at) FROM kg_edge_candidates), ''),
                     COALESCE((SELECT MAX(created_at) FROM market_events), ''),
                     COALESCE((SELECT MAX(validated_at) FROM event_propagations), ''),
-                    COALESCE((SELECT MAX(updated_at) FROM settings), '')
+                    COALESCE((SELECT MAX(updated_at) FROM settings), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM signals), ''),
+                    COALESCE((SELECT MAX(as_of_date) FROM BeliefState), ''),
+                    COALESCE((SELECT MAX(created_at) FROM Recommendation), '')
                 """
             ).fetchone()
         base = "|".join(str(item or "") for item in (row or ()))
-        return f"{kind}:{date.today().isoformat()}:{base}"
+        return f"{kind}:{_PAYLOAD_SCHEMA_VERSION}:{_current_asof(db)}:{base}"
 
     def _readiness_signature(*, days: int, end_date: str | None, datasets: str | None) -> str:
         db = _db()
@@ -201,6 +212,7 @@ def create_app():
                     COALESCE((SELECT MAX(updated_at) FROM sync_state), ''),
                     COALESCE((SELECT MAX(id) FROM data_repair_runs), 0),
                     COALESCE((SELECT MAX(updated_at) FROM data_gaps), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM readiness_recovery_actions), ''),
                     COALESCE((SELECT MAX(date) FROM signals), ''),
                     COALESCE((SELECT MAX(as_of_date) FROM BeliefState), ''),
                     COALESCE((SELECT MAX(as_of_date) FROM Recommendation), ''),
@@ -209,7 +221,7 @@ def create_app():
                 """
             ).fetchone()
         base = "|".join(str(item or "") for item in (row or ()))
-        return f"readiness:{days}:{end_date or ''}:{datasets or ''}:{base}"
+        return f"readiness:{_PAYLOAD_SCHEMA_VERSION}:{days}:{end_date or ''}:{datasets or ''}:{base}"
 
     def _cache_get(name: str, *, signature: str, ttl_seconds: float) -> dict[str, Any] | None:
         now = time.monotonic()
@@ -793,20 +805,21 @@ def create_app():
 
     def _events_page_payload() -> dict[str, Any]:
         db = _db()
-        today = date.today().isoformat()
+        today = _current_asof(db)
+        focus_day = date.fromisoformat(today)
         workflows = db.event_workflow_recent(limit=24)
         focus = _pick_workflow_focus(workflows, db)
         runtime = db.pipeline_dag_runtime(recent_limit=240)
         today_events = db.get_events(from_date=today, to_date=today, limit=200)
         recent_market_events = db.get_events(
-            from_date=(date.today() - timedelta(days=7)).isoformat(),
+            from_date=(focus_day - timedelta(days=7)).isoformat(),
             to_date=today,
             limit=120,
         )
         due_agenda = db.agenda_queue_due(limit=24)
         planned_events = db.planned_events_list(
             start_date=today,
-            end_date=(date.today() + timedelta(days=3)).isoformat(),
+            end_date=(focus_day + timedelta(days=3)).isoformat(),
             limit=40,
         )
         failed_nodes = [
@@ -903,7 +916,7 @@ def create_app():
         }
 
         # EBRT: top picks from Recommendation table (with belief delta)
-        today_str = date.today().isoformat()
+        today_str = _current_asof(db)
         ebrt_recs: list[dict] = []
         try:
             recs = db.recommendation_list(today_str)
@@ -1076,7 +1089,7 @@ def create_app():
 
     def _signals_page_payload() -> dict[str, Any]:
         db = _db()
-        today_str = date.today().isoformat()
+        today_str = _current_asof(db)
 
         # EBRT: use Recommendation table if available
         ebrt_recs = []
@@ -1978,7 +1991,7 @@ def create_app():
         from trade_py.decision.action import DecisionAction
 
         db = _db()
-        today_str = date.today().isoformat()
+        today_str = _current_asof(db)
 
         # Get the current EBRT picks as the candidate set
         try:
@@ -2027,19 +2040,53 @@ def create_app():
     async def get_trust_overview():
         """Return portfolio-level trust summary from QualityReport."""
         db = _db()
-        today_str = date.today().isoformat()
+        today_str = _current_asof(db)
         try:
-            rows = db.quality_report_list(limit=7)
+            with db._conn_lock:
+                rows = [
+                    dict(row)
+                    for row in db._conn.execute(
+                        "SELECT eval_date, metrics_json FROM QualityReport ORDER BY eval_date DESC LIMIT 7"
+                    ).fetchall()
+                ]
+                gate_rows = {
+                    str(row["eval_date"]): dict(row)
+                    for row in db._conn.execute(
+                        "SELECT eval_date, metrics_json FROM daily_quality_gate ORDER BY eval_date DESC LIMIT 7"
+                    ).fetchall()
+                }
         except Exception:
             rows = []
+            gate_rows = {}
 
         trend = []
         for row in rows:
-            metrics = row.get("metrics_json") or {}
+            metrics = row.get("metrics")
+            if not isinstance(metrics, dict) or not metrics:
+                try:
+                    metrics = json.loads(row.get("metrics_json") or "{}")
+                except Exception:
+                    metrics = {}
+            gate_metrics = {}
+            gate_row = gate_rows.get(str(row.get("eval_date") or ""))
+            if gate_row:
+                try:
+                    gate_metrics = json.loads(gate_row.get("metrics_json") or "{}")
+                except Exception:
+                    gate_metrics = {}
+            latest_gate = gate_metrics.get("latest_metrics") or {}
+            coverage = (
+                metrics.get("feature_coverage")
+                or metrics.get("fund_flow_coverage")
+                or latest_gate.get("source_healthy_ratio")
+                or latest_gate.get("fund_flow_coverage")
+                or latest_gate.get("fundamental_coverage")
+                or 0.0
+            )
             trend.append({
                 "eval_date":    row.get("eval_date"),
                 "trust_scalar": round(float(metrics.get("trust_scalar") or 0.0), 4),
-                "coverage":     round(float(metrics.get("feature_coverage") or 0.0), 4),
+                "coverage":     round(float(coverage or 0.0), 4),
             })
         trend.sort(key=lambda x: (x.get("eval_date") or ""))
 
@@ -2054,7 +2101,7 @@ def create_app():
     # ── API: kline/{symbol} ───────────────────────────────────────────────────
 
     @app.get("/api/kline/{symbol}")
-    async def get_kline(symbol: str, days: int = 60):
+    async def get_kline(symbol: str, days: int = 60, date: str | None = None):
         """Return OHLCV + indicators + event markers + recommendation context."""
         symbol = symbol.strip().upper()
         if not symbol:
@@ -2072,6 +2119,7 @@ def create_app():
         context = _explain_svc.build_kline_context(
             symbol,
             days=max(days, 60),
+            as_of_date=date,
             db=db,
             data_root=data_root,
         )
@@ -2079,7 +2127,7 @@ def create_app():
         # Decision explanation — primary truth source for Symbol page
         explanation: dict = {}
         try:
-            exp = _explain_svc.explain(symbol)
+            exp = _explain_svc.explain(symbol, as_of_date=date)
             explanation = exp.to_summary_dict()
         except Exception as exc:
             logger.debug("kline explain failed for %s: %s", symbol, exc)

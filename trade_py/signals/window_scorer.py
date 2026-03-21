@@ -23,6 +23,7 @@ from typing import Any
 import pandas as pd
 
 from trade_py.data.access import DataGateway
+from trade_py.data.market.fund_flow.tushare import FundFlowFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,12 @@ def _score_large_order(symbol: str, gateway: DataGateway,
                        target_date: datetime.date) -> float:
     """Read fund_flow data and score based on large-order net flow trend."""
     try:
+        # Recommendation recovery should not block on symbols that have never had
+        # any local fund-flow coverage. Treat them as neutral instead of forcing
+        # a per-symbol network refill that can dominate the whole chain.
+        local_df = FundFlowFetcher(str(gateway._root)).load(symbol)
+        if local_df is None or local_df.empty:
+            return 50.0
         df, report = gateway.get_fund_flow(symbol, as_of=target_date)
         if report.action != "hit_local" or report.degraded:
             logger.warning("window_scorer fund_flow report: %s", gateway.format_report(report))
@@ -364,8 +371,8 @@ def score_universe(
     db = TradeDB(data_root)
     gateway = DataGateway(data_root)
 
-    # Full-market scoring job should always cover the instrument universe.
-    symbols = db.get_all_symbols()
+    # Latest-recommendation scoring should focus on normal tradable instruments.
+    symbols = db.get_active_symbols()
     if limit is not None:
         symbols = symbols[:limit]
 
