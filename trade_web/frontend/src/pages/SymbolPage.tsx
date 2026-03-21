@@ -1,8 +1,6 @@
 import { useState } from "react";
 
-import { BeliefCausalTimeline } from "../components/BeliefCausalTimeline";
 import { BeliefWorkspace } from "../components/BeliefWorkspace";
-import { DataTrustPanel } from "../components/DataTrustPanel";
 import { DecisionChangeStrip } from "../components/DecisionChangeStrip";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
@@ -10,12 +8,24 @@ import { ExplanationRail } from "../components/ExplanationRail";
 import { LoadingSkeleton } from "../components/LoadingSkeleton";
 import { SymbolChart } from "../components/SymbolChart";
 import { SymbolChartToolbar } from "../components/SymbolChartToolbar";
+import { SymbolDataOpsTab } from "../components/SymbolDataOpsTab";
 import { SymbolDecisionPanel } from "../components/SymbolDecisionPanel";
+import { SymbolEvidenceTab } from "../components/SymbolEvidenceTab";
 import { SymbolFreshnessBanner } from "../components/SymbolFreshnessBanner";
 import { SymbolQuoteStrip } from "../components/SymbolQuoteStrip";
 import { SymbolReasonBoard } from "../components/SymbolReasonBoard";
 import { SymbolWorkspaceTabs, useWorkspaceTab } from "../components/SymbolWorkspaceTabs";
-import type { AdjustMode, BeliefGraphResponse, DecisionExplanation, IndicatorMode, KlineResponse, WorldState } from "../lib/api";
+import type {
+  AdjustMode,
+  BeliefGraphResponse,
+  DecisionExplanation,
+  IndicatorMode,
+  KlineResponse,
+  SymbolDataOpsResponse,
+  SymbolEvidenceResponse,
+  SymbolSectorResponse,
+  WorldState,
+} from "../lib/api";
 import { useApiResource } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { getDatasetText } from "../lib/statusText";
@@ -56,6 +66,31 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
     deps: [symbol, refreshToken],
     cacheKey: symbol ? `trade-web:belief-graph:${symbol}` : undefined,
   });
+
+  // Evidence tab resources — only fetched when on that tab
+  const evidenceResource = useApiResource<SymbolEvidenceResponse>(
+    symbol && activeTab === "evidence" ? `/api/symbol-evidence/${symbol}` : null,
+    {
+      deps: [symbol, refreshToken, activeTab],
+      cacheKey: symbol ? `trade-web:symbol-evidence:${symbol}` : undefined,
+    }
+  );
+  const sectorResource = useApiResource<SymbolSectorResponse>(
+    symbol && activeTab === "evidence" ? `/api/symbol-sector/${symbol}` : null,
+    {
+      deps: [symbol, refreshToken, activeTab],
+      cacheKey: symbol ? `trade-web:symbol-sector:${symbol}` : undefined,
+    }
+  );
+
+  // Data Ops tab resource — only fetched when on that tab
+  const dataOpsResource = useApiResource<SymbolDataOpsResponse>(
+    symbol && activeTab === "data-ops" ? `/api/symbol-data-ops/${symbol}` : null,
+    {
+      deps: [symbol, refreshToken, activeTab],
+      cacheKey: symbol ? `trade-web:symbol-data-ops:${symbol}` : undefined,
+    }
+  );
 
   if (!symbol) {
     return <EmptyState title={t("symbol.none")} body={t("symbol.noneCopy")} />;
@@ -205,22 +240,27 @@ export function SymbolPage({ symbol, refreshToken, onBack, onOpenOpsFocus }: Sym
         </div>
       )}
 
-      {activeTab === "timeline" && (
-        <div className="symbol-tab-body symbol-tab-body--timeline">
-          <BeliefCausalTimeline
+      {activeTab === "evidence" && (
+        <div className="symbol-tab-body symbol-tab-body--evidence">
+          <SymbolEvidenceTab
+            evidenceData={evidenceResource.data}
+            sectorData={sectorResource.data}
             beliefGraph={beliefGraphResource.data}
             kline={klineResource.data}
+            evidenceLoading={evidenceResource.loading}
+            sectorLoading={sectorResource.loading}
           />
         </div>
       )}
 
-      {activeTab === "data-trust" && (
-        <div className="symbol-tab-body symbol-tab-body--data-trust">
-          <DataTrustPanel
-            explanation={explanation}
-            state={stateResource.data}
-            kline={klineResource.data}
-            beliefGraph={beliefGraphResource.data}
+      {activeTab === "data-ops" && (
+        <div className="symbol-tab-body symbol-tab-body--data-ops">
+          <SymbolDataOpsTab
+            symbol={symbol}
+            data={dataOpsResource.data}
+            loading={dataOpsResource.loading}
+            onOpenFullOps={openReadiness}
+            onRetry={dataOpsResource.retry}
           />
         </div>
       )}

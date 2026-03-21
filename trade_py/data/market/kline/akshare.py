@@ -27,10 +27,12 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 import pandas as pd
 
 from trade_py.db.instruments_db import InstrumentsDB
+from trade_py.data.market.kline.providers import _finalize_frame
 from trade_py.utils.a_share_symbols import ensure_a_share_symbol, infer_a_share_suffix
 from trade_py.utils.retry import retry
 
@@ -108,7 +110,7 @@ class KlineFetcher:
         symbol: str,
         start: str,
         end: Optional[str] = None,
-        adjust: str = "hfq",
+        adjust: str = "none",
     ) -> pd.DataFrame:
         """Fetch daily OHLCV bars for one symbol via akshare.
 
@@ -158,42 +160,13 @@ class KlineFetcher:
             "成交量": "volume",       # 手 (lots)
             "成交额": "amount",       # 元
             "换手率": "turnover_rate",
+            "涨跌幅": "pct_chg",
         }
         df = raw.rename(columns=col_map)
 
         # Keep only the columns we care about (ignore akshare extras like 振幅/涨跌幅...)
         keep = [c for c in col_map.values() if c in df.columns]
-        df = df[keep].copy()
-
-        # Ensure date is a proper date string YYYY-MM-DD
-        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
-
-        # Numeric coercion
-        for col in ["open", "close", "high", "low", "volume", "amount", "turnover_rate"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-
-        # prev_close: previous day's closing price (0 for first row)
-        df = df.sort_values("date").reset_index(drop=True)
-        df["prev_close"] = df["close"].shift(1).fillna(0.0)
-
-        # vwap = amount / (volume * 100)  [元/股]
-        total_shares = df["volume"] * 100
-        df["vwap"] = (df["amount"] / total_shares.where(total_shares > 0, other=float("nan"))
-                      ).fillna(0.0)
-
-        # Add symbol column
-        df["symbol"] = symbol
-
-        # Ensure turnover_rate exists
-        if "turnover_rate" not in df.columns:
-            df["turnover_rate"] = 0.0
-
-        # Reorder columns
-        available = [c for c in _COLUMN_ORDER if c in df.columns]
-        df = df[available]
-
-        return df
+        return _finalize_frame(symbol, df[keep].copy())
 
     # ── Parquet I/O ────────────────────────────────────────────────────────
 
@@ -222,7 +195,11 @@ class KlineFetcher:
             group = group.drop(columns=["_month"])
 
             if out_path.exists():
-                existing = pd.read_parquet(out_path)
+                try:
+                    existing = pd.read_parquet(out_path)
+                except Exception as exc:
+                    logger.warning("Ignoring unreadable parquet %s during repair: %s", out_path, exc)
+                    existing = pd.DataFrame(columns=group.columns)
                 combined = pd.concat([existing, group], ignore_index=True)
                 combined = combined.drop_duplicates(subset=["date"], keep="last")
             else:
@@ -236,9 +213,42 @@ class KlineFetcher:
                     combined[col] = 0.0
             combined = combined[[c for c in _COLUMN_ORDER if c in combined.columns]]
 
-            combined.to_parquet(out_path, index=False)
+            tmp_path = out_path.with_name(f".{out_path.name}.{uuid4().hex}.tmp")
+            combined.to_parquet(tmp_path, index=False)
+            tmp_path.replace(out_path)
 
         logger.debug("Saved %d rows for %s", len(df), symbol)
+
+    def replace_month_parquet(self, symbol: str, df: pd.DataFrame) -> None:
+        """Rewrite monthly partitions for a symbol without reading old files first.
+
+        This is intended for full-month repair/backfill flows where the caller
+        already provides the authoritative rows for every affected month.
+        """
+        if df.empty:
+            return
+
+        safe_sym = symbol.replace(".", "_")
+        df = df.copy()
+        df["_month"] = df["date"].str[:7]
+
+        for month, group in df.groupby("_month"):
+            month_dir = self._kline_root / month
+            month_dir.mkdir(parents=True, exist_ok=True)
+            out_path = month_dir / f"{safe_sym}.parquet"
+
+            combined = group.drop(columns=["_month"]).sort_values("date").reset_index(drop=True)
+            combined = combined.drop_duplicates(subset=["date"], keep="last")
+            for col in _COLUMN_ORDER:
+                if col not in combined.columns:
+                    combined[col] = 0.0
+            combined = combined[[c for c in _COLUMN_ORDER if c in combined.columns]]
+
+            tmp_path = out_path.with_name(f".{out_path.name}.{uuid4().hex}.tmp")
+            combined.to_parquet(tmp_path, index=False)
+            tmp_path.replace(out_path)
+
+        logger.debug("Replaced %d rows for %s", len(df), symbol)
 
     # ── Incremental update ─────────────────────────────────────────────────
 
@@ -246,7 +256,7 @@ class KlineFetcher:
         self,
         symbol: str,
         start_fallback: str | None = None,
-        adjust: str = "hfq",
+        adjust: str = "none",
     ) -> int:
         """Incrementally fetch new bars for one symbol and persist to Parquet.
 

@@ -8,16 +8,24 @@ const STORAGE_KEY = "trade-web:symbol-workspace-tab";
 const TABS: { id: WorkspaceTab; labelKey: string }[] = [
   { id: "decision", labelKey: "symbol.tab.decision" },
   { id: "belief", labelKey: "symbol.tab.belief" },
-  { id: "timeline", labelKey: "symbol.tab.timeline" },
-  { id: "data-trust", labelKey: "symbol.tab.dataTrust" },
+  { id: "evidence", labelKey: "symbol.tab.evidence" },
+  { id: "data-ops", labelKey: "symbol.tab.dataOps" },
 ];
+
+const VALID_TABS = new Set<string>(TABS.map((t) => t.id));
+
+/** Remap old tab values to new names for backward compatibility. */
+function remapLegacyTab(raw: string | null): WorkspaceTab {
+  if (raw === "timeline") return "evidence";
+  if (raw === "data-trust") return "data-ops";
+  if (raw && VALID_TABS.has(raw)) return raw as WorkspaceTab;
+  return "decision";
+}
 
 function readPersistedTab(): WorkspaceTab {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw === "decision" || raw === "belief" || raw === "timeline" || raw === "data-trust") {
-      return raw;
-    }
+    return remapLegacyTab(raw);
   } catch {
     // ignore
   }

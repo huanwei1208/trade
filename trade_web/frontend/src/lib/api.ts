@@ -315,7 +315,101 @@ export type BeliefGraphResponse = {
 };
 
 // Workspace tab type
-export type WorkspaceTab = "decision" | "belief" | "timeline" | "data-trust";
+export type WorkspaceTab = "decision" | "belief" | "evidence" | "data-ops";
+
+// ── Symbol evidence types (EBRT_14) ──────────────────────────────────────────
+
+export type SymbolMarketEvent = {
+  id?: string;
+  date?: string;
+  event_type?: string;
+  entity_id?: string;
+  magnitude?: number;
+  confidence?: number;
+  sentiment_score?: number;
+  news_volume?: number;
+  summary?: string;
+  source?: string;
+};
+
+export type SymbolEvidenceItem = {
+  id?: string;
+  date?: string;
+  evidence_type?: string;
+  direction?: number;
+  strength?: number;
+  reliability?: number;
+  novelty?: number;
+  source?: string;
+};
+
+export type SymbolAttentionItem = {
+  id?: string;
+  evidence_type?: string;
+  weight?: number;
+  direction?: number;
+  source?: string;
+};
+
+export type SymbolEvidenceResponse = {
+  symbol?: string;
+  as_of?: string;
+  sector_code?: string | null;
+  market_events?: SymbolMarketEvent[];
+  evidence_items?: SymbolEvidenceItem[];
+  attention_items?: SymbolAttentionItem[];
+};
+
+export type PeerEntry = {
+  symbol?: string;
+  name?: string;
+  action?: ActionType;
+  conviction?: string;
+  score?: number;
+  risk?: number;
+  window_score?: number | null;
+  net_sentiment?: number | null;
+  belief_mu?: number | null;
+  belief_confidence?: number | null;
+  kline_last_date?: string | null;
+};
+
+export type SymbolSectorResponse = {
+  symbol?: string;
+  as_of?: string;
+  sector_code?: string | null;
+  sector_name?: string | null;
+  sector_sentiment?: number;
+  sector_event_count?: number;
+  peers?: PeerEntry[];
+};
+
+// ── Symbol data ops types (EBRT_14) ──────────────────────────────────────────
+
+export type DataOpsDomain = {
+  id?: string;
+  name_zh?: string;
+  name_en?: string;
+  last_date?: string | null;
+  lag_days?: number | null;
+  row_count?: number | null;
+  status?: string;
+  source?: string;
+  can_repull?: boolean;
+};
+
+export type SymbolDataOpsResponse = {
+  symbol?: string;
+  as_of?: string;
+  domains?: DataOpsDomain[];
+};
+
+export type DataOpsRepairResponse = {
+  accepted?: boolean;
+  job_id?: string;
+  message?: string;
+  updated?: string[];
+};
 
 export type TrustOverview = {
   as_of?: string;

@@ -107,6 +107,12 @@ def _resolve_date_range(data_root: str, start: str | None, end: str | None) -> t
     return resolved_start, resolved_end
 
 
+def _catboost_train_dir(data_root: str | Path, model_name: str) -> str:
+    path = Path(data_root) / "catboost_info" / "kg_learned" / model_name
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def _resolve_backend(backend: str) -> str:
     norm = str(backend or "auto").strip().lower().replace("-", "_")
     if norm in {"xgboost", "catboost", "lgbm"}:
@@ -645,6 +651,7 @@ def _fit_edge_regressor(
             loss_function="RMSE",
             eval_metric="MAE",
             random_seed=42,
+            train_dir=_catboost_train_dir(data_root, model_name),
             verbose=False,
         )
     else:

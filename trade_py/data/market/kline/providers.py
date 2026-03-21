@@ -65,9 +65,20 @@ def _finalize_frame(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
         if col not in out.columns:
             out[col] = 0.0
         out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+    if "pct_chg" in out.columns:
+        out["pct_chg"] = pd.to_numeric(out["pct_chg"], errors="coerce")
+    if "prev_close" in out.columns:
+        out["prev_close"] = pd.to_numeric(out["prev_close"], errors="coerce")
 
     out = out.sort_values("date").reset_index(drop=True)
-    out["prev_close"] = out["close"].shift(1).fillna(0.0)
+    prev_close = out["prev_close"] if "prev_close" in out.columns else pd.Series(pd.NA, index=out.index, dtype="float64")
+    if "pct_chg" in out.columns:
+        denominator = 1.0 + (out["pct_chg"] / 100.0)
+        derived_prev = out["close"] / denominator.where(denominator.abs() > 1e-9)
+        prev_close = prev_close.where(prev_close.notna() & (prev_close > 0), derived_prev)
+    shifted_prev = out["close"].shift(1)
+    prev_close = prev_close.where(prev_close.notna() & (prev_close > 0), shifted_prev)
+    out["prev_close"] = pd.to_numeric(prev_close, errors="coerce").fillna(0.0)
     total_shares = out["volume"] * 100
     out["vwap"] = (out["amount"] / total_shares.where(total_shares > 0, other=float("nan"))).fillna(0.0)
     out = out.drop_duplicates(subset=["date"], keep="last")
@@ -107,6 +118,7 @@ class AkshareKlineProvider:
             "成交量": "volume",
             "成交额": "amount",
             "换手率": "turnover_rate",
+            "涨跌幅": "pct_chg",
         }
         df = raw.rename(columns=col_map)
         keep = [c for c in col_map.values() if c in df.columns]

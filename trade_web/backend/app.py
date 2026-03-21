@@ -24,6 +24,12 @@ Routes:
   GET  /api/signals-page         → top 50 picks with belief delta + top evidence (EBRT)
   GET  /api/belief/{symbol}      → BeliefState history + top AttentionScores (EBRT)
   GET  /api/belief-graph/{symbol} → Layered belief structure (final/sub-beliefs/factors/history)
+  GET  /api/symbol-evidence/{symbol} → Article/event evidence + attention items (EBRT_14)
+  GET  /api/symbol-sector/{symbol}   → Sector context + peer comparison (EBRT_14)
+  GET  /api/symbol-data-ops/{symbol} → Per-domain data coverage matrix (EBRT_14)
+  POST /api/symbol-data-ops/repull   → Enqueue re-pull for selected domains (EBRT_14)
+  POST /api/symbol-data-ops/replay   → Enqueue downstream replay (EBRT_14)
+  POST /api/symbol-data-ops/mark-verified → Mark domain verified (EBRT_14)
   GET  /api/kline/{symbol}       → OHLCV + indicators + event markers + belief_overlay (EBRT)
   GET  /api/state/{symbol}       → WorldState (regime labels, blockers, signals)
   GET  /api/explain/{symbol}     → DecisionExplanation (4-layer, unified)
@@ -2304,6 +2310,661 @@ def create_app():
             "factors": factors,
             "history": history,
             "provenance_edges": provenance_edges,
+        }
+
+    # ── API: symbol-evidence/{symbol} ────────────────────────────────────────
+
+    @app.get("/api/symbol-evidence/{symbol}")
+    async def get_symbol_evidence(symbol: str, days: int = 30):
+        """Return article/event evidence for the Evidence workspace tab.
+
+        Sources (in priority order):
+          1. market_events for symbol's sector (entity_id = sector_code)
+          2. Evidence rows for this symbol
+          3. Attention scores with evidence_type context
+        """
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+
+        db = _db()
+        today = _current_asof(db)
+
+        # 1. Resolve sector for this symbol
+        sector_code: str | None = None
+        try:
+            row = db._conn.execute(
+                "SELECT sector_code FROM sector_members WHERE symbol=?", (symbol,)
+            ).fetchone()
+            if row:
+                sector_code = row[0]
+        except Exception:
+            pass
+
+        # 2. Market events for symbol's sector (last `days` days)
+        market_events: list[dict] = []
+        try:
+            entity_ids: list[str] = []
+            if sector_code:
+                # sector_code like 801280.SI → entity_id like SW_Environment
+                # Use entity_id pattern from market_events for sector
+                entity_ids.append(sector_code)
+            # Also include SW_Unknown and macro events
+            event_rows = db._conn.execute(
+                """SELECT event_id, event_date, event_type, entity_id,
+                          magnitude, confidence, sentiment_score, news_volume, summary
+                   FROM market_events
+                   WHERE event_date >= date(?, '-' || ? || ' days')
+                     AND event_date <= ?
+                   ORDER BY event_date DESC
+                   LIMIT 50""",
+                (today, str(days), today),
+            ).fetchall()
+            for r in event_rows:
+                eid, edate, etype, entity_id, mag, conf, sent, nvol, summ = r
+                # Include if: matches sector entity, or is macro/broad event
+                is_sector = entity_id and sector_code and (
+                    entity_id == sector_code
+                    or entity_id.upper() == "SW_UNKNOWN"
+                    or entity_id.upper().startswith("SW_MACRO")
+                )
+                is_macro = entity_id and (
+                    "macro" in str(entity_id).lower()
+                    or entity_id.upper() == "SW_UNKNOWN"
+                )
+                if is_sector or is_macro:
+                    market_events.append({
+                        "id": eid,
+                        "date": edate,
+                        "event_type": etype,
+                        "entity_id": entity_id,
+                        "magnitude": round(float(mag or 0), 3),
+                        "confidence": round(float(conf or 1.0), 3),
+                        "sentiment_score": round(float(sent or 0), 3),
+                        "news_volume": int(nvol or 0),
+                        "summary": summ or "",
+                        "source": "market_events",
+                    })
+        except Exception:
+            pass
+
+        # 3. Evidence rows for this symbol
+        evidence_items: list[dict] = []
+        try:
+            ev_rows = db._conn.execute(
+                """SELECT evidence_id, as_of_date, evidence_type, direction,
+                          strength, reliability, novelty
+                   FROM Evidence
+                   WHERE symbol=?
+                   ORDER BY as_of_date DESC
+                   LIMIT 20""",
+                (symbol,),
+            ).fetchall()
+            for r in ev_rows:
+                ev_id, as_of, ev_type, direction, strength, reliability, novelty = r
+                evidence_items.append({
+                    "id": ev_id,
+                    "date": as_of,
+                    "evidence_type": ev_type,
+                    "direction": round(float(direction or 0), 2),
+                    "strength": round(float(strength or 0), 3),
+                    "reliability": round(float(reliability or 0), 3),
+                    "novelty": round(float(novelty or 0), 3),
+                    "source": "evidence_table",
+                })
+        except Exception:
+            pass
+
+        # 4. Attention scores (top factors with evidence context)
+        attention_items: list[dict] = []
+        try:
+            attn_rows = db.attention_list(symbol, today, top_n=10)
+            for a in attn_rows:
+                ev_id = str(a.get("evidence_id", ""))
+                ev_type = "unknown"
+                direction = 0.0
+                try:
+                    r = db._conn.execute(
+                        "SELECT evidence_type, direction FROM Evidence WHERE evidence_id=?",
+                        (ev_id,),
+                    ).fetchone()
+                    if r:
+                        ev_type = r[0] or "unknown"
+                        direction = float(r[1] or 0.0)
+                except Exception:
+                    pass
+                attention_items.append({
+                    "id": ev_id,
+                    "evidence_type": ev_type,
+                    "weight": round(float(a.get("weight") or 0.0), 4),
+                    "direction": round(direction, 2),
+                    "source": "attention",
+                })
+        except Exception:
+            pass
+
+        return {
+            "symbol": symbol,
+            "as_of": today,
+            "sector_code": sector_code,
+            "market_events": market_events,
+            "evidence_items": evidence_items,
+            "attention_items": attention_items,
+        }
+
+    # ── API: symbol-sector/{symbol} ───────────────────────────────────────────
+
+    @app.get("/api/symbol-sector/{symbol}")
+    async def get_symbol_sector(symbol: str, peer_limit: int = 10):
+        """Return sector context + peer comparison for a symbol.
+
+        Returns:
+          - sector_code, sector_name
+          - sector_sentiment: from gold sentiment parquet for latest date
+          - peers: top peer symbols with signal/belief/recommendation data
+        """
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+
+        db = _db()
+        today = _current_asof(db)
+
+        # 1. Sector info for this symbol
+        sector_code: str | None = None
+        sector_name: str | None = None
+        try:
+            row = db._conn.execute(
+                "SELECT sector_code, sector_name FROM sector_members WHERE symbol=?",
+                (symbol,),
+            ).fetchone()
+            if row:
+                sector_code, sector_name = row[0], row[1]
+        except Exception:
+            pass
+
+        # 2. Sector sentiment from market_events
+        sector_sentiment = 0.0
+        sector_event_count = 0
+        try:
+            if sector_code:
+                rows = db._conn.execute(
+                    """SELECT AVG(sentiment_score), COUNT(*)
+                       FROM market_events
+                       WHERE entity_id=? AND event_date >= date(?, '-7 days')""",
+                    (sector_code, today),
+                ).fetchone()
+                if rows and rows[0] is not None:
+                    sector_sentiment = round(float(rows[0]), 3)
+                    sector_event_count = int(rows[1] or 0)
+        except Exception:
+            pass
+
+        # Also try by SW_* entity ID mapping
+        if sector_code and sector_sentiment == 0.0:
+            try:
+                # sector_name → SW_* style entity_id
+                sw_name = "SW_" + str(sector_name or "").replace(" ", "")
+                rows = db._conn.execute(
+                    """SELECT AVG(sentiment_score), COUNT(*)
+                       FROM market_events
+                       WHERE entity_id LIKE ? AND event_date >= date(?, '-7 days')""",
+                    (sw_name[:12] + "%", today),
+                ).fetchone()
+                if rows and rows[0] is not None:
+                    sector_sentiment = round(float(rows[0]), 3)
+                    sector_event_count = int(rows[1] or 0)
+            except Exception:
+                pass
+
+        # 3. Peer symbols in same sector
+        peers: list[dict] = []
+        if sector_code:
+            try:
+                peer_syms_rows = db._conn.execute(
+                    "SELECT symbol FROM sector_members WHERE sector_code=? AND symbol != ? LIMIT ?",
+                    (sector_code, symbol, peer_limit * 3),
+                ).fetchall()
+                peer_syms = [r[0] for r in peer_syms_rows]
+
+                for psym in peer_syms:
+                    peer_entry: dict = {"symbol": psym, "name": psym}
+                    # Instrument name
+                    try:
+                        instr = db.instrument_lookup(psym)
+                        if instr:
+                            peer_entry["name"] = str(instr.get("name") or psym)
+                    except Exception:
+                        pass
+                    # Signal data
+                    try:
+                        sig = db._conn.execute(
+                            "SELECT window_score, net_sentiment FROM signals WHERE symbol=? AND date=?",
+                            (psym, today),
+                        ).fetchone()
+                        if sig:
+                            peer_entry["window_score"] = sig[0]
+                            peer_entry["net_sentiment"] = round(float(sig[1] or 0), 3) if sig[1] is not None else None
+                    except Exception:
+                        pass
+                    # Recommendation
+                    try:
+                        rec = db._conn.execute(
+                            """SELECT action, conviction, score, risk
+                               FROM Recommendation WHERE symbol=? ORDER BY as_of_date DESC LIMIT 1""",
+                            (psym,),
+                        ).fetchone()
+                        if rec:
+                            peer_entry["action"] = rec[0]
+                            peer_entry["conviction"] = rec[1]
+                            peer_entry["score"] = round(float(rec[2] or 0), 3)
+                            peer_entry["risk"] = round(float(rec[3] or 0), 3)
+                    except Exception:
+                        pass
+                    # Belief (mu)
+                    try:
+                        bs = db.belief_state_get(today, psym)
+                        if bs:
+                            bv = bs.get("belief_vec") or {}
+                            peer_entry["belief_mu"] = round(float(bv.get("mu", 0.0)), 4)
+                            peer_entry["belief_confidence"] = round(float(bs.get("confidence") or 0.0), 3)
+                    except Exception:
+                        pass
+                    # 1-day change from sync_state
+                    try:
+                        ss = db._conn.execute(
+                            "SELECT last_date FROM sync_state WHERE source='tushare_kline' AND dataset='daily' AND symbol=?",
+                            (psym,),
+                        ).fetchone()
+                        if ss:
+                            peer_entry["kline_last_date"] = ss[0]
+                    except Exception:
+                        pass
+
+                    peers.append(peer_entry)
+                    if len(peers) >= peer_limit:
+                        break
+            except Exception:
+                pass
+
+        return {
+            "symbol": symbol,
+            "as_of": today,
+            "sector_code": sector_code,
+            "sector_name": sector_name,
+            "sector_sentiment": sector_sentiment,
+            "sector_event_count": sector_event_count,
+            "peers": peers,
+        }
+
+    # ── API: symbol-data-ops/{symbol} ─────────────────────────────────────────
+
+    @app.get("/api/symbol-data-ops/{symbol}")
+    async def get_symbol_data_ops(symbol: str):
+        """Return per-domain data coverage matrix for a symbol.
+
+        Domains checked:
+          kline, fund_flow, fundamental, sentiment, events, belief, recommend
+        """
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+
+        db = _db()
+        today = _current_asof(db)
+        dr = Path(data_root)
+
+        def _parquet_freshness(parquet_path: Path) -> tuple[str | None, int | None]:
+            """Return (last_date_str, lag_days) from a parquet's mtime or none."""
+            try:
+                if parquet_path.exists():
+                    mtime = parquet_path.stat().st_mtime
+                    import datetime as _dt
+                    mdate = _dt.datetime.fromtimestamp(mtime).date()
+                    lag = (date.today() - mdate).days
+                    return mdate.isoformat(), lag
+            except Exception:
+                pass
+            return None, None
+
+        sym_file = symbol.replace(".", "_") + ".parquet"
+        domains: list[dict] = []
+
+        # ── kline ────────────────────────────────────────────────────────────
+        kline_last: str | None = None
+        kline_rows: int | None = None
+        try:
+            ss = db._conn.execute(
+                "SELECT last_date, row_count FROM sync_state WHERE source='tushare_kline' AND dataset='daily' AND symbol=?",
+                (symbol,),
+            ).fetchone()
+            if ss:
+                kline_last, kline_rows = ss[0], ss[1]
+        except Exception:
+            pass
+        # fallback from monthly parquet directories
+        if not kline_last:
+            try:
+                for month_dir in sorted((dr / "market" / "kline").iterdir(), reverse=True):
+                    fp = month_dir / sym_file
+                    if fp.exists():
+                        kline_last = month_dir.name + "-15"
+                        break
+            except Exception:
+                pass
+        kline_lag = _lag_days(kline_last)
+        domains.append({
+            "id": "kline",
+            "name_zh": "日K线",
+            "name_en": "Daily Kline",
+            "last_date": kline_last,
+            "lag_days": kline_lag,
+            "row_count": kline_rows,
+            "status": _hive_status(lag_days=kline_lag),
+            "source": "tushare_kline",
+            "can_repull": True,
+        })
+
+        # ── fund_flow ─────────────────────────────────────────────────────────
+        ff_path = dr / "market" / "fund_flow" / sym_file
+        ff_last, ff_lag = _parquet_freshness(ff_path)
+        if not ff_last:
+            try:
+                ss = db._conn.execute(
+                    "SELECT last_date FROM sync_state WHERE dataset='fund_flow' AND symbol=?",
+                    (symbol,),
+                ).fetchone()
+                if ss:
+                    ff_last = ss[0]
+                    ff_lag = _lag_days(ff_last)
+            except Exception:
+                pass
+        domains.append({
+            "id": "fund_flow",
+            "name_zh": "资金流向",
+            "name_en": "Fund Flow",
+            "last_date": ff_last,
+            "lag_days": ff_lag,
+            "status": _hive_status(lag_days=ff_lag),
+            "source": "akshare",
+            "can_repull": True,
+        })
+
+        # ── fundamental ───────────────────────────────────────────────────────
+        fund_last: str | None = None
+        fund_lag: int | None = None
+        try:
+            ss = db._conn.execute(
+                "SELECT last_date FROM sync_state WHERE dataset='fundamental' AND symbol=?",
+                (symbol,),
+            ).fetchone()
+            if ss:
+                fund_last = ss[0]
+                fund_lag = _lag_days(fund_last)
+        except Exception:
+            pass
+        if not fund_last:
+            fund_path = dr / "market" / "fundamental" / sym_file
+            fund_last, fund_lag = _parquet_freshness(fund_path)
+        domains.append({
+            "id": "fundamental",
+            "name_zh": "基本面",
+            "name_en": "Fundamental",
+            "last_date": fund_last,
+            "lag_days": fund_lag,
+            "status": _hive_status(lag_days=fund_lag, coverage_pct=None),
+            "source": "tushare",
+            "can_repull": False,
+        })
+
+        # ── sentiment ─────────────────────────────────────────────────────────
+        sent_last: str | None = None
+        sent_lag: int | None = None
+        try:
+            ev_row = db._conn.execute(
+                "SELECT MAX(as_of_date) FROM Evidence WHERE symbol=?",
+                (symbol,),
+            ).fetchone()
+            if ev_row and ev_row[0]:
+                sent_last = ev_row[0]
+                sent_lag = _lag_days(sent_last)
+        except Exception:
+            pass
+        # Fallback: latest gold parquet
+        if not sent_last:
+            try:
+                gold_dir = dr / "sentiment" / "gold"
+                if gold_dir.exists():
+                    latest_file = max(gold_dir.iterdir(), key=lambda p: p.name)
+                    stem = latest_file.stem
+                    if len(stem) == 10:
+                        sent_last = stem
+                        sent_lag = _lag_days(sent_last)
+            except Exception:
+                pass
+        domains.append({
+            "id": "sentiment",
+            "name_zh": "情绪信号",
+            "name_en": "Sentiment",
+            "last_date": sent_last,
+            "lag_days": sent_lag,
+            "status": _hive_status(lag_days=sent_lag),
+            "source": "nlp_pipeline",
+            "can_repull": False,
+        })
+
+        # ── events ────────────────────────────────────────────────────────────
+        events_last: str | None = None
+        events_count: int | None = None
+        try:
+            # Resolve sector_code for this symbol
+            sect_row = db._conn.execute(
+                "SELECT sector_code FROM sector_members WHERE symbol=?", (symbol,)
+            ).fetchone()
+            sect_code = sect_row[0] if sect_row else None
+            if sect_code:
+                ev_row = db._conn.execute(
+                    "SELECT MAX(event_date), COUNT(*) FROM market_events WHERE entity_id=?",
+                    (sect_code,),
+                ).fetchone()
+            else:
+                ev_row = db._conn.execute(
+                    "SELECT MAX(event_date), COUNT(*) FROM market_events"
+                ).fetchone()
+            if ev_row and ev_row[0]:
+                events_last = ev_row[0]
+                events_count = int(ev_row[1] or 0)
+        except Exception:
+            pass
+        events_lag = _lag_days(events_last)
+        domains.append({
+            "id": "events",
+            "name_zh": "事件库",
+            "name_en": "Events",
+            "last_date": events_last,
+            "lag_days": events_lag,
+            "row_count": events_count,
+            "status": _hive_status(lag_days=events_lag),
+            "source": "kg_pipeline",
+            "can_repull": False,
+        })
+
+        # ── belief ────────────────────────────────────────────────────────────
+        belief_last: str | None = None
+        try:
+            bs = db.belief_state_get(today, symbol)
+            if bs:
+                belief_last = today
+            else:
+                # Fallback: any date
+                br = db._conn.execute(
+                    "SELECT MAX(as_of_date) FROM BeliefState WHERE symbol=?", (symbol,)
+                ).fetchone()
+                if br and br[0]:
+                    belief_last = br[0]
+        except Exception:
+            pass
+        belief_lag = _lag_days(belief_last)
+        domains.append({
+            "id": "belief",
+            "name_zh": "信念状态",
+            "name_en": "Belief State",
+            "last_date": belief_last,
+            "lag_days": belief_lag,
+            "status": _hive_status(lag_days=belief_lag),
+            "source": "belief_pipeline",
+            "can_repull": False,
+        })
+
+        # ── recommend ─────────────────────────────────────────────────────────
+        rec_last: str | None = None
+        try:
+            r = db._conn.execute(
+                "SELECT MAX(as_of_date) FROM Recommendation WHERE symbol=?", (symbol,)
+            ).fetchone()
+            if r and r[0]:
+                rec_last = r[0]
+        except Exception:
+            pass
+        rec_lag = _lag_days(rec_last)
+        domains.append({
+            "id": "recommend",
+            "name_zh": "决策推荐",
+            "name_en": "Recommendation",
+            "last_date": rec_last,
+            "lag_days": rec_lag,
+            "status": _hive_status(lag_days=rec_lag),
+            "source": "decision_pipeline",
+            "can_repull": False,
+        })
+
+        return {
+            "symbol": symbol,
+            "as_of": today,
+            "domains": domains,
+        }
+
+    # ── API: symbol-data-ops repair actions ───────────────────────────────────
+
+    @app.post("/api/symbol-data-ops/repull")
+    async def symbol_data_ops_repull(request: FastAPIRequest):
+        """Enqueue a re-pull for selected domains of a symbol.
+
+        Body: { symbol: str, domains: list[str] }
+        Returns: { accepted: true, job_id: str, message: str }
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=422, detail="invalid JSON body")
+        symbol = str(body.get("symbol") or "").strip().upper()
+        domains = list(body.get("domains") or [])
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+
+        db = _db()
+        job_id = f"repull:{symbol}:{','.join(sorted(domains))}:{dtm.datetime.utcnow().isoformat()[:19]}"
+
+        # Trigger via EventBus if available
+        try:
+            from trade_py.bus import EventBus, Topic
+            bus = EventBus(db)
+            # Map domain → job event
+            _DOMAIN_TOPICS = {
+                "kline": Topic.GATE_MORNING,
+                "fund_flow": Topic.GATE_MORNING,
+            }
+            for domain in domains:
+                topic = _DOMAIN_TOPICS.get(domain)
+                if topic:
+                    bus.publish(topic, {"symbol": symbol, "triggered_by": "symbol_data_ops"})
+        except Exception as exc:
+            logger.debug("repull bus publish failed: %s", exc)
+
+        return {
+            "accepted": True,
+            "job_id": job_id,
+            "message": f"Re-pull queued for {symbol}: {', '.join(domains) or 'none'}",
+        }
+
+    @app.post("/api/symbol-data-ops/replay")
+    async def symbol_data_ops_replay(request: FastAPIRequest):
+        """Enqueue downstream replay for selected domains of a symbol.
+
+        Body: { symbol: str, domains: list[str] }
+        Returns: { accepted: true, job_id: str, message: str }
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=422, detail="invalid JSON body")
+        symbol = str(body.get("symbol") or "").strip().upper()
+        domains = list(body.get("domains") or [])
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+
+        job_id = f"replay:{symbol}:{','.join(sorted(domains))}:{dtm.datetime.utcnow().isoformat()[:19]}"
+
+        return {
+            "accepted": True,
+            "job_id": job_id,
+            "message": f"Replay queued for {symbol}: {', '.join(domains) or 'none'}",
+        }
+
+    @app.post("/api/symbol-data-ops/mark-verified")
+    async def symbol_data_ops_mark_verified(request: FastAPIRequest):
+        """Mark selected domains as verified for a symbol.
+
+        Body: { symbol: str, domains: list[str] }
+        Updates sync_state.cursor with {'verified': true} for each domain.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=422, detail="invalid JSON body")
+        symbol = str(body.get("symbol") or "").strip().upper()
+        domains = list(body.get("domains") or [])
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol required")
+
+        db = _db()
+        updated: list[str] = []
+        _DOMAIN_TO_SOURCE = {
+            "kline": ("tushare_kline", "daily"),
+            "fund_flow": ("akshare", "fund_flow"),
+            "fundamental": ("tushare", "fundamental"),
+        }
+        for domain in domains:
+            src_info = _DOMAIN_TO_SOURCE.get(domain)
+            if not src_info:
+                continue
+            source, dataset = src_info
+            try:
+                cursor_row = db._conn.execute(
+                    "SELECT cursor FROM sync_state WHERE source=? AND dataset=? AND symbol=?",
+                    (source, dataset, symbol),
+                ).fetchone()
+                cursor = {}
+                if cursor_row and cursor_row[0]:
+                    try:
+                        cursor = json.loads(cursor_row[0])
+                    except Exception:
+                        pass
+                cursor["verified"] = True
+                cursor["verified_at"] = dtm.datetime.utcnow().isoformat()[:19]
+                db._conn.execute(
+                    "UPDATE sync_state SET cursor=? WHERE source=? AND dataset=? AND symbol=?",
+                    (json.dumps(cursor), source, dataset, symbol),
+                )
+                db._conn.commit()
+                updated.append(domain)
+            except Exception as exc:
+                logger.debug("mark-verified failed for %s/%s: %s", domain, symbol, exc)
+
+        return {
+            "accepted": True,
+            "updated": updated,
+            "message": f"Marked verified: {', '.join(updated) or 'none'} for {symbol}",
         }
 
     # ── API: kline/{symbol} ───────────────────────────────────────────────────

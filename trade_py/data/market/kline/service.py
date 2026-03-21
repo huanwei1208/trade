@@ -30,7 +30,7 @@ class KlineSyncOptions:
     symbols: list[str] | None = None
     start: str | None = None
     end: str | None = None
-    adjust: KlineAdjust = "hfq"
+    adjust: KlineAdjust = "none"
     provider: str = "auto"
     delay_ms: int = 300
     fail_fast: bool = False

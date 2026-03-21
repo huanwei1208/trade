@@ -17,6 +17,7 @@ vcpkg_installed/
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info
 *.egg-info/
 dist/
 catboost_info/

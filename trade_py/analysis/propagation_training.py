@@ -47,6 +47,12 @@ def _model_dir(data_root: str | Path) -> Path:
     return Path(data_root) / "models" / "propagation"
 
 
+def _catboost_train_dir(data_root: str | Path, target_name: str) -> str:
+    path = Path(data_root) / "catboost_info" / "propagation" / target_name
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def _load_training_frame(data_root: str) -> pd.DataFrame:
     path = _feature_path(data_root)
     if not path.exists():
@@ -477,6 +483,8 @@ def _train_catboost(
     target_name: str,
     spec: dict[str, Any],
     cv_splits: int,
+    *,
+    data_root: str,
 ) -> tuple[object, dict[str, Any]]:
     from sklearn.metrics import mean_absolute_error, roc_auc_score
     from catboost import CatBoostClassifier, CatBoostRegressor
@@ -509,6 +517,7 @@ def _train_catboost(
                 loss_function="RMSE",
                 eval_metric="MAE",
                 random_seed=42,
+                train_dir=_catboost_train_dir(data_root, target_name),
                 verbose=False,
             )
             model.fit(X_tr, y_tr, eval_set=(X_val, y_val), use_best_model=True, verbose=False)
@@ -526,6 +535,7 @@ def _train_catboost(
                 eval_metric="AUC",
                 auto_class_weights="Balanced",
                 random_seed=42,
+                train_dir=_catboost_train_dir(data_root, target_name),
                 verbose=False,
             )
             model.fit(X_tr, y_tr, eval_set=(X_val, y_val), use_best_model=True, verbose=False)
@@ -540,6 +550,7 @@ def _train_catboost(
             loss_function="RMSE",
             eval_metric="MAE",
             random_seed=42,
+            train_dir=_catboost_train_dir(data_root, target_name),
             verbose=False,
         )
     else:
@@ -551,6 +562,7 @@ def _train_catboost(
             eval_metric="AUC",
             auto_class_weights="Balanced",
             random_seed=42,
+            train_dir=_catboost_train_dir(data_root, target_name),
             verbose=False,
         )
     final.fit(X_all, y_all, verbose=False)
@@ -747,7 +759,10 @@ def train_models(
             if backend_name == "tabular_nn":
                 work = _downsample_for_tabular_nn(work)
 
-            model, metrics = trainer(work, feature_cols, target_name, spec, cv_splits)
+            if backend_name == "catboost":
+                model, metrics = trainer(work, feature_cols, target_name, spec, cv_splits, data_root=data_root)
+            else:
+                model, metrics = trainer(work, feature_cols, target_name, spec, cv_splits)
             metrics["promotion_check"] = _promotion_check(
                 db,
                 model,

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import types
 
+import pandas as pd
+
 from trade_py.data.market.kline.service import KlineSyncOptions, KlineSyncService
+from trade_py.data.market.kline.tushare import _parse_raw
 
 
 def test_missing_ranges_split_around_existing_downloads() -> None:
@@ -89,3 +92,45 @@ def test_range_mode_keeps_trade_date_batch_for_sparse_gaps(tmp_path, monkeypatch
     assert summary.sync_mode == "trade_date_batch"
     assert captured["symbols"] == ["000001.SZ", "000002.SZ"]
     assert captured["trade_dates"] == ["2026-01-01", "2026-01-02", "2026-01-05"]
+
+
+def test_tushare_parse_preserves_prev_close_and_turnover_rate() -> None:
+    raw = pd.DataFrame(
+        [
+            {
+                "ts_code": "603083.SH",
+                "trade_date": "20260320",
+                "open": 118.0,
+                "high": 122.8,
+                "low": 114.46,
+                "close": 115.33,
+                "pre_close": 115.67,
+                "pct_chg": -0.2939,
+                "vol": 350718.73,
+                "amount": 4182823.469,
+            }
+        ]
+    )
+    basics = pd.DataFrame(
+        [
+            {
+                "ts_code": "603083.SH",
+                "trade_date": "20260320",
+                "turnover_rate": 12.7262,
+            }
+        ]
+    )
+
+    parsed = _parse_raw(raw, "603083.SH", basics=basics)
+
+    assert len(parsed) == 1
+    row = parsed.iloc[0].to_dict()
+    assert row["prev_close"] == 115.67
+    assert row["turnover_rate"] == 12.7262
+    assert row["close"] == 115.33
+    assert row["amount"] == 4182823469.0
+    assert row["vwap"] > 0
+
+
+def test_kline_sync_options_default_to_none_adjust() -> None:
+    assert KlineSyncOptions().adjust == "none"
