@@ -2152,19 +2152,71 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
 
         event_by_id = {int(row["id"]): row for row in event_rows}
         event_by_topic: dict[str, list[dict]] = {}
+        event_by_job: dict[str, list[dict]] = {}
         for row in event_rows:
             event_by_topic.setdefault(str(row.get("topic") or ""), []).append(row)
+            payload_json = row.get("payload_json") or {}
+            job_name = str(payload_json.get("job_name") or "").strip()
+            if job_name:
+                event_by_job.setdefault(job_name, []).append(row)
         jobs_by_name: dict[str, list[dict]] = {}
         for row in jobs:
             jobs_by_name.setdefault(str(row.get("job_name") or ""), []).append(row)
 
+        payload = root.get("payload_json") or {}
         expected_nodes = self._workflow_expected_nodes(str(root.get("topic") or ""))
+        if not expected_nodes:
+            raw_job_plan = payload.get("job_plan")
+            synthetic_nodes: list[dict] = []
+            if isinstance(raw_job_plan, list):
+                for item in raw_job_plan:
+                    if not isinstance(item, dict):
+                        continue
+                    job_name = str(item.get("job_name") or "").strip()
+                    if not job_name:
+                        continue
+                    synthetic_nodes.append({
+                        "id": None,
+                        "job_name": job_name,
+                        "stage": item.get("stage"),
+                        "source": root.get("topic"),
+                        "emits": None,
+                        "description": item.get("description") or payload.get("goal"),
+                        "enabled": True,
+                    })
+            if not synthetic_nodes:
+                for job_name in payload.get("job_names") or []:
+                    if not str(job_name).strip():
+                        continue
+                    synthetic_nodes.append({
+                        "id": None,
+                        "job_name": str(job_name),
+                        "stage": None,
+                        "source": root.get("topic"),
+                        "emits": None,
+                        "description": payload.get("goal"),
+                        "enabled": True,
+                    })
+            if not synthetic_nodes and jobs:
+                for job in jobs:
+                    synthetic_nodes.append({
+                        "id": None,
+                        "job_name": job.get("job_name"),
+                        "stage": job.get("stage"),
+                        "source": root.get("topic"),
+                        "emits": None,
+                        "description": payload.get("goal"),
+                        "enabled": True,
+                    })
+            expected_nodes = synthetic_nodes
         nodes: list[dict] = []
         for row in expected_nodes:
             job_name = str(row.get("job_name") or "")
             source_topic = str(row.get("source") or "")
             emits_topic = str(row.get("emits") or "")
             source_event = (event_by_topic.get(source_topic) or [None])[-1]
+            if job_name and event_by_job.get(job_name):
+                source_event = (event_by_job.get(job_name) or [None])[-1]
             emitted_event = (event_by_topic.get(emits_topic) or [None])[-1] if emits_topic else None
             job = (jobs_by_name.get(job_name) or [None])[-1]
             status = "pending"
@@ -2173,10 +2225,13 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 status = str(job.get("status") or "pending")
                 error = job.get("result_summary") or None
             elif source_event:
-                status = str(source_event.get("status") or "pending")
+                raw_status = str(source_event.get("status") or "pending")
+                status = "running" if raw_status in {"pending", "queued"} else raw_status
                 error = source_event.get("error") or None
             elif emitted_event:
                 status = "ok" if str(emitted_event.get("status") or "") == "ok" else "pending"
+            elif str(root.get("status") or "") in {"pending", "running"}:
+                status = "queued"
             nodes.append({
                 "dag_id": row.get("id"),
                 "job_name": job_name,
@@ -2193,7 +2248,7 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             })
 
         completed = sum(1 for node in nodes if node["status"] == "ok")
-        running = sum(1 for node in nodes if node["status"] == "running")
+        running = sum(1 for node in nodes if node["status"] in {"running", "queued", "pending"})
         error_count = sum(1 for node in nodes if node["status"] == "error")
         pending = max(0, len(nodes) - completed - running - error_count)
 
@@ -2225,14 +2280,14 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 }
 
         overall_status = "ok"
-        if error_count or str(root.get("status") or "") == "error":
+        root_status = str(root.get("status") or "")
+        if error_count or root_status == "error":
             overall_status = "error"
-        elif running:
+        elif running or root_status in {"pending", "running"}:
             overall_status = "running"
         elif pending and nodes:
             overall_status = "partial"
 
-        payload = root.get("payload_json") or {}
         title = (
             payload.get("title")
             or payload.get("name")

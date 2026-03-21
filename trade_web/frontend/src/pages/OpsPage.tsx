@@ -474,8 +474,8 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
             {(workflows.data || []).slice(0, 12).map((workflow, index) => (
               <div className="compact-row" key={`${workflow.root_event_id || index}`}>
                 <div>
-                  <div className="compact-row__title">{String(workflow.topic || workflow.job_name || "Workflow")}</div>
-                  <div className="compact-row__subtitle">{shortText(String(workflow.root_cause || workflow.reason_summary || ""), 90) || t("ops.noRootCause")}</div>
+                  <div className="compact-row__title">{getWorkflowTitle(workflow)}</div>
+                  <div className="compact-row__subtitle">{shortText(getWorkflowSummary(workflow) || "", 90) || t("ops.noRootCause")}</div>
                 </div>
                 <div className="compact-row__meta">
                   <StatusPill label={getGateStatusText(locale, String(workflow.status || "unknown")).label} tone={String(workflow.status) === "ok" ? "ok" : String(workflow.status) === "error" ? "err" : "info"} subtle />
@@ -508,4 +508,17 @@ function findSelectedReadiness(rows: ReadinessRow[], selectedCellId: string): { 
     }
   }
   return { row: null, cell: null };
+}
+
+function getWorkflowTitle(workflow: WorkflowSummary) {
+  return String(workflow.title || workflow.topic || workflow.job_name || "Workflow");
+}
+
+function getWorkflowSummary(workflow: WorkflowSummary) {
+  const rootCause = workflow.root_cause;
+  if (rootCause && typeof rootCause === "object") {
+    const payload = rootCause as Record<string, unknown>;
+    return String(payload.message || payload.node || workflow.reason_summary || "");
+  }
+  return String(workflow.reason_summary || "");
 }

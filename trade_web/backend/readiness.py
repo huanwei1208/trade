@@ -5,7 +5,7 @@ import logging
 import hashlib
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -1147,6 +1147,46 @@ def update_recovery_action(
         db._conn.commit()
 
 
+def _recovery_goal_copy(meta: DatasetMeta, *, mode: str, action_type: str) -> str:
+    if mode == "data_only":
+        return f"Repair {meta.label} inputs for the latest recommendation"
+    if action_type == "replay" or mode == "data_plus_downstream":
+        return f"Restore the latest recommendation from {meta.label}"
+    if mode == "full_replay":
+        return f"Rebuild the full latest-recommendation chain from {meta.label}"
+    return f"Restore the latest recommendation from {meta.label}"
+
+
+def _build_recovery_job_plan(
+    *,
+    meta: DatasetMeta,
+    plan: dict[str, Any],
+    jobs: list[str],
+) -> list[dict[str, Any]]:
+    by_job_name: dict[str, dict[str, Any]] = {}
+    if meta.job_name:
+        by_job_name[meta.job_name] = {
+            "job_name": meta.job_name,
+            "stage": "fetch",
+            "enabled": True,
+        }
+    for bucket in ("downstream_nodes", "full_chain"):
+        for item in plan.get(bucket) or []:
+            job_name = str(item.get("job_name") or "").strip()
+            if not job_name:
+                continue
+            by_job_name[job_name] = {
+                "job_name": job_name,
+                "stage": item.get("stage"),
+                "enabled": item.get("enabled"),
+                "avg_duration_ms": item.get("avg_duration_ms"),
+            }
+    return [
+        by_job_name.get(job_name, {"job_name": job_name, "stage": None, "enabled": True})
+        for job_name in jobs
+    ]
+
+
 def execute_recovery_action(
     data_root: str | Path,
     db,
@@ -1178,18 +1218,52 @@ def execute_recovery_action(
 
     # preserve job order while removing duplicates
     deduped_jobs = list(dict.fromkeys(job for job in jobs if job))
-    started_at = datetime.utcnow()
+    job_plan = _build_recovery_job_plan(meta=meta, plan=plan, jobs=deduped_jobs)
+    goal_copy = _recovery_goal_copy(meta, mode=mode, action_type=action_type)
+    started_at = datetime.now(UTC)
     steps: list[dict[str, Any]] = []
-    update_recovery_action(db, action_id, status="running", result_payload={"steps": []}, summary="running")
+    root_event_payload = {
+        "action_id": action_id,
+        "workflow_kind": "readiness_recovery",
+        "title": goal_copy,
+        "goal": goal_copy,
+        "dataset": dataset,
+        "dataset_label": meta.label,
+        "date_from": date_from,
+        "date_to": date_to,
+        "action_type": action_type,
+        "mode": mode,
+        "job_names": deduped_jobs,
+        "job_plan": job_plan,
+        "affected_outputs": list(plan.get("affected_outputs") or []),
+    }
+    root_event_id = db.event_log_insert(
+        "ops.readiness.recovery",
+        json.dumps(root_event_payload, ensure_ascii=False),
+        parent_event_id=None,
+    )
+    update_recovery_action(
+        db,
+        action_id,
+        status="running",
+        result_payload={"steps": [], "workflow_event_id": root_event_id},
+        summary=goal_copy,
+    )
 
     try:
         if not deduped_jobs:
             fingerprint_after = compute_readiness_fingerprint(str(data_root), db, dataset=dataset, day=date_to)
+            db.event_log_complete(
+                root_event_id,
+                "ok",
+                "readiness.execute_recovery_action",
+                elapsed_ms=0,
+            )
             update_recovery_action(
                 db,
                 action_id,
                 status="ok",
-                result_payload={"steps": [], "duration_ms": 0},
+                result_payload={"steps": [], "duration_ms": 0, "workflow_event_id": root_event_id},
                 summary="no-op replay plan",
                 fingerprint_after=fingerprint_after,
             )
@@ -1197,43 +1271,113 @@ def execute_recovery_action(
 
         for job_name in deduped_jobs:
             logger.info("readiness recovery action %s running job=%s range=%s..%s", action_id, job_name, date_from, date_to)
-            step_started = datetime.utcnow()
-            summary = run_node(job_name, str(data_root), date_from=date_from, date_to=date_to)
-            steps.append({
+            step_started = datetime.now(UTC)
+            step_meta = next((item for item in job_plan if str(item.get("job_name") or "") == job_name), {})
+            step_event_payload = {
+                "action_id": action_id,
+                "dataset": dataset,
+                "dataset_label": meta.label,
                 "job_name": job_name,
-                "status": "ok",
-                "summary": summary,
-                "duration_ms": int((datetime.utcnow() - step_started).total_seconds() * 1000),
-            })
+                "stage": step_meta.get("stage"),
+                "date_from": date_from,
+                "date_to": date_to,
+                "title": f"{goal_copy} · {job_name}",
+            }
+            step_event_id = db.event_log_insert(
+                "ops.readiness.step",
+                json.dumps(step_event_payload, ensure_ascii=False),
+                parent_event_id=root_event_id,
+            )
+            run_id = db.job_run_start(
+                job_name,
+                stage=str(step_meta.get("stage") or "") or None,
+                trigger_event_id=step_event_id,
+            )
+            try:
+                summary = run_node(job_name, str(data_root), date_from=date_from, date_to=date_to)
+                duration_ms = int((datetime.now(UTC) - step_started).total_seconds() * 1000)
+                db.job_run_finish(run_id, "ok", result_summary=summary, elapsed_ms=duration_ms)
+                db.event_log_complete(step_event_id, "ok", job_name, elapsed_ms=duration_ms)
+                steps.append({
+                    "job_name": job_name,
+                    "status": "ok",
+                    "summary": summary,
+                    "duration_ms": duration_ms,
+                })
+            except Exception as exc:
+                duration_ms = int((datetime.now(UTC) - step_started).total_seconds() * 1000)
+                db.job_run_finish(run_id, "error", result_summary=str(exc)[:500], elapsed_ms=duration_ms)
+                db.event_log_complete(
+                    step_event_id,
+                    "error",
+                    job_name,
+                    error=str(exc)[:500],
+                    elapsed_ms=duration_ms,
+                )
+                steps.append({
+                    "job_name": job_name,
+                    "status": "error",
+                    "summary": str(exc),
+                    "duration_ms": duration_ms,
+                })
+                raise
             update_recovery_action(
                 db,
                 action_id,
                 status="running",
-                result_payload={"steps": steps, "duration_ms": int((datetime.utcnow() - started_at).total_seconds() * 1000)},
+                result_payload={
+                    "steps": steps,
+                    "duration_ms": int((datetime.now(UTC) - started_at).total_seconds() * 1000),
+                    "workflow_event_id": root_event_id,
+                },
                 summary=summary,
             )
 
         fingerprint_after = compute_readiness_fingerprint(str(data_root), db, dataset=dataset, day=date_to)
+        total_duration_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
+        db.event_log_complete(
+            root_event_id,
+            "ok",
+            "readiness.execute_recovery_action",
+            elapsed_ms=total_duration_ms,
+        )
         update_recovery_action(
             db,
             action_id,
             status="ok",
-            result_payload={"steps": steps, "duration_ms": int((datetime.utcnow() - started_at).total_seconds() * 1000)},
+            result_payload={
+                "steps": steps,
+                "duration_ms": total_duration_ms,
+                "workflow_event_id": root_event_id,
+            },
             summary=steps[-1]["summary"] if steps else "ok",
             fingerprint_after=fingerprint_after,
         )
     except Exception as exc:
         logger.exception("readiness recovery action %s failed", action_id)
-        steps.append({
-            "job_name": deduped_jobs[len(steps)] if len(steps) < len(deduped_jobs) else None,
-            "status": "error",
-            "summary": str(exc),
-        })
+        total_duration_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
+        if not steps or steps[-1].get("status") != "error":
+            steps.append({
+                "job_name": deduped_jobs[len(steps)] if len(steps) < len(deduped_jobs) else None,
+                "status": "error",
+                "summary": str(exc),
+            })
+        db.event_log_complete(
+            root_event_id,
+            "error",
+            "readiness.execute_recovery_action",
+            error=str(exc)[:500],
+            elapsed_ms=total_duration_ms,
+        )
         update_recovery_action(
             db,
             action_id,
             status="error",
-            result_payload={"steps": steps, "duration_ms": int((datetime.utcnow() - started_at).total_seconds() * 1000)},
+            result_payload={
+                "steps": steps,
+                "duration_ms": total_duration_ms,
+                "workflow_event_id": root_event_id,
+            },
             summary="error",
             error=str(exc),
         )

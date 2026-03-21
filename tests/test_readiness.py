@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from trade_py.db.trade_db import TradeDB
-from trade_web.backend.readiness import _collect_recovery_actions
+from trade_web.backend import readiness as readiness_module
+from trade_web.backend.readiness import (
+    _collect_recovery_actions,
+    create_recovery_action,
+    execute_recovery_action,
+    list_recovery_history,
+)
 
 
 def test_collect_recovery_actions_clips_long_ranges_to_requested_window(tmp_path) -> None:
@@ -33,3 +39,74 @@ def test_collect_recovery_actions_clips_long_ranges_to_requested_window(tmp_path
 
     assert "kline" in by_dataset
     assert by_cell[("kline", "2026-03-20")][0]["summary"] == "range repair"
+
+
+def test_execute_recovery_action_creates_workflow_and_job_run_trace(monkeypatch, tmp_path) -> None:
+    db = TradeDB(tmp_path)
+
+    def fake_run_node(job_name: str, data_root: str, **kwargs) -> str:
+        return f"{job_name} ok for {kwargs.get('date_to')}"
+
+    monkeypatch.setattr("trade_py.engine.run_node", fake_run_node)
+    monkeypatch.setattr(readiness_module, "compute_readiness_fingerprint", lambda *args, **kwargs: "fp-after")
+
+    action_id = create_recovery_action(
+        db,
+        dataset="recommendation",
+        date_from="2026-03-20",
+        date_to="2026-03-20",
+        action_type="replay",
+        mode="data_plus_downstream",
+        job_names=["evaluate_daily"],
+        affected_outputs=["today", "candidates", "symbol"],
+        request_payload={"dataset": "recommendation"},
+        fingerprint_before="fp-before",
+    )
+
+    execute_recovery_action(
+        str(tmp_path),
+        db,
+        action_id=action_id,
+        dataset="recommendation",
+        date_from="2026-03-20",
+        date_to="2026-03-20",
+        mode="data_plus_downstream",
+        action_type="replay",
+    )
+
+    history = list_recovery_history(db, dataset="recommendation", date="2026-03-20", limit=5)
+    assert history[0]["status"] == "ok"
+    workflow_event_id = history[0]["result"]["workflow_event_id"]
+    assert isinstance(workflow_event_id, int)
+    assert history[0]["result"]["steps"][0]["job_name"] == "evaluate_daily"
+
+    workflow = db.event_workflow_detail(workflow_event_id)
+    assert workflow is not None
+    assert workflow["title"] == "Restore the latest recommendation from Recommendation"
+    assert workflow["status"] == "ok"
+    assert workflow["progress"]["completed"] == 1
+    assert workflow["progress"]["total"] == 1
+    assert workflow["nodes"][0]["job_name"] == "evaluate_daily"
+
+    recent = db.event_workflow_recent(limit=5)
+    assert recent[0]["root_event_id"] == workflow_event_id
+    assert recent[0]["status"] == "ok"
+
+    with db._conn_lock:
+        child_events = db._conn.execute(
+            "SELECT id, topic, status, handler FROM event_log WHERE parent_event_id = ? ORDER BY id",
+            (workflow_event_id,),
+        ).fetchall()
+        job_rows = db._conn.execute(
+            "SELECT job_name, status, trigger_event_id, result_summary FROM job_runs ORDER BY id DESC LIMIT 1"
+        ).fetchall()
+
+    assert len(child_events) == 1
+    assert child_events[0]["topic"] == "ops.readiness.step"
+    assert child_events[0]["status"] == "ok"
+    assert child_events[0]["handler"] == "evaluate_daily"
+    assert len(job_rows) == 1
+    assert job_rows[0]["job_name"] == "evaluate_daily"
+    assert job_rows[0]["status"] == "ok"
+    assert job_rows[0]["trigger_event_id"] == child_events[0]["id"]
+    assert "2026-03-20" in str(job_rows[0]["result_summary"] or "")
