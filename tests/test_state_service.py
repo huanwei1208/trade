@@ -100,3 +100,52 @@ def test_state_service_reads_symbol_events_from_event_propagations_and_signal_fa
     assert payload["event_state"]["top_event_type"] == "policy_support"
     assert payload["event_state"]["event_count_recent"] >= 1
     assert payload["event_state"]["kg_score"] == 0.72
+
+
+def test_state_service_falls_back_to_factor_store_for_technicals_when_signals_schema_is_sparse(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    db.trading_calendar_upsert_batch([
+        {"exchange": "SSE", "trade_date": "2026-03-20", "is_open": 1},
+    ])
+    db.signal_upsert("2026-03-20", "600096.SH", window_score=69, net_sentiment=0.0, event_kg_score=0.0)
+    db.factor_upsert_batch([
+        {"date": "2026-03-20", "symbol": "600096.SH", "factor_name": "tech_rsi_14", "factor_type": "technical", "value": 41.47},
+        {"date": "2026-03-20", "symbol": "600096.SH", "factor_name": "tech_macd_cross", "factor_type": "technical", "value": 0.0},
+        {"date": "2026-03-20", "symbol": "600096.SH", "factor_name": "tech_volume_ratio_5_20", "factor_type": "technical", "value": 0.83},
+    ])
+    db.sync_state_set("tushare_kline", "daily", last_date="2026-03-20")
+    with db._conn_lock:
+        db._conn.execute(
+            """
+            INSERT INTO dataset_snapshots (
+                snapshot_name, eval_date, start_date, end_date,
+                source_count, market_event_count, propagation_count,
+                feature_rows, labeled_rows_5d, labeled_rows_20d,
+                signal_dates, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                "daily",
+                "2026-03-20",
+                "2026-03-01",
+                "2026-03-20",
+                1,
+                0,
+                0,
+                3,
+                0,
+                0,
+                1,
+                json.dumps({"fund_flow_coverage": 1.0, "fundamental_coverage": 1.0}),
+            ),
+        )
+        db._conn.commit()
+
+    svc = StateService(str(tmp_path), db=db)
+    payload = svc.build("600096.SH", as_of_date="2026-03-20").to_dict()
+
+    assert payload["technical_state"]["regime"] == "NEUTRAL"
+    assert payload["technical_state"]["rsi_14"] == 41.47
+    assert payload["technical_state"]["macd_signal"] == 0.0
+    assert payload["liquidity_state"]["vol_ratio"] == 0.83
+    assert payload["liquidity_state"]["regime"] == "NORMAL"

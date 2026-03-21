@@ -30,28 +30,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Neutral / default values used for missing features (sentinels for trust detection)
-_DEFAULT_SENTINELS: dict[str, float] = {
-    "hop": 0.0,
-    "kg_score": 0.0,
-    "magnitude": 0.0,
-    "window_score": 50.0,
-    "net_sentiment": 0.0,
-    "tech_rsi_14": 50.0,
-    "tech_macd_hist": 0.0,
-    "tech_macd_cross": 0.0,
-    "tech_kdj_k": 50.0,
-    "tech_kdj_d": 50.0,
-    "tech_kdj_j": 50.0,
-    "tech_volatility_20d": 0.0,
-    "tech_volume_ratio_5_20": 1.0,
-    "bf_net_sentiment": 0.0,
-    "bf_event_strength": 0.0,
-    "bf_novelty": 1.0,
-    "bf_noise_penalty": 1.0,
-}
-
-
 class InferenceService:
     """Wraps active registry models and serves prediction requests."""
 
@@ -235,7 +213,6 @@ class InferenceService:
                     model_version=model_version,
                     generation_method=generation_method,
                     data_lag_days=data_lag,
-                    default_value_sentinels=_DEFAULT_SENTINELS,
                 )
                 result[symbol] = {
                     "model_score": round(float(ranks[idx]), 2),

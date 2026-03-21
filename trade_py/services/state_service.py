@@ -111,8 +111,9 @@ class StateService:
         """Read the most recent signals row for (symbol, as_of)."""
         try:
             columns = self._signal_columns(db)
+            factor_fallback = self._read_factor_fallback(db, symbol)
             if not columns:
-                return {}
+                return factor_fallback
             desired = [
                 "window_score",
                 "event_kg_score",
@@ -143,17 +144,17 @@ class StateService:
                             return row[idx]
                     return None
                 return {
-                    "window_score":   latest[index["window_score"]] if "window_score" in index else None,
-                    "event_kg_score": _latest_non_null(index["event_kg_score"]) if "event_kg_score" in index else None,
-                    "rsi_14":         _latest_non_null(index["rsi_14"]) if "rsi_14" in index else None,
-                    "net_sentiment":  _latest_non_null(index["net_sentiment"]) if "net_sentiment" in index else None,
-                    "vol_ratio":      _latest_non_null(index["vol_ratio"]) if "vol_ratio" in index else None,
-                    "macd_signal":    _latest_non_null(index["macd_signal"]) if "macd_signal" in index else None,
+                    "window_score":   latest[index["window_score"]] if "window_score" in index else factor_fallback.get("window_score"),
+                    "event_kg_score": _latest_non_null(index["event_kg_score"]) if "event_kg_score" in index else factor_fallback.get("event_kg_score"),
+                    "rsi_14":         _latest_non_null(index["rsi_14"]) if "rsi_14" in index else factor_fallback.get("rsi_14"),
+                    "net_sentiment":  _latest_non_null(index["net_sentiment"]) if "net_sentiment" in index else factor_fallback.get("net_sentiment"),
+                    "vol_ratio":      _latest_non_null(index["vol_ratio"]) if "vol_ratio" in index else factor_fallback.get("vol_ratio"),
+                    "macd_signal":    _latest_non_null(index["macd_signal"]) if "macd_signal" in index else factor_fallback.get("macd_signal"),
                     "event_type":     (_latest_non_null(index["event_type"]) or "") if "event_type" in index else "",
                 }
         except Exception as exc:
             logger.debug("state_service signals read failed for %s: %s", symbol, exc)
-        return {}
+        return self._read_factor_fallback(db, symbol)
 
     def _signal_columns(self, db) -> set[str]:
         if self._signals_columns is not None:
@@ -167,6 +168,33 @@ class StateService:
             logger.debug("state_service signal schema read failed: %s", exc)
         self._signals_columns = columns
         return columns
+
+    def _read_factor_fallback(self, db, symbol: str) -> dict[str, Any]:
+        """Fallback to latest factor-store values when signals schema is sparse."""
+        try:
+            factors = db.factor_get_latest(
+                symbol,
+                [
+                    "window_score",
+                    "kg_score",
+                    "net_sentiment",
+                    "tech_rsi_14",
+                    "tech_macd_cross",
+                    "tech_volume_ratio_5_20",
+                ],
+            )
+            return {
+                "window_score": factors.get("window_score"),
+                "event_kg_score": factors.get("kg_score"),
+                "rsi_14": factors.get("tech_rsi_14"),
+                "net_sentiment": factors.get("net_sentiment"),
+                "vol_ratio": factors.get("tech_volume_ratio_5_20"),
+                "macd_signal": factors.get("tech_macd_cross"),
+                "event_type": "",
+            }
+        except Exception as exc:
+            logger.debug("state_service factor fallback failed for %s: %s", symbol, exc)
+        return {}
 
     def _read_belief(self, db, symbol: str, as_of: str) -> dict[str, Any]:
         """Read belief_state for (symbol, as_of) via TradeDB helper."""
