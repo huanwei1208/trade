@@ -131,6 +131,7 @@ class ExplanationService:
                 prediction = pred_map.get(symbol) or {}
         except Exception:
             pass
+        prediction = self._merge_signal_prediction(_db, symbol, as_of, prediction)
 
         # ── World state + action summary ──────────────────────────────────────
         ws_obj = None
@@ -864,3 +865,51 @@ class ExplanationService:
         except Exception as exc:
             logger.debug("kline_context: recommendation read failed for %s: %s", symbol, exc)
         return {}
+
+    def _merge_signal_prediction(
+        self,
+        db,
+        symbol: str,
+        as_of: str,
+        prediction: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Overlay single-symbol kline prediction with stored universe-ranked signal fields.
+
+        InferenceService computes ``model_score`` as an in-batch percentile rank.
+        When /api/kline/{symbol} requests a single symbol, that rank collapses to 0.
+        The signals table already stores the correct full-universe score/risk/version
+        for the trading day, so prefer those fields while keeping real-time trust.
+        """
+        merged = dict(prediction or {})
+        try:
+            with db._conn_lock:
+                row = db._conn.execute(
+                    """
+                    SELECT date, model_score, model_risk, model_version
+                    FROM signals
+                    WHERE symbol = ? AND date <= ?
+                    ORDER BY date DESC
+                    LIMIT 1
+                    """,
+                    (symbol, as_of),
+                ).fetchone()
+            if not row:
+                return merged
+
+            signal_date = row[0]
+            signal_score = row[1]
+            signal_risk = row[2]
+            signal_version = row[3]
+
+            # Only override with concrete stored values; trust stays from inference.
+            if signal_score is not None:
+                merged["model_score"] = round(float(signal_score), 2)
+                merged["model_score_as_of"] = signal_date
+            if signal_risk is not None:
+                merged["model_risk"] = round(float(signal_risk), 4)
+                merged["model_risk_as_of"] = signal_date
+            if signal_version:
+                merged["model_version"] = signal_version
+        except Exception as exc:
+            logger.debug("kline_context: signal prediction read failed for %s: %s", symbol, exc)
+        return merged
