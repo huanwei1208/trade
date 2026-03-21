@@ -19,6 +19,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from trade_py.utils.data_inspector import _resolve_kline_glob
+
 logger = logging.getLogger(__name__)
 
 _MIN_STOCKS_PER_DAY = 10  # minimum stocks required per day for a valid observation
@@ -55,12 +57,9 @@ def _load_gold_factor(
 
 def _load_kline_pivot(data_root: Path) -> pd.DataFrame:
     """Load kline close prices as (date × symbol) pivot via DuckDB."""
-    kline_dir = data_root / "kline"
-    if not kline_dir.exists():
-        return pd.DataFrame()
+    kline_glob = _resolve_kline_glob(data_root)
     try:
         import duckdb
-        kline_glob = str(kline_dir / "**" / "*.parquet")
         con = duckdb.connect()
         df = con.execute(f"""
             SELECT symbol, date, close

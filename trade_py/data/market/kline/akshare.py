@@ -1,9 +1,9 @@
 """A-share daily K-line fetcher using akshare.
 
 Replaces the C++ EastMoney provider for OHLCV data collection.
-Writes monthly-partitioned Parquet files compatible with the C++ ParquetReader.
+Writes consolidated per-symbol Parquet files compatible with the C++ ParquetReader.
 
-Storage layout:  data/kline/YYYY-MM/{symbol}.parquet
+Storage layout:  data/market/kline/{symbol}.parquet
 
 Column order (must match C++ ParquetReader):
     symbol, date, open, high, low, close, volume, amount,
@@ -22,9 +22,10 @@ Usage:
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -33,6 +34,7 @@ import pandas as pd
 
 from trade_py.db.instruments_db import InstrumentsDB
 from trade_py.data.market.kline.providers import _finalize_frame
+from trade_py.data.paths import KLINE_MANIFEST
 from trade_py.utils.a_share_symbols import ensure_a_share_symbol, infer_a_share_suffix
 from trade_py.utils.retry import retry
 
@@ -170,85 +172,115 @@ class KlineFetcher:
 
     # ── Parquet I/O ────────────────────────────────────────────────────────
 
-    def save_parquet(self, symbol: str, df: pd.DataFrame) -> None:
-        """Persist a DataFrame to monthly-partitioned Parquet files.
+    def _flat_path(self, symbol: str) -> Path:
+        return self._kline_root / f"{symbol.replace('.', '_')}.parquet"
 
-        Merges new data with any existing Parquet file for the same month,
-        deduplicating by date (latest value wins) and sorting ascending.
+    def _legacy_month_paths(self, symbol: str) -> list[Path]:
+        safe_sym = symbol.replace('.', '_')
+        return sorted(self._kline_root.glob(f"20??-??/{safe_sym}.parquet"))
 
-        Args:
-            symbol: Full symbol e.g. "600000.SH"
-            df:     DataFrame with at least "date" and "symbol" columns
-        """
+    def _normalize_frame(self, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
-            return
+            return pd.DataFrame(columns=_COLUMN_ORDER)
+        combined = df.copy()
+        combined["symbol"] = symbol
+        combined["date"] = combined["date"].astype(str).str[:10]
+        combined = combined.dropna(subset=["date"])
+        combined = combined.drop_duplicates(subset=["date"], keep="last")
+        combined = combined.sort_values("date").reset_index(drop=True)
+        for col in _COLUMN_ORDER:
+            if col not in combined.columns:
+                combined[col] = 0.0 if col != "symbol" else symbol
+        combined["symbol"] = combined["symbol"].fillna(symbol)
+        return combined[_COLUMN_ORDER]
 
-        safe_sym = symbol.replace(".", "_")
-        df = df.copy()
-        df["_month"] = df["date"].str[:7]  # "YYYY-MM"
+    def _load_existing_symbol(self, symbol: str) -> pd.DataFrame:
+        flat_path = self._flat_path(symbol)
+        if flat_path.exists():
+            try:
+                return self._normalize_frame(symbol, pd.read_parquet(flat_path))
+            except Exception as exc:
+                logger.warning("Ignoring unreadable flat parquet %s during repair: %s", flat_path, exc)
 
-        for month, group in df.groupby("_month"):
-            month_dir = self._kline_root / month
-            month_dir.mkdir(parents=True, exist_ok=True)
-            out_path = month_dir / f"{safe_sym}.parquet"
+        frames: list[pd.DataFrame] = []
+        for legacy_path in self._legacy_month_paths(symbol):
+            try:
+                frames.append(pd.read_parquet(legacy_path))
+            except Exception as exc:
+                logger.warning("Ignoring unreadable legacy parquet %s during repair: %s", legacy_path, exc)
+        if not frames:
+            return pd.DataFrame(columns=_COLUMN_ORDER)
+        return self._normalize_frame(symbol, pd.concat(frames, ignore_index=True))
 
-            group = group.drop(columns=["_month"])
+    def _write_symbol_frame(self, symbol: str, df: pd.DataFrame, *, merge_existing: bool) -> Path | None:
+        if df.empty:
+            return None
+        incoming = self._normalize_frame(symbol, df)
+        if merge_existing:
+            existing = self._load_existing_symbol(symbol)
+            if not existing.empty:
+                incoming = self._normalize_frame(symbol, pd.concat([existing, incoming], ignore_index=True))
 
-            if out_path.exists():
-                try:
-                    existing = pd.read_parquet(out_path)
-                except Exception as exc:
-                    logger.warning("Ignoring unreadable parquet %s during repair: %s", out_path, exc)
-                    existing = pd.DataFrame(columns=group.columns)
-                combined = pd.concat([existing, group], ignore_index=True)
-                combined = combined.drop_duplicates(subset=["date"], keep="last")
-            else:
-                combined = group
+        out_path = self._flat_path(symbol)
+        tmp_path = out_path.with_name(f".{out_path.name}.{uuid4().hex}.tmp")
+        incoming.to_parquet(tmp_path, index=False)
+        tmp_path.replace(out_path)
+        self._update_manifest(symbol, incoming, out_path)
+        return out_path
 
-            combined = combined.sort_values("date").reset_index(drop=True)
+    def _update_manifest(self, symbol: str, df: pd.DataFrame, path: Path) -> None:
+        manifest_path = KLINE_MANIFEST(self._data_root)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+        manifest: dict[str, object]
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            except Exception as exc:
+                logger.warning("Ignoring unreadable manifest %s during rewrite: %s", manifest_path, exc)
+                manifest = {}
+        else:
+            manifest = {}
 
-            # Enforce column order (add missing columns as 0)
-            for col in _COLUMN_ORDER:
-                if col not in combined.columns:
-                    combined[col] = 0.0
-            combined = combined[[c for c in _COLUMN_ORDER if c in combined.columns]]
+        entries = manifest.setdefault('entries', {})
+        assert isinstance(entries, dict)
+        safe_sym = symbol.replace('.', '_')
+        bytes_size = path.stat().st_size if path.exists() else 0
+        entries[safe_sym] = {
+            'rows': int(len(df)),
+            'date_min': str(df['date'].min()) if not df.empty else None,
+            'date_max': str(df['date'].max()) if not df.empty else None,
+            'bytes': int(bytes_size),
+            'updated_at': now,
+        }
+        manifest.update({
+            'dataset': 'kline',
+            'layout': 'per_symbol',
+            'schema_version': 2,
+            'columns': list(_COLUMN_ORDER),
+            'primary_key': ['symbol', 'date'],
+            'last_compaction': now,
+        })
+        tmp_path = manifest_path.with_name(f".{manifest_path.name}.{uuid4().hex}.tmp")
+        tmp_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+        tmp_path.replace(manifest_path)
 
-            tmp_path = out_path.with_name(f".{out_path.name}.{uuid4().hex}.tmp")
-            combined.to_parquet(tmp_path, index=False)
-            tmp_path.replace(out_path)
+    def save_parquet(self, symbol: str, df: pd.DataFrame) -> None:
+        """Persist a DataFrame to a per-symbol Parquet file.
 
-        logger.debug("Saved %d rows for %s", len(df), symbol)
+        The writer keeps backward compatibility during migration by merging any
+        existing monthly shards the first time a symbol is touched, then writing
+        a single authoritative file at ``market/kline/{symbol}.parquet``.
+        """
+        out_path = self._write_symbol_frame(symbol, df, merge_existing=True)
+        if out_path is not None:
+            logger.debug("Saved %d rows for %s -> %s", len(df), symbol, out_path)
 
     def replace_month_parquet(self, symbol: str, df: pd.DataFrame) -> None:
-        """Rewrite monthly partitions for a symbol without reading old files first.
-
-        This is intended for full-month repair/backfill flows where the caller
-        already provides the authoritative rows for every affected month.
-        """
-        if df.empty:
-            return
-
-        safe_sym = symbol.replace(".", "_")
-        df = df.copy()
-        df["_month"] = df["date"].str[:7]
-
-        for month, group in df.groupby("_month"):
-            month_dir = self._kline_root / month
-            month_dir.mkdir(parents=True, exist_ok=True)
-            out_path = month_dir / f"{safe_sym}.parquet"
-
-            combined = group.drop(columns=["_month"]).sort_values("date").reset_index(drop=True)
-            combined = combined.drop_duplicates(subset=["date"], keep="last")
-            for col in _COLUMN_ORDER:
-                if col not in combined.columns:
-                    combined[col] = 0.0
-            combined = combined[[c for c in _COLUMN_ORDER if c in combined.columns]]
-
-            tmp_path = out_path.with_name(f".{out_path.name}.{uuid4().hex}.tmp")
-            combined.to_parquet(tmp_path, index=False)
-            tmp_path.replace(out_path)
-
-        logger.debug("Replaced %d rows for %s", len(df), symbol)
+        """Rewrite the authoritative per-symbol file without reading old rows first."""
+        out_path = self._write_symbol_frame(symbol, df, merge_existing=False)
+        if out_path is not None:
+            logger.debug("Replaced %d rows for %s -> %s", len(df), symbol, out_path)
 
     # ── Incremental update ─────────────────────────────────────────────────
 

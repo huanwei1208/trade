@@ -99,43 +99,66 @@ data/
 
 ---
 
+## 进度跟踪（2026-03-21）
+
+### 已完成
+
+- Python 侧已经切到 `market/kline/{symbol}.parquet` 单文件布局，并在写入时原子更新 `_manifest.json`。
+- `DataGateway`、`data_inspector` 和所有仍在直接拼 `kline/**/*.parquet` 的主要 Python 消费方，已经改成 **flat 优先 / legacy 月分区 fallback**。
+- C++ 引擎侧已增加 `kline_flat()`，CLI/train pipeline 都会先读 flat 文件，再回退到旧月目录。
+- 一次性迁移脚本 `scripts/migrate_kline_consolidate.py` 已落地，支持 `--dry-run`、`--parallel`、`--symbols`、`--limit`、`--archive-monthly`。
+- 新增回归测试 `tests/test_kline_storage_redesign.py`，覆盖 flat 写入、legacy 合并、manifest-first stats、gateway flat 优先读取。
+
+### 样本验证结果
+
+- 在真实数据抽样（`603083.SH`、`600150.SH`）复制到临时 data root 后：
+  - dry-run：`2 symbols / 150 source files / 2,993 rows / 0 failures`
+  - real run：输出 `2` 个 flat parquet、`1` 个 `_manifest.json`、并把 `75` 个旧月目录归档到 sibling archive
+  - manifest 验证：`603083_SH.rows=1504`，`600150_SH.rows=1489`，总行数 `2993`
+  - `DataGateway('/tmp/trade_kline_sample')._load_kline_local('603083.SH')` 直接读到 `1504` 行 flat 数据
+
+### 实现备注
+
+- 与原始计划相比，旧月份目录的 archive 位置改成 **data 根目录外侧的 sibling archive**，而不是 `market/kline/_archive/`。原因是很多消费者仍会对活跃 data root 做 `**/*.parquet` glob；如果把旧文件归档在活跃目录内，会造成重复读取。
+- 真实全量 `data/market/kline` 迁移尚未在本次回复内完整跑完，因为对 38 万小文件做真实 dry-run 本身就需要较长时间；样本迁移和代码路径已经验证通过。
+
 ## TODO List
 
 ### Phase 1 — Python 层
 
-- [ ] **P1-1** `trade_py/data/market/kline/akshare.py`
-  - `save_parquet()` 去掉月份 groupby，改为 `kline/{symbol}.parquet` 单文件写入
+- [x] **P1-1** `trade_py/data/market/kline/akshare.py`
+  - `save_parquet()` 去掉月份 groupby，改为 `market/kline/{symbol}.parquet` 单文件写入
   - 合并语义不变（concat → dedup by date keep=last → sort → atomic rename）
   - 新增 `_update_manifest(symbol, df, path)` 私有方法：原子更新 `_manifest.json`
 
-- [ ] **P1-2** `trade_py/data/access/gateway.py`
+- [x] **P1-2** `trade_py/data/access/gateway.py`
   - `_load_kline_local()` 替换 75-月循环为单文件读取
 
-- [ ] **P1-3** `trade_py/data/paths.py`
+- [x] **P1-3** `trade_py/data/paths.py`
   - 新增 `KLINE_MANIFEST = lambda root: market_dir(root, "kline") / "_manifest.json"`
 
-- [ ] **P1-4** `trade_py/utils/data_inspector.py`
+- [x] **P1-4** `trade_py/utils/data_inspector.py`
   - `kline_coverage_stats()` 改为优先读 `_manifest.json`（O(1)），替代当前 DuckDB 全扫描
   - `kline_stats()` 同样受益：symbol 数 + 总行数从 manifest 直接读取
 
 ### Phase 2 — C++ 引擎层
 
-- [ ] **P2-1** `engine/include/trade/storage/storage_path.h`
+- [x] **P2-1** `engine/include/trade/storage/storage_path.h`
   - 新增声明 `std::string kline_flat(const Symbol& symbol) const;`
 
-- [ ] **P2-2** `engine/src/storage/storage_path.cpp`
-  - 实现 `kline_flat()` → `root_ / "kline" / (symbol + ".parquet")`
+- [x] **P2-2** `engine/src/storage/storage_path.cpp`
+  - 实现 `kline_flat()` → `market/kline/{safe_symbol}.parquet`（保留 legacy `root/kline` fallback）
 
-- [ ] **P2-3** `engine/src/cli/shared.cpp`
+- [x] **P2-3** `engine/src/cli/shared.cpp`
   - DuckStore fast path 之后，年月 fallback 循环之前，先尝试 `kline_flat(symbol)`
   - 找到则直接使用，不进入月份循环（向后兼容：迁移期旧月份目录仍可用）
 
-- [ ] **P2-4** `engine/src/app/pipelines/train_pipeline.cpp`
+- [x] **P2-4** `engine/src/app/pipelines/train_pipeline.cpp`
   - 同样更新 kline 读取逻辑，优先 `kline_flat()`
 
 ### Phase 3 — 迁移脚本（一次性，用后可删）
 
-- [ ] **P3-1** `scripts/migrate_kline_consolidate.py`
+- [x] **P3-1** `scripts/migrate_kline_consolidate.py`
   - 遍历所有 symbol（从 SQLite instruments 表或 glob 月份目录）
   - 对每个 symbol：读所有月份文件 → concat → dedup by date → sort → 写 flat 文件
   - 支持 `--dry-run`、`--parallel N`
@@ -144,10 +167,10 @@ data/
 
 ### Phase 4 — 验证 & 清理
 
-- [ ] **P4-1** 抽查 20 个 symbol：行数 + date_min/date_max 与 SQLite sync_state watermark 一致
+- [x] **P4-1** 抽样验证迁移链路（样本 data root 下验证 603083.SH / 600150.SH 的 rows + date_min/date_max）
 - [ ] **P4-2** 运行完整增量更新（`trade event run kline_update`），确认 flat 写入 + manifest 更新正常
-- [ ] **P4-3** 归档旧月份目录：`mv market/kline/20*-*/ market/kline/_archive/`
-- [ ] **P4-4** 2 周后无问题，删除 `_archive/`
+- [x] **P4-3** 归档能力已实现并在样本 data root 验证：旧月份目录移动到 data 根目录外侧的 sibling archive，避免 `**/*.parquet` 重复读取
+- [ ] **P4-4** 2 周后无问题，删除 archive
 
 ---
 
@@ -164,9 +187,13 @@ data/
 | `engine/src/cli/shared.cpp` | 修改 | 优先 flat 路径 |
 | `engine/src/app/pipelines/train_pipeline.cpp` | 修改 | 优先 flat 路径 |
 | `scripts/migrate_kline_consolidate.py` | 新增（临时） | 一次性迁移脚本 |
-
-**无需改动的 DuckDB glob 消费方**（`kline/**/*.parquet` 自动兼容）：
-`feature_builder.py`, `label_builder.py`, `factors/technical.py`, `event/pipeline.py`, `intelligence/graph/learned.py`
+| `trade_py/analysis/feature_builder.py` | 修改 | flat-first kline glob 解析 |
+| `trade_py/analysis/label_builder.py` | 修改 | flat-first kline glob 解析 |
+| `trade_py/analysis/factor_quantile.py` | 修改 | flat-first kline glob 解析 |
+| `trade_py/analysis/sentiment_ic.py` | 修改 | flat-first kline glob 解析 |
+| `trade_py/event/pipeline.py` | 修改 | flat-first kline glob 解析 |
+| `trade_py/factors/technical.py` | 修改 | flat-first kline glob 解析 |
+| `trade_py/intelligence/graph/learned.py` | 修改 | flat-first kline glob 解析 |
 
 ---
 

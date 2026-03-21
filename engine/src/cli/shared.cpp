@@ -13,6 +13,11 @@
 
 namespace trade::cli {
 
+namespace {
+std::filesystem::path resolve_kline_root(const std::filesystem::path& data_root);
+std::string resolve_kline_glob(const std::filesystem::path& kline_root);
+}
+
 std::pair<Date, Date> resolve_dates(const CliArgs& args,
                                     const std::string& default_start) {
     auto start = args.start_date.empty()
@@ -28,12 +33,22 @@ std::vector<Bar> load_bars(const std::string& symbol,
                            const Config& config) {
     StoragePath paths(config.data.data_root);
 
-    // Fast path: use DuckStore to scan all kline parquet files in one query.
-    const std::string kline_dir =
-        (std::filesystem::path(config.data.data_root) / "kline").string();
-    if (std::filesystem::exists(kline_dir)) {
-        const std::string glob =
-            (std::filesystem::path(kline_dir) / "**" / "*.parquet").string();
+    const auto flat_path = paths.kline_flat(symbol);
+    if (std::filesystem::exists(flat_path)) {
+        try {
+            auto bars = ParquetReader::read_bars(flat_path);
+            if (!bars.empty()) {
+                return bars;
+            }
+        } catch (...) {
+            // Fall through to scan/monthly fallback.
+        }
+    }
+
+    // Fast path: use DuckStore to scan the active kline layout in one query.
+    const auto kline_root = resolve_kline_root(std::filesystem::path(config.data.data_root));
+    if (std::filesystem::exists(kline_root)) {
+        const std::string glob = resolve_kline_glob(kline_root);
         try {
             DuckStore db;
             auto bars = db.read_bars(glob, symbol);
@@ -109,6 +124,27 @@ bool has_local_parquet(const std::filesystem::path& dir) {
     return false;
 }
 
+bool has_top_level_parquet(const std::filesystem::path& dir) {
+    if (!std::filesystem::exists(dir)) return false;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() == ".parquet") return true;
+    }
+    return false;
+}
+
+std::filesystem::path resolve_kline_root(const std::filesystem::path& data_root) {
+    const auto market = data_root / "market" / "kline";
+    if (std::filesystem::exists(market)) return market;
+    const auto legacy = data_root / "kline";
+    if (std::filesystem::exists(legacy)) return legacy;
+    return market;
+}
+
+std::string resolve_kline_glob(const std::filesystem::path& kline_root) {
+    return (kline_root / (has_top_level_parquet(kline_root) ? "*.parquet" : "**/*.parquet")).string();
+}
+
 std::string sql_string(const std::string& s) {
     return "'" + sql_escape(s) + "'";
 }
@@ -175,18 +211,19 @@ std::vector<SqlViewDef> discover_sql_views(const Config& config) {
         });
     }
 
-    auto kline_dir = std::filesystem::path(config.data.data_root) / "kline";
-    if (has_local_parquet(kline_dir)) {
+    auto kline_root = resolve_kline_root(data_root);
+    if (has_local_parquet(kline_root)) {
+        const auto kline_glob = resolve_kline_glob(kline_root);
         views.push_back(SqlViewDef{
             .dataset_id = "kline",
             .view_name  = "kline",
-            .glob_path  = (kline_dir / "**/*.parquet").string(),
+            .glob_path  = kline_glob,
         });
         // Convenience alias
         views.push_back(SqlViewDef{
             .dataset_id = "daily",
             .view_name  = "daily",
-            .glob_path  = (kline_dir / "**/*.parquet").string(),
+            .glob_path  = kline_glob,
         });
     }
 

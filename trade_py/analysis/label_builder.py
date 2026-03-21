@@ -92,7 +92,8 @@ class LabelBuilder:
             return self._price_cache[cache_key]
 
         import duckdb
-        kline_glob = str(self._root / "kline" / "**" / "*.parquet")
+        from trade_py.utils.data_inspector import _resolve_kline_glob
+        kline_glob = _resolve_kline_glob(self._root)
         try:
             con = duckdb.connect()
             df = con.execute(f"""

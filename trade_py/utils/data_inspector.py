@@ -10,10 +10,13 @@ Usage (notebook):
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
+
+from trade_py.data.paths import KLINE_DIR, KLINE_MANIFEST
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +26,36 @@ logger = logging.getLogger(__name__)
 
 def _resolve_kline_dir(data_root: str | Path = "data") -> Path:
     root = Path(data_root)
-    candidates = (root / "market" / "kline", root / "kline")
+    candidates = (KLINE_DIR(root), root / "kline")
+    for candidate in candidates:
+        if candidate.exists() and any(candidate.glob("*.parquet")):
+            return candidate
     for candidate in candidates:
         if candidate.exists() and any(candidate.rglob("*.parquet")):
             return candidate
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    return root / "kline"
+    return KLINE_DIR(root)
+
+
+def _load_kline_manifest(data_root: str | Path = "data") -> dict[str, Any]:
+    manifest_path = KLINE_MANIFEST(data_root)
+    if not manifest_path.exists():
+        return {}
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        logger.debug("kline manifest read error: %s", exc)
+        return {}
+
+
+def _resolve_kline_glob(data_root: str | Path = "data") -> str:
+    kline_dir = _resolve_kline_dir(data_root)
+    if any(kline_dir.glob("*.parquet")):
+        return str(kline_dir / "*.parquet")
+    return str(kline_dir / "**" / "*.parquet")
 
 def status_emoji(n: int, days_threshold: int = 3) -> str:
     """Return status emoji based on row count and recency check."""
@@ -67,13 +92,28 @@ def parquet_stats(files: list[str | Path]) -> dict[str, Any]:
 
 
 def kline_stats(data_root: str | Path = "data") -> dict[str, Any]:
-    """Return kline data statistics using DuckDB."""
+    """Return kline data statistics, preferring the manifest when present."""
+    manifest = _load_kline_manifest(data_root)
+    entries = manifest.get("entries") if isinstance(manifest, dict) else None
+    if isinstance(entries, dict) and entries:
+        mins = [str(v.get("date_min")) for v in entries.values() if v.get("date_min")]
+        maxs = [str(v.get("date_max")) for v in entries.values() if v.get("date_max")]
+        return {
+            "symbols": len(entries),
+            "rows": sum(int((v or {}).get("rows") or 0) for v in entries.values()),
+            "bytes": sum(int((v or {}).get("bytes") or 0) for v in entries.values()),
+            "min_date": min(mins) if mins else None,
+            "max_date": max(maxs) if maxs else None,
+            "layout": manifest.get("layout"),
+            "manifest": True,
+        }
+
     kline_dir = _resolve_kline_dir(data_root)
     if not kline_dir.exists():
         return {"symbols": 0, "rows": 0, "min_date": None, "max_date": None}
     try:
         import duckdb
-        kline_glob = str(kline_dir / "**" / "*.parquet")
+        kline_glob = _resolve_kline_glob(data_root)
         con = duckdb.connect()
         row = con.execute(f"""
             SELECT COUNT(DISTINCT symbol) AS symbols,
@@ -89,6 +129,7 @@ def kline_stats(data_root: str | Path = "data") -> dict[str, Any]:
             "rows": int(rows or 0),
             "min_date": str(min_date) if min_date else None,
             "max_date": str(max_date) if max_date else None,
+            "manifest": False,
         }
     except Exception as exc:
         logger.debug("kline_stats error: %s", exc)
@@ -101,8 +142,17 @@ def kline_coverage_stats(data_root: str | Path = "data", sample_limit: int = 10)
 
         db = InstrumentsDB(data_root)
         db_symbols = set(db.get_all_symbols())
-        kline_dir = _resolve_kline_dir(data_root)
-        file_symbols = {p.stem.replace("_", ".") for p in kline_dir.glob("**/*.parquet")}
+        manifest = _load_kline_manifest(data_root)
+        entries = manifest.get("entries") if isinstance(manifest, dict) else None
+        if isinstance(entries, dict) and entries:
+            file_symbols = {key.replace("_", ".") for key in entries.keys()}
+            source = "manifest"
+        else:
+            kline_dir = _resolve_kline_dir(data_root)
+            file_symbols = {p.stem.replace("_", ".") for p in kline_dir.glob("*.parquet")}
+            if not file_symbols:
+                file_symbols = {p.stem.replace("_", ".") for p in kline_dir.glob("**/*.parquet")}
+            source = "filesystem"
         missing = sorted(db_symbols - file_symbols)
         suspicious = sorted(s for s in db_symbols if s.startswith("920") and s.endswith(".SH"))
         present = len(db_symbols) - len(missing)
@@ -115,6 +165,7 @@ def kline_coverage_stats(data_root: str | Path = "data", sample_limit: int = 10)
             "missing_sample": missing[:sample_limit],
             "suspicious_suffix_symbols": len(suspicious),
             "suspicious_sample": suspicious[:sample_limit],
+            "source": source,
         }
     except Exception as exc:
         logger.debug("kline_coverage_stats error: %s", exc)

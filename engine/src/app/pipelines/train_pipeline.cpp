@@ -30,6 +30,16 @@ namespace {
 std::vector<Bar> load_bars_for_train(const std::string& symbol,
                                      const Config& config) {
     StoragePath paths(config.data.data_root);
+    const auto flat_path = paths.kline_flat(symbol);
+    if (std::filesystem::exists(flat_path)) {
+        try {
+            auto bars = ParquetReader::read_bars(flat_path);
+            if (!bars.empty()) {
+                return bars;
+            }
+        } catch (...) {}
+    }
+
     std::vector<Bar> all_bars;
     auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
     auto min_date = parse_date(config.ingestion.min_start_date);

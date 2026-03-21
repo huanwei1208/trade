@@ -345,9 +345,9 @@ def _compute_excess_returns(data_root: str, event_date: str,
         return {}
     try:
         import duckdb
-        from trade_py.utils.data_inspector import _resolve_kline_dir
+        from trade_py.utils.data_inspector import _resolve_kline_glob
 
-        kline_glob = str(_resolve_kline_dir(data_root) / "**" / "*.parquet")
+        kline_glob = _resolve_kline_glob(data_root)
         con = duckdb.connect()
         # Get close prices on event_date and window trading days later
         df = con.execute(f"""

@@ -14,6 +14,7 @@ from trade_py.data.market.kline.akshare import KlineFetcher
 from trade_py.data.market.kline.providers import ensure_symbol
 from trade_py.data.market.fund_flow.tushare import FundFlowFetcher
 from trade_py.data.market.cross_asset import fetch_btc, fetch_fx_cnh, fetch_gold
+from trade_py.data.paths import KLINE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -234,17 +235,30 @@ class DataGateway:
 
     def _load_kline_local(self, symbol: str) -> pd.DataFrame:
         symbol_file = symbol.replace(".", "_") + ".parquet"
-        base = self._root / "kline"
-        if not base.exists():
-            return pd.DataFrame()
+        candidates = (KLINE_DIR(self._root), self._root / "kline")
+
+        for base in candidates:
+            flat_path = base / symbol_file
+            if flat_path.exists():
+                try:
+                    return pd.read_parquet(flat_path)
+                except Exception as exc:
+                    logger.warning("kline flat read failed: %s (%s)", flat_path, exc)
+
         frames: list[pd.DataFrame] = []
-        for month_dir in sorted(base.iterdir()):
-            p = month_dir / symbol_file
-            if p.exists():
+        for base in candidates:
+            if not base.exists():
+                continue
+            for month_dir in sorted(base.glob("20??-??")):
+                p = month_dir / symbol_file
+                if not p.exists():
+                    continue
                 try:
                     frames.append(pd.read_parquet(p))
                 except Exception as exc:
-                    logger.warning("kline read failed: %s (%s)", p, exc)
+                    logger.warning("kline monthly read failed: %s (%s)", p, exc)
+            if frames:
+                break
         if not frames:
             return pd.DataFrame()
         return pd.concat(frames, ignore_index=True)

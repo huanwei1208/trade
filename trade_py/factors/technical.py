@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 def _load_kline_history(data_root: str, start_date: str, end_date: str) -> pd.DataFrame:
     try:
         import duckdb
-        from trade_py.utils.data_inspector import _resolve_kline_dir
+        from trade_py.utils.data_inspector import _resolve_kline_glob
 
-        kline_glob = str(_resolve_kline_dir(data_root) / "**" / "*.parquet")
+        kline_glob = _resolve_kline_glob(data_root)
         con = duckdb.connect()
         df = con.execute(
             f"""

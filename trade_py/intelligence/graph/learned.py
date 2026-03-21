@@ -12,7 +12,7 @@ import pandas as pd
 
 from trade_py.analysis.knowledge_graph import SW
 from trade_py.db.trade_db import TradeDB
-from trade_py.utils.data_inspector import _resolve_kline_dir
+from trade_py.utils.data_inspector import _resolve_kline_glob
 
 
 EDGE_FEATURE_COLS = [
@@ -158,7 +158,7 @@ def _load_sector_returns(data_root: str, start: str, end: str, members: pd.DataF
 
     con = duckdb.connect()
     con.register("members", members[["symbol", "industry_code"]])
-    kline_glob = str(_resolve_kline_dir(data_root) / "**" / "*.parquet")
+    kline_glob = _resolve_kline_glob(data_root)
     query = f"""
         WITH joined AS (
             SELECT

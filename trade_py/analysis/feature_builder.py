@@ -442,7 +442,8 @@ class FeatureBuilder:
         Default 260 bars covers ~1 trading year (needed for 52-week features).
         """
         import duckdb
-        kline_glob = str(self._root / "kline" / "**" / "*.parquet")
+        from trade_py.utils.data_inspector import _resolve_kline_glob
+        kline_glob = _resolve_kline_glob(self._root)
         cache_key = f"{symbol}:{end_date}"
         if cache_key in self._kline_cache:
             return self._kline_cache[cache_key]
@@ -608,7 +609,8 @@ class FeatureBuilder:
         Best-effort: returns zeros if data is unavailable.
         """
         import duckdb
-        kline_glob = str(self._root / "kline" / "**" / "*.parquet")
+        from trade_py.utils.data_inspector import _resolve_kline_glob
+        kline_glob = _resolve_kline_glob(self._root)
         defaults = {
             "market_trend_20d":      0.0,
             "sector_rank_20d":       0.5,

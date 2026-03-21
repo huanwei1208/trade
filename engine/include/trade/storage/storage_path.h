@@ -30,9 +30,11 @@ public:
     std::string models_dir() const;
 
     // New monthly kline paths (replaces bucketed raw/silver layout)
-    // Returns: data/kline/YYYY-MM/{symbol}.parquet
+    // Returns: data/market/kline/{symbol}.parquet (prefers flat layout, falls back to legacy root/kline)
+    std::string kline_flat(const Symbol& symbol) const;
+    // Returns: data/market/kline/YYYY-MM/{symbol}.parquet in legacy monthly layout
     std::string kline_monthly(const Symbol& symbol, int year, int month) const;
-    // Returns: data/kline/YYYY-MM/ directory
+    // Returns: data/market/kline/YYYY-MM/ directory
     std::string kline_dir(int year, int month) const;
 
     // Metadata
@@ -42,6 +44,8 @@ public:
     static void ensure_dir(const std::string& path);
 
 private:
+    std::filesystem::path kline_root() const;
+    static std::string safe_symbol(const Symbol& symbol);
     std::filesystem::path root_;
 };
 

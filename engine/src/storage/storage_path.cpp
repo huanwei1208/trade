@@ -1,4 +1,5 @@
 #include "trade/storage/storage_path.h"
+#include <algorithm>
 #include "trade/common/time_utils.h"
 #include <chrono>
 #include <fmt/format.h>
@@ -7,6 +8,20 @@
 namespace trade {
 
 StoragePath::StoragePath(const std::string& data_root) : root_(data_root) {}
+
+std::filesystem::path StoragePath::kline_root() const {
+    const auto market = root_ / "market" / "kline";
+    if (std::filesystem::exists(market)) return market;
+    const auto legacy = root_ / "kline";
+    if (std::filesystem::exists(legacy)) return legacy;
+    return market;
+}
+
+std::string StoragePath::safe_symbol(const Symbol& symbol) {
+    auto safe = symbol;
+    std::replace(safe.begin(), safe.end(), "."[0], "_"[0]);
+    return safe;
+}
 
 std::string StoragePath::raw_daily(const Symbol& symbol, int year) const {
     return (root_ / "raw" / "cn_a" / "daily" / std::to_string(year) /
@@ -68,14 +83,18 @@ void StoragePath::ensure_dir(const std::string& path) {
     }
 }
 
+std::string StoragePath::kline_flat(const Symbol& symbol) const {
+    return (kline_root() / (safe_symbol(symbol) + ".parquet")).string();
+}
+
 std::string StoragePath::kline_monthly(const Symbol& symbol, int year, int month) const {
-    return (root_ / "kline" /
+    return (kline_root() /
             fmt::format("{:04d}-{:02d}", year, month) /
-            (symbol + ".parquet")).string();
+            (safe_symbol(symbol) + ".parquet")).string();
 }
 
 std::string StoragePath::kline_dir(int year, int month) const {
-    return (root_ / "kline" /
+    return (kline_root() /
             fmt::format("{:04d}-{:02d}", year, month)).string();
 }
 

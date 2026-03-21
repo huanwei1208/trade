@@ -40,6 +40,7 @@ def sentiment_dir(data_root: str | Path, tier: str) -> Path:
 # ── Convenience lambdas ────────────────────────────────────────────────────────
 
 KLINE_DIR       = lambda root: market_dir(root, "kline")        # noqa: E731
+KLINE_MANIFEST  = lambda root: market_dir(root, "kline") / "_manifest.json"  # noqa: E731
 FUND_FLOW_DIR   = lambda root: market_dir(root, "fund_flow")    # noqa: E731
 CROSS_ASSET_DIR = lambda root: market_dir(root, "cross_asset")  # noqa: E731
 INDEX_DIR       = lambda root: market_dir(root, "index")        # noqa: E731

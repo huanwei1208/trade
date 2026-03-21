@@ -19,6 +19,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from trade_py.utils.data_inspector import _resolve_kline_glob
+
 logger = logging.getLogger(__name__)
 
 # Minimum number of stocks required for a valid daily IC observation
@@ -53,13 +55,9 @@ def _load_gold(data_root: Path, start: date, end: date) -> pd.DataFrame:
 
 def _load_kline_close(data_root: Path) -> pd.DataFrame:
     """Load all kline close prices as a (date × symbol) pivot table."""
-    kline_dir = data_root / "kline"
-    if not kline_dir.exists():
-        return pd.DataFrame()
-
     try:
         import duckdb
-        kline_glob = str(kline_dir / "**" / "*.parquet")
+        kline_glob = _resolve_kline_glob(data_root)
         con = duckdb.connect()
         df = con.execute(f"""
             SELECT symbol, date, close
