@@ -334,6 +334,27 @@ def create_app():
         except Exception:
             return []
 
+    def _read_instrument_name_map(db, symbols: list[str]) -> dict[str, str]:
+        cleaned = [str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()]
+        if not cleaned:
+            return {}
+        result: dict[str, str] = {}
+        batch_size = 800
+        try:
+            with db._conn_lock:
+                for start in range(0, len(cleaned), batch_size):
+                    batch = cleaned[start:start + batch_size]
+                    placeholders = ",".join("?" for _ in batch)
+                    rows = db._conn.execute(
+                        f"SELECT symbol, name FROM instruments WHERE symbol IN ({placeholders})",
+                        batch,
+                    ).fetchall()
+                    for row in rows:
+                        result[str(row["symbol"] or "")] = str(row["name"] or "")
+        except Exception:
+            return {}
+        return result
+
     async def _stream_wait(poll_seconds: float) -> bool:
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=max(0.25, float(poll_seconds)))
@@ -1118,9 +1139,11 @@ def create_app():
             "error_nodes": [n for n in nodes if str(n.get("status") or "") == "error"][:5],
         }
 
-    def _signals_page_payload() -> dict[str, Any]:
+    def _signals_page_payload(*, search: str | None = None, limit: int = 300) -> dict[str, Any]:
         db = _db()
         today_str = _current_asof(db)
+        search_text = str(search or "").strip().lower()
+        resolved_limit = max(50, min(int(limit or 300), 2000))
 
         # EBRT: use Recommendation table if available
         ebrt_recs = []
@@ -1130,21 +1153,34 @@ def create_app():
             pass
 
         if ebrt_recs:
+            universe_total = len(ebrt_recs)
+            name_map = _read_instrument_name_map(
+                db,
+                [str(item.get("symbol") or "") for item in ebrt_recs],
+            )
+            filtered_recs = []
+            if search_text:
+                for rec in ebrt_recs:
+                    sym = str(rec.get("symbol") or "").upper()
+                    name = name_map.get(sym, "")
+                    haystack = f"{sym} {name}".lower()
+                    if search_text in haystack:
+                        filtered_recs.append(rec)
+            else:
+                filtered_recs = list(ebrt_recs)
+
+            visible_recs = filtered_recs[:resolved_limit]
+            heavy_limit = len(visible_recs) if search_text else min(len(visible_recs), 80)
             picks = []
-            for r in ebrt_recs[:50]:
+            for index, r in enumerate(visible_recs):
                 sym = str(r.get("symbol") or "")
-                name = ""
+                name = name_map.get(sym, "")
                 belief_mu = 0.0
                 belief_sigma = 0.3
                 delta_mu = 0.0
                 top_evidence: list = []
                 sparkline: list[dict[str, Any]] = []
                 event_tags: list[str] = []
-                try:
-                    instr = db.instrument_lookup(sym)
-                    name = str(instr.get("name") or "") if instr else ""
-                except Exception:
-                    pass
                 try:
                     bs = db.belief_state_get(today_str, sym)
                     if bs:
@@ -1154,13 +1190,14 @@ def create_app():
                     bt = db.belief_transition_get(sym, today_str)
                     if bt:
                         delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0))
-                    attn = db.attention_list(sym, today_str, top_n=3)
-                    top_evidence = [
-                        {"weight": a.get("weight"), "evidence_id": a.get("evidence_id")}
-                        for a in attn
-                    ]
-                    sparkline = _read_symbol_sparkline(sym)
-                    event_tags = _read_symbol_event_tags(db, sym, as_of=today_str, limit=3)
+                    if index < heavy_limit:
+                        attn = db.attention_list(sym, today_str, top_n=3)
+                        top_evidence = [
+                            {"weight": a.get("weight"), "evidence_id": a.get("evidence_id")}
+                            for a in attn
+                        ]
+                        sparkline = _read_symbol_sparkline(sym)
+                        event_tags = _read_symbol_event_tags(db, sym, as_of=today_str, limit=3)
                 except Exception:
                     pass
                 # Decision-layer enrichment (top 20 only — speed)
@@ -1227,13 +1264,25 @@ def create_app():
                 "as_of": today_str,
                 "picks": picks,
                 "dropped": [],
-                "total": len(picks),
+                "shown": len(picks),
+                "total": len(filtered_recs),
+                "universe_total": universe_total,
+                "search": search or "",
                 "source": "ebrt",
             }
 
         # Fall back to old signal-based picks
-        recommend = db.signal_recommend(limit=50)
+        recommend = db.signal_recommend(limit=resolved_limit if not search_text else max(resolved_limit, 200))
         picks = recommend.get("picks", [])
+        fallback_name_map = _read_instrument_name_map(
+            db,
+            [str(pick.get("symbol") or "") for pick in picks],
+        )
+        if search_text:
+            picks = [
+                pick for pick in picks
+                if search_text in f"{str(pick.get('symbol') or '').upper()} {fallback_name_map.get(str(pick.get('symbol') or '').upper(), '')}".lower()
+            ]
         dropped = recommend.get("dropped", [])
         for pick in picks:
             sym = str(pick.get("symbol") or "")
@@ -1249,7 +1298,10 @@ def create_app():
             "as_of": today_str,
             "picks": picks,
             "dropped": dropped,
+            "shown": len(picks),
             "total": len(picks),
+            "universe_total": len(picks),
+            "search": search or "",
             "source": "signals",
         }
 
@@ -2077,13 +2129,15 @@ def create_app():
     # ── API: signals-page ─────────────────────────────────────────────────────
 
     @app.get("/api/signals-page")
-    async def get_signals_page():
-        sig = _payload_signature("signals")
+    async def get_signals_page(search: str | None = None, limit: int = 300):
+        resolved_search = str(search or "").strip() or None
+        resolved_limit = max(50, min(int(limit or 300), 2000))
+        sig = f"{_payload_signature('signals')}:{resolved_search or ''}:{resolved_limit}"
         return _snapshot_get_or_build(
             "signals_page",
             signature=sig,
             ttl_seconds=300,
-            builder=_signals_page_payload,
+            builder=lambda: _signals_page_payload(search=resolved_search, limit=resolved_limit),
         )
 
     # ── API: state/{symbol} ───────────────────────────────────────────────────

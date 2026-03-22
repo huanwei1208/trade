@@ -26,10 +26,6 @@ type AvailabilityFilter = "ACTIONABLE_ONLY" | "INCLUDE_BLOCKED";
 
 export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps, onOpenOpsFocus }: CandidatesPageProps) {
   const { t } = useI18n();
-  const resource = useApiResource<SignalsPageData>("/api/signals-page", {
-    deps: [refreshToken],
-    cacheKey: "trade-web:signals-page",
-  });
   const [selectedSymbol, setSelectedSymbol] = useLocalStorageState<string>("trade-web:selected-candidate", "");
   const [actionFilter, setActionFilter] = useState<ActionFilter>("ALL");
   const [trustFilter, setTrustFilter] = useState<TrustFilter>("ALL");
@@ -38,6 +34,14 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps, onOpenOp
   const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
+  const normalizedSearch = deferredSearch.trim();
+  const signalsPath = normalizedSearch
+    ? `/api/signals-page?limit=200&search=${encodeURIComponent(normalizedSearch)}`
+    : "/api/signals-page?limit=300";
+  const resource = useApiResource<SignalsPageData>(signalsPath, {
+    deps: [refreshToken, normalizedSearch],
+    cacheKey: `trade-web:signals-page:${normalizedSearch || "all"}`,
+  });
 
   function handleSort(key: CandidateSortKey) {
     if (key === sortBy) {
@@ -177,6 +181,27 @@ export function CandidatesPage({ refreshToken, onOpenSymbol, onOpenOps, onOpenOp
           </select>
         </label>
       </div>
+
+      {resource.data && (
+        <div className="page-banner page-banner--muted">
+          <strong>
+            {t("candidates.scopeSummary", {
+              shown: resource.data.shown ?? filtered.length,
+              total: resource.data.total ?? resource.data.picks?.length ?? 0,
+            })}
+          </strong>
+          <span>
+            {normalizedSearch
+              ? t("candidates.searchScope", {
+                  search: normalizedSearch,
+                  universe: resource.data.universe_total ?? resource.data.total ?? resource.data.picks?.length ?? 0,
+                })
+              : t("candidates.defaultScope", {
+                  universe: resource.data.universe_total ?? resource.data.total ?? resource.data.picks?.length ?? 0,
+                })}
+          </span>
+        </div>
+      )}
 
       <div className="candidates-layout">
         <div className="candidates-layout__table">

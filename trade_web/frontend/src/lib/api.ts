@@ -87,6 +87,9 @@ export type SignalsPageData = {
   picks?: CandidateRow[];
   dropped?: Array<{ symbol?: string }>;
   total?: number;
+  shown?: number;
+  universe_total?: number;
+  search?: string;
   source?: string;
 };
 
@@ -1008,8 +1011,18 @@ export function getTodayPage() {
   return fetchJson<TodayPageData>("/api/today-page");
 }
 
-export function getSignalsPage() {
-  return fetchJson<SignalsPageData>("/api/signals-page");
+export function getSignalsPage(options?: { search?: string; limit?: number }) {
+  const params = new URLSearchParams();
+  const search = String(options?.search || "").trim();
+  const limit = Number(options?.limit || 0);
+  if (search) {
+    params.set("search", search);
+  }
+  if (Number.isFinite(limit) && limit > 0) {
+    params.set("limit", String(limit));
+  }
+  const suffix = params.toString();
+  return fetchJson<SignalsPageData>(`/api/signals-page${suffix ? `?${suffix}` : ""}`);
 }
 
 export function getExplain(symbol: string) {
