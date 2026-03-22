@@ -506,6 +506,34 @@ export type StatusPayload = {
   backup_health?: Record<string, unknown>;
 };
 
+export type AutomationScheduleItem = {
+  id?: string;
+  topic?: string;
+  label?: string;
+  time?: string;
+  cadence?: string;
+  trading_day_only?: boolean;
+  market_hours_only?: boolean;
+  description?: string;
+  currently_eligible?: boolean;
+  state_hint?: string;
+};
+
+export type AutomationOverviewPayload = {
+  today?: string;
+  latest_market_asof?: string;
+  latest_trading_day?: string;
+  is_trading_day_today?: boolean;
+  web_runs_scheduler?: boolean;
+  requires_daemon?: boolean;
+  daemon_command?: string;
+  calendar?: Array<Record<string, unknown>>;
+  schedules?: AutomationScheduleItem[];
+  due_agenda?: Array<Record<string, unknown>>;
+  recent_agenda?: Array<Record<string, unknown>>;
+  recent_events?: Array<Record<string, unknown>>;
+};
+
 export type DagRuntime = {
   nodes?: Array<Record<string, unknown>>;
   edges?: Array<Record<string, unknown>>;
@@ -1043,6 +1071,10 @@ export function getTrustOverview() {
 
 export function getStatus() {
   return fetchJson<StatusPayload>("/api/status");
+}
+
+export function getAutomationOverview() {
+  return fetchJson<AutomationOverviewPayload>("/api/automation/overview");
 }
 
 export function getDagRuntime() {

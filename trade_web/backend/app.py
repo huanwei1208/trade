@@ -1620,6 +1620,52 @@ def create_app():
             "backup_health": backup_health,
         }
 
+    @app.get("/api/automation/overview")
+    async def get_automation_overview():
+        db = _db()
+        today = date.today()
+        today_str = today.isoformat()
+        latest_market_asof = db.get_latest_market_asof() or today_str
+        latest_trading_day = (
+            today_str
+            if db.trading_calendar_is_open(today_str, exchange="SSE")
+            else db.trading_calendar_prev_trading_day(today_str, exchange="SSE") or latest_market_asof
+        )
+        calendar_rows: list[dict[str, Any]] = []
+        for offset in range(-1, 4):
+            cur = today + timedelta(days=offset)
+            row = db.trading_calendar_get(cur.isoformat(), exchange="SSE")
+            if row:
+                calendar_rows.append(row)
+        due_agenda = db.agenda_queue_due(limit=12)
+        recent_agenda = db.agenda_queue_recent(limit=12)
+        recent_events = [
+            row
+            for row in db.event_log_recent(limit=120)
+            if str(row.get("topic") or "").startswith("gate.") or str(row.get("topic") or "") == "agenda.due"
+        ][:12]
+        try:
+            from trade_py.bus.scheduler import describe_schedule
+
+            schedules = describe_schedule(db)
+        except Exception as exc:  # pragma: no cover - defensive web path
+            logger.warning("automation schedule introspection failed: %s", exc)
+            schedules = []
+        return {
+            "today": today_str,
+            "latest_market_asof": latest_market_asof,
+            "latest_trading_day": latest_trading_day,
+            "is_trading_day_today": bool(db.trading_calendar_is_open(today_str, exchange="SSE")),
+            "web_runs_scheduler": False,
+            "requires_daemon": True,
+            "daemon_command": "trade start",
+            "calendar": calendar_rows,
+            "schedules": schedules,
+            "due_agenda": due_agenda,
+            "recent_agenda": recent_agenda,
+            "recent_events": recent_events,
+        }
+
     @app.get("/api/report-page")
     async def get_report_page():
         db = _db()

@@ -29,6 +29,7 @@ import {
   postReadinessBackfill,
   postReadinessDetectChanges,
   postReadinessReplay,
+  type AutomationOverviewPayload,
   type DagRuntime,
   type EventsPagePayload,
   type OpsComputeLayersPayload,
@@ -57,7 +58,7 @@ import {
 } from "../lib/statusText";
 import { useLocalStorageState } from "../lib/ui";
 
-type OpsTab = "overview" | "readiness" | "compute" | "replay" | "trust" | "audit";
+type OpsTab = "overview" | "automation" | "readiness" | "compute" | "replay" | "trust" | "audit";
 type OpsTabLike = OpsTab | "recovery" | "pipeline" | "workflows";
 
 type OpsPageProps = {
@@ -79,6 +80,7 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   const tab = normalizeOpsTab(storedTab);
 
   const [readinessDays, setReadinessDays] = useState<30 | 60 | 90>(30);
+  const [readinessEndDate, setReadinessEndDate] = useState("");
   const [activeCellId, setActiveCellId] = useState("");
   const [selectedCellIds, setSelectedCellIds] = useState<string[]>([]);
   const [activeNodeId, setActiveNodeId] = useState("");
@@ -112,13 +114,18 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   const terminalRefreshKeyRef = useRef("");
 
   const status = useApiResource<StatusPayload>("/api/status", { deps: [refreshToken], cacheKey: "trade-web:status" });
+  const automation = useApiResource<AutomationOverviewPayload>("/api/automation/overview", { deps: [refreshToken], cacheKey: "trade-web:automation-overview" });
   const runtime = useApiResource<DagRuntime>("/api/dag/runtime", { deps: [refreshToken], cacheKey: "trade-web:dag-runtime" });
   const trust = useApiResource<TrustOverview>("/api/trust/overview", { deps: [refreshToken], cacheKey: "trade-web:trust-overview" });
   const workflows = useApiResource<WorkflowSummary[]>("/api/workflows", { deps: [refreshToken], cacheKey: "trade-web:workflows" });
   const events = useApiResource<EventsPagePayload>("/api/events-page", { deps: [refreshToken], cacheKey: "trade-web:events-page" });
-  const readiness = useApiResource<ReadinessGridPayload>(`/api/readiness-grid?days=${readinessDays}`, {
-    deps: [refreshToken, readinessDays],
-    cacheKey: `trade-web:readiness-grid:${readinessDays}`,
+  const normalizedReadinessEndDate = readinessEndDate.trim();
+  const readinessPath = normalizedReadinessEndDate
+    ? `/api/readiness-grid?days=${readinessDays}&end_date=${encodeURIComponent(normalizedReadinessEndDate)}`
+    : `/api/readiness-grid?days=${readinessDays}`;
+  const readiness = useApiResource<ReadinessGridPayload>(readinessPath, {
+    deps: [refreshToken, readinessDays, normalizedReadinessEndDate],
+    cacheKey: `trade-web:readiness-grid:${readinessDays}:${normalizedReadinessEndDate || "latest"}`,
   });
   const computeDate = focus?.date || "";
   const compute = useApiResource<OpsComputeLayersPayload>(computeDate ? `/api/ops/compute-layers?date=${computeDate}` : "/api/ops/compute-layers", {
@@ -156,9 +163,15 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
   const richHistoryItems =
     latestHistoryItems.length > 0
       ? latestHistoryItems
-      : selectedReadiness.row
-        ? readiness.data?.recovery_history?.[selectedReadiness.row.dataset] || selectedReadiness.cell?.history || []
-        : [];
+        : selectedReadiness.row
+          ? readiness.data?.recovery_history?.[selectedReadiness.row.dataset] || selectedReadiness.cell?.history || []
+          : [];
+  const todayDate = automation.data?.today || status.data?.today || "";
+  const latestMarketAsOf = automation.data?.latest_market_asof || "";
+  const latestTradingDay = automation.data?.latest_trading_day || latestMarketAsOf || "";
+  const effectiveReadinessEndDate = normalizedReadinessEndDate || readiness.data?.range.end_date || latestMarketAsOf || todayDate || "";
+  const viewingCalendarToday = Boolean(todayDate && effectiveReadinessEndDate === todayDate);
+  const viewingAheadOfLatestMarket = Boolean(effectiveReadinessEndDate && latestMarketAsOf && effectiveReadinessEndDate > latestMarketAsOf);
 
   const effectiveNodeIds = useMemo(() => {
     if (selectedNodeIds.length > 0) {
@@ -203,6 +216,14 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
     }
     setStoredTab(normalizeOpsTab(focus.tab));
   }, [focus?.tab, setStoredTab]);
+
+  useEffect(() => {
+    if (!focus?.date) {
+      return;
+    }
+    const nextDate = String(focus.date || "");
+    setReadinessEndDate((current) => (current === nextDate ? current : nextDate));
+  }, [focus?.date]);
 
   useEffect(() => {
     if (!focus?.dataset || !focus?.date || !readiness.data?.rows?.length) {
@@ -589,6 +610,7 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
       <div className="filter-bar filter-bar--ops">
         {([
           ["overview", t("ops.tabs.overview")],
+          ["automation", t("ops.tabs.automation")],
           ["readiness", t("ops.tabs.readiness")],
           ["compute", t("ops.tabs.compute")],
           ["replay", t("ops.tabs.replayBuilder")],
@@ -678,6 +700,111 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
         </div>
       )}
 
+      {tab === "automation" && (
+        automation.loading && !automation.data ? (
+          <LoadingSkeleton variant="ops" />
+        ) : automation.data ? (
+          <div className="compact-grid">
+            <PanelCard title={t("ops.automation.runtime")} subdued>
+              <div className="list-stack">
+                <div className="compact-row">
+                  <div>
+                    <div className="compact-row__title">{t("ops.automation.mode")}</div>
+                    <div className="compact-row__subtitle">{t("ops.automation.modeCopy")}</div>
+                  </div>
+                  <StatusPill label={automation.data?.requires_daemon ? t("ops.automation.requiresDaemon") : t("status.healthy")} tone={automation.data?.requires_daemon ? "warn" : "ok"} subtle />
+                </div>
+                <div className="compact-row">
+                  <div className="compact-row__title">{t("ops.automation.todayLabel")}</div>
+                  <div className="compact-row__meta">
+                    <span>{todayDate || "—"}</span>
+                    <StatusPill label={automation.data?.is_trading_day_today ? t("ops.automation.tradingDay") : t("ops.automation.nonTradingDay")} tone={automation.data?.is_trading_day_today ? "ok" : "warn"} subtle />
+                  </div>
+                </div>
+                <div className="compact-row">
+                  <div className="compact-row__title">{t("ops.automation.latestMarketAsOf")}</div>
+                  <div className="compact-row__meta">
+                    <span>{latestMarketAsOf || "—"}</span>
+                  </div>
+                </div>
+                <div className="compact-row">
+                  <div className="compact-row__title">{t("ops.automation.latestTradingDay")}</div>
+                  <div className="compact-row__meta">
+                    <span>{latestTradingDay || "—"}</span>
+                  </div>
+                </div>
+                <div className="note-card">
+                  {t("ops.automation.commandHint")} <code>{String(automation.data?.daemon_command || "trade start")}</code>
+                </div>
+              </div>
+            </PanelCard>
+
+            <PanelCard title={t("ops.automation.schedulePlan")} subdued>
+              <div className="list-stack">
+                {(automation.data?.schedules || []).map((item, index) => (
+                  <div className="compact-row" key={String(item.id || item.topic || item.time || index)}>
+                    <div>
+                      <div className="compact-row__title">{String(item.label || item.topic || "Schedule")}</div>
+                      <div className="compact-row__subtitle">{String(item.description || "")}</div>
+                    </div>
+                    <div className="compact-row__meta">
+                      <span>{String(item.time || "—")}</span>
+                      <StatusPill
+                        label={item.currently_eligible ? t("ops.automation.eligibleNow") : t("ops.automation.waiting")}
+                        tone={item.currently_eligible ? "ok" : "muted"}
+                        subtle
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </PanelCard>
+
+            <PanelCard title={t("ops.automation.dueAgenda")} subdued>
+              <div className="list-stack">
+                {(automation.data?.due_agenda || []).slice(0, 10).map((item, index) => (
+                  <div className="compact-row" key={`${String(item.agenda_id || index)}`}>
+                    <div>
+                      <div className="compact-row__title">{String(item.title || item.job_name || item.planned_event_id || "Agenda")}</div>
+                      <div className="compact-row__subtitle">{String(item.phase || item.event_type || "")}</div>
+                    </div>
+                    <div className="compact-row__meta">
+                      <span>{formatDateTime(String(item.run_at || ""), locale === "zh-CN" ? "zh-CN" : "en-US")}</span>
+                      <StatusPill label={String(item.status || "pending")} tone={String(item.status || "") === "pending" ? "warn" : "muted"} subtle />
+                    </div>
+                  </div>
+                ))}
+                {(!automation.data?.due_agenda || automation.data.due_agenda.length === 0) && <div className="note-card">{t("ops.automation.noAgenda")}</div>}
+              </div>
+            </PanelCard>
+
+            <PanelCard title={t("ops.automation.recentTriggers")} subdued>
+              <div className="list-stack">
+                {(automation.data?.recent_events || []).slice(0, 10).map((item, index) => (
+                  <div className="compact-row" key={`${String(item.id || index)}`}>
+                    <div>
+                      <div className="compact-row__title">{String(item.topic || "event")}</div>
+                      <div className="compact-row__subtitle">{String(item.handler || item.error || "")}</div>
+                    </div>
+                    <div className="compact-row__meta">
+                      <StatusPill label={getGateStatusText(locale, String(item.status || "unknown")).label} tone={String(item.status || "") === "ok" ? "ok" : String(item.status || "") === "error" ? "err" : "info"} subtle />
+                      <span>{formatDateTime(String(item.created_at || ""), locale === "zh-CN" ? "zh-CN" : "en-US")}</span>
+                    </div>
+                  </div>
+                ))}
+                {(!automation.data?.recent_events || automation.data.recent_events.length === 0) && <div className="note-card">{t("ops.automation.noRecentTriggers")}</div>}
+              </div>
+            </PanelCard>
+          </div>
+        ) : (
+          <ErrorState
+            title={t("ops.viewUnavailable")}
+            body={t("ops.viewUnavailableCopy")}
+            action={<button type="button" className="button button--primary" onClick={automation.retry}>{t("common.retry")}</button>}
+          />
+        )
+      )}
+
       {tab === "readiness" && (
         <div className="readiness-page">
           <div className="filter-bar filter-bar--ops">
@@ -690,7 +817,42 @@ export function OpsPage({ refreshToken, focus, onFocusChange }: OpsPageProps) {
                 {label}
               </button>
             ))}
+            <button
+              type="button"
+              className={!normalizedReadinessEndDate || normalizedReadinessEndDate === latestMarketAsOf ? "is-active" : ""}
+              onClick={() => setReadinessEndDate(latestMarketAsOf || "")}
+            >
+              {t("ops.readiness.useLatestMarketDay")}
+            </button>
+            <button
+              type="button"
+              className={normalizedReadinessEndDate === todayDate ? "is-active" : ""}
+              onClick={() => setReadinessEndDate(todayDate || "")}
+            >
+              {t("ops.readiness.useToday")}
+            </button>
+            <label className="filter-bar__search">
+              <span>{t("ops.readiness.endDate")}</span>
+              <input type="date" value={normalizedReadinessEndDate} onChange={(event) => setReadinessEndDate(event.target.value)} />
+            </label>
           </div>
+
+          {(viewingAheadOfLatestMarket || (todayDate && latestMarketAsOf && todayDate !== latestMarketAsOf && !normalizedReadinessEndDate)) && (
+            <div className="page-banner page-banner--muted">
+              <strong>{t("ops.readiness.nonTradingDayNotice")}</strong>
+              <span>
+                {viewingCalendarToday
+                  ? t("ops.readiness.nonTradingDayViewingToday", {
+                      today: todayDate,
+                      latest: latestMarketAsOf,
+                    })
+                  : t("ops.readiness.nonTradingDayViewingLatest", {
+                      today: todayDate,
+                      latest: latestMarketAsOf,
+                    })}
+              </span>
+            </div>
+          )}
 
           {readiness.loading && !readiness.data ? (
             <LoadingSkeleton variant="ops" />
@@ -887,7 +1049,7 @@ function normalizeOpsTab(tab?: string | null): OpsTab {
   if (tab === "workflows") {
     return "audit";
   }
-  if (tab === "overview" || tab === "readiness" || tab === "compute" || tab === "replay" || tab === "trust" || tab === "audit") {
+  if (tab === "overview" || tab === "automation" || tab === "readiness" || tab === "compute" || tab === "replay" || tab === "trust" || tab === "audit") {
     return tab;
   }
   return "readiness";
