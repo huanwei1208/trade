@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class AnthropicClient(BaseLLMClient):
     """Calls Claude via the Anthropic Messages API."""
 
-    MODEL = "claude-haiku-4-5-20251001"
+    MODEL = "claude-sonnet-5"
 
     @classmethod
     def factory_fields(cls) -> set[str]:
@@ -55,8 +55,8 @@ class AnthropicClient(BaseLLMClient):
 
     @property
     def estimated_cost(self) -> float:
-        # Claude Haiku: $0.80/M input, $4.00/M output
-        return (self._total_input_tokens * 0.80 + self._total_output_tokens * 4.00) / 1_000_000
+        # Claude Sonnet 5: $3.00/M input, $15.00/M output
+        return (self._total_input_tokens * 3.00 + self._total_output_tokens * 15.00) / 1_000_000
 
     @property
     def token_usage(self) -> dict:

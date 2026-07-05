@@ -223,7 +223,7 @@ class KlineFetcher:
 
         out_path = self._flat_path(symbol)
         tmp_path = out_path.with_name(f".{out_path.name}.{uuid4().hex}.tmp")
-        incoming.to_parquet(tmp_path, index=False)
+        incoming.to_parquet(tmp_path, index=False, compression=None)
         tmp_path.replace(out_path)
         self._update_manifest(symbol, incoming, out_path)
         return out_path

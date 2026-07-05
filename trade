@@ -164,6 +164,7 @@ cmd_py() {
   fi
   require_cmd uv
   cd "$ROOT_DIR"
+  mkdir -p data
   uv run python -m trade_py.cli.main "$@"
 }
 
