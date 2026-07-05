@@ -18,6 +18,15 @@ SYSTEM_PROMPT = """你是专业的A股市场金融情感分析助手。
 
 _EVENT_TYPE_OPTIONS = [e.value for e in EventType]
 
+
+def _extract_json(raw: str) -> str:
+    """Strip markdown fences/preamble; return the outermost {...} span."""
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        return raw[start:end + 1]
+    return raw
+
 USER_TEMPLATE = """分析以下A股市场新闻：
 
 标题：{title}
@@ -152,7 +161,7 @@ class BaseLLMClient:
             try:
                 raw, in_tok, out_tok = self._call_llm(prompt)
                 self._last_call = time.time()
-                data = json.loads(raw)
+                data = json.loads(_extract_json(raw))
                 return parse_result(data, model=getattr(self, "model", ""),
                                     input_tokens=in_tok, output_tokens=out_tok)
             except json.JSONDecodeError as e:

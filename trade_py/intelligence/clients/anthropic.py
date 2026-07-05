@@ -43,10 +43,15 @@ class AnthropicClient(BaseLLMClient):
         response = self._client.messages.create(
             model=self.model,
             max_tokens=self.MAX_TOKENS,
+            # Sonnet 5 runs adaptive thinking when the field is omitted; this is a
+            # fixed-schema extraction task, so disable it for cost and latency.
+            thinking={"type": "disabled"},
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.content[0].text.strip()
+        raw = next(
+            (block.text for block in response.content if block.type == "text"), ""
+        ).strip()
         in_tok = response.usage.input_tokens
         out_tok = response.usage.output_tokens
         self._total_input_tokens += in_tok
