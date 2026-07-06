@@ -17,6 +17,7 @@ from trade_py.data.warehouse import (
     read_table,
     write_table,
 )
+from trade_py.cli import data as data_cli
 
 
 def test_import_rss_catalog_rows_keeps_first_category_and_dedupes_repeated_sources() -> None:
@@ -231,3 +232,49 @@ def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_p
     assert statuses["ods.raw_rows_retained"] == "pass"
     assert statuses["dwd.semantic_nulls_recorded"] == "pass"
     assert statuses["ads.value_reasons_present"] == "pass"
+
+
+def test_data_cli_materialize_rss_runs_closed_loop_from_local_csv(tmp_path: Path, capsys) -> None:
+    catalog = tmp_path / "feeds.csv"
+    entries = tmp_path / "entries.csv"
+    catalog.write_text(
+        "\n".join(
+            [
+                "名称,rss link",
+                "科技 / AI / 工程,",
+                "OpenAI Blog,https://openai.com/news/rss.xml",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    entry_lines = ["source_id,url,title,summary,published_at,rating"]
+    for day, count in [("2026-07-01", 1), ("2026-07-02", 1), ("2026-07-03", 4)]:
+        for idx in range(count):
+            rating = "差评" if day == "2026-07-03" and idx == 0 else "中性"
+            entry_lines.append(
+                f"rss_openai_blog,https://example.com/{day}/{idx},"
+                f"OpenAI NVIDIA AI cloud capex expands,"
+                f"GPU demand and cloud infrastructure rise,{day}T08:00:00+00:00,{rating}"
+            )
+    entries.write_text("\n".join(entry_lines), encoding="utf-8")
+
+    rc = data_cli.main(
+        [
+            "warehouse",
+            "materialize-rss",
+            "--data-root",
+            str(tmp_path),
+            "--catalog",
+            str(catalog),
+            "--entries",
+            str(entries),
+        ]
+    )
+    captured = capsys.readouterr()
+    layout = WarehouseLayout.from_data_root(tmp_path)
+    validation = read_table(layout, "ads", "ads_warehouse_validation_report")
+
+    assert rc == 0
+    assert "warehouse_root=" in captured.out
+    assert "ods.raw_rows_retained" in captured.out
+    assert dict(zip(validation["check_name"], validation["status"]))["ads.value_reasons_present"] == "pass"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import time
@@ -129,6 +130,21 @@ def _resolve_default_symbols(data_root: str, raw_symbols: str | None, *, top: in
         return watchlist
     rows = db.signal_suggest(limit=top, by="model_score")
     return [str(row.get("symbol") or "").strip().upper() for row in rows if str(row.get("symbol") or "").strip()]
+
+
+def _read_records_file(path: str | Path) -> list[dict]:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    if p.suffix.lower() == ".json":
+        payload = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            return [dict(item) for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict) and isinstance(payload.get("rows"), list):
+            return [dict(item) for item in payload["rows"] if isinstance(item, dict)]
+        raise ValueError(f"{p} must contain a JSON list or an object with rows")
+    with p.open("r", encoding="utf-8-sig", newline="") as fh:
+        return [dict(row) for row in csv.DictReader(fh)]
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -365,6 +381,25 @@ def make_parser() -> argparse.ArgumentParser:
     p_macro_sync.add_argument("--data-root", default=str(default_data_root()))
     p_macro_sync.add_argument("--dataset", default=None, help="gdp/cpi/ppi/pmi，空=全部")
 
+    p_warehouse = sub.add_parser(
+        "warehouse",
+        description="研究数仓闭环：DIM/ODS/DWD/DWS/ADS 落表与验证",
+        epilog=(
+            "trade data warehouse materialize-rss --catalog feeds.csv --entries rss_entries.csv\n"
+            "trade data warehouse materialize-rss --catalog feeds.json --entries rss_entries.json --json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    wh_sub = p_warehouse.add_subparsers(dest="warehouse_cmd", required=True)
+    p_wh_rss = wh_sub.add_parser(
+        "materialize-rss",
+        description="从本地 RSS catalog/entry 文件生成研究数仓分层表和 ADS 验证报告",
+    )
+    p_wh_rss.add_argument("--data-root", default=str(default_data_root()))
+    p_wh_rss.add_argument("--catalog", required=True, help="CSV/JSON, columns: 名称,rss link")
+    p_wh_rss.add_argument("--entries", required=True, help="CSV/JSON RSS entry rows")
+    p_wh_rss.add_argument("--json", action="store_true", dest="as_json")
+
     parser.epilog = epilog_from_subparsers(parser)
     return parser
 
@@ -433,6 +468,32 @@ def main(argv: list[str] | None = None) -> int:
                     f"{row['stale_days']:>10}"
                 )
             print()
+        return 0
+
+    if args.command == "warehouse" and args.warehouse_cmd == "materialize-rss":
+        from trade_py.data.warehouse import materialize_rss_research_loop
+
+        catalog_rows = _read_records_file(args.catalog)
+        rss_entries = _read_records_file(args.entries)
+        result = materialize_rss_research_loop(
+            args.data_root,
+            catalog_rows=catalog_rows,
+            rss_entries=rss_entries,
+        )
+        payload = result.to_dict()
+        if args.as_json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        print(f"warehouse_root={result.layout_root}")
+        print("tables:")
+        for key in sorted(result.table_paths):
+            print(f"  {key}: {result.table_paths[key]}")
+        print("validation:")
+        for row in result.validation_report.to_dict(orient="records"):
+            print(
+                f"  {row['status']:<5} {row['check_name']:<36} "
+                f"rows={row['row_count']} {row['detail']}"
+            )
         return 0
 
     if args.command == "backfill" and args.backfill_cmd == "status":
