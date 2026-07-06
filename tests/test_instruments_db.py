@@ -40,7 +40,7 @@ def test_classification_view_handles_old_st_rows_and_sector_mapping(tmp_path) ->
     )
     db._conn.execute(
         """
-        INSERT INTO instrument_sector_members(symbol, sector_code, sector_name, industry_code)
+        INSERT INTO sector_members(symbol, sector_code, sector_name, industry_code)
         VALUES (?, ?, ?, ?)
         """,
         ("000001.SZ", "801170.SI", "银行", 17),
@@ -103,10 +103,10 @@ def test_refresh_sector_members_resolves_conflicts_by_latest_in_date(tmp_path, m
     assert updated.get("000001.SZ") == 17   # 银行
     assert updated.get("000002.SZ") == 18   # 非银金融 (later in_date wins)
 
-    conn = sqlite3.connect(str(tmp_path / ".metadata" / "trade.db"))
+    conn = sqlite3.connect(str(tmp_path / ".db" / "trade.db"))
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT symbol, sector_code, industry_code FROM instrument_sector_members ORDER BY symbol"
+        "SELECT symbol, sector_code, industry_code FROM sector_members ORDER BY symbol"
     ).fetchall()
     instruments = {
         row["symbol"]: row["industry"]
