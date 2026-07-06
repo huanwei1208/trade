@@ -11,6 +11,7 @@ from trade_py.data.warehouse import (
     build_dwd_articles,
     build_dws_sector_topic_daily,
     import_rss_catalog_rows,
+    materialize_rss_research_loop,
     normalize_ods_rss_entries,
     normalize_semantic_value,
     read_table,
@@ -163,3 +164,70 @@ def test_warehouse_io_uses_layered_paths_inside_project_data_root(tmp_path: Path
 
     assert path == tmp_path / "warehouse" / "dim" / "dim_sector.parquet"
     assert loaded.to_dict(orient="records") == [{"sector": "ai", "name": "AI"}]
+
+
+def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_path: Path) -> None:
+    catalog_rows = [
+        {"名称": "科技 / AI / 工程", "rss link": ""},
+        {"名称": "OpenAI Blog", "rss link": "https://openai.com/news/rss.xml"},
+    ]
+    rss_entries = []
+    for day, count in [("2026-07-01", 1), ("2026-07-02", 1), ("2026-07-03", 4)]:
+        for idx in range(count):
+            rss_entries.append(
+                {
+                    "source_id": "rss_openai_blog",
+                    "url": f"https://example.com/{day}/{idx}",
+                    "title": "OpenAI NVIDIA AI cloud capex expands",
+                    "summary": "GPU demand and cloud infrastructure rise",
+                    "published_at": f"{day}T08:00:00+00:00",
+                    "rating": "差评" if day == "2026-07-03" and idx == 0 else "中性",
+                }
+            )
+    rss_entries.append(
+        {
+            "source_id": "rss_noise",
+            "url": "",
+            "title": "",
+            "summary": "",
+            "published_at": "not-a-date",
+            "rating": "差评",
+        }
+    )
+
+    result = materialize_rss_research_loop(
+        tmp_path,
+        catalog_rows=catalog_rows,
+        rss_entries=rss_entries,
+    )
+    layout = WarehouseLayout.from_data_root(tmp_path)
+
+    expected_tables = {
+        "dim.dim_data_source",
+        "ods.ods_rss_entry_raw",
+        "dwd.dwd_article",
+        "dwd.dwd_article_quality_check",
+        "dwd.dwd_article_semantic_check",
+        "dwd.dwd_article_sector_relevance",
+        "dws.dws_sector_topic_daily",
+        "ads.ads_data_signal_report",
+        "ads.ads_source_value_report",
+        "ads.ads_warehouse_validation_report",
+    }
+    assert expected_tables <= set(result.table_paths)
+    assert all(path.exists() for path in result.table_paths.values())
+
+    ods = read_table(layout, "ods", "ods_rss_entry_raw")
+    semantic = read_table(layout, "dwd", "dwd_article_semantic_check")
+    signals = read_table(layout, "ads", "ads_data_signal_report")
+    validation = read_table(layout, "ads", "ads_warehouse_validation_report")
+
+    assert len(ods) == len(rss_entries)
+    assert (semantic["null_reason"] == "invalid_type").any()
+    assert not signals.empty
+    assert signals["value_reason"].str.contains("baseline").any()
+
+    statuses = dict(zip(validation["check_name"], validation["status"]))
+    assert statuses["ods.raw_rows_retained"] == "pass"
+    assert statuses["dwd.semantic_nulls_recorded"] == "pass"
+    assert statuses["ads.value_reasons_present"] == "pass"
