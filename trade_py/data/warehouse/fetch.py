@@ -33,6 +33,7 @@ class ControlledFetchPolicy:
     min_interval_seconds: float = 1.0
     timeout_seconds: int = 10
     max_sources: int | None = None
+    skip_sources: int = 0
     dry_run: bool = False
 
 
@@ -86,6 +87,8 @@ def controlled_fetch_rss_sources(
     policy = policy or ControlledFetchPolicy()
     fetcher = fetcher or _default_fetch
     dim_data_source = import_rss_catalog_rows(catalog_rows)
+    if policy.skip_sources:
+        dim_data_source = dim_data_source.iloc[max(0, int(policy.skip_sources)):].copy()
     if policy.max_sources is not None:
         dim_data_source = dim_data_source.head(max(0, int(policy.max_sources))).copy()
 

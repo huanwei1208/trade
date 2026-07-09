@@ -90,6 +90,25 @@ def test_controlled_fetch_rss_sources_records_attempts_and_entries() -> None:
     assert "OpenAI" in entries.iloc[0]["title"]
 
 
+def test_controlled_fetch_rss_sources_supports_skip_and_limit_batches() -> None:
+    catalog_rows = [
+        {"名称": "科技 / AI / 工程", "rss link": ""},
+        {"名称": "OpenAI Blog", "rss link": "https://openai.com/news/rss.xml"},
+        {"名称": "Google AI Blog", "rss link": "https://blog.google/technology/ai/rss/"},
+        {"名称": "财经 / 市场 / 商业", "rss link": ""},
+        {"名称": "CNBC Finance", "rss link": "https://www.cnbc.com/id/10000664/device/rss/rss.html"},
+    ]
+
+    dim_sources, attempts, entries = controlled_fetch_rss_sources(
+        catalog_rows,
+        policy=ControlledFetchPolicy(skip_sources=1, max_sources=1, dry_run=True),
+    )
+
+    assert dim_sources["source_id"].tolist() == ["rss_google_ai_blog"]
+    assert attempts.iloc[0]["status"] == "dry_run"
+    assert entries.empty
+
+
 def test_research_profiles_define_three_first_class_analysis_domains() -> None:
     sectors = build_dim_sector()
     topics = build_dim_topic()

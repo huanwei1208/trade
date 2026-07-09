@@ -410,6 +410,7 @@ def make_parser() -> argparse.ArgumentParser:
     p_wh_fetch.add_argument("--catalog", default=str(_DEFAULT_RESEARCH_SOURCE_CATALOG))
     p_wh_fetch.add_argument("--positions", default=None, help="Optional CSV/JSON local position/watchlist rows")
     p_wh_fetch.add_argument("--max-sources", type=int, default=None)
+    p_wh_fetch.add_argument("--skip-sources", type=int, default=0)
     p_wh_fetch.add_argument("--min-interval-seconds", type=float, default=1.0)
     p_wh_fetch.add_argument("--timeout-seconds", type=int, default=10)
     p_wh_fetch.add_argument("--dry-run", action="store_true")
@@ -529,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
             min_interval_seconds=args.min_interval_seconds,
             timeout_seconds=args.timeout_seconds,
             max_sources=args.max_sources,
+            skip_sources=args.skip_sources,
             dry_run=args.dry_run,
         )
         dim_data_source, attempts, rss_entries = controlled_fetch_rss_sources(
