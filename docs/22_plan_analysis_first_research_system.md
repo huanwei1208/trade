@@ -372,12 +372,12 @@ controlled, resumable backfill rather than a high-QPS crawl.
 
 Current local data state after the latest controlled run:
 
-- K-line files: 5,702 symbols, 7,611,362 rows, date range
+- K-line files: 5,702 symbols, 7,618,551 rows, date range
   `2020-01-02 -> 2026-07-09`.
 - K-line tracked symbols in `sync_state`: 5,489.
 - SH/SZ tracked symbols: 5,191.
-- Symbols with latest K-line date on or after `2026-07-01`: 3,332.
-- Symbols with latest K-line date equal to `2026-07-09`: 3,327.
+- Symbols with latest K-line date on or after `2026-07-01`: 3,429.
+- Symbols with latest K-line date equal to `2026-07-09`: 3,424.
 - BJ or other non-SH/SZ symbols: 298, currently maxing at `2026-03-23`.
 
 Controlled Tencent K-line fallback result:
@@ -385,8 +385,8 @@ Controlled Tencent K-line fallback result:
 - Provider: `tencent`.
 - Mode: `incremental`.
 - Batch policy: 100 symbols per batch, serial execution, `delay_ms=300`.
-- Thirty-two SH/SZ batches completed with 3,200 requested symbols, 3,200
-  successes, 0 failures, 2 empty returns, and 232,592 added rows.
+- Thirty-three SH/SZ batches completed with 3,300 requested symbols, 3,300
+  successes, 0 failures, 2 empty returns, and 239,781 added rows.
 - Empty returns observed for `603056.SH` and `002231.SZ`; these should be
   checked against instrument/listing status before repeated retries.
 
