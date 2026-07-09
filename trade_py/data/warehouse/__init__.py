@@ -20,6 +20,12 @@ from trade_py.data.warehouse.materialize import (
     build_warehouse_validation_report,
     materialize_rss_research_loop,
 )
+from trade_py.data.warehouse.profiles import (
+    RESEARCH_SECTOR_PROFILES,
+    SectorProfile,
+    build_dim_sector,
+    build_dim_topic,
+)
 from trade_py.data.warehouse.signals import (
     build_ads_data_signal_report,
     build_ads_source_value_report,
@@ -29,12 +35,16 @@ from trade_py.data.warehouse.signals import (
 __all__ = [
     "DEFAULT_SECTOR_PROFILES",
     "DataSourceCatalogEntry",
+    "RESEARCH_SECTOR_PROFILES",
+    "SectorProfile",
     "WarehouseLayout",
     "WarehouseMaterializationResult",
     "build_ads_data_signal_report",
     "build_ads_source_value_report",
     "build_dwd_articles",
     "build_dws_sector_topic_daily",
+    "build_dim_sector",
+    "build_dim_topic",
     "build_warehouse_validation_report",
     "import_rss_catalog_rows",
     "materialize_rss_research_loop",

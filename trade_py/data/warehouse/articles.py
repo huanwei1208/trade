@@ -4,11 +4,12 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
+
+from trade_py.data.warehouse.profiles import RESEARCH_SECTOR_PROFILES, SectorProfile
 
 
 NULL_REASON_MISSING = "missing"
@@ -25,35 +26,7 @@ _NEUTRAL_LABELS = {"中性", "neutral", "mixed"}
 _MISSING_TEXT = {"", "none", "null", "nan", "n/a", "--", "-"}
 
 
-@dataclass(frozen=True)
-class SectorProfile:
-    sector: str
-    keywords: tuple[str, ...]
-
-
-DEFAULT_SECTOR_PROFILES: tuple[SectorProfile, ...] = (
-    SectorProfile(
-        "ai",
-        (
-            "ai", "artificial intelligence", "llm", "openai", "google ai",
-            "nvidia", "gpu", "cloud", "capex", "芯片", "算力", "大模型", "人工智能",
-        ),
-    ),
-    SectorProfile(
-        "bank",
-        (
-            "bank", "banks", "loan", "credit", "rate", "deposit", "nim",
-            "央行", "银行", "信贷", "息差", "地产", "信用", "利率",
-        ),
-    ),
-    SectorProfile(
-        "crypto",
-        (
-            "bitcoin", "btc", "ethereum", "eth", "crypto", "stablecoin",
-            "defi", "binance", "coinbase", "加密", "比特币", "以太坊",
-        ),
-    ),
-)
+DEFAULT_SECTOR_PROFILES = RESEARCH_SECTOR_PROFILES
 
 
 def _stable_hash(*parts: Any) -> str:

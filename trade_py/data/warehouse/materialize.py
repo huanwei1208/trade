@@ -9,6 +9,7 @@ import pandas as pd
 from trade_py.data.warehouse.articles import build_dwd_articles, normalize_ods_rss_entries
 from trade_py.data.warehouse.catalog import import_rss_catalog_rows
 from trade_py.data.warehouse.io import WarehouseLayout, read_table, write_table
+from trade_py.data.warehouse.profiles import build_dim_sector, build_dim_topic
 from trade_py.data.warehouse.signals import (
     build_ads_data_signal_report,
     build_ads_source_value_report,
@@ -17,6 +18,8 @@ from trade_py.data.warehouse.signals import (
 
 
 _REQUIRED_TABLES: tuple[tuple[str, str], ...] = (
+    ("dim", "dim_sector"),
+    ("dim", "dim_topic"),
     ("dim", "dim_data_source"),
     ("ods", "ods_rss_entry_raw"),
     ("dwd", "dwd_article"),
@@ -140,6 +143,13 @@ def materialize_rss_research_loop(
     """
     layout = WarehouseLayout.from_data_root(data_root)
     table_paths: dict[str, Path] = {}
+
+    table_paths[_table_key("dim", "dim_sector")] = write_table(
+        layout, "dim", "dim_sector", build_dim_sector()
+    )
+    table_paths[_table_key("dim", "dim_topic")] = write_table(
+        layout, "dim", "dim_topic", build_dim_topic()
+    )
 
     dim_data_source = import_rss_catalog_rows(catalog_rows)
     table_paths[_table_key("dim", "dim_data_source")] = write_table(

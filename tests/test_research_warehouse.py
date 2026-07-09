@@ -6,6 +6,8 @@ import pandas as pd
 
 from trade_py.data.warehouse import (
     WarehouseLayout,
+    build_dim_sector,
+    build_dim_topic,
     build_ads_data_signal_report,
     build_ads_source_value_report,
     build_dwd_articles,
@@ -41,6 +43,16 @@ def test_import_rss_catalog_rows_keeps_first_category_and_dedupes_repeated_sourc
     assert openai["sector_tags"] == "ai"
     assert openai["language"] == "en"
     assert "AI" in openai["value_hypothesis"]
+
+
+def test_research_profiles_define_three_first_class_analysis_domains() -> None:
+    sectors = build_dim_sector()
+    topics = build_dim_topic()
+
+    assert sectors["sector"].tolist() == ["crypto", "ai", "bank"]
+    assert set(topics["sector"]) == {"crypto", "ai", "bank"}
+    assert {"cloud_capex", "credit_risk", "regulation"} <= set(topics["topic"])
+    assert sectors["purpose"].str.len().min() > 20
 
 
 def test_ods_normalization_preserves_dirty_rows_instead_of_filtering() -> None:
@@ -204,6 +216,8 @@ def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_p
     layout = WarehouseLayout.from_data_root(tmp_path)
 
     expected_tables = {
+        "dim.dim_sector",
+        "dim.dim_topic",
         "dim.dim_data_source",
         "ods.ods_rss_entry_raw",
         "dwd.dwd_article",
