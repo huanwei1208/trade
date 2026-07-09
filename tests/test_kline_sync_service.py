@@ -6,6 +6,7 @@ import pandas as pd
 
 from trade_py.data.market.kline.service import KlineSyncOptions, KlineSyncService
 from trade_py.data.market.kline.tushare import _parse_raw
+from trade_py.data.market.kline.providers import TencentKlineProvider
 
 
 def test_missing_ranges_split_around_existing_downloads() -> None:
@@ -56,6 +57,7 @@ def test_target_ranges_only_request_uncovered_gaps(tmp_path) -> None:
 
 def test_chunk_days_uses_larger_windows_for_tushare() -> None:
     assert KlineSyncService._chunk_days("tushare") == 3650
+    assert KlineSyncService._chunk_days("tencent") == 3650
     assert KlineSyncService._chunk_days("akshare") == 31
 
 
@@ -208,3 +210,36 @@ def test_tushare_parse_preserves_prev_close_and_turnover_rate() -> None:
 
 def test_kline_sync_options_default_to_none_adjust() -> None:
     assert KlineSyncOptions().adjust == "none"
+
+
+def test_tencent_provider_parses_public_kline_payload(monkeypatch) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self):
+            return {
+                "code": 0,
+                "data": {
+                    "sh600000": {
+                        "qfqday": [
+                            ["2026-03-24", "9.950", "10.040", "10.120", "9.890", "609859.000"],
+                            ["2026-03-25", "10.060", "10.100", "10.120", "9.940", "456784.000"],
+                        ]
+                    }
+                },
+            }
+
+    def fake_get(url, params, timeout):
+        assert params["param"].startswith("sh600000,day,2026-03-24,2026-03-25")
+        assert timeout == 15
+        return FakeResponse()
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    df = TencentKlineProvider().fetch("600000.SH", "2026-03-24", "2026-03-25", adjust="qfq")
+
+    assert df["symbol"].tolist() == ["600000.SH", "600000.SH"]
+    assert df["date"].tolist() == ["2026-03-24", "2026-03-25"]
+    assert df["close"].tolist() == [10.04, 10.1]
+    assert df["vwap"].tolist() == [10.04, 10.1]

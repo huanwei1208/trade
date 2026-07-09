@@ -157,7 +157,7 @@ class KlineSyncService:
 
     @staticmethod
     def _chunk_days(provider_name: str) -> int:
-        if provider_name in {"tushare", "auto"}:
+        if provider_name in {"tushare", "tencent", "auto"}:
             return _TUSHARE_CHUNK_DAYS_DEFAULT
         return _DEFAULT_CHUNK_DAYS
 

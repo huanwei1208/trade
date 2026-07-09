@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
+import numpy as np
 import pandas as pd
 
 from trade_py.utils.a_share_symbols import ensure_a_share_symbol, infer_a_share_suffix
@@ -71,7 +72,7 @@ def _finalize_frame(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
         out["prev_close"] = pd.to_numeric(out["prev_close"], errors="coerce")
 
     out = out.sort_values("date").reset_index(drop=True)
-    prev_close = out["prev_close"] if "prev_close" in out.columns else pd.Series(pd.NA, index=out.index, dtype="float64")
+    prev_close = out["prev_close"] if "prev_close" in out.columns else pd.Series(np.nan, index=out.index, dtype="float64")
     if "pct_chg" in out.columns:
         denominator = 1.0 + (out["pct_chg"] / 100.0)
         derived_prev = out["close"] / denominator.where(denominator.abs() > 1e-9)
@@ -172,6 +173,41 @@ class BaostockKlineProvider:
         return _finalize_frame(sym, raw)
 
 
+class TencentKlineProvider:
+    name = "tencent"
+
+    def fetch(self, symbol: str, start: str, end: str, adjust: str = "hfq") -> pd.DataFrame:
+        import requests
+
+        sym = ensure_symbol(symbol)
+        code = sym.split(".")[0]
+        if sym.endswith(".SH"):
+            prefix = "sh"
+        elif sym.endswith(".SZ"):
+            prefix = "sz"
+        else:
+            raise ValueError(f"tencent provider does not support symbol suffix: {sym}")
+        adjust_key = {"qfq": "qfqday", "hfq": "hfqday", "none": "day", "": "day"}.get(adjust, "qfqday")
+        param = f"{prefix}{code},day,{start},{end},640,{adjust if adjust != 'none' else ''}".rstrip(",")
+        resp = requests.get(
+            "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+            params={"param": param},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        data = ((payload.get("data") or {}).get(f"{prefix}{code}") or {})
+        rows = data.get(adjust_key) or data.get("qfqday") or data.get("day") or []
+        if not rows:
+            return pd.DataFrame(columns=_COLUMN_ORDER)
+        raw = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume"])
+        for col in ("open", "close", "high", "low", "volume"):
+            raw[col] = pd.to_numeric(raw[col], errors="coerce").fillna(0.0)
+        raw["amount"] = raw["volume"] * 100.0 * raw["close"]
+        raw["turnover_rate"] = 0.0
+        return _finalize_frame(sym, raw)
+
+
 @dataclass
 class FetchResult:
     df: pd.DataFrame
@@ -214,6 +250,8 @@ def build_provider_chain(provider: str, data_root: str = "data") -> ProviderChai
         return ProviderChain([AkshareKlineProvider()])
     if provider == "baostock":
         return ProviderChain([BaostockKlineProvider()])
+    if provider == "tencent":
+        return ProviderChain([TencentKlineProvider()])
     if provider == "tushare":
         from trade_py.data.market.kline.tushare import TushareKlineProvider
         return ProviderChain([TushareKlineProvider(data_root)])
@@ -223,7 +261,8 @@ def build_provider_chain(provider: str, data_root: str = "data") -> ProviderChai
         return ProviderChain([
             TushareKlineProvider(data_root),
             AkshareKlineProvider(),
+            TencentKlineProvider(),
             BaostockKlineProvider(),
         ])
     except Exception:
-        return ProviderChain([AkshareKlineProvider(), BaostockKlineProvider()])
+        return ProviderChain([AkshareKlineProvider(), TencentKlineProvider(), BaostockKlineProvider()])
