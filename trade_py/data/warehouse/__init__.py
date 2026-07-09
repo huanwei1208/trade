@@ -10,6 +10,10 @@ from trade_py.data.warehouse.catalog import (
     DataSourceCatalogEntry,
     import_rss_catalog_rows,
 )
+from trade_py.data.warehouse.fetch import (
+    ControlledFetchPolicy,
+    controlled_fetch_rss_sources,
+)
 from trade_py.data.warehouse.io import (
     WarehouseLayout,
     read_table,
@@ -42,6 +46,7 @@ from trade_py.data.warehouse.signals import (
 __all__ = [
     "DEFAULT_SECTOR_PROFILES",
     "DataSourceCatalogEntry",
+    "ControlledFetchPolicy",
     "RESEARCH_SECTOR_PROFILES",
     "SectorProfile",
     "WarehouseLayout",
@@ -58,6 +63,7 @@ __all__ = [
     "build_dim_topic",
     "build_warehouse_validation_report",
     "import_rss_catalog_rows",
+    "controlled_fetch_rss_sources",
     "materialize_rss_research_loop",
     "normalize_ods_rss_entries",
     "normalize_position_rows",

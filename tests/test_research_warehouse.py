@@ -6,6 +6,7 @@ import pandas as pd
 
 from trade_py.data.warehouse import (
     WarehouseLayout,
+    ControlledFetchPolicy,
     build_dim_sector,
     build_dim_topic,
     build_ads_association_result,
@@ -17,6 +18,7 @@ from trade_py.data.warehouse import (
     build_dwd_articles,
     build_dws_sector_topic_daily,
     import_rss_catalog_rows,
+    controlled_fetch_rss_sources,
     materialize_rss_research_loop,
     normalize_ods_rss_entries,
     normalize_position_rows,
@@ -48,6 +50,44 @@ def test_import_rss_catalog_rows_keeps_first_category_and_dedupes_repeated_sourc
     assert openai["sector_tags"] == "ai"
     assert openai["language"] == "en"
     assert "AI" in openai["value_hypothesis"]
+
+
+def test_local_research_source_catalog_is_versioned_and_importable() -> None:
+    catalog = Path("trade_py/infra/config/research_sources.csv")
+
+    rows = import_rss_catalog_rows(pd.read_csv(catalog))
+
+    assert catalog.exists()
+    assert {"ai", "bank", "crypto"} <= set(",".join(rows["sector_tags"]).split(","))
+    assert "https://openai.com/news/rss.xml" in set(rows["url"])
+
+
+def test_controlled_fetch_rss_sources_records_attempts_and_entries() -> None:
+    catalog_rows = [
+        {"名称": "科技 / AI / 工程", "rss link": ""},
+        {"名称": "OpenAI Blog", "rss link": "https://openai.com/news/rss.xml"},
+    ]
+    payload = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel><title>Demo</title>
+      <item>
+        <title>OpenAI NVIDIA AI cloud capex expands</title>
+        <link>https://example.com/ai/1</link>
+        <description>GPU demand and cloud infrastructure rise</description>
+        <pubDate>Fri, 03 Jul 2026 08:00:00 GMT</pubDate>
+      </item>
+    </channel></rss>"""
+
+    dim_sources, attempts, entries = controlled_fetch_rss_sources(
+        catalog_rows,
+        policy=ControlledFetchPolicy(min_interval_seconds=0.0, timeout_seconds=1),
+        fetcher=lambda _url, _timeout: payload,
+    )
+
+    assert dim_sources.iloc[0]["source_id"] == "rss_openai_blog"
+    assert attempts.iloc[0]["status"] == "ok"
+    assert attempts.iloc[0]["entries"] == 1
+    assert entries.iloc[0]["source_id"] == "rss_openai_blog"
+    assert "OpenAI" in entries.iloc[0]["title"]
 
 
 def test_research_profiles_define_three_first_class_analysis_domains() -> None:
@@ -377,3 +417,40 @@ def test_data_cli_materialize_rss_runs_closed_loop_from_local_csv(tmp_path: Path
     assert "ods.raw_rows_retained" in captured.out
     assert dict(zip(validation["check_name"], validation["status"]))["ads.value_reasons_present"] == "pass"
     assert position_risk.iloc[0]["manual_action"] == "needs_review"
+
+
+def test_data_cli_fetch_rss_dry_run_writes_attempts_without_network(tmp_path: Path, capsys) -> None:
+    catalog = tmp_path / "feeds.csv"
+    catalog.write_text(
+        "\n".join(
+            [
+                "名称,rss link",
+                "科技 / AI / 工程,",
+                "OpenAI Blog,https://openai.com/news/rss.xml",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    rc = data_cli.main(
+        [
+            "warehouse",
+            "fetch-rss",
+            "--data-root",
+            str(tmp_path),
+            "--catalog",
+            str(catalog),
+            "--dry-run",
+            "--no-materialize",
+            "--min-interval-seconds",
+            "0",
+        ]
+    )
+    captured = capsys.readouterr()
+    layout = WarehouseLayout.from_data_root(tmp_path)
+    attempts = read_table(layout, "ods", "ods_fetch_attempt")
+
+    assert rc == 0
+    assert "dry_run=True" in captured.out
+    assert attempts.iloc[0]["status"] == "dry_run"
+    assert attempts.iloc[0]["entries"] == 0

@@ -30,6 +30,17 @@ def _slug(value: str) -> str:
     return text or "source"
 
 
+def _cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except TypeError:
+        pass
+    return str(value).strip()
+
+
 @dataclass(frozen=True)
 class DataSourceCatalogEntry:
     source_id: str
@@ -108,8 +119,8 @@ def import_rss_catalog_rows(rows: list[dict[str, Any]] | pd.DataFrame) -> pd.Dat
     current_category = "uncategorized"
     seen_urls: set[str] = set()
     for _, row in frame.iterrows():
-        name = str(row.get(name_col) or "").strip().rstrip(":")
-        url = str(row.get(url_col) or "").strip()
+        name = _cell_text(row.get(name_col)).rstrip(":")
+        url = _cell_text(row.get(url_col))
         if not name and not url:
             continue
         if name and not url:
