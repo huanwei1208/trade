@@ -188,7 +188,7 @@ class TencentKlineProvider:
         else:
             raise ValueError(f"tencent provider does not support symbol suffix: {sym}")
         adjust_key = {"qfq": "qfqday", "hfq": "hfqday", "none": "day", "": "day"}.get(adjust, "qfqday")
-        param = f"{prefix}{code},day,{start},{end},640,{adjust if adjust != 'none' else ''}".rstrip(",")
+        param = f"{prefix}{code},day,{start},{end},640,{adjust if adjust != 'none' else ''}"
         resp = requests.get(
             "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
             params={"param": param},
@@ -200,10 +200,17 @@ class TencentKlineProvider:
         rows = data.get(adjust_key) or data.get("qfqday") or data.get("day") or []
         if not rows:
             return pd.DataFrame(columns=_COLUMN_ORDER)
-        raw = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume"])
+        normalized_rows = []
+        for row in rows:
+            values = list(row)
+            if len(values) < 6:
+                continue
+            normalized_rows.append(values[:7] if len(values) >= 7 else values[:6] + [None])
+        raw = pd.DataFrame(normalized_rows, columns=["date", "open", "close", "high", "low", "volume", "amount"])
         for col in ("open", "close", "high", "low", "volume"):
             raw[col] = pd.to_numeric(raw[col], errors="coerce").fillna(0.0)
-        raw["amount"] = raw["volume"] * 100.0 * raw["close"]
+        raw["amount"] = pd.to_numeric(raw["amount"], errors="coerce")
+        raw["amount"] = raw["amount"].where(raw["amount"].notna() & (raw["amount"] > 0), raw["volume"] * 100.0 * raw["close"])
         raw["turnover_rate"] = 0.0
         return _finalize_frame(sym, raw)
 

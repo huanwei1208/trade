@@ -223,7 +223,7 @@ def test_tencent_provider_parses_public_kline_payload(monkeypatch) -> None:
                 "data": {
                     "sh600000": {
                         "qfqday": [
-                            ["2026-03-24", "9.950", "10.040", "10.120", "9.890", "609859.000"],
+                            ["2026-03-24", "9.950", "10.040", "10.120", "9.890", "609859.000", "612298436.0"],
                             ["2026-03-25", "10.060", "10.100", "10.120", "9.940", "456784.000"],
                         ]
                     }
@@ -242,4 +242,5 @@ def test_tencent_provider_parses_public_kline_payload(monkeypatch) -> None:
     assert df["symbol"].tolist() == ["600000.SH", "600000.SH"]
     assert df["date"].tolist() == ["2026-03-24", "2026-03-25"]
     assert df["close"].tolist() == [10.04, 10.1]
-    assert df["vwap"].tolist() == [10.04, 10.1]
+    assert round(float(df["vwap"].iloc[0]), 4) == round(612298436.0 / (609859.0 * 100.0), 4)
+    assert df["vwap"].iloc[1] == 10.1
