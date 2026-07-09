@@ -364,3 +364,48 @@ Final validation performed after implementation:
 
 This completes the M1-M4 implementation plan for the first analysis-first
 research-system slice.
+
+## Data Supplementation Status - 2026-07-09
+
+The one-year data supplementation goal is active and is being handled as a
+controlled, resumable backfill rather than a high-QPS crawl.
+
+Current local data state after the latest controlled run:
+
+- K-line files: 5,702 symbols, 7,393,031 rows, date range
+  `2020-01-02 -> 2026-07-09`.
+- K-line tracked symbols in `sync_state`: 5,489.
+- SH/SZ tracked symbols: 5,191.
+- Symbols with latest K-line date on or after `2026-07-01`: 337.
+- Symbols with latest K-line date equal to `2026-07-09`: 336.
+- BJ or other non-SH/SZ symbols: 298, currently maxing at `2026-03-23`.
+
+Controlled Tencent K-line fallback result:
+
+- Provider: `tencent`.
+- Mode: `incremental`.
+- Batch policy: 100 symbols per batch, serial execution, `delay_ms=300`.
+- Two SH/SZ batches completed with 200 requested symbols, 200 successes, 0
+  failures, 2 empty returns, and 14,261 added rows.
+- Empty returns observed for `603056.SH` and `002231.SZ`; these should be
+  checked against instrument/listing status before repeated retries.
+
+Remaining backfill constraints:
+
+- Tushare remains unavailable because the configured token is rejected by the
+  server.
+- Akshare and Baostock were unreliable in this environment during the latest
+  retry attempts.
+- Tencent is currently the stable SH/SZ fallback, but it should continue to run
+  in small serial batches with explicit delay and stop-on-throttle behavior.
+- BJ symbols need a separate provider strategy because the current Tencent
+  provider supports SH/SZ only.
+
+The detailed local audit is kept at:
+
+```text
+data/warehouse/ads/backfill_audit_2026-07-09.json
+```
+
+That audit file is intentionally under ignored generated data. This document is
+the tracked project-level summary.
