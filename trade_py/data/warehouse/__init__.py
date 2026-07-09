@@ -17,6 +17,7 @@ from trade_py.data.warehouse.fetch import (
 from trade_py.data.warehouse.io import (
     WarehouseLayout,
     read_table,
+    upsert_table,
     write_table,
 )
 from trade_py.data.warehouse.materialize import (
@@ -69,5 +70,6 @@ __all__ = [
     "normalize_position_rows",
     "normalize_semantic_value",
     "read_table",
+    "upsert_table",
     "write_table",
 ]

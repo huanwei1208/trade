@@ -520,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
             WarehouseLayout,
             controlled_fetch_rss_sources,
             materialize_rss_research_loop,
+            upsert_table,
             write_table,
         )
 
@@ -537,7 +538,13 @@ def main(argv: list[str] | None = None) -> int:
         layout = WarehouseLayout.from_data_root(args.data_root)
         fetch_paths = {
             "dim.dim_data_source": write_table(layout, "dim", "dim_data_source", dim_data_source),
-            "ods.ods_fetch_attempt": write_table(layout, "ods", "ods_fetch_attempt", attempts),
+            "ods.ods_fetch_attempt": upsert_table(
+                layout,
+                "ods",
+                "ods_fetch_attempt",
+                attempts,
+                key_cols=["source_id", "requested_at"],
+            ),
         }
         result_payload = {
             "warehouse_root": str(layout.root),

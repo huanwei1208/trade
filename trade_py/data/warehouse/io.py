@@ -28,6 +28,27 @@ def write_table(layout: WarehouseLayout, layer: str, table: str, frame: pd.DataF
     return path
 
 
+def upsert_table(
+    layout: WarehouseLayout,
+    layer: str,
+    table: str,
+    frame: pd.DataFrame,
+    *,
+    key_cols: list[str],
+) -> Path:
+    path = layout.table_path(layer, table)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        existing = pd.read_parquet(path)
+        combined = pd.concat([existing, frame], ignore_index=True)
+    else:
+        combined = frame.copy()
+    if key_cols and not combined.empty:
+        combined = combined.drop_duplicates(subset=key_cols, keep="last")
+    combined.to_parquet(path, index=False)
+    return path
+
+
 def read_table(layout: WarehouseLayout, layer: str, table: str) -> pd.DataFrame:
     path = layout.table_path(layer, table)
     if not path.exists():

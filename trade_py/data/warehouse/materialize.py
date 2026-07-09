@@ -8,7 +8,7 @@ import pandas as pd
 
 from trade_py.data.warehouse.articles import build_dwd_articles, normalize_ods_rss_entries
 from trade_py.data.warehouse.catalog import import_rss_catalog_rows
-from trade_py.data.warehouse.io import WarehouseLayout, read_table, write_table
+from trade_py.data.warehouse.io import WarehouseLayout, read_table, upsert_table, write_table
 from trade_py.data.warehouse.positions import build_ads_position_risk_signal, normalize_position_rows
 from trade_py.data.warehouse.profiles import build_dim_sector, build_dim_topic
 from trade_py.data.warehouse.signals import (
@@ -171,10 +171,11 @@ def materialize_rss_research_loop(
         layout, "dim", "dim_data_source", dim_data_source
     )
 
-    ods_rss = normalize_ods_rss_entries(rss_entries)
-    table_paths[_table_key("ods", "ods_rss_entry_raw")] = write_table(
-        layout, "ods", "ods_rss_entry_raw", ods_rss
+    new_ods_rss = normalize_ods_rss_entries(rss_entries)
+    table_paths[_table_key("ods", "ods_rss_entry_raw")] = upsert_table(
+        layout, "ods", "ods_rss_entry_raw", new_ods_rss, key_cols=["entry_id"]
     )
+    ods_rss = read_table(layout, "ods", "ods_rss_entry_raw")
 
     dwd_article, quality, semantic, relevance = build_dwd_articles(ods_rss)
     table_paths[_table_key("dwd", "dwd_article")] = write_table(layout, "dwd", "dwd_article", dwd_article)

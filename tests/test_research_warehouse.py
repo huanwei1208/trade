@@ -267,6 +267,44 @@ def test_warehouse_io_uses_layered_paths_inside_project_data_root(tmp_path: Path
     assert loaded.to_dict(orient="records") == [{"sector": "ai", "name": "AI"}]
 
 
+def test_materialize_rss_research_loop_accumulates_ods_by_entry_id(tmp_path: Path) -> None:
+    catalog_rows = [
+        {"名称": "科技 / AI / 工程", "rss link": ""},
+        {"名称": "OpenAI Blog", "rss link": "https://openai.com/news/rss.xml"},
+    ]
+    first = [
+        {
+            "source_id": "rss_openai_blog",
+            "url": "https://example.com/ai/1",
+            "title": "OpenAI NVIDIA AI cloud capex expands",
+            "summary": "GPU demand and cloud infrastructure rise",
+            "published_at": "2026-07-01T08:00:00+00:00",
+        }
+    ]
+    second = [
+        first[0],
+        {
+            "source_id": "rss_openai_blog",
+            "url": "https://example.com/ai/2",
+            "title": "Google AI cloud infrastructure spending rises",
+            "summary": "AI cloud capex and chips demand improve",
+            "published_at": "2026-07-02T08:00:00+00:00",
+        },
+    ]
+
+    materialize_rss_research_loop(tmp_path, catalog_rows=catalog_rows, rss_entries=first)
+    materialize_rss_research_loop(tmp_path, catalog_rows=catalog_rows, rss_entries=second)
+
+    layout = WarehouseLayout.from_data_root(tmp_path)
+    ods = read_table(layout, "ods", "ods_rss_entry_raw")
+    dwd = read_table(layout, "dwd", "dwd_article")
+    validation = read_table(layout, "ads", "ads_warehouse_validation_report")
+
+    assert len(ods) == 2
+    assert len(dwd) == 2
+    assert dict(zip(validation["check_name"], validation["row_count"]))["ods.raw_rows_retained"] == 2
+
+
 def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_path: Path) -> None:
     catalog_rows = [
         {"名称": "科技 / AI / 工程", "rss link": ""},
