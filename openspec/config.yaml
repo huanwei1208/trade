@@ -1,0 +1,32 @@
+schema: spec-driven
+
+context: |
+  Repository: trade, a mixed quantitative trading decision-support system.
+  Tech stack: Python 3.10+, pytest, uv, FastAPI, a frontend under trade_web/frontend,
+  and a C++ engine built through CMake presets and ctest.
+  Entrypoint: ./trade is the stable user-facing command surface for doctor,
+  setup, run/status/inspect/web, C++ configure/build/test, and Python CLI domains.
+  Architecture: keep Python behavior behind CLI/API facades, services, domain
+  objects, data/db repositories, and adapters. Keep C++ engine changes in engine/.
+  Data safety: real data roots, DB files, and generated parquet are local assets;
+  default to read-only probes unless a change explicitly includes migration,
+  backup, dry-run, verification, and rollback behavior.
+  Financial semantics: recommendations, causal chains, trust/calibration, quality
+  gates, and backtests must expose evidence, confidence/calibration status, and
+  unknown/failure states. Heuristics must be labeled as heuristics.
+  Working tree: do not stage unrelated local config, cache, generated data, or
+  untracked runtime artifacts.
+
+rules:
+  proposal:
+    - Include the user-visible problem, why it matters, non-goals, affected CLI/API/DB/data/engine contracts, and compatibility risks.
+    - Call out whether real data or schema migration is involved; if yes, include backup, dry-run, sample verification, and rollback expectations.
+    - For trading-decision, recommendation, causal, trust, or model work, define how evidence, confidence/calibration, and unknown/failure states remain auditable.
+  design:
+    - Prefer stable module boundaries over broad rewrites: CLI/API facades, services/domain logic, db/data repositories, adapters, and engine boundaries.
+    - Describe data flow and ownership for any cross-layer path touching CLI, service, DB, Web API, frontend, or C++ engine.
+    - Avoid catch-all modules and specify where new code belongs when a responsibility crosses existing packages.
+  tasks:
+    - Map every behavior change to focused pytest, compileall, ctest, API smoke, frontend build/typecheck, or an explicit no-test reason.
+    - Include a working-tree safety step before staging and a validation summary step before commit.
+    - Keep tasks small enough to commit as validated rounds; note any residual data, compatibility, or calibration risk.
