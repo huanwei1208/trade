@@ -32,10 +32,7 @@ def list_research_tables(data_root: str | Path) -> dict[str, Any]:
             path = layout.table_path(layer, table)
             row_count = 0
             if path.exists():
-                try:
-                    row_count = int(len(pd.read_parquet(path, columns=[])))
-                except Exception:
-                    row_count = int(len(read_table(layout, layer, table)))
+                row_count = int(len(pd.read_parquet(path)))
             items.append(
                 {
                     "layer": layer,

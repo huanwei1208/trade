@@ -37,6 +37,7 @@ def test_research_backend_lists_and_reads_allowed_warehouse_tables(tmp_path: Pat
     assert listing["warehouse_root"].endswith("warehouse")
     layers = {item["layer"]: item["tables"] for item in listing["layers"]}
     assert any(row["table"] == "ads_data_signal_report" and row["exists"] for row in layers["ads"])
+    assert next(row for row in layers["ads"] if row["table"] == "ads_data_signal_report")["row_count"] >= 1
     assert table["layer"] == "ads"
     assert table["table"] == "ads_data_signal_report"
     assert table["row_count"] >= 1
