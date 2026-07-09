@@ -7,6 +7,7 @@ import { I18nProvider } from "./lib/i18n";
 import { getPageMeta, useLocalStorageState } from "./lib/ui";
 import { CandidatesPage } from "./pages/CandidatesPage";
 import { OpsPage } from "./pages/OpsPage";
+import { ResearchPage } from "./pages/ResearchPage";
 import { SymbolPage } from "./pages/SymbolPage";
 import { TodayPage } from "./pages/TodayPage";
 
@@ -131,6 +132,7 @@ export default function App() {
         {resolvedPage === "today" && <TodayPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOpsFocus={openOpsFocus} onOpenCandidates={() => navigate("candidates")} />}
         {resolvedPage === "candidates" && <CandidatesPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOps={() => navigate("ops")} onOpenOpsFocus={openOpsFocus} />}
         {resolvedPage === "symbol" && <SymbolPage symbol={selectedSymbol} refreshToken={refreshToken} onBack={() => navigate(symbolOrigin || "today")} onOpenOpsFocus={openOpsFocus} />}
+        {resolvedPage === "research" && <ResearchPage refreshToken={refreshToken} />}
         {resolvedPage === "ops" && <OpsPage refreshToken={refreshToken} focus={opsFocus} onFocusChange={setOpsFocus} />}
       </AppShell>
     </I18nProvider>

@@ -39,6 +39,7 @@ export function AppShell({
     { key: "today", label: t("nav.today") },
     { key: "candidates", label: t("nav.candidates") },
     { key: "symbol", label: selectedSymbol ? t("nav.symbolWithCode", { symbol: selectedSymbol }) : t("nav.symbol"), symbolOnly: true },
+    { key: "research", label: t("nav.research") },
     { key: "ops", label: t("nav.ops") },
   ];
 
@@ -64,7 +65,7 @@ export function AppShell({
                 onClick={() => !disabled && onNavigate(item.key)}
                 disabled={disabled}
               >
-                <span className="app-sidebar__icon">{item.key === "ops" ? "⌘" : item.key === "symbol" ? "◎" : item.key === "candidates" ? "▤" : "◢"}</span>
+                <span className="app-sidebar__icon">{item.key === "ops" ? "⌘" : item.key === "research" ? "◇" : item.key === "symbol" ? "◎" : item.key === "candidates" ? "▤" : "◢"}</span>
                 <span>{item.label}</span>
               </button>
             );
