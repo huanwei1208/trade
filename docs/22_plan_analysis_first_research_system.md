@@ -330,3 +330,37 @@ Rules:
 
 - Add read-only API endpoints for warehouse ADS outputs.
 - Add a research workbench page without removing existing pages.
+
+## Implementation Status
+
+Current branch:
+
+```text
+trade-structure-opt
+```
+
+Completed implementation commits:
+
+- `b45d6eb Add research sector profiles`
+  - Added deterministic Crypto / AI / Banks research profiles.
+  - Materializes `dim_sector` and `dim_topic`.
+- `6d7d513 Add deterministic research validation outputs`
+  - Added ADS feature value, association, and hypothesis validation reports.
+  - Ensures outputs include evidence, reason, and validation status.
+- `5ccb9ae Add position risk research context`
+  - Added local position/watchlist context.
+  - Materializes `dim_position` and `ads_position_risk_signal`.
+  - Uses manual-review language only; no trade actions are produced.
+- `b18cab7 Expose read-only research warehouse APIs`
+  - Added read-only backend research warehouse table listing and table read APIs.
+- `73db3ac Add research warehouse web page`
+  - Added a read-only Research page.
+  - Existing Today / Candidates / Symbol / Ops pages remain in place.
+
+Final validation performed after implementation:
+
+- `uv run --with pytest pytest -q`
+- `npm --prefix trade_web/frontend run build`
+
+This completes the M1-M4 implementation plan for the first analysis-first
+research-system slice.
