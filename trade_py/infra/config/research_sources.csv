@@ -1,0 +1,33 @@
+名称,rss link
+科技 / AI / 工程,
+Hacker News Frontpage,https://hnrss.org/frontpage
+Hacker News Newest,https://hnrss.org/show
+TechCrunch,https://techcrunch.com/feed/
+The Verge,https://www.theverge.com/rss/index.xml
+Ars Technica,https://feeds.arstechnica.com/arstechnica/index
+MIT Tech Review,https://www.technologyreview.com/feed/
+IEEE Spectrum,https://spectrum.ieee.org/rss/fulltext
+Google AI Blog,https://blog.google/technology/ai/rss/
+OpenAI Blog,https://openai.com/news/rss.xml
+财经 / 市场 / 商业,
+Yahoo Finance,https://finance.yahoo.com/news/rssindex
+MarketWatch,https://feeds.content.dowjones.io/public/rss/mw_topstories
+CNBC Top News,https://www.cnbc.com/id/100003114/device/rss/rss.html
+CNBC Finance,https://www.cnbc.com/id/10000664/device/rss/rss.html
+Investopedia,https://www.investopedia.com/feedbuilder/feed/getfeed/?feedName=rss_headline
+Seeking Alpha,https://seekingalpha.com/feed.xml
+HKEX RSS,https://www.hkex.com.hk/Services/RSS-Feeds?sc_lang=en
+中文 / 中国相关,
+南华早报 SCMP,https://www.scmp.com/rss
+中国日报,https://www.chinadaily.com.cn/rss/index.html
+极客公园,http://www.geekpark.net/rss
+小众软件,https://feed.appinn.com/
+知乎日报,https://rsshub.app/zhihu/daily
+工程博客 / 技术博客,
+The Pragmatic Engineer,https://blog.pragmaticengineer.com/rss/
+Netflix Tech Blog,https://netflixtechblog.com/feed
+Uber Engineering,https://www.uber.com/blog/engineering/rss/
+Cloudflare Blog,https://blog.cloudflare.com/rss/
+GitHub Blog,https://github.blog/feed/
+Stripe Blog,https://stripe.com/blog/feed.rss
+Pinterest Engineering,https://medium.com/feed/pinterest-engineering

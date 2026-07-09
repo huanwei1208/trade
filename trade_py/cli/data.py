@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _DATA_ROOT_ARG = str(default_data_root())
 _READ_ONLY_SENTIMENT_COMMANDS = {"status", "sources", "doctor", "inspect", "sample"}
+_DEFAULT_RESEARCH_SOURCE_CATALOG = Path("trade_py/infra/config/research_sources.csv")
 
 
 @dataclass
@@ -398,7 +399,22 @@ def make_parser() -> argparse.ArgumentParser:
     p_wh_rss.add_argument("--data-root", default=str(default_data_root()))
     p_wh_rss.add_argument("--catalog", required=True, help="CSV/JSON, columns: 名称,rss link")
     p_wh_rss.add_argument("--entries", required=True, help="CSV/JSON RSS entry rows")
+    p_wh_rss.add_argument("--positions", default=None, help="Optional CSV/JSON local position/watchlist rows")
     p_wh_rss.add_argument("--json", action="store_true", dest="as_json")
+
+    p_wh_fetch = wh_sub.add_parser(
+        "fetch-rss",
+        description="按本地 source catalog 受控抓取 RSS，并可直接落研究数仓",
+    )
+    p_wh_fetch.add_argument("--data-root", default=str(default_data_root()))
+    p_wh_fetch.add_argument("--catalog", default=str(_DEFAULT_RESEARCH_SOURCE_CATALOG))
+    p_wh_fetch.add_argument("--positions", default=None, help="Optional CSV/JSON local position/watchlist rows")
+    p_wh_fetch.add_argument("--max-sources", type=int, default=None)
+    p_wh_fetch.add_argument("--min-interval-seconds", type=float, default=1.0)
+    p_wh_fetch.add_argument("--timeout-seconds", type=int, default=10)
+    p_wh_fetch.add_argument("--dry-run", action="store_true")
+    p_wh_fetch.add_argument("--no-materialize", action="store_true")
+    p_wh_fetch.add_argument("--json", action="store_true", dest="as_json")
 
     parser.epilog = epilog_from_subparsers(parser)
     return parser
@@ -475,10 +491,12 @@ def main(argv: list[str] | None = None) -> int:
 
         catalog_rows = _read_records_file(args.catalog)
         rss_entries = _read_records_file(args.entries)
+        position_rows = _read_records_file(args.positions) if args.positions else None
         result = materialize_rss_research_loop(
             args.data_root,
             catalog_rows=catalog_rows,
             rss_entries=rss_entries,
+            position_rows=position_rows,
         )
         payload = result.to_dict()
         if args.as_json:
@@ -494,6 +512,61 @@ def main(argv: list[str] | None = None) -> int:
                 f"  {row['status']:<5} {row['check_name']:<36} "
                 f"rows={row['row_count']} {row['detail']}"
             )
+        return 0
+
+    if args.command == "warehouse" and args.warehouse_cmd == "fetch-rss":
+        from trade_py.data.warehouse import (
+            ControlledFetchPolicy,
+            WarehouseLayout,
+            controlled_fetch_rss_sources,
+            materialize_rss_research_loop,
+            write_table,
+        )
+
+        catalog_rows = _read_records_file(args.catalog)
+        policy = ControlledFetchPolicy(
+            min_interval_seconds=args.min_interval_seconds,
+            timeout_seconds=args.timeout_seconds,
+            max_sources=args.max_sources,
+            dry_run=args.dry_run,
+        )
+        dim_data_source, attempts, rss_entries = controlled_fetch_rss_sources(
+            catalog_rows,
+            policy=policy,
+        )
+        layout = WarehouseLayout.from_data_root(args.data_root)
+        fetch_paths = {
+            "dim.dim_data_source": write_table(layout, "dim", "dim_data_source", dim_data_source),
+            "ods.ods_fetch_attempt": write_table(layout, "ods", "ods_fetch_attempt", attempts),
+        }
+        result_payload = {
+            "warehouse_root": str(layout.root),
+            "fetch_paths": {key: str(value) for key, value in fetch_paths.items()},
+            "attempts": attempts.to_dict(orient="records"),
+            "entries": len(rss_entries),
+            "materialized": None,
+        }
+        if not args.no_materialize and not args.dry_run:
+            position_rows = _read_records_file(args.positions) if args.positions else None
+            result = materialize_rss_research_loop(
+                args.data_root,
+                catalog_rows=catalog_rows,
+                rss_entries=rss_entries,
+                position_rows=position_rows,
+            )
+            result_payload["materialized"] = result.to_dict()
+        if args.as_json:
+            print(json.dumps(result_payload, ensure_ascii=False, indent=2))
+            return 0
+        print(f"warehouse_root={layout.root}")
+        print(f"fetch_attempts={len(attempts)} entries={len(rss_entries)} dry_run={args.dry_run}")
+        for row in attempts.to_dict(orient="records"):
+            print(
+                f"  {row['status']:<7} {row['source_id']:<28} "
+                f"entries={row['entries']} elapsed_ms={row['elapsed_ms']} error={row['error_kind'] or '-'}"
+            )
+        if result_payload["materialized"]:
+            print("materialized=true")
         return 0
 
     if args.command == "backfill" and args.backfill_cmd == "status":

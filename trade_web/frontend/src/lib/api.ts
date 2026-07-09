@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 export type Locale = "zh-CN" | "en-US";
-export type PageKey = "today" | "candidates" | "symbol" | "ops";
+export type PageKey = "today" | "candidates" | "symbol" | "ops" | "research";
 export type ActionType = "ADD" | "PROBE" | "WATCH" | "REDUCE" | "NO_ACTION" | string;
 
 export type TrustGate = {
@@ -859,6 +859,28 @@ export type EventsPagePayload = {
   due_agenda?: Array<Record<string, unknown>>;
   planned_events?: Array<Record<string, unknown>>;
   failed_nodes?: Array<Record<string, unknown>>;
+};
+
+export type ResearchTableSummary = {
+  layer: string;
+  table: string;
+  exists: boolean;
+  row_count: number;
+  path: string;
+};
+
+export type ResearchTablesPayload = {
+  warehouse_root?: string;
+  layers?: Array<{ layer: string; tables: ResearchTableSummary[] }>;
+};
+
+export type ResearchTablePayload = {
+  warehouse_root?: string;
+  layer?: string;
+  table?: string;
+  row_count?: number;
+  columns?: string[];
+  rows?: Array<Record<string, unknown>>;
 };
 
 export class ApiError extends Error {

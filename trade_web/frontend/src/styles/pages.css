@@ -3224,3 +3224,71 @@ details[open] .symbol-advanced__summary::before {
   color: #a16207;
   font-style: italic;
 }
+
+/* Research warehouse */
+
+.ops-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.6fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.ops-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ops-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ops-list__item.is-active {
+  border-color: var(--line-strong);
+  background: var(--panel-soft);
+}
+
+.table-scroll {
+  max-width: 100%;
+  overflow: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.data-table th,
+.data-table td {
+  max-width: 260px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table th {
+  color: var(--text-1);
+  font-weight: 700;
+}
+
+@media (max-width: 960px) {
+  .ops-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

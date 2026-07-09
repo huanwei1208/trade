@@ -169,3 +169,133 @@ def build_ads_source_value_report(
             }
         )
     return pd.DataFrame(rows).sort_values(["sector", "overall_value_score"], ascending=[True, False]).reset_index(drop=True)
+
+
+def build_ads_feature_value_report(dws_sector_topic_daily: pd.DataFrame) -> pd.DataFrame:
+    """Create deterministic feature-value summaries from DWS statistics."""
+    if dws_sector_topic_daily.empty:
+        return pd.DataFrame(
+            columns=[
+                "feature_id", "sector", "feature_name", "coverage_days",
+                "latest_ratio", "latest_zscore", "stability_score",
+                "validation_status", "evidence", "reason",
+            ]
+        )
+    rows: list[dict[str, Any]] = []
+    for (sector, topic), group in dws_sector_topic_daily.groupby(["sector", "topic"]):
+        group = group.sort_values("date")
+        latest = group.iloc[-1]
+        coverage_days = int(group["date"].nunique())
+        latest_ratio = float(latest.get("article_count_ratio") or 0.0)
+        latest_zscore = float(latest.get("article_count_zscore") or 0.0)
+        active_days = int(
+            (
+                (group["article_count_ratio"].astype(float) >= 1.2)
+                | (group["article_count_zscore"].astype(float) >= 0.8)
+            ).sum()
+        )
+        stability_score = round(active_days / max(coverage_days, 1), 4)
+        status = "candidate"
+        if coverage_days >= 3 and latest_ratio >= 1.5:
+            status = "monitoring"
+        rows.append(
+            {
+                "feature_id": f"{sector}_{topic}_article_burst",
+                "sector": sector,
+                "feature_name": "article_burst",
+                "coverage_days": coverage_days,
+                "latest_ratio": round(latest_ratio, 4),
+                "latest_zscore": round(latest_zscore, 4),
+                "stability_score": stability_score,
+                "validation_status": status,
+                "evidence": f"dws_sector_topic_daily:{sector}:{topic}:{latest.get('date')}",
+                "reason": (
+                    f"{sector}/{topic} article-burst feature has {coverage_days} observed days; "
+                    f"latest ratio={latest_ratio:.2f}, z={latest_zscore:.2f}, "
+                    f"stability={stability_score:.2f}."
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_ads_association_result(dws_sector_topic_daily: pd.DataFrame) -> pd.DataFrame:
+    """Create a first deterministic association table between topics and sectors."""
+    if dws_sector_topic_daily.empty:
+        return pd.DataFrame(
+            columns=[
+                "association_id", "driver_type", "driver_id", "target_type",
+                "target_id", "lag_days", "association_score", "validation_status",
+                "evidence", "reason",
+            ]
+        )
+    rows: list[dict[str, Any]] = []
+    for (sector, topic), group in dws_sector_topic_daily.groupby(["sector", "topic"]):
+        ratio_mean = float(group["article_count_ratio"].astype(float).mean())
+        zscore_max = float(group["article_count_zscore"].astype(float).max())
+        score = round(min(1.0, max(0.0, (ratio_mean - 1.0) / 2.0 + max(0.0, zscore_max) / 5.0)), 4)
+        status = "candidate" if score < 0.6 else "monitoring"
+        rows.append(
+            {
+                "association_id": f"topic:{topic}->sector:{sector}:lag0",
+                "driver_type": "topic",
+                "driver_id": topic,
+                "target_type": "sector",
+                "target_id": sector,
+                "lag_days": 0,
+                "association_score": score,
+                "validation_status": status,
+                "evidence": f"dws_sector_topic_daily:{sector}:{topic}",
+                "reason": (
+                    f"{topic} is associated with {sector} attention with mean ratio={ratio_mean:.2f} "
+                    f"and max z={zscore_max:.2f}; price/return validation is still required."
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_ads_hypothesis_validation_report(
+    ads_data_signal_report: pd.DataFrame,
+    ads_association_result: pd.DataFrame,
+) -> pd.DataFrame:
+    """Generate first-pass hypothesis validation rows from signals and associations."""
+    columns = [
+        "hypothesis_id", "sector", "hypothesis", "evidence_count",
+        "support_score", "validation_status", "evidence", "reason",
+    ]
+    if ads_data_signal_report.empty and ads_association_result.empty:
+        return pd.DataFrame(columns=columns)
+    sectors = sorted(
+        set(ads_data_signal_report.get("sector", pd.Series(dtype=str)).dropna().astype(str).tolist())
+        | set(ads_association_result.get("target_id", pd.Series(dtype=str)).dropna().astype(str).tolist())
+    )
+    rows: list[dict[str, Any]] = []
+    for sector in sectors:
+        signals = ads_data_signal_report[ads_data_signal_report.get("sector") == sector] if not ads_data_signal_report.empty else pd.DataFrame()
+        associations = (
+            ads_association_result[ads_association_result.get("target_id") == sector]
+            if not ads_association_result.empty
+            else pd.DataFrame()
+        )
+        evidence_count = int(len(signals) + len(associations))
+        strong_signals = int((signals.get("signal_strength", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0
+        assoc_score = float(associations.get("association_score", pd.Series([0.0])).astype(float).max()) if not associations.empty else 0.0
+        support_score = round(min(1.0, strong_signals * 0.25 + evidence_count * 0.1 + assoc_score * 0.4), 4)
+        status = "candidate" if support_score < 0.55 else "monitoring"
+        rows.append(
+            {
+                "hypothesis_id": f"{sector}_attention_has_research_value",
+                "sector": sector,
+                "hypothesis": f"{sector} attention bursts may identify research-worthy changes before formal recommendation logic.",
+                "evidence_count": evidence_count,
+                "support_score": support_score,
+                "validation_status": status,
+                "evidence": f"signals={len(signals)};associations={len(associations)}",
+                "reason": (
+                    f"{sector} has {len(signals)} signal rows and {len(associations)} association rows; "
+                    f"support_score={support_score:.2f}. This remains deterministic pre-price validation."
+                ),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)

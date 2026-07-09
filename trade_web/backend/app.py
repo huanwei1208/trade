@@ -1721,6 +1721,22 @@ def create_app():
             builder=_data_health_payload,
         )
 
+    @app.get("/api/research/warehouse/tables")
+    async def get_research_warehouse_tables():
+        from trade_web.backend.research import list_research_tables
+
+        return list_research_tables(data_root)
+
+    @app.get("/api/research/warehouse/{layer}/{table}")
+    async def get_research_warehouse_table(layer: str, table: str, limit: int = 100):
+        from fastapi import HTTPException
+        from trade_web.backend.research import read_research_table
+
+        try:
+            return read_research_table(data_root, layer=layer, table=table, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
     @app.get("/api/readiness-grid")
     async def get_readiness_grid(days: int = 30, end_date: str | None = None, datasets: str | None = None):
         db = _db()
