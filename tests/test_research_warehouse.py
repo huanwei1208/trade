@@ -8,7 +8,10 @@ from trade_py.data.warehouse import (
     WarehouseLayout,
     build_dim_sector,
     build_dim_topic,
+    build_ads_association_result,
     build_ads_data_signal_report,
+    build_ads_feature_value_report,
+    build_ads_hypothesis_validation_report,
     build_ads_source_value_report,
     build_dwd_articles,
     build_dws_sector_topic_daily,
@@ -151,6 +154,9 @@ def test_dws_and_ads_surface_ratio_based_value_signals() -> None:
 
     dws = build_dws_sector_topic_daily(articles, relevance, lookback_days=20)
     ads = build_ads_data_signal_report(dws)
+    feature_value = build_ads_feature_value_report(dws)
+    association = build_ads_association_result(dws)
+    hypothesis = build_ads_hypothesis_validation_report(ads, association)
     source_value = build_ads_source_value_report(articles, relevance)
 
     latest_ai = dws[(dws["date"] == "2026-07-03") & (dws["sector"] == "ai")].iloc[0]
@@ -161,6 +167,12 @@ def test_dws_and_ads_surface_ratio_based_value_signals() -> None:
     signal = ads[ads["sector"] == "ai"].iloc[-1]
     assert signal["signal_type"] == "topic_burst"
     assert "baseline" in signal["value_reason"]
+    assert {"evidence", "reason", "validation_status"} <= set(feature_value.columns)
+    assert {"evidence", "reason", "validation_status"} <= set(association.columns)
+    assert {"evidence", "reason", "validation_status"} <= set(hypothesis.columns)
+    assert feature_value[feature_value["sector"] == "ai"].iloc[-1]["validation_status"] in {"candidate", "monitoring"}
+    assert association[association["target_id"] == "ai"].iloc[-1]["driver_type"] == "topic"
+    assert hypothesis[hypothesis["sector"] == "ai"].iloc[-1]["support_score"] >= 0
 
     value_row = source_value[source_value["source_id"] == "rss_openai_blog"].iloc[0]
     assert value_row["sector"] == "ai"
@@ -227,6 +239,9 @@ def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_p
         "dws.dws_sector_topic_daily",
         "ads.ads_data_signal_report",
         "ads.ads_source_value_report",
+        "ads.ads_feature_value_report",
+        "ads.ads_association_result",
+        "ads.ads_hypothesis_validation_report",
         "ads.ads_warehouse_validation_report",
     }
     assert expected_tables <= set(result.table_paths)
@@ -235,12 +250,18 @@ def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_p
     ods = read_table(layout, "ods", "ods_rss_entry_raw")
     semantic = read_table(layout, "dwd", "dwd_article_semantic_check")
     signals = read_table(layout, "ads", "ads_data_signal_report")
+    feature_value = read_table(layout, "ads", "ads_feature_value_report")
+    association = read_table(layout, "ads", "ads_association_result")
+    hypothesis = read_table(layout, "ads", "ads_hypothesis_validation_report")
     validation = read_table(layout, "ads", "ads_warehouse_validation_report")
 
     assert len(ods) == len(rss_entries)
     assert (semantic["null_reason"] == "invalid_type").any()
     assert not signals.empty
     assert signals["value_reason"].str.contains("baseline").any()
+    assert feature_value["reason"].str.len().gt(0).all()
+    assert association["evidence"].str.len().gt(0).all()
+    assert hypothesis["validation_status"].isin({"candidate", "monitoring"}).all()
 
     statuses = dict(zip(validation["check_name"], validation["status"]))
     assert statuses["ods.raw_rows_retained"] == "pass"

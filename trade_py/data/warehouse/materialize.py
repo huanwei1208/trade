@@ -11,7 +11,10 @@ from trade_py.data.warehouse.catalog import import_rss_catalog_rows
 from trade_py.data.warehouse.io import WarehouseLayout, read_table, write_table
 from trade_py.data.warehouse.profiles import build_dim_sector, build_dim_topic
 from trade_py.data.warehouse.signals import (
+    build_ads_association_result,
     build_ads_data_signal_report,
+    build_ads_feature_value_report,
+    build_ads_hypothesis_validation_report,
     build_ads_source_value_report,
     build_dws_sector_topic_daily,
 )
@@ -29,6 +32,9 @@ _REQUIRED_TABLES: tuple[tuple[str, str], ...] = (
     ("dws", "dws_sector_topic_daily"),
     ("ads", "ads_data_signal_report"),
     ("ads", "ads_source_value_report"),
+    ("ads", "ads_feature_value_report"),
+    ("ads", "ads_association_result"),
+    ("ads", "ads_hypothesis_validation_report"),
 )
 
 
@@ -186,6 +192,21 @@ def materialize_rss_research_loop(
     ads_source_value = build_ads_source_value_report(dwd_article, relevance)
     table_paths[_table_key("ads", "ads_source_value_report")] = write_table(
         layout, "ads", "ads_source_value_report", ads_source_value
+    )
+
+    ads_feature_value = build_ads_feature_value_report(dws_sector_topic_daily)
+    table_paths[_table_key("ads", "ads_feature_value_report")] = write_table(
+        layout, "ads", "ads_feature_value_report", ads_feature_value
+    )
+
+    ads_association = build_ads_association_result(dws_sector_topic_daily)
+    table_paths[_table_key("ads", "ads_association_result")] = write_table(
+        layout, "ads", "ads_association_result", ads_association
+    )
+
+    ads_hypothesis = build_ads_hypothesis_validation_report(ads_data_signal, ads_association)
+    table_paths[_table_key("ads", "ads_hypothesis_validation_report")] = write_table(
+        layout, "ads", "ads_hypothesis_validation_report", ads_hypothesis
     )
 
     validation = build_warehouse_validation_report(layout, expected_ods_rows=len(ods_rss))

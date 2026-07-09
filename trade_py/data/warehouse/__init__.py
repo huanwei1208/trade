@@ -27,7 +27,10 @@ from trade_py.data.warehouse.profiles import (
     build_dim_topic,
 )
 from trade_py.data.warehouse.signals import (
+    build_ads_association_result,
     build_ads_data_signal_report,
+    build_ads_feature_value_report,
+    build_ads_hypothesis_validation_report,
     build_ads_source_value_report,
     build_dws_sector_topic_daily,
 )
@@ -39,7 +42,10 @@ __all__ = [
     "SectorProfile",
     "WarehouseLayout",
     "WarehouseMaterializationResult",
+    "build_ads_association_result",
     "build_ads_data_signal_report",
+    "build_ads_feature_value_report",
+    "build_ads_hypothesis_validation_report",
     "build_ads_source_value_report",
     "build_dwd_articles",
     "build_dws_sector_topic_daily",
