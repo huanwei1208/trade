@@ -372,12 +372,12 @@ controlled, resumable backfill rather than a high-QPS crawl.
 
 Current local data state after the latest controlled run:
 
-- K-line files: 5,702 symbols, 7,654,997 rows, date range
+- K-line files: 5,702 symbols, 7,662,276 rows, date range
   `2020-01-02 -> 2026-07-09`.
 - K-line tracked symbols in `sync_state`: 5,489.
 - SH/SZ tracked symbols: 5,191.
-- Symbols with latest K-line date on or after `2026-07-01`: 3,928.
-- Symbols with latest K-line date equal to `2026-07-09`: 3,923.
+- Symbols with latest K-line date on or after `2026-07-01`: 4,028.
+- Symbols with latest K-line date equal to `2026-07-09`: 4,023.
 - BJ or other non-SH/SZ symbols: 298, currently maxing at `2026-03-23`.
 
 Controlled Tencent K-line fallback result:
@@ -385,14 +385,16 @@ Controlled Tencent K-line fallback result:
 - Provider: `tencent`.
 - Mode: `incremental`.
 - Batch policy: 100 symbols per batch, serial execution, `delay_ms=300`.
-- Thirty-eight SH/SZ batches completed with 3,800 requested symbols, 3,800
-  successes, 0 failures, 2 empty returns, and 276,227 added rows.
+- Thirty-nine SH/SZ batches completed with 3,900 requested symbols, 3,900
+  successes, 0 failures, 2 empty returns, and 283,506 added rows.
 - Empty returns observed for `603056.SH` and `002231.SZ`; these should be
   checked against instrument/listing status before repeated retries.
 - The thirty-seventh batch added 7,290 rows. A unique-symbol watermark check
   found 99 symbols at `2026-07-09`; `601369.SH` remained at `2026-06-26` and
   should be instrument-status checked before repeated retries.
 - The thirty-eighth batch added 7,292 rows. A unique-symbol watermark check
+  found all 100 symbols at `2026-07-09`.
+- The thirty-ninth batch added 7,279 rows. A unique-symbol watermark check
   found all 100 symbols at `2026-07-09`.
 
 Remaining backfill constraints:
