@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,11 +24,14 @@ _CATEGORY_TO_TOPICS: dict[str, tuple[str, ...]] = {
 
 
 def _slug(value: str) -> str:
-    text = value.strip().lower()
-    text = re.sub(r"https?://", "", text)
+    raw = value.strip().lower()
+    text = re.sub(r"https?://", "", raw)
     text = re.sub(r"[^a-z0-9]+", "_", text)
     text = text.strip("_")
-    return text or "source"
+    if text:
+        return text
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+    return f"source_{digest}"
 
 
 def _cell_text(value: Any) -> str:

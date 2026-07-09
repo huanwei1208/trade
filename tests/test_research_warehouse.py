@@ -58,8 +58,10 @@ def test_local_research_source_catalog_is_versioned_and_importable() -> None:
     rows = import_rss_catalog_rows(pd.read_csv(catalog))
 
     assert catalog.exists()
+    assert rows["source_id"].is_unique
     assert {"ai", "bank", "crypto"} <= set(",".join(rows["sector_tags"]).split(","))
     assert "https://openai.com/news/rss.xml" in set(rows["url"])
+    assert all(source_id != "rss_source" for source_id in rows["source_id"])
 
 
 def test_controlled_fetch_rss_sources_records_attempts_and_entries() -> None:
