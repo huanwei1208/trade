@@ -26,6 +26,10 @@ from trade_py.data.warehouse.profiles import (
     build_dim_sector,
     build_dim_topic,
 )
+from trade_py.data.warehouse.positions import (
+    build_ads_position_risk_signal,
+    normalize_position_rows,
+)
 from trade_py.data.warehouse.signals import (
     build_ads_association_result,
     build_ads_data_signal_report,
@@ -46,6 +50,7 @@ __all__ = [
     "build_ads_data_signal_report",
     "build_ads_feature_value_report",
     "build_ads_hypothesis_validation_report",
+    "build_ads_position_risk_signal",
     "build_ads_source_value_report",
     "build_dwd_articles",
     "build_dws_sector_topic_daily",
@@ -55,6 +60,7 @@ __all__ = [
     "import_rss_catalog_rows",
     "materialize_rss_research_loop",
     "normalize_ods_rss_entries",
+    "normalize_position_rows",
     "normalize_semantic_value",
     "read_table",
     "write_table",

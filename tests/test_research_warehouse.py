@@ -12,12 +12,14 @@ from trade_py.data.warehouse import (
     build_ads_data_signal_report,
     build_ads_feature_value_report,
     build_ads_hypothesis_validation_report,
+    build_ads_position_risk_signal,
     build_ads_source_value_report,
     build_dwd_articles,
     build_dws_sector_topic_daily,
     import_rss_catalog_rows,
     materialize_rss_research_loop,
     normalize_ods_rss_entries,
+    normalize_position_rows,
     normalize_semantic_value,
     read_table,
     write_table,
@@ -56,6 +58,40 @@ def test_research_profiles_define_three_first_class_analysis_domains() -> None:
     assert set(topics["sector"]) == {"crypto", "ai", "bank"}
     assert {"cloud_capex", "credit_risk", "regulation"} <= set(topics["topic"])
     assert sectors["purpose"].str.len().min() > 20
+
+
+def test_position_context_links_research_signals_without_trade_actions() -> None:
+    positions = normalize_position_rows(
+        [
+            {
+                "asset_id": "NVDA",
+                "asset_name": "NVIDIA",
+                "sector": "ai",
+                "thesis": "AI compute demand",
+                "risk_notes": "capex slowdown",
+            }
+        ]
+    )
+    signals = pd.DataFrame(
+        [
+            {
+                "date": "2026-07-03",
+                "sector": "ai",
+                "signal_type": "topic_burst",
+                "target_id": "ai",
+                "signal_strength": "high",
+                "validation_status": "candidate",
+                "value_reason": "AI article volume is 3.00x baseline.",
+            }
+        ]
+    )
+
+    risk = build_ads_position_risk_signal(positions, signals)
+
+    assert positions.iloc[0]["status"] == "watch"
+    assert risk.iloc[0]["asset_id"] == "NVDA"
+    assert risk.iloc[0]["manual_action"] == "needs_review"
+    assert "Review manually" in risk.iloc[0]["reason"]
 
 
 def test_ods_normalization_preserves_dirty_rows_instead_of_filtering() -> None:
@@ -220,16 +256,27 @@ def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_p
         }
     )
 
+    position_rows = [
+        {
+            "asset_id": "NVDA",
+            "sector": "ai",
+            "thesis": "AI compute demand",
+            "risk_notes": "capex slowdown",
+        }
+    ]
+
     result = materialize_rss_research_loop(
         tmp_path,
         catalog_rows=catalog_rows,
         rss_entries=rss_entries,
+        position_rows=position_rows,
     )
     layout = WarehouseLayout.from_data_root(tmp_path)
 
     expected_tables = {
         "dim.dim_sector",
         "dim.dim_topic",
+        "dim.dim_position",
         "dim.dim_data_source",
         "ods.ods_rss_entry_raw",
         "dwd.dwd_article",
@@ -242,6 +289,7 @@ def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_p
         "ads.ads_feature_value_report",
         "ads.ads_association_result",
         "ads.ads_hypothesis_validation_report",
+        "ads.ads_position_risk_signal",
         "ads.ads_warehouse_validation_report",
     }
     assert expected_tables <= set(result.table_paths)
@@ -253,6 +301,7 @@ def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_p
     feature_value = read_table(layout, "ads", "ads_feature_value_report")
     association = read_table(layout, "ads", "ads_association_result")
     hypothesis = read_table(layout, "ads", "ads_hypothesis_validation_report")
+    position_risk = read_table(layout, "ads", "ads_position_risk_signal")
     validation = read_table(layout, "ads", "ads_warehouse_validation_report")
 
     assert len(ods) == len(rss_entries)
@@ -262,6 +311,7 @@ def test_materialize_rss_research_loop_writes_layers_and_validation_report(tmp_p
     assert feature_value["reason"].str.len().gt(0).all()
     assert association["evidence"].str.len().gt(0).all()
     assert hypothesis["validation_status"].isin({"candidate", "monitoring"}).all()
+    assert position_risk.iloc[0]["manual_action"] == "needs_review"
 
     statuses = dict(zip(validation["check_name"], validation["status"]))
     assert statuses["ods.raw_rows_retained"] == "pass"
@@ -292,6 +342,16 @@ def test_data_cli_materialize_rss_runs_closed_loop_from_local_csv(tmp_path: Path
                 f"GPU demand and cloud infrastructure rise,{day}T08:00:00+00:00,{rating}"
             )
     entries.write_text("\n".join(entry_lines), encoding="utf-8")
+    positions = tmp_path / "positions.csv"
+    positions.write_text(
+        "\n".join(
+            [
+                "asset_id,asset_name,sector,thesis,risk_notes",
+                "NVDA,NVIDIA,ai,AI compute demand,capex slowdown",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     rc = data_cli.main(
         [
@@ -303,13 +363,17 @@ def test_data_cli_materialize_rss_runs_closed_loop_from_local_csv(tmp_path: Path
             str(catalog),
             "--entries",
             str(entries),
+            "--positions",
+            str(positions),
         ]
     )
     captured = capsys.readouterr()
     layout = WarehouseLayout.from_data_root(tmp_path)
     validation = read_table(layout, "ads", "ads_warehouse_validation_report")
+    position_risk = read_table(layout, "ads", "ads_position_risk_signal")
 
     assert rc == 0
     assert "warehouse_root=" in captured.out
     assert "ods.raw_rows_retained" in captured.out
     assert dict(zip(validation["check_name"], validation["status"]))["ads.value_reasons_present"] == "pass"
+    assert position_risk.iloc[0]["manual_action"] == "needs_review"

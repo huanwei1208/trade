@@ -9,6 +9,7 @@ import pandas as pd
 from trade_py.data.warehouse.articles import build_dwd_articles, normalize_ods_rss_entries
 from trade_py.data.warehouse.catalog import import_rss_catalog_rows
 from trade_py.data.warehouse.io import WarehouseLayout, read_table, write_table
+from trade_py.data.warehouse.positions import build_ads_position_risk_signal, normalize_position_rows
 from trade_py.data.warehouse.profiles import build_dim_sector, build_dim_topic
 from trade_py.data.warehouse.signals import (
     build_ads_association_result,
@@ -23,6 +24,7 @@ from trade_py.data.warehouse.signals import (
 _REQUIRED_TABLES: tuple[tuple[str, str], ...] = (
     ("dim", "dim_sector"),
     ("dim", "dim_topic"),
+    ("dim", "dim_position"),
     ("dim", "dim_data_source"),
     ("ods", "ods_rss_entry_raw"),
     ("dwd", "dwd_article"),
@@ -35,6 +37,7 @@ _REQUIRED_TABLES: tuple[tuple[str, str], ...] = (
     ("ads", "ads_feature_value_report"),
     ("ads", "ads_association_result"),
     ("ads", "ads_hypothesis_validation_report"),
+    ("ads", "ads_position_risk_signal"),
 )
 
 
@@ -137,6 +140,7 @@ def materialize_rss_research_loop(
     *,
     catalog_rows: list[dict[str, Any]] | pd.DataFrame,
     rss_entries: list[dict[str, Any]] | pd.DataFrame,
+    position_rows: list[dict[str, Any]] | pd.DataFrame | None = None,
 ) -> WarehouseMaterializationResult:
     """Materialize the first RSS research warehouse loop.
 
@@ -155,6 +159,11 @@ def materialize_rss_research_loop(
     )
     table_paths[_table_key("dim", "dim_topic")] = write_table(
         layout, "dim", "dim_topic", build_dim_topic()
+    )
+
+    dim_position = normalize_position_rows(position_rows)
+    table_paths[_table_key("dim", "dim_position")] = write_table(
+        layout, "dim", "dim_position", dim_position
     )
 
     dim_data_source = import_rss_catalog_rows(catalog_rows)
@@ -207,6 +216,11 @@ def materialize_rss_research_loop(
     ads_hypothesis = build_ads_hypothesis_validation_report(ads_data_signal, ads_association)
     table_paths[_table_key("ads", "ads_hypothesis_validation_report")] = write_table(
         layout, "ads", "ads_hypothesis_validation_report", ads_hypothesis
+    )
+
+    ads_position_risk = build_ads_position_risk_signal(dim_position, ads_data_signal)
+    table_paths[_table_key("ads", "ads_position_risk_signal")] = write_table(
+        layout, "ads", "ads_position_risk_signal", ads_position_risk
     )
 
     validation = build_warehouse_validation_report(layout, expected_ods_rows=len(ods_rss))

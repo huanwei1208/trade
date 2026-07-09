@@ -398,6 +398,7 @@ def make_parser() -> argparse.ArgumentParser:
     p_wh_rss.add_argument("--data-root", default=str(default_data_root()))
     p_wh_rss.add_argument("--catalog", required=True, help="CSV/JSON, columns: 名称,rss link")
     p_wh_rss.add_argument("--entries", required=True, help="CSV/JSON RSS entry rows")
+    p_wh_rss.add_argument("--positions", default=None, help="Optional CSV/JSON local position/watchlist rows")
     p_wh_rss.add_argument("--json", action="store_true", dest="as_json")
 
     parser.epilog = epilog_from_subparsers(parser)
@@ -475,10 +476,12 @@ def main(argv: list[str] | None = None) -> int:
 
         catalog_rows = _read_records_file(args.catalog)
         rss_entries = _read_records_file(args.entries)
+        position_rows = _read_records_file(args.positions) if args.positions else None
         result = materialize_rss_research_loop(
             args.data_root,
             catalog_rows=catalog_rows,
             rss_entries=rss_entries,
+            position_rows=position_rows,
         )
         payload = result.to_dict()
         if args.as_json:
