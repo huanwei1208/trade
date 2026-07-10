@@ -162,6 +162,21 @@ _TUSHARE_AUDIT_FAIL_STATUSES = {"auth", "permission", "invalid_request"}
 _TUSHARE_AUDIT_WARN_STATUSES = {"rate_limit", "transient", "unknown"}
 _REQUIRED_CROSS_SOURCE_DATASETS = ("kline", "cross_asset.btc")
 _KLINE_RECONCILIATION_SCHEMA_VERSION = "kline-reconciliation-v1"
+_KLINE_RECONCILIATION_COMMAND = [
+    "trade",
+    "data",
+    "kline",
+    "reconcile",
+    "--symbols",
+    "<symbols>",
+    "--start",
+    "<start>",
+    "--end",
+    "<end>",
+    "--shadow-provider",
+    "tencent",
+    "--json",
+]
 
 
 # ── Status helpers ─────────────────────────────────────────────────────────────
@@ -2329,6 +2344,14 @@ def _btc_cross_source_item(data_root: str | Path) -> dict[str, Any]:
         "primary_source": "okx",
         "shadow_sources": ["coingecko"],
         "evidence_refs": {"current_pointer": str(current_path)},
+        "required_artifact": {
+            "current_pointer": str(current_path),
+            "manifest_gate": "D3",
+            "cross_source_status": "pass",
+            "minimum_aligned_rows": 1,
+            "maximum_block_rows": 0,
+            "required_shadow_sources": ["coingecko"],
+        },
         "reason_code": "BTC_RECONCILIATION_MISSING",
         "metrics": {},
     }
@@ -2393,6 +2416,14 @@ def _kline_cross_source_item(data_root: str | Path) -> dict[str, Any]:
             "failure_log": str(Path(data_root) / ".db" / "kline_failures.jsonl"),
             "manifest_path": str(KLINE_MANIFEST(data_root)),
         },
+        "required_artifact": {
+            "path": str(path),
+            "schema_version": _KLINE_RECONCILIATION_SCHEMA_VERSION,
+            "status": "pass",
+            "minimum_checked_rows": 1,
+            "maximum_block_rows": 0,
+            "shadow_sources": "non_empty",
+        },
     }
     if not path.exists():
         return item
@@ -2452,6 +2483,46 @@ def _kline_cross_source_item(data_root: str | Path) -> dict[str, Any]:
     return item
 
 
+def _cross_source_recovery_item(dataset: str, item: dict[str, Any]) -> dict[str, Any]:
+    common = {
+        "dataset": dataset,
+        "status": item.get("status"),
+        "reason_code": item.get("reason_code"),
+        "evidence_level": item.get("evidence_level"),
+        "metrics": dict(item.get("metrics") or {}),
+        "evidence_refs": dict(item.get("evidence_refs") or {}),
+        "required_artifact": dict(item.get("required_artifact") or {}),
+    }
+    if dataset == "kline":
+        return {
+            **common,
+            "command": list(_KLINE_RECONCILIATION_COMMAND),
+            "preflight_command": [*_KLINE_RECONCILIATION_COMMAND, "--dry-run"],
+            "mode": "generate",
+            "detail": (
+                "Run K-line reconciliation over an explicit liquid-symbol/date sample. "
+                "Use the dry-run command first; rerun without --dry-run only when status=pass "
+                "to write data/market/kline/reconciliation/current.json."
+            ),
+        }
+    if dataset == "cross_asset.btc":
+        return {
+            **common,
+            "command": ["trade", "data", "cross-asset", "btc", "--mode", "sync", "--strict"],
+            "mode": "sync",
+            "detail": (
+                "Run BTC assurance with OKX primary and CoinGecko shadow evidence until "
+                "D3 reconciliation passes and btc_current.json points at the manifest."
+            ),
+        }
+    return {
+        **common,
+        "command": ["trade", "data", "status", "--strict", "--json"],
+        "mode": "audit",
+        "detail": "Inspect cross-source evidence before trusting this dataset.",
+    }
+
+
 def cross_source_coverage_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Inventory datasets with durable independent-source validation evidence."""
     datasets: dict[str, dict[str, Any]] = {
@@ -2496,27 +2567,9 @@ def cross_source_coverage_stats(data_root: str | Path = "data") -> dict[str, Any
     if optional_single_source:
         reason_codes.append("OPTIONAL_CROSS_SOURCE_EVIDENCE_MISSING")
     recovery_plan = [
-        {
-            "dataset": "kline",
-            "command": ["trade", "data", "status", "--strict", "--json"],
-            "mode": "design",
-            "detail": (
-                "Produce data/market/kline/reconciliation/current.json with "
-                f"schema_version={_KLINE_RECONCILIATION_SCHEMA_VERSION} before treating fallback as validation."
-            ),
-        }
-        if "kline" in required_missing
-        else None,
-        {
-            "dataset": "cross_asset.btc",
-            "command": ["trade", "data", "cross-asset", "btc", "--mode", "sync", "--strict"],
-            "mode": "sync",
-            "detail": "Run BTC assurance with OKX primary and CoinGecko shadow evidence until D3 reconciliation passes.",
-        }
-        if "cross_asset.btc" in required_missing
-        else None,
+        _cross_source_recovery_item(dataset, datasets[dataset])
+        for dataset in required_missing
     ]
-    recovery_plan = [item for item in recovery_plan if item is not None]
     return {
         "status": "fail" if required_missing else ("warn" if optional_single_source else "pass"),
         "reason_codes": reason_codes,
@@ -2791,14 +2844,23 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
     cross_source = status.get("cross_source_coverage", {})
     if cross_source:
         reasons = cross_source.get("reason_codes") or []
+        recovery_plan = cross_source.get("recovery_plan") or []
         lines += [
             "### 多源交叉验证覆盖",
             f"- status: **{cross_source.get('status', 'unknown')}**",
             f"- required missing: {', '.join(cross_source.get('required_missing') or []) or '—'}",
             f"- optional single-source: {', '.join(cross_source.get('optional_single_source') or []) or '—'}",
+            f"- recovery actions: {len(recovery_plan):,}",
             f"- reasons: {', '.join(reasons) if reasons else '—'}",
-            "",
         ]
+        for item in recovery_plan[:3]:
+            command = item.get("preflight_command") or item.get("command") or []
+            command_text = " ".join(str(part) for part in command)
+            lines.append(
+                f"- {item.get('dataset', 'unknown')}: {item.get('reason_code') or item.get('status') or 'unknown'}"
+                f" mode={item.get('mode', 'audit')} command={command_text or '—'}"
+            )
+        lines.append("")
 
     s = status.get("sentiment", {})
     silver = s.get("silver", {})

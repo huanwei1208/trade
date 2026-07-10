@@ -1167,8 +1167,39 @@ def test_cross_source_coverage_reports_required_missing_and_single_source_option
     assert stats["optional_single_source"] == ["cross_asset.fx_cnh", "cross_asset.gold"]
     assert "REQUIRED_CROSS_SOURCE_EVIDENCE_MISSING" in stats["reason_codes"]
     assert stats["datasets"]["kline"]["evidence_level"] == "provider_fallback_only"
+    assert stats["datasets"]["kline"]["required_artifact"] == {
+        "path": str(tmp_path / "market" / "kline" / "reconciliation" / "current.json"),
+        "schema_version": "kline-reconciliation-v1",
+        "status": "pass",
+        "minimum_checked_rows": 1,
+        "maximum_block_rows": 0,
+        "shadow_sources": "non_empty",
+    }
     assert stats["datasets"]["cross_asset.btc"]["reason_code"] == "BTC_RECONCILIATION_MISSING"
+    plan_by_dataset = {item["dataset"]: item for item in stats["recovery_plan"]}
+    assert plan_by_dataset["kline"]["mode"] == "generate"
+    assert plan_by_dataset["kline"]["command"] == [
+        "trade",
+        "data",
+        "kline",
+        "reconcile",
+        "--symbols",
+        "<symbols>",
+        "--start",
+        "<start>",
+        "--end",
+        "<end>",
+        "--shadow-provider",
+        "tencent",
+        "--json",
+    ]
+    assert plan_by_dataset["kline"]["preflight_command"][-1] == "--dry-run"
+    assert plan_by_dataset["kline"]["required_artifact"]["schema_version"] == "kline-reconciliation-v1"
+    assert plan_by_dataset["cross_asset.btc"]["mode"] == "sync"
+    assert plan_by_dataset["cross_asset.btc"]["required_artifact"]["manifest_gate"] == "D3"
     assert any("多源交叉验证覆盖" in line for line in lines)
+    assert any("recovery actions: 2" in line for line in lines)
+    assert any("trade data kline reconcile" in line and "--dry-run" in line for line in lines)
 
 
 def test_cross_source_coverage_accepts_ready_btc_reconciliation_manifest(tmp_path) -> None:
@@ -1324,7 +1355,7 @@ def test_data_quality_gate_fails_on_cross_source_coverage_gap() -> None:
             "reason_codes": ["REQUIRED_CROSS_SOURCE_EVIDENCE_MISSING"],
             "required_missing": ["kline", "cross_asset.btc"],
             "optional_single_source": ["cross_asset.gold"],
-            "recovery_plan": [{"dataset": "kline", "mode": "design"}],
+            "recovery_plan": [{"dataset": "kline", "mode": "generate"}],
         },
     }
 
@@ -1338,6 +1369,7 @@ def test_data_quality_gate_fails_on_cross_source_coverage_gap() -> None:
     ]
     plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
     assert plan_by_component["cross_source_coverage"]["mode"] == "audit"
+    assert gate["components"]["cross_source_coverage"]["metrics"]["recovery_plan"][0]["mode"] == "generate"
 
 
 def test_stale_job_policy_converges_data_jobs(tmp_path) -> None:
