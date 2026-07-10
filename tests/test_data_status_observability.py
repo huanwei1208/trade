@@ -1176,6 +1176,86 @@ def test_cross_source_coverage_accepts_ready_btc_reconciliation_manifest(tmp_pat
     assert stats["required_missing"] == ["kline"]
 
 
+def test_cross_source_coverage_accepts_ready_kline_reconciliation_artifact(tmp_path) -> None:
+    recon_root = tmp_path / "market" / "kline" / "reconciliation"
+    recon_root.mkdir(parents=True)
+    (recon_root / "current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "kline-reconciliation-v1",
+                "run_id": "kline-recon-ready",
+                "status": "pass",
+                "observed_at": "2026-03-20T15:30:00Z",
+                "providers": {
+                    "primary": "tushare",
+                    "shadow": ["akshare", "tencent"],
+                },
+                "kline_manifest_hash": "f" * 64,
+                "metrics": {
+                    "checked_rows": 42,
+                    "block_rows": 0,
+                    "warn_rows": 1,
+                    "max_close_basis_pct": 0.12,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stats = cross_source_coverage_stats(tmp_path)
+    item = stats["datasets"]["kline"]
+
+    assert item["status"] == "pass"
+    assert item["evidence_level"] == "provider_reconciliation"
+    assert item["metrics"]["checked_rows"] == 42
+    assert item["shadow_sources"] == ["akshare", "tencent"]
+    assert stats["required_missing"] == ["cross_asset.btc"]
+
+
+def test_cross_source_coverage_rejects_invalid_kline_reconciliation_artifact(tmp_path) -> None:
+    recon_root = tmp_path / "market" / "kline" / "reconciliation"
+    recon_root.mkdir(parents=True)
+    (recon_root / "current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "old-schema",
+                "status": "pass",
+                "providers": {"primary": "tushare", "shadow": ["akshare"]},
+                "metrics": {"checked_rows": 10, "block_rows": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stats = cross_source_coverage_stats(tmp_path)
+
+    assert stats["datasets"]["kline"]["status"] == "fail"
+    assert stats["datasets"]["kline"]["evidence_level"] == "invalid_artifact"
+    assert stats["datasets"]["kline"]["reason_code"] == "KLINE_RECONCILIATION_SCHEMA_MISMATCH"
+
+
+def test_cross_source_coverage_rejects_failing_kline_reconciliation_artifact(tmp_path) -> None:
+    recon_root = tmp_path / "market" / "kline" / "reconciliation"
+    recon_root.mkdir(parents=True)
+    (recon_root / "current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "kline-reconciliation-v1",
+                "status": "fail",
+                "providers": {"primary": "tushare", "shadow": ["akshare"]},
+                "metrics": {"checked_rows": 10, "block_rows": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stats = cross_source_coverage_stats(tmp_path)
+
+    assert stats["datasets"]["kline"]["status"] == "fail"
+    assert stats["datasets"]["kline"]["evidence_level"] == "provider_reconciliation_failed"
+    assert stats["datasets"]["kline"]["reason_code"] == "KLINE_RECONCILIATION_NOT_READY"
+
+
 def test_data_quality_gate_fails_on_cross_source_coverage_gap() -> None:
     clean = {
         "kline_coverage": {"coverage_pct": 100.0},

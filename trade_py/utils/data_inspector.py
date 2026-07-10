@@ -161,6 +161,7 @@ _TUSHARE_AUDIT_LOG_NAME = "tushare_requests.jsonl"
 _TUSHARE_AUDIT_FAIL_STATUSES = {"auth", "permission", "invalid_request"}
 _TUSHARE_AUDIT_WARN_STATUSES = {"rate_limit", "transient", "unknown"}
 _REQUIRED_CROSS_SOURCE_DATASETS = ("kline", "cross_asset.btc")
+_KLINE_RECONCILIATION_SCHEMA_VERSION = "kline-reconciliation-v1"
 
 
 # ── Status helpers ─────────────────────────────────────────────────────────────
@@ -2370,25 +2371,91 @@ def _btc_cross_source_item(data_root: str | Path) -> dict[str, Any]:
     return item
 
 
+def _kline_reconciliation_path(data_root: str | Path) -> Path:
+    return KLINE_DIR(data_root) / "reconciliation" / "current.json"
+
+
+def _kline_cross_source_item(data_root: str | Path) -> dict[str, Any]:
+    path = _kline_reconciliation_path(data_root)
+    item = {
+        "dataset": "kline",
+        "required": True,
+        "status": "warn",
+        "evidence_level": "provider_fallback_only",
+        "primary_source": "tushare",
+        "shadow_sources": ["akshare", "tencent", "baostock"],
+        "reason_code": "KLINE_RECONCILIATION_NOT_PERSISTED",
+        "metrics": {
+            "provider_chain": ["tushare", "akshare", "tencent", "baostock"],
+        },
+        "evidence_refs": {
+            "reconciliation_pointer": str(path),
+            "failure_log": str(Path(data_root) / ".db" / "kline_failures.jsonl"),
+            "manifest_path": str(KLINE_MANIFEST(data_root)),
+        },
+    }
+    if not path.exists():
+        return item
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        item["status"] = "fail"
+        item["evidence_level"] = "invalid_artifact"
+        item["reason_code"] = "KLINE_RECONCILIATION_READ_ERROR"
+        item["error"] = str(exc)
+        return item
+    if not isinstance(payload, dict):
+        item["status"] = "fail"
+        item["evidence_level"] = "invalid_artifact"
+        item["reason_code"] = "KLINE_RECONCILIATION_INVALID"
+        return item
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    providers = payload.get("providers") if isinstance(payload.get("providers"), dict) else {}
+    primary = str(providers.get("primary") or payload.get("primary_source") or "tushare")
+    shadows = [str(value) for value in (providers.get("shadow") or payload.get("shadow_sources") or [])]
+    checked_rows = int(metrics.get("checked_rows") or metrics.get("aligned_rows") or 0)
+    block_rows = int(metrics.get("block_rows") or 0)
+    warn_rows = int(metrics.get("warn_rows") or 0)
+    status = str(payload.get("status") or "")
+    schema_version = str(payload.get("schema_version") or "")
+    item.update({
+        "primary_source": primary,
+        "shadow_sources": shadows,
+        "run_id": payload.get("run_id"),
+        "observed_at": payload.get("observed_at"),
+        "metrics": {
+            "checked_rows": checked_rows,
+            "block_rows": block_rows,
+            "warn_rows": warn_rows,
+            "max_close_basis_pct": metrics.get("max_close_basis_pct"),
+            "provider_pair_count": len(shadows),
+        },
+        "evidence_refs": {
+            **item["evidence_refs"],
+            "artifact_path": str(path),
+            "manifest_hash": payload.get("kline_manifest_hash"),
+        },
+    })
+    if schema_version != _KLINE_RECONCILIATION_SCHEMA_VERSION:
+        item["status"] = "fail"
+        item["evidence_level"] = "invalid_artifact"
+        item["reason_code"] = "KLINE_RECONCILIATION_SCHEMA_MISMATCH"
+        return item
+    if status == "pass" and checked_rows > 0 and block_rows == 0 and shadows:
+        item["status"] = "pass"
+        item["evidence_level"] = "provider_reconciliation"
+        item["reason_code"] = None
+        return item
+    item["status"] = "fail"
+    item["evidence_level"] = "provider_reconciliation_failed"
+    item["reason_code"] = "KLINE_RECONCILIATION_NOT_READY"
+    return item
+
+
 def cross_source_coverage_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Inventory datasets with durable independent-source validation evidence."""
     datasets: dict[str, dict[str, Any]] = {
-        "kline": {
-            "dataset": "kline",
-            "required": True,
-            "status": "warn",
-            "evidence_level": "provider_fallback_only",
-            "primary_source": "tushare",
-            "shadow_sources": ["akshare", "tencent", "baostock"],
-            "reason_code": "KLINE_RECONCILIATION_NOT_PERSISTED",
-            "metrics": {
-                "provider_chain": ["tushare", "akshare", "tencent", "baostock"],
-            },
-            "evidence_refs": {
-                "failure_log": str(Path(data_root) / ".db" / "kline_failures.jsonl"),
-                "manifest_path": str(KLINE_MANIFEST(data_root)),
-            },
-        },
+        "kline": _kline_cross_source_item(data_root),
         "cross_asset.btc": _btc_cross_source_item(data_root),
         "cross_asset.gold": {
             "dataset": "cross_asset.gold",
@@ -2433,7 +2500,10 @@ def cross_source_coverage_stats(data_root: str | Path = "data") -> dict[str, Any
             "dataset": "kline",
             "command": ["trade", "data", "status", "--strict", "--json"],
             "mode": "design",
-            "detail": "Persist provider-level kline reconciliation evidence before treating fallback as validation.",
+            "detail": (
+                "Produce data/market/kline/reconciliation/current.json with "
+                f"schema_version={_KLINE_RECONCILIATION_SCHEMA_VERSION} before treating fallback as validation."
+            ),
         }
         if "kline" in required_missing
         else None,
