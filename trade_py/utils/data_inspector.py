@@ -606,10 +606,30 @@ def macro_stats(data_root: str | Path = "data") -> dict[str, Any]:
     return result
 
 
-def _component(status: str, reason_code: str | None = None, metrics: dict[str, Any] | None = None) -> dict[str, Any]:
+def _recovery(
+    command: list[str],
+    *,
+    mode: str,
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        "command": command,
+        "mode": mode,
+        "detail": detail,
+    }
+
+
+def _component(
+    status: str,
+    reason_code: str | None = None,
+    metrics: dict[str, Any] | None = None,
+    recovery: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     payload = {"status": status, "metrics": metrics or {}}
     if reason_code:
         payload["reason_code"] = reason_code
+    if recovery:
+        payload["recovery"] = recovery
     return payload
 
 
@@ -622,6 +642,9 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         "pass" if kline_cov >= 99.0 and kline_lag <= 3 else ("warn" if kline_cov >= 95.0 else "fail"),
         None if kline_cov >= 99.0 and kline_lag <= 3 else "KLINE_STALE_OR_LOW_COVERAGE",
         {"coverage_pct": kline_cov, "max_trading_day_stale_days": kline_lag},
+        _recovery(["trade", "data", "kline", "sync"], mode="refresh", detail="Refresh K-line source data and watermarks")
+        if not (kline_cov >= 99.0 and kline_lag <= 3)
+        else None,
     )
 
     fund = status.get("fund_flow") or {}
@@ -634,6 +657,9 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         "pass" if fund_cov >= 90.0 and fund_lag <= 5 else ("warn" if fund_cov >= 80.0 else "fail"),
         None if fund_cov >= 90.0 and fund_lag <= 5 else "FUND_FLOW_STALE_OR_LOW_COVERAGE",
         {"coverage_pct": fund_cov, "sample_max_trading_day_stale_days": fund_lag},
+        _recovery(["trade", "data", "fund-flow", "sync"], mode="refresh", detail="Refresh local fund-flow parquet coverage")
+        if not (fund_cov >= 90.0 and fund_lag <= 5)
+        else None,
     )
 
     fundamental = status.get("fundamental") or {}
@@ -642,6 +668,9 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         "pass" if fundamental_cov >= 95.0 else ("warn" if fundamental_cov >= 85.0 else "fail"),
         None if fundamental_cov >= 95.0 else "FUNDAMENTAL_LOW_COVERAGE",
         {"coverage_pct": fundamental_cov, "max_report_date": fundamental.get("max_date")},
+        _recovery(["trade", "data", "fundamental", "sync"], mode="refresh", detail="Refresh quarterly fundamental parquet coverage")
+        if fundamental_cov < 95.0
+        else None,
     )
 
     sentiment = status.get("sentiment") or {}
@@ -650,6 +679,9 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         "pass" if gold_lag is not None and int(gold_lag) <= 3 else "warn",
         None if gold_lag is not None and int(gold_lag) <= 3 else "SENTIMENT_GOLD_STALE",
         {"lag_days": gold_lag, "max_date": (sentiment.get("gold") or {}).get("max_date")},
+        _recovery(["trade", "data", "sentiment"], mode="refresh", detail="Refresh sentiment Silver/Gold pipeline")
+        if not (gold_lag is not None and int(gold_lag) <= 3)
+        else None,
     )
 
     events = status.get("events") or {}
@@ -659,6 +691,9 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         "pass" if event_count > 0 and event_lag is not None and int(event_lag) <= 3 else "warn",
         None if event_count > 0 and event_lag is not None and int(event_lag) <= 3 else "EVENTS_STALE_OR_EMPTY",
         {"lag_days": event_lag, "event_count": event_count},
+        _recovery(["trade", "event", "sync"], mode="recompute", detail="Rebuild market events from sentiment evidence")
+        if not (event_count > 0 and event_lag is not None and int(event_lag) <= 3)
+        else None,
     )
 
     cross = status.get("cross_asset") or {}
@@ -678,6 +713,9 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         "pass" if not cross_bad else "warn",
         None if not cross_bad else "CROSS_ASSET_STALE_OR_MISSING",
         cross_metrics,
+        _recovery(["trade", "data", "cross-asset", "all"], mode="refresh", detail="Refresh gold and FX cross-asset sources")
+        if cross_bad
+        else None,
     )
 
     index = status.get("index") or {}
@@ -687,6 +725,9 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         "pass" if index_cov >= 95.0 and index_sample_lag <= 3 else "warn",
         None if index_cov >= 95.0 and index_sample_lag <= 3 else "INDEX_STALE_OR_LOW_COVERAGE",
         {"coverage_pct": index_cov, "sample_max_lag_days": index_sample_lag},
+        _recovery(["trade", "data", "market-index", "sync"], mode="refresh", detail="Refresh broad market index data")
+        if not (index_cov >= 95.0 and index_sample_lag <= 3)
+        else None,
     )
 
     north = status.get("northbound") or {}
@@ -695,6 +736,9 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         "pass" if north.get("exists") and north_lag is not None and int(north_lag) <= 3 else "warn",
         None if north.get("exists") and north_lag is not None and int(north_lag) <= 3 else "NORTHBOUND_STALE_OR_MISSING",
         {"exists": north.get("exists"), "lag_days": north_lag},
+        _recovery(["trade", "data", "northbound", "sync"], mode="refresh", detail="Refresh northbound capital flow data")
+        if not (north.get("exists") and north_lag is not None and int(north_lag) <= 3)
+        else None,
     )
 
     statuses = [item["status"] for item in components.values()]
@@ -704,10 +748,16 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         for item in components.values()
         if item.get("reason_code")
     ]
+    recovery_plan = [
+        {"component": key, **dict(item["recovery"])}
+        for key, item in components.items()
+        if item.get("recovery")
+    ]
     return {
         "status": overall,
         "reason_codes": reasons,
         "components": components,
+        "recovery_plan": recovery_plan,
     }
 
 

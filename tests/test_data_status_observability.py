@@ -310,9 +310,14 @@ def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
 
     assert clean_gate["status"] == "pass"
     assert clean_gate["reason_codes"] == []
+    assert clean_gate["recovery_plan"] == []
     assert degraded_gate["status"] == "fail"
     assert "KLINE_STALE_OR_LOW_COVERAGE" in degraded_gate["reason_codes"]
     assert "SENTIMENT_GOLD_STALE" in degraded_gate["reason_codes"]
+    plan_by_component = {item["component"]: item for item in degraded_gate["recovery_plan"]}
+    assert plan_by_component["kline"]["command"] == ["trade", "data", "kline", "sync"]
+    assert plan_by_component["sentiment_gold"]["command"] == ["trade", "data", "sentiment"]
+    assert degraded_gate["components"]["kline"]["recovery"]["mode"] == "refresh"
     assert any("数据质量门禁" in line for line in degraded_lines)
 
 
