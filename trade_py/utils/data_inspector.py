@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from importlib.util import find_spec
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -126,6 +128,30 @@ _VALUE_QUALITY_RECOVERY: dict[str, dict[str, Any]] = {
         "command": ["trade", "data", "sentiment"],
         "mode": "recompute",
         "detail": "Recompute Silver/Gold sentiment layers and verify score/confidence ranges.",
+    },
+}
+
+
+_PYTHON_PROVIDER_MODULES: dict[str, tuple[str, ...]] = {
+    "akshare": ("akshare",),
+    "baostock": ("baostock",),
+    "tencent": ("requests",),
+    "okx": ("requests",),
+    "coingecko": ("requests",),
+    "tushare": ("tushare",),
+}
+
+
+_PROVIDER_RECOVERY: dict[str, dict[str, Any]] = {
+    "tushare": {
+        "command": ["trade", "account", "setting-set", "tushare_token", "YOUR_TOKEN"],
+        "mode": "configure",
+        "detail": "Configure Tushare token before running A-share market, fundamental, macro, and flow refresh jobs.",
+    },
+    "coingecko": {
+        "command": ["export", "COINGECKO_API_KEY=YOUR_KEY"],
+        "mode": "configure",
+        "detail": "Set COINGECKO_API_KEY or COINGECKO_DEMO_API_KEY before BTC shadow reconciliation.",
     },
 }
 
@@ -1504,6 +1530,27 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         else None,
     )
 
+    provider_readiness = status.get("provider_readiness") or {}
+    provider_status = str(provider_readiness.get("status") or "pass")
+    provider_reasons = list(provider_readiness.get("reason_codes") or [])
+    components["provider_readiness"] = _component(
+        "fail" if provider_status == "fail" else ("warn" if provider_status == "warn" else "pass"),
+        None if provider_status == "pass" else "PROVIDER_READINESS_DEGRADED",
+        {
+            "missing_required": list(provider_readiness.get("missing_required") or []),
+            "warn_optional": list(provider_readiness.get("warn_optional") or []),
+            "reason_codes": provider_reasons,
+            "recovery_plan": list(provider_readiness.get("recovery_plan") or []),
+        },
+        _recovery(
+            ["trade", "account", "setting-set", "tushare_token", "YOUR_TOKEN"],
+            mode="configure",
+            detail="Configure missing provider credentials/packages before running source refresh jobs",
+        )
+        if provider_status != "pass"
+        else None,
+    )
+
     statuses = [item["status"] for item in components.values()]
     overall = "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass")
     reasons = [
@@ -1911,6 +1958,167 @@ def metadata_reconciliation_stats(
     }
 
 
+def _module_available(module_name: str) -> bool:
+    try:
+        return find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _settings_get(data_root: str | Path, key: str, default: Any = "") -> Any:
+    try:
+        from trade_py.db.settings_db import SettingsDB
+
+        return SettingsDB(data_root).get(key, default)
+    except Exception as exc:
+        logger.debug("settings lookup error key=%s: %s", key, exc)
+        return default
+
+
+def _defaults_provider_value(path: tuple[str, ...]) -> Any:
+    try:
+        from trade_py.infra.settings import load_defaults
+
+        value: Any = load_defaults()
+        for key in path:
+            if not isinstance(value, dict):
+                return None
+            value = value.get(key)
+        return value
+    except Exception as exc:
+        logger.debug("defaults lookup error path=%s: %s", path, exc)
+        return None
+
+
+def provider_readiness_stats(data_root: str | Path = "data") -> dict[str, Any]:
+    """Return non-network provider credential/package readiness."""
+    tushare_token = str(
+        _settings_get(data_root, "tushare_token", "")
+        or os.environ.get("TUSHARE_TOKEN", "")
+        or _defaults_provider_value(("tushare_token",))
+        or _defaults_provider_value(("tushare", "token"))
+        or _defaults_provider_value(("providers", "tushare_token"))
+        or _defaults_provider_value(("providers", "tushare", "token"))
+        or ""
+    ).strip()
+    coingecko_key = str(
+        os.environ.get("COINGECKO_API_KEY")
+        or os.environ.get("COINGECKO_DEMO_API_KEY")
+        or ""
+    ).strip()
+
+    providers: dict[str, dict[str, Any]] = {
+        "tushare": {
+            "status": "pass" if tushare_token and all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["tushare"]) else "fail",
+            "credential_required": True,
+            "credential_present": bool(tushare_token),
+            "credential_sources": ["settings:tushare_token", "env:TUSHARE_TOKEN", "defaults"],
+            "modules": {
+                module: _module_available(module)
+                for module in _PYTHON_PROVIDER_MODULES["tushare"]
+            },
+            "used_by": ["kline", "fund_flow", "fundamental", "index", "northbound", "macro", "calendar"],
+        },
+        "coingecko": {
+            "status": "pass" if coingecko_key and all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["coingecko"]) else "fail",
+            "credential_required": True,
+            "credential_present": bool(coingecko_key),
+            "credential_sources": ["env:COINGECKO_API_KEY", "env:COINGECKO_DEMO_API_KEY"],
+            "modules": {
+                module: _module_available(module)
+                for module in _PYTHON_PROVIDER_MODULES["coingecko"]
+            },
+            "used_by": ["cross_asset.btc.shadow_reconciliation"],
+        },
+        "akshare": {
+            "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["akshare"]) else "warn",
+            "credential_required": False,
+            "credential_present": None,
+            "credential_sources": [],
+            "modules": {
+                module: _module_available(module)
+                for module in _PYTHON_PROVIDER_MODULES["akshare"]
+            },
+            "used_by": ["kline_fallback", "cross_asset.gold", "cross_asset.fx_cnh"],
+        },
+        "baostock": {
+            "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["baostock"]) else "warn",
+            "credential_required": False,
+            "credential_present": None,
+            "credential_sources": [],
+            "modules": {
+                module: _module_available(module)
+                for module in _PYTHON_PROVIDER_MODULES["baostock"]
+            },
+            "used_by": ["kline_fallback"],
+        },
+        "tencent": {
+            "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["tencent"]) else "warn",
+            "credential_required": False,
+            "credential_present": None,
+            "credential_sources": [],
+            "modules": {
+                module: _module_available(module)
+                for module in _PYTHON_PROVIDER_MODULES["tencent"]
+            },
+            "used_by": ["kline_fallback"],
+        },
+        "okx": {
+            "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["okx"]) else "fail",
+            "credential_required": False,
+            "credential_present": None,
+            "credential_sources": [],
+            "modules": {
+                module: _module_available(module)
+                for module in _PYTHON_PROVIDER_MODULES["okx"]
+            },
+            "used_by": ["cross_asset.btc.primary"],
+        },
+    }
+
+    missing_required = sorted(
+        name
+        for name, item in providers.items()
+        if item.get("status") == "fail"
+    )
+    warn_optional = sorted(
+        name
+        for name, item in providers.items()
+        if item.get("status") == "warn"
+    )
+    recovery_plan = []
+    for name in missing_required:
+        spec = _PROVIDER_RECOVERY.get(name)
+        if spec:
+            recovery_plan.append({"provider": name, **spec})
+    for name in warn_optional:
+        missing_modules = [
+            module
+            for module, available in (providers.get(name, {}).get("modules") or {}).items()
+            if not available
+        ]
+        recovery_plan.append({
+            "provider": name,
+            "command": ["python", "-m", "pip", "install", *missing_modules] if missing_modules else ["trade", "data", "status", "--json"],
+            "mode": "install_optional",
+            "detail": f"Install optional provider package(s) for {name} fallback support.",
+            "missing_modules": missing_modules,
+        })
+    reason_codes: list[str] = []
+    if missing_required:
+        reason_codes.append("PROVIDER_REQUIRED_UNAVAILABLE")
+    if warn_optional:
+        reason_codes.append("PROVIDER_OPTIONAL_UNAVAILABLE")
+    return {
+        "status": "fail" if missing_required else ("warn" if warn_optional else "pass"),
+        "reason_codes": reason_codes,
+        "missing_required": missing_required,
+        "warn_optional": warn_optional,
+        "recovery_plan": recovery_plan,
+        "providers": providers,
+    }
+
+
 # ── Aggregate status ──────────────────────────────────────────────────────────
 
 def get_data_status(
@@ -1936,6 +2144,7 @@ def get_data_status(
         "schema_contracts": schema_contracts,
         "source_stability": source_stability_stats(data_root, sample_limit=sample_limit),
         "metadata_reconciliation": metadata_reconciliation_stats(data_root, sample_limit=sample_limit),
+        "provider_readiness": provider_readiness_stats(data_root),
         "as_of":       date.today().isoformat(),
     }
     if include_value_quality:
@@ -2137,6 +2346,20 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
             f"- status: **{metadata.get('status', 'unknown')}**",
             f"- manifest checked: {manifest_metrics.get('checked_entries', 0):,}",
             f"- sync_state checked: {sync_metrics.get('checked_rows', 0):,}",
+            f"- reasons: {', '.join(reasons) if reasons else '—'}",
+            "",
+        ]
+
+    providers = status.get("provider_readiness", {})
+    if providers:
+        reasons = providers.get("reason_codes") or []
+        recovery_plan = providers.get("recovery_plan") or []
+        lines += [
+            "### 数据源可用性",
+            f"- status: **{providers.get('status', 'unknown')}**",
+            f"- missing required: {', '.join(providers.get('missing_required') or []) or '—'}",
+            f"- optional warnings: {', '.join(providers.get('warn_optional') or []) or '—'}",
+            f"- recovery actions: {len(recovery_plan):,}",
             f"- reasons: {', '.join(reasons) if reasons else '—'}",
             "",
         ]

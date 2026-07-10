@@ -22,6 +22,7 @@ from trade_py.utils.data_inspector import (
     northbound_stats,
     macro_stats,
     metadata_reconciliation_stats,
+    provider_readiness_stats,
     schema_contract_stats,
     source_stability_stats,
     value_quality_stats,
@@ -897,6 +898,99 @@ def test_data_quality_gate_fails_on_metadata_reconciliation_mismatch() -> None:
     assert gate["components"]["metadata_reconciliation"]["metrics"]["reason_codes"] == ["MANIFEST_PARQUET_MISMATCH"]
     plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
     assert plan_by_component["metadata_reconciliation"]["mode"] == "audit"
+
+
+def test_provider_readiness_reports_required_credentials_and_optional_modules(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TUSHARE_TOKEN", "tushare-token")
+    monkeypatch.delenv("COINGECKO_API_KEY", raising=False)
+    monkeypatch.delenv("COINGECKO_DEMO_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "trade_py.utils.data_inspector._module_available",
+        lambda module: module != "akshare",
+    )
+
+    stats = provider_readiness_stats(tmp_path)
+    lines = build_status_lines({"as_of": "2026-03-20", "provider_readiness": stats})
+
+    assert stats["status"] == "fail"
+    assert "coingecko" in stats["missing_required"]
+    assert "akshare" in stats["warn_optional"]
+    assert stats["providers"]["tushare"]["credential_present"] is True
+    assert stats["providers"]["coingecko"]["credential_present"] is False
+    assert "PROVIDER_REQUIRED_UNAVAILABLE" in stats["reason_codes"]
+    assert "PROVIDER_OPTIONAL_UNAVAILABLE" in stats["reason_codes"]
+    plan_by_provider = {item["provider"]: item for item in stats["recovery_plan"]}
+    assert plan_by_provider["coingecko"]["command"] == ["export", "COINGECKO_API_KEY=YOUR_KEY"]
+    assert plan_by_provider["akshare"]["missing_modules"] == ["akshare"]
+    assert any("数据源可用性" in line for line in lines)
+
+
+def test_provider_readiness_passes_when_required_credentials_and_modules_exist(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TUSHARE_TOKEN", "tushare-token")
+    monkeypatch.setenv("COINGECKO_API_KEY", "coingecko-key")
+    monkeypatch.setattr("trade_py.utils.data_inspector._module_available", lambda _module: True)
+
+    stats = provider_readiness_stats(tmp_path)
+
+    assert stats["status"] == "pass"
+    assert stats["missing_required"] == []
+    assert stats["warn_optional"] == []
+    assert stats["recovery_plan"] == []
+    assert stats["providers"]["coingecko"]["credential_present"] is True
+
+
+def test_data_quality_gate_fails_on_provider_readiness_breakage() -> None:
+    clean = {
+        "kline_coverage": {"coverage_pct": 100.0},
+        "kline_freshness": {"max_trading_day_stale_days": 0},
+        "fund_flow": {"coverage_pct": 95.0, "stale_sample": [{"trading_day_stale_days": 0}]},
+        "fundamental": {"coverage_pct": 100.0, "max_date": "2025-12-31"},
+        "sentiment": {"gold": {"lag_days": 0, "max_date": "2026-03-20"}},
+        "events": {"lag_days": 0, "event_count": 3},
+        "cross_asset": {
+            "gold": {"exists": True, "lag_days": 0},
+            "fx_cnh": {"exists": True, "lag_days": 0},
+            "btc": {"exists": True, "lag_days": 0},
+        },
+        "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
+        "northbound": {"exists": True, "lag_days": 0},
+        "schema_contracts": {"status": "pass", "checked_files": 12, "failed_contracts": []},
+        "value_quality": {"status": "pass", "checked_rows": 0, "failed_checks": []},
+        "source_stability": {"status": "pass", "reason_codes": []},
+        "metadata_reconciliation": {"status": "pass", "reason_codes": []},
+        "provider_readiness": {
+            "status": "fail",
+            "reason_codes": ["PROVIDER_REQUIRED_UNAVAILABLE"],
+            "missing_required": ["tushare", "coingecko"],
+            "warn_optional": [],
+            "recovery_plan": [
+                {
+                    "provider": "coingecko",
+                    "command": ["export", "COINGECKO_API_KEY=YOUR_KEY"],
+                    "mode": "configure",
+                    "detail": "set CoinGecko key",
+                }
+            ],
+        },
+    }
+
+    gate = build_data_quality_gate(clean)
+
+    assert gate["status"] == "fail"
+    assert "PROVIDER_READINESS_DEGRADED" in gate["reason_codes"]
+    assert gate["components"]["provider_readiness"]["metrics"]["missing_required"] == [
+        "tushare",
+        "coingecko",
+    ]
+    assert gate["components"]["provider_readiness"]["metrics"]["recovery_plan"][0]["provider"] == "coingecko"
+    plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
+    assert plan_by_component["provider_readiness"]["mode"] == "configure"
 
 
 def test_stale_job_policy_converges_data_jobs(tmp_path) -> None:
