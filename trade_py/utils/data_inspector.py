@@ -175,14 +175,51 @@ def kline_coverage_stats(data_root: str | Path = "data", sample_limit: int = 10)
 def kline_freshness_stats(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
     try:
         from trade_py.data.market.kline import KlineSyncService
+        from trade_py.db.trade_db import TradeDB
 
         rows = KlineSyncService(data_root).status(limit=1000000)
         stale_values = [int(r["stale_days"]) for r in rows if r.get("stale_days") not in {None, "-"}]
+        trading_reference = None
+        trading_lag_values: list[int] = []
+        try:
+            db = TradeDB(data_root)
+            trading_reference = db.get_latest_open_trade_date()
+            if trading_reference:
+                with db._conn_lock:
+                    lag_rows = db._conn.execute(
+                        """
+                        SELECT s.symbol, COUNT(c.trade_date) AS missing_trade_days
+                        FROM sync_state s
+                        LEFT JOIN trading_calendar c
+                          ON c.exchange = 'SSE'
+                         AND c.is_open = 1
+                         AND c.trade_date > COALESCE(s.last_date, '')
+                         AND c.trade_date <= ?
+                        WHERE s.source = 'tushare_kline'
+                          AND s.dataset = 'daily'
+                        GROUP BY s.symbol
+                        """,
+                        (trading_reference,),
+                    ).fetchall()
+                by_symbol = {
+                    str(row["symbol"]): int(row["missing_trade_days"] or 0)
+                    for row in lag_rows
+                }
+                for row in rows:
+                    row["trading_day_stale_days"] = str(by_symbol.get(str(row.get("symbol") or ""), 0))
+                trading_lag_values = list(by_symbol.values())
+        except Exception as exc:
+            logger.debug("kline trading-day freshness error: %s", exc)
         return {
             "stale_ge_1": sum(1 for v in stale_values if v >= 1),
             "stale_ge_5": sum(1 for v in stale_values if v >= 5),
             "stale_ge_30": sum(1 for v in stale_values if v >= 30),
             "max_stale_days": max(stale_values) if stale_values else 0,
+            "expected_trade_date": trading_reference,
+            "trading_day_stale_ge_1": sum(1 for v in trading_lag_values if v >= 1),
+            "trading_day_stale_ge_5": sum(1 for v in trading_lag_values if v >= 5),
+            "trading_day_stale_ge_30": sum(1 for v in trading_lag_values if v >= 30),
+            "max_trading_day_stale_days": max(trading_lag_values) if trading_lag_values else 0,
             "stale_sample": rows[:sample_limit],
         }
     except Exception as exc:
@@ -363,6 +400,10 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
             f"- stale >= 5d: {kf.get('stale_ge_5', 0):,}",
             f"- stale >= 30d: {kf.get('stale_ge_30', 0):,}",
             f"- 最大滞后: {kf.get('max_stale_days', 0)} 天",
+            f"- 交易日基准: {kf.get('expected_trade_date') or '—'}",
+            f"- trading-day stale >= 1d: {kf.get('trading_day_stale_ge_1', 0):,}",
+            f"- trading-day stale >= 5d: {kf.get('trading_day_stale_ge_5', 0):,}",
+            f"- 最大交易日滞后: {kf.get('max_trading_day_stale_days', 0)} 天",
             "",
         ]
 

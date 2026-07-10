@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -19,6 +20,23 @@ logger = logging.getLogger(__name__)
 _DATA_ROOT_ARG = str(default_data_root())
 _READ_ONLY_SENTIMENT_COMMANDS = {"status", "sources", "doctor", "inspect", "sample"}
 _DEFAULT_RESEARCH_SOURCE_CATALOG = Path("trade_py/infra/config/research_sources.csv")
+_RUNNING_JOB_STALE_HOURS = {
+    "realtime_quote_sync": 0.25,
+    "realtime_compute": 0.25,
+    "planned_event_sync": 0.5,
+    "planned_event_realize": 0.5,
+    "window_score": 1.0,
+    "fund_flow_update": 1.0,
+    "northbound": 1.0,
+    "crypto_btc_fetch": 1.0,
+    "crypto_research_validation": 1.0,
+    "evaluate_gate": 0.5,
+    "evaluate_source": 2.0,
+    "evaluate_daily": 2.0,
+    "event_pipeline": 2.0,
+    "sentiment_pipeline": 4.0,
+    "kline_update": 6.0,
+}
 
 
 @dataclass
@@ -30,6 +48,31 @@ class DataRunResult:
 
 def _truncate_summary(text: str, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit]
+
+
+def _parse_job_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace(" ", "T"))
+    except ValueError:
+        return None
+
+
+def _running_job_state(row: dict, *, now: datetime | None = None) -> dict[str, object]:
+    job_name = str(row.get("job_name") or "")
+    started = _parse_job_datetime(row.get("started_at"))
+    threshold = float(_RUNNING_JOB_STALE_HOURS.get(job_name, 4.0))
+    age_hours = None
+    if started is not None:
+        age_hours = max(((now or datetime.now()) - started).total_seconds() / 3600.0, 0.0)
+    stale = age_hours is not None and age_hours > threshold
+    return {
+        "status": "stale_running" if stale else "running",
+        "age_hours": round(age_hours, 2) if age_hours is not None else None,
+        "stale_after_hours": threshold,
+    }
 
 
 def _extract_flag_value(argv: list[str], flag: str, default: str) -> str:
@@ -723,8 +766,11 @@ def main(argv: list[str] | None = None) -> int:
         if not running:
             print("  none")
         for row in running:
+            state = _running_job_state(dict(row))
             print(
-                f"  {row['job_name']:<20} stage={row['stage'] or '—':<8} "
+                f"  {row['job_name']:<20} status={state['status']:<14} stage={row['stage'] or '—':<8} "
+                f"age_h={state['age_hours'] if state['age_hours'] is not None else '—'} "
+                f"stale_after_h={state['stale_after_hours']} "
                 f"started_at={row['started_at']} summary={row['result_summary'] or ''}"
             )
         print()
