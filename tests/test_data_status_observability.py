@@ -19,6 +19,7 @@ from trade_py.utils.data_inspector import (
     index_stats,
     northbound_stats,
     macro_stats,
+    build_data_quality_gate,
 )
 
 
@@ -277,3 +278,38 @@ def test_index_northbound_and_macro_status_use_local_files(tmp_path) -> None:
     assert any("指数数据" in line for line in lines)
     assert any("北向资金" in line for line in lines)
     assert any("宏观数据" in line for line in lines)
+
+
+def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
+    clean = {
+        "kline_coverage": {"coverage_pct": 100.0},
+        "kline_freshness": {"max_trading_day_stale_days": 0},
+        "fund_flow": {"coverage_pct": 95.0, "stale_sample": [{"trading_day_stale_days": 0}]},
+        "fundamental": {"coverage_pct": 100.0, "max_date": "2025-12-31"},
+        "sentiment": {"gold": {"lag_days": 0, "max_date": "2026-03-20"}},
+        "events": {"lag_days": 0, "event_count": 3},
+        "cross_asset": {
+            "gold": {"exists": True, "lag_days": 0},
+            "fx_cnh": {"exists": True, "lag_days": 0},
+            "btc": {"exists": True, "lag_days": 0},
+        },
+        "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
+        "northbound": {"exists": True, "lag_days": 0},
+    }
+    degraded = {
+        **clean,
+        "kline_coverage": {"coverage_pct": 80.0},
+        "sentiment": {"gold": {"lag_days": 20, "max_date": "2026-03-01"}},
+        "events": {"lag_days": 20, "event_count": 0},
+    }
+
+    clean_gate = build_data_quality_gate(clean)
+    degraded_gate = build_data_quality_gate(degraded)
+    degraded_lines = build_status_lines({"as_of": "2026-03-20", "quality_gate": degraded_gate})
+
+    assert clean_gate["status"] == "pass"
+    assert clean_gate["reason_codes"] == []
+    assert degraded_gate["status"] == "fail"
+    assert "KLINE_STALE_OR_LOW_COVERAGE" in degraded_gate["reason_codes"]
+    assert "SENTIMENT_GOLD_STALE" in degraded_gate["reason_codes"]
+    assert any("数据质量门禁" in line for line in degraded_lines)

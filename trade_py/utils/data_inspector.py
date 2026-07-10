@@ -606,6 +606,111 @@ def macro_stats(data_root: str | Path = "data") -> dict[str, Any]:
     return result
 
 
+def _component(status: str, reason_code: str | None = None, metrics: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {"status": status, "metrics": metrics or {}}
+    if reason_code:
+        payload["reason_code"] = reason_code
+    return payload
+
+
+def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
+    components: dict[str, dict[str, Any]] = {}
+
+    kline_cov = float((status.get("kline_coverage") or {}).get("coverage_pct") or 0.0)
+    kline_lag = int((status.get("kline_freshness") or {}).get("max_trading_day_stale_days") or 0)
+    components["kline"] = _component(
+        "pass" if kline_cov >= 99.0 and kline_lag <= 3 else ("warn" if kline_cov >= 95.0 else "fail"),
+        None if kline_cov >= 99.0 and kline_lag <= 3 else "KLINE_STALE_OR_LOW_COVERAGE",
+        {"coverage_pct": kline_cov, "max_trading_day_stale_days": kline_lag},
+    )
+
+    fund = status.get("fund_flow") or {}
+    fund_cov = float(fund.get("coverage_pct") or 0.0)
+    fund_lag = max(
+        [int(item.get("trading_day_stale_days") or 0) for item in fund.get("stale_sample") or []],
+        default=0,
+    )
+    components["fund_flow"] = _component(
+        "pass" if fund_cov >= 90.0 and fund_lag <= 5 else ("warn" if fund_cov >= 80.0 else "fail"),
+        None if fund_cov >= 90.0 and fund_lag <= 5 else "FUND_FLOW_STALE_OR_LOW_COVERAGE",
+        {"coverage_pct": fund_cov, "sample_max_trading_day_stale_days": fund_lag},
+    )
+
+    fundamental = status.get("fundamental") or {}
+    fundamental_cov = float(fundamental.get("coverage_pct") or 0.0)
+    components["fundamental"] = _component(
+        "pass" if fundamental_cov >= 95.0 else ("warn" if fundamental_cov >= 85.0 else "fail"),
+        None if fundamental_cov >= 95.0 else "FUNDAMENTAL_LOW_COVERAGE",
+        {"coverage_pct": fundamental_cov, "max_report_date": fundamental.get("max_date")},
+    )
+
+    sentiment = status.get("sentiment") or {}
+    gold_lag = (sentiment.get("gold") or {}).get("lag_days")
+    components["sentiment_gold"] = _component(
+        "pass" if gold_lag is not None and int(gold_lag) <= 3 else "warn",
+        None if gold_lag is not None and int(gold_lag) <= 3 else "SENTIMENT_GOLD_STALE",
+        {"lag_days": gold_lag, "max_date": (sentiment.get("gold") or {}).get("max_date")},
+    )
+
+    events = status.get("events") or {}
+    event_lag = events.get("lag_days")
+    event_count = int(events.get("event_count") or 0)
+    components["events"] = _component(
+        "pass" if event_count > 0 and event_lag is not None and int(event_lag) <= 3 else "warn",
+        None if event_count > 0 and event_lag is not None and int(event_lag) <= 3 else "EVENTS_STALE_OR_EMPTY",
+        {"lag_days": event_lag, "event_count": event_count},
+    )
+
+    cross = status.get("cross_asset") or {}
+    cross_metrics = {
+        key: {
+            "exists": (cross.get(key) or {}).get("exists"),
+            "lag_days": (cross.get(key) or {}).get("lag_days"),
+        }
+        for key in ("gold", "fx_cnh", "btc")
+    }
+    cross_bad = [
+        key
+        for key, item in cross_metrics.items()
+        if not item.get("exists") or item.get("lag_days") is None or int(item.get("lag_days") or 0) > 7
+    ]
+    components["cross_asset"] = _component(
+        "pass" if not cross_bad else "warn",
+        None if not cross_bad else "CROSS_ASSET_STALE_OR_MISSING",
+        cross_metrics,
+    )
+
+    index = status.get("index") or {}
+    index_cov = float(index.get("coverage_pct") or 0.0)
+    index_sample_lag = max([int(item.get("lag_days") or 0) for item in index.get("stale_sample") or []], default=0)
+    components["index"] = _component(
+        "pass" if index_cov >= 95.0 and index_sample_lag <= 3 else "warn",
+        None if index_cov >= 95.0 and index_sample_lag <= 3 else "INDEX_STALE_OR_LOW_COVERAGE",
+        {"coverage_pct": index_cov, "sample_max_lag_days": index_sample_lag},
+    )
+
+    north = status.get("northbound") or {}
+    north_lag = north.get("lag_days")
+    components["northbound"] = _component(
+        "pass" if north.get("exists") and north_lag is not None and int(north_lag) <= 3 else "warn",
+        None if north.get("exists") and north_lag is not None and int(north_lag) <= 3 else "NORTHBOUND_STALE_OR_MISSING",
+        {"exists": north.get("exists"), "lag_days": north_lag},
+    )
+
+    statuses = [item["status"] for item in components.values()]
+    overall = "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass")
+    reasons = [
+        str(item.get("reason_code"))
+        for item in components.values()
+        if item.get("reason_code")
+    ]
+    return {
+        "status": overall,
+        "reason_codes": reasons,
+        "components": components,
+    }
+
+
 def db_instrument_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Return instrument DB statistics."""
     try:
@@ -728,7 +833,7 @@ def events_stats(data_root: str | Path = "data") -> dict[str, Any]:
 
 def get_data_status(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
     """Return a consolidated status dict across all data layers."""
-    return {
+    status = {
         "kline":       kline_stats(data_root),
         "kline_coverage": kline_coverage_stats(data_root, sample_limit=sample_limit),
         "kline_freshness": kline_freshness_stats(data_root, sample_limit=sample_limit),
@@ -743,6 +848,8 @@ def get_data_status(data_root: str | Path = "data", sample_limit: int = 10) -> d
         "events":      events_stats(data_root),
         "as_of":       date.today().isoformat(),
     }
+    status["quality_gate"] = build_data_quality_gate(status)
+    return status
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
@@ -764,6 +871,15 @@ def build_status_lines(status: dict[str, Any]) -> list[str]:
 
 def _build_status_md(status: dict[str, Any]) -> list[str]:
     lines = [f"## 数据层状态 ({status.get('as_of', 'N/A')})", ""]
+
+    gate = status.get("quality_gate") or {}
+    if gate:
+        lines += [
+            "### 数据质量门禁",
+            f"- status: **{gate.get('status', 'unknown')}**",
+            f"- reasons: {', '.join(gate.get('reason_codes') or []) or '—'}",
+            "",
+        ]
 
     k = status.get("kline", {})
     k_ok = status_emoji(k.get("symbols", 0), 100)
