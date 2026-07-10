@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from io import BytesIO
 import logging
 import sqlite3
 import time
@@ -13,8 +15,7 @@ from trade_py.data.access.policy import BackfillReport, ReadPolicy
 from trade_py.data.market.kline.akshare import KlineFetcher
 from trade_py.data.market.kline.providers import ensure_symbol
 from trade_py.data.market.fund_flow.tushare import FundFlowFetcher
-from trade_py.data.market.cross_asset import fetch_btc, fetch_fx_cnh, fetch_gold
-from trade_py.data.paths import KLINE_DIR
+from trade_py.data.paths import CROSS_ASSET_DIR, KLINE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -22,21 +23,21 @@ _CST = timezone(timedelta(hours=8))
 
 
 class DataGateway:
-    """Unified read-through data access layer.
+    """Unified data access layer.
 
     Behavior contract:
-    - Try local data first.
-    - If gaps are found, attempt refill at least once.
-    - Only degrade to defaults when refill attempt fails.
-    - Keep failed gaps open, so next call retries again.
+    - Kline, fund-flow, and sentiment readers may use explicit repair behavior.
+    - Cross-asset reads are local-only and never trigger fetch or persistence.
+    - Metadata storage is initialized lazily by readers that record repair work.
     """
 
     def __init__(self, data_root: str | Path = "data", policy: ReadPolicy | None = None) -> None:
         self._root = Path(data_root)
         self._policy = policy or ReadPolicy()
-        from trade_py.db.trade_db import _find_db_path; self._meta_db = _find_db_path(self._root)
-        self._meta_db.parent.mkdir(parents=True, exist_ok=True)
-        self._ensure_meta_tables()
+        from trade_py.db.trade_db import _find_db_path
+
+        self._meta_db = _find_db_path(self._root)
+        self._meta_tables_ready = False
 
     # ------------------------------------------------------------------
     # Public readers
@@ -127,47 +128,50 @@ class DataGateway:
     def get_cross_asset(self, name: str) -> tuple[pd.DataFrame, BackfillReport]:
         start_ts = time.perf_counter()
         report = BackfillReport(dataset="cross_asset", key=name)
-        p = self._root / "cross_asset" / f"{name}.parquet"
-        if p.exists():
+        canonical_name = "fx_cnh" if name == "fx" else name
+        canonical_path = CROSS_ASSET_DIR(self._root) / f"{canonical_name}.parquet"
+        legacy_path = self._root / "cross_asset" / f"{canonical_name}.parquet"
+        path = (
+            canonical_path
+            if name == "btc" or canonical_path.is_file()
+            else legacy_path
+        )
+
+        if not path.is_file():
+            frame = pd.DataFrame()
+            report.action = "degraded"
+            report.degraded = True
+            report.reason_code = "no_local_data"
+            report.error = f"canonical cross-asset file not found: {path}"
+        else:
             try:
-                df = pd.read_parquet(p)
-                report.local_range = self._df_date_range(df)
-                self._record_report(report, start_ts)
-                return df, report
+                if name == "btc":
+                    pointer_path = path.with_name("btc_current.json")
+                    if not pointer_path.is_file():
+                        raise ValueError("BTC canonical lineage pointer is missing")
+                    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+                    expected_hash = str(pointer.get("canonical_sha256") or "")
+                    snapshot = path.read_bytes()
+                    digest = hashlib.sha256(snapshot).hexdigest()
+                    if len(expected_hash) != 64 or digest != expected_hash:
+                        raise ValueError("BTC canonical hash does not match current pointer")
+                    frame = pd.read_parquet(BytesIO(snapshot))
+                else:
+                    frame = pd.read_parquet(path)
+                report.local_range = self._df_date_range(frame)
             except Exception as exc:
+                frame = pd.DataFrame()
+                report.action = "degraded"
                 report.degraded = True
                 report.reason_code = "read_error"
                 report.error = repr(exc)
 
-        report.action = "gap_fill"
-        report.api_calls_est = 1
-        try:
-            if name == "gold":
-                fetch_gold(str(self._root))
-                report.api_endpoint = "akshare.spot_hist_sge"
-            elif name == "btc":
-                fetch_btc(str(self._root))
-                report.api_endpoint = "coingecko.ohlc"
-            elif name in {"fx", "fx_cnh"}:
-                fetch_fx_cnh(str(self._root))
-                report.api_endpoint = "akshare.fx_usdcnh"
-            else:
-                raise ValueError(f"unknown cross-asset dataset: {name}")
-            report.api_calls_actual = 1
-            df = pd.read_parquet(self._root / "cross_asset" / f"{('fx_cnh' if name == 'fx' else name)}.parquet")
-            report.local_range = self._df_date_range(df)
-            self._resolve_gap("cross_asset", name)
-            self._record_report(report, start_ts)
-            return df, report
-        except Exception as exc:
-            report.api_calls_actual = 1
-            report.degraded = True
-            report.reason_code = "api_error"
-            report.error = repr(exc)
-            report.action = "degraded"
-            self._upsert_gap("cross_asset", name, "unknown", report.error)
-            self._record_report(report, start_ts)
-            return pd.DataFrame(), report
+        report.duration_ms = int((time.perf_counter() - start_ts) * 1000)
+        if report.degraded:
+            logger.warning("cross-asset read report: %s", self.format_report(report))
+        else:
+            logger.debug("cross-asset read report: %s", self.format_report(report))
+        return frame, report
 
     def ensure_sentiment_gold_date(self, target_date: date) -> BackfillReport:
         """Ensure sentiment gold parquet for a date exists.
@@ -299,6 +303,10 @@ class DataGateway:
         return target
 
     def _ensure_meta_tables(self) -> None:
+        if self._meta_tables_ready:
+            return
+
+        self._meta_db.parent.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(str(self._meta_db))
         try:
             con.executescript(
@@ -339,8 +347,10 @@ class DataGateway:
             con.commit()
         finally:
             con.close()
+        self._meta_tables_ready = True
 
     def _upsert_gap(self, dataset: str, key: str, missing_range: str, error: str) -> None:
+        self._ensure_meta_tables()
         con = sqlite3.connect(str(self._meta_db))
         try:
             con.execute(
@@ -360,6 +370,7 @@ class DataGateway:
             con.close()
 
     def _resolve_gap(self, dataset: str, key: str) -> None:
+        self._ensure_meta_tables()
         con = sqlite3.connect(str(self._meta_db))
         try:
             con.execute(
@@ -378,6 +389,7 @@ class DataGateway:
 
     def _record_report(self, report: BackfillReport, start_ts: float) -> None:
         report.duration_ms = int((time.perf_counter() - start_ts) * 1000)
+        self._ensure_meta_tables()
         con = sqlite3.connect(str(self._meta_db))
         try:
             con.execute(

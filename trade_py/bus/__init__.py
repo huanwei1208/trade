@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 class Topic:
     # Schedule gates (time-triggered, one-to-many)
     GATE_MORNING          = "gate.morning"           # 07:00
+    GATE_CRYPTO_DAILY     = "gate.crypto_daily"      # 09:00
     GATE_INTRADAY         = "gate.intraday"          # every 1min during market session
     GATE_PRE_MARKET       = "gate.pre_market"         # 07:05
     GATE_SIGNAL_AM        = "gate.signal_am"          # 07:35
@@ -52,6 +53,7 @@ class Topic:
     REALTIME_SYNCED       = "data.realtime.synced"
     INDEX_SYNCED          = "data.index.synced"
     SENTIMENT_SYNCED      = "data.sentiment.synced"
+    CRYPTO_SYNCED         = "data.crypto.synced"
     WINDOW_SCORE_UPDATED  = "signal.window.updated"
     FEATURES_BUILT        = "model.features.built"
     LABELS_BUILT          = "model.labels.built"
@@ -74,7 +76,7 @@ class Topic:
 
     # All gate topics (for dry-run iteration)
     ALL_GATES = [
-        GATE_MORNING, GATE_INTRADAY, GATE_PRE_MARKET, GATE_SIGNAL_AM,
+        GATE_MORNING, GATE_CRYPTO_DAILY, GATE_INTRADAY, GATE_PRE_MARKET, GATE_SIGNAL_AM,
         GATE_MARKET_CLOSE, GATE_EVENING, GATE_EVENT_EXTRACT, GATE_EVALUATE_DAILY,
         GATE_SECTOR_WEEKLY, GATE_FUND_WEEKLY, GATE_MACRO_WEEKLY,
         GATE_MODEL_WEEKLY,

@@ -249,6 +249,10 @@ def make_parser() -> argparse.ArgumentParser:
     )
     p_cross.add_argument("asset", nargs="?", choices=["all", "gold", "fx", "btc"], default="all")
     p_cross.add_argument("--data-root", default=str(default_data_root()))
+    p_cross.add_argument("--mode", choices=["sync", "validate", "status"], default="sync")
+    p_cross.add_argument("--dry-run", action="store_true")
+    p_cross.add_argument("--strict", action="store_true")
+    p_cross.add_argument("--json", action="store_true", dest="as_json")
 
     p_rt = sub.add_parser(
         "realtime",
@@ -417,6 +421,17 @@ def make_parser() -> argparse.ArgumentParser:
     p_wh_fetch.add_argument("--no-materialize", action="store_true")
     p_wh_fetch.add_argument("--json", action="store_true", dest="as_json")
 
+    p_wh_crypto = wh_sub.add_parser(
+        "validate-research",
+        description="运行预注册研究验证并落审计型 ADS 输出",
+    )
+    p_wh_crypto.add_argument("--data-root", default=str(default_data_root()))
+    p_wh_crypto.add_argument("--profile", choices=["crypto-btc-v1"], required=True)
+    p_wh_crypto.add_argument("--as-of", choices=["latest-common"], default="latest-common")
+    p_wh_crypto.add_argument("--dry-run", action="store_true")
+    p_wh_crypto.add_argument("--strict", action="store_true")
+    p_wh_crypto.add_argument("--json", action="store_true", dest="as_json")
+
     parser.epilog = epilog_from_subparsers(parser)
     return parser
 
@@ -515,6 +530,45 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0
 
+    if args.command == "warehouse" and args.warehouse_cmd == "validate-research":
+        from trade_py.data.warehouse.crypto import validate_crypto_btc_profile
+
+        try:
+            payload = validate_crypto_btc_profile(args.data_root, dry_run=args.dry_run)
+        except Exception as exc:
+            payload = {
+                "profile": args.profile,
+                "as_of": args.as_of,
+                "dry_run": args.dry_run,
+                "status": "error",
+                "reason_code": "RESEARCH_VALIDATION_IO_ERROR",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            if args.as_json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+            else:
+                print(f"research_validation=error reason={payload['reason_code']} error={payload['error']}")
+            return 3
+        validation = payload["validation"]
+        if args.as_json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        else:
+            print(
+                f"profile={payload['profile']} data_readiness={validation['data_readiness']} "
+                f"signal_status={validation['status']} run_id={validation['run_id']} "
+                f"dry_run={payload['dry_run']}"
+            )
+            print(f"reasons={','.join(validation.get('reasons') or []) or '-'}")
+            for table, path in payload["outputs"].items():
+                print(f"  {table}: {path}")
+        if payload.get("io_error"):
+            return 3
+        if validation["status"] == "invalid":
+            return 2
+        if args.strict and validation["data_readiness"] == "degraded":
+            return 3
+        return 0
+
     if args.command == "warehouse" and args.warehouse_cmd == "fetch-rss":
         from trade_py.data.warehouse import (
             ControlledFetchPolicy,
@@ -608,6 +662,8 @@ def main(argv: list[str] | None = None) -> int:
             "sector_refresh",
             "macro",
             "cross_asset_fetch",
+            "crypto_btc_fetch",
+            "crypto_research_validation",
         }
         latest_by_job: dict[str, dict] = {}
         for row in db.job_runs_recent(limit=max(args.limit * 8, 96)):
@@ -790,6 +846,67 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     if args.command == "cross-asset":
+        if args.asset == "btc":
+            from trade_py.data.market.cross_asset.service import BtcMarketDataService
+
+            service = BtcMarketDataService(args.data_root)
+            try:
+                if args.mode == "sync":
+                    payload = service.sync(dry_run=args.dry_run)
+                elif args.mode == "validate":
+                    if args.dry_run:
+                        payload = {**service.validate_current(), "dry_run": True}
+                    else:
+                        payload = service.validate_current()
+                else:
+                    payload = service.status()
+            except Exception as exc:
+                payload = {
+                    "mode": args.mode,
+                    "data_readiness": "invalid",
+                    "reason_code": "BTC_DATA_IO_ERROR",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                if args.as_json:
+                    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+                else:
+                    print(f"btc_mode={args.mode} readiness=invalid error={payload['error']}")
+                return 3
+
+            if args.as_json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+            else:
+                print(
+                    f"btc_mode={args.mode} readiness={payload.get('data_readiness', 'invalid')} "
+                    f"run_id={payload.get('run_id') or '-'} published={payload.get('published', False)}"
+                )
+                gates = payload.get("gates") or (payload.get("manifest") or {}).get("gates") or []
+                for gate in gates:
+                    print(
+                        f"  {gate.get('gate', '-')}: {gate.get('status', '-')} "
+                        f"{gate.get('reason_code', '-')}"
+                    )
+
+            readiness = str(payload.get("data_readiness") or "invalid")
+            gates = payload.get("gates") or (payload.get("manifest") or {}).get("gates") or []
+            d3 = next((gate for gate in gates if gate.get("gate") == "D3"), {})
+            if d3.get("status") == "fail" and d3.get("reason_code") == "SOURCE_DIVERGENCE":
+                return 4
+            if readiness == "invalid":
+                return 2
+            acquisition = payload.get("acquisition") or {}
+            if args.mode == "sync" and int(acquisition.get("failed") or 0) > 0:
+                return 3
+            if args.mode == "sync" and (acquisition.get("predecessor") or {}).get("status") == "read_error":
+                return 3
+            if args.strict and readiness == "degraded":
+                return 3
+            return 0
+
+        if args.mode != "sync" or args.dry_run or args.strict or args.as_json:
+            print("cross-asset modes/dry-run/strict/json currently apply only to btc")
+            return 2
+
         def _run_cross_asset() -> DataRunResult:
             fn_map = {
                 "gold": lambda: fetch_gold(args.data_root),

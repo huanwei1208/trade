@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-"""Cross-asset data fetcher: gold (SGE), BTC (CoinGecko), USD/CNH (EastMoney).
+"""Cross-asset data fetcher: gold (SGE), BTC (OKX), USD/CNH (EastMoney).
 
 Storage:
-    data/cross_asset/gold.parquet    — Au99.99 CNY/gram, SGE
-    data/cross_asset/btc.parquet     — BTC/USD daily OHLC, CoinGecko free API
-    data/cross_asset/fx_cnh.parquet  — USD/CNH daily close, EastMoney
+    data/market/cross_asset/gold.parquet — Au99.99 CNY/gram, SGE
+    data/market/cross_asset/btc.parquet — BTC/USDT UTC daily OHLC, OKX
+    data/market/cross_asset/fx_cnh.parquet — USD/CNH daily close, EastMoney
 
 Column schema (all assets): date, open, high, low, close, [volume]
 """
@@ -15,6 +15,11 @@ import time
 from pathlib import Path
 
 import pandas as pd
+
+from trade_py.data.market.cross_asset.btc import (
+    OkxBtcDailyProvider,
+    okx_canonical_candidate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,97 +127,53 @@ def fetch_fx_cnh(data_root: str = _DEFAULT_DATA_ROOT) -> pd.DataFrame:
     return df
 
 
-# ── BTC/USD (OKX primary, CoinGecko fallback) ─────────────────────────────────
+# ── BTC/USDT (OKX primary only) ───────────────────────────────────────────────
 
 def _fetch_btc_okx(days: int) -> pd.DataFrame:
-    """Fetch BTC/USDT daily OHLC from OKX public API (no key required)."""
-    import requests
+    """Fetch completed BTC/USDT ``1Dutc`` OHLC through the primary adapter."""
 
-    # OKX returns at most 100 candles per request; paginate if needed
-    bar = "1D"
-    limit = 100
-    all_rows: list[list] = []
-    after: int | None = None  # fetch backwards from this timestamp_ms
-
-    # Calculate earliest timestamp we need
-    import time as _time
-    earliest_ms = int((_time.time() - days * 86400) * 1000)
-
-    while True:
-        params: dict = {"instId": "BTC-USDT", "bar": bar, "limit": limit}
-        if after is not None:
-            params["after"] = after
-        resp = requests.get(
-            "https://www.okx.com/api/v5/market/history-candles",
-            params=params,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("code") != "0" or not data.get("data"):
-            break
-        rows = data["data"]  # [[ts_ms, o, h, l, c, vol, volCcy, volCcyQuote, confirm], ...]
-        all_rows.extend(rows)
-        oldest_ts = int(rows[-1][0])
-        if oldest_ts <= earliest_ms or len(rows) < limit:
-            break
-        after = oldest_ts  # next page: fetch candles older than this
-
-    if not all_rows:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(all_rows, columns=["ts", "open", "high", "low", "close",
-                                          "vol", "vol_ccy", "vol_ccy_quote", "confirm"])
-    df["date"] = pd.to_datetime(df["ts"].astype(int), unit="ms").dt.normalize()
-    for col in ("open", "high", "low", "close"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df[["date", "open", "high", "low", "close"]].drop_duplicates(subset=["date"])
-
-
-def _fetch_btc_coingecko(days: int) -> pd.DataFrame:
-    """Fetch BTC/USD daily OHLC from CoinGecko free API (fallback)."""
-    import requests
-
-    url = f"https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days={days}"
-    resp = requests.get(url, timeout=20, headers={"Accept": "application/json"})
-    resp.raise_for_status()
-    raw = resp.json()  # [[ts_ms, o, h, l, c], ...]
-    df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close"])
-    df["date"] = pd.to_datetime(df["ts"], unit="ms").dt.normalize()
-    return df[["date", "open", "high", "low", "close"]].drop_duplicates(subset=["date"])
+    capture = OkxBtcDailyProvider().capture(
+        days=days,
+        fetched_at=None,
+        run_id="legacy-cross-asset-fetch",
+    )
+    candidate = okx_canonical_candidate(capture)
+    if candidate.empty:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close"])
+    out = candidate.assign(date=candidate["bar_open_at"].dt.tz_localize(None))
+    return out[["date", "open", "high", "low", "close"]].reset_index(drop=True)
 
 
 def fetch_btc(
     data_root: str = _DEFAULT_DATA_ROOT,
     days: int = 365,
 ) -> pd.DataFrame:
-    """Fetch BTC/USDT daily OHLC. Tries OKX first, falls back to CoinGecko."""
-    path = _out_path(data_root, "btc")
+    """Compatibility entry for the assured BTC synchronization workflow.
+
+    CoinGecko is intentionally not a fallback: it is a BTC/USD close-only
+    shadow source and is acquired separately by the assurance workflow.
+    """
+    from trade_py.data.market.cross_asset.service import BtcMarketDataService
+
+    path = Path(data_root) / _OUT_DIR / "btc.parquet"
+    try:
+        outcome = BtcMarketDataService(data_root, days=days).sync()
+    except Exception as e:
+        logger.error("Assured BTC synchronization failed: %s", e)
+        raise RuntimeError(f"assured BTC synchronization failed: {e}") from e
+    if not outcome.get("published"):
+        raise RuntimeError(
+            "assured BTC synchronization did not publish: "
+            f"readiness={outcome.get('data_readiness')} run_id={outcome.get('run_id')}"
+        )
+    logger.info(
+        "Assured BTC synchronization complete: readiness=%s published=%s run_id=%s",
+        outcome.get("data_readiness"),
+        outcome.get("published"),
+        outcome.get("run_id"),
+    )
     existing = _load_existing(path)
-    logger.info("Fetching BTC/USD…")
-
-    df: pd.DataFrame | None = None
-    for source, fetcher in [("OKX", _fetch_btc_okx), ("CoinGecko", _fetch_btc_coingecko)]:
-        try:
-            df = fetcher(days)
-            if df is not None and not df.empty:
-                logger.debug("BTC data fetched from %s", source)
-                break
-        except Exception as e:
-            logger.warning("BTC fetch failed (%s): %s", source, e)
-
-    if df is None or df.empty:
-        logger.error("BTC fetch failed from all sources")
-        return existing if existing is not None else pd.DataFrame()
-
-    df = df.sort_values("date").reset_index(drop=True)
-    if existing is not None:
-        df = pd.concat([existing, df], ignore_index=True).drop_duplicates(subset=["date"])
-        df = df.sort_values("date").reset_index(drop=True)
-
-    df.to_parquet(path, index=False)
-    logger.info("BTC saved: %d rows → %s", len(df), path)
-    return df
+    return existing if existing is not None else pd.DataFrame()
 
 
 # ── Master fetch ───────────────────────────────────────────────────────────────
@@ -221,11 +182,15 @@ def fetch_all(data_root: str = _DEFAULT_DATA_ROOT, delay_s: float = 1.0) -> dict
     """Fetch all cross-asset datasets in sequence."""
     results: dict[str, pd.DataFrame] = {}
 
+    failures: dict[str, str] = {}
     for name, fn in [("gold", fetch_gold), ("fx_cnh", fetch_fx_cnh), ("btc", fetch_btc)]:
         try:
             results[name] = fn(data_root)
         except Exception as e:
             logger.error("Failed to fetch %s: %s", name, e)
+            failures[name] = f"{type(e).__name__}: {e}"
         time.sleep(delay_s)
 
+    if failures:
+        raise RuntimeError(f"cross-asset synchronization incomplete: {failures}")
     return results

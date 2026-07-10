@@ -262,7 +262,8 @@ def build_ads_hypothesis_validation_report(
     """Generate first-pass hypothesis validation rows from signals and associations."""
     columns = [
         "hypothesis_id", "sector", "hypothesis", "evidence_count",
-        "support_score", "validation_status", "evidence", "reason",
+        "support_score", "validation_status", "evidence_class",
+        "statistically_validated", "causal", "evidence", "reason",
     ]
     if ads_data_signal_report.empty and ads_association_result.empty:
         return pd.DataFrame(columns=columns)
@@ -291,6 +292,9 @@ def build_ads_hypothesis_validation_report(
                 "evidence_count": evidence_count,
                 "support_score": support_score,
                 "validation_status": status,
+                "evidence_class": "legacy_non_statistical_scaffold",
+                "statistically_validated": False,
+                "causal": False,
                 "evidence": f"signals={len(signals)};associations={len(associations)}",
                 "reason": (
                     f"{sector} has {len(signals)} signal rows and {len(associations)} association rows; "

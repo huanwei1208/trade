@@ -270,6 +270,8 @@ def test_dws_and_ads_surface_ratio_based_value_signals() -> None:
     assert feature_value[feature_value["sector"] == "ai"].iloc[-1]["validation_status"] in {"candidate", "monitoring"}
     assert association[association["target_id"] == "ai"].iloc[-1]["driver_type"] == "topic"
     assert hypothesis[hypothesis["sector"] == "ai"].iloc[-1]["support_score"] >= 0
+    assert hypothesis["evidence_class"].eq("legacy_non_statistical_scaffold").all()
+    assert hypothesis["statistically_validated"].eq(False).all()
 
     value_row = source_value[source_value["source_id"] == "rss_openai_blog"].iloc[0]
     assert value_row["sector"] == "ai"

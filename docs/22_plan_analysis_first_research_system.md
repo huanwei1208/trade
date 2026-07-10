@@ -39,6 +39,19 @@ Recommendation may remain as a downstream view or historical artifact, but new
 work should not optimize the project around making recommendation the central
 object.
 
+## Active Child Plan
+
+The next priority domain is **Crypto**, starting with a BTC-only data-assurance
+and falsifiable validation slice. The detailed contracts, data gates, signal
+gates, rollout, and rollback requirements live in:
+
+```text
+docs/23_plan_crypto_research_data_quality_and_signal_validation.md
+```
+
+For Crypto-specific work, that child plan is authoritative when a generic M1-M4
+warehouse scaffold conflicts with point-in-time, provider, or validation rules.
+
 ## Non-Goals
 
 - No automatic trading.

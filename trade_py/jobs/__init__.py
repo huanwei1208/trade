@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -75,9 +75,74 @@ def _job_sentiment_pipeline(
 
 
 def _job_cross_asset(data_root: str, config: dict | None = None) -> str:
-    from trade_py.data.market.cross_asset import fetch_all
-    fetch_all(data_root)
-    return "跨资产数据同步完成"
+    from trade_py.data.market.cross_asset import fetch_fx_cnh, fetch_gold
+
+    gold = fetch_gold(data_root)
+    fx = fetch_fx_cnh(data_root)
+    if gold.empty or fx.empty:
+        raise RuntimeError("Gold/FX 跨资产数据同步不完整")
+    return "跨资产数据同步完成: gold,fx_cnh"
+
+
+def _job_crypto_btc_fetch(data_root: str, config: dict | None = None) -> str:
+    from trade_py.data.market.cross_asset.service import BtcMarketDataService
+    from trade_py.data.warehouse.crypto import validate_crypto_btc_profile
+
+    try:
+        result = BtcMarketDataService(data_root).sync()
+    except Exception as exc:
+        failure = {
+            "mode": "sync",
+            "run_id": "",
+            "data_readiness": "invalid",
+            "published": False,
+            "reason_code": "BTC_ACQUISITION_EXCEPTION",
+            "reason_codes": ["BTC_ACQUISITION_EXCEPTION"],
+            "error": f"{type(exc).__name__}: {exc}",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "gates": [],
+        }
+        try:
+            validate_crypto_btc_profile(
+                data_root,
+                data_assurance_override=failure,
+            )
+        except Exception as suppression_exc:
+            raise RuntimeError(
+                "BTC acquisition failed and active Crypto evidence could not be suppressed: "
+                f"{type(suppression_exc).__name__}: {suppression_exc}"
+            ) from exc
+        raise
+    if not result.get("published"):
+        suppression = validate_crypto_btc_profile(
+            data_root,
+            data_assurance_override=result,
+        )
+        raise RuntimeError(
+            "BTC assurance 未发布: "
+            f"readiness={result.get('data_readiness')} run_id={result.get('run_id')} "
+            f"active={((suppression.get('validation') or {}).get('lifecycle') or {}).get('active_signal_status')}"
+        )
+    return f"BTC assurance 已发布: run_id={result.get('run_id')}"
+
+
+def _job_crypto_research_validation(data_root: str, config: dict | None = None) -> str:
+    from trade_py.data.warehouse.crypto import validate_crypto_btc_profile
+
+    result = validate_crypto_btc_profile(data_root)
+    validation = result["validation"]
+    if result.get("io_error"):
+        raise RuntimeError(f"Crypto 研究验证 I/O 失败: {result['io_error']}")
+    if validation.get("data_readiness") != "ready":
+        raise RuntimeError(
+            "Crypto 研究验证被数据门禁抑制: "
+            f"readiness={validation.get('data_readiness')} status={validation.get('status')}"
+        )
+    lifecycle = validation.get("lifecycle") or {}
+    return (
+        f"Crypto 研究验证完成: status={validation.get('status')} "
+        f"active={lifecycle.get('active_signal_status')} run_id={validation.get('run_id')}"
+    )
 
 
 def _job_calendar_sync(data_root: str, config: dict | None = None) -> str:
@@ -573,7 +638,19 @@ JOB_REGISTRY: dict[str, JobDef] = {
     ),
     "cross_asset_fetch": JobDef(
         "cross_asset_fetch", _job_cross_asset, "跨资产行情抓取",
-        ["daily 07:00"], "fetch", ["market"],
+        ["daily 07:00"], "fetch", ["market", "gold", "fx"],
+    ),
+    "crypto_btc_fetch": JobDef(
+        "crypto_btc_fetch", _job_crypto_btc_fetch, "BTC UTC 日线采集与门禁",
+        ["daily 09:00"], "fetch", ["market", "crypto"],
+    ),
+    "crypto_research_validation": JobDef(
+        "crypto_research_validation",
+        _job_crypto_research_validation,
+        "Crypto BTC 研究验证与状态复核",
+        ["after crypto sync"],
+        "compute",
+        ["market", "crypto", "validation"],
     ),
     "market_index": JobDef(
         "market_index", _job_market_index, "市场/行业指数同步",

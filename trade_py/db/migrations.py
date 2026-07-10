@@ -37,6 +37,7 @@ def _col_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
 # Version 9: daily evaluation DAG rows
 # Version 10: UI snapshot cache + remove legacy brief DAG/settings
 # Version 12: disable legacy sentiment_pipeline + event_pipeline DAG rows
+# Version 17: add dedicated post-UTC-close BTC acquisition and validation DAG rows
 
 MIGRATIONS: list[tuple[int, str]] = [
     (2, "DROP TABLE IF EXISTS macro_events;"),
@@ -247,7 +248,8 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
         dag_rows = [
             # STAGE: fetch
             ("fetch", "gate.morning",            "kline_update",       "data.kline.synced",     1, "K线同步"),
-            ("fetch", "gate.morning",            "cross_asset_fetch",  None,                    1, "跨资产数据"),
+            ("fetch", "gate.morning",            "cross_asset_fetch",  None,                    1, "Gold/FX 跨资产数据"),
+            ("fetch", "gate.crypto_daily",       "crypto_btc_fetch",   "data.crypto.synced",   1, "BTC UTC 日线门禁"),
             ("fetch", "gate.pre_market",         "market_index",       "data.index.synced",     1, "指数数据"),
             ("fetch", "gate.signal_am",          "fund_flow_update",   None,                    1, "资金流向（早盘）"),
             ("fetch", "gate.market_close",       "fund_flow_update",   None,                    1, "资金流向（收盘）"),
@@ -261,6 +263,7 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
             ("compute", "gate.signal_am",        "window_score",   "signal.window.updated",  1, "早盘前全市场评分"),
             ("compute", "gate.market_close",     "window_score",   "signal.window.updated",  1, "收盘后全市场评分"),
             ("compute", "data.sentiment.synced", "event_pipeline", None,                     1, "情绪→事件级联"),
+            ("compute", "data.crypto.synced",    "crypto_research_validation", None,          1, "Crypto 数据→研究验证"),
             ("compute", "gate.event_extract",    "event_pipeline", None,                     1, "事件提取"),
             ("compute", "gate.model_weekly",     "build_features", "model.features.built",   1, "特征构建"),
             ("compute", "model.features.built",  "build_labels",   "model.labels.built",     1, "标签构建"),
@@ -846,6 +849,52 @@ def _migrate_v16(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v17(conn: sqlite3.Connection) -> None:
+    """Add a dedicated post-UTC-close BTC job without moving Gold/FX."""
+    if not _table_exists(conn, "pipeline_dag"):
+        return
+    conn.execute(
+        "UPDATE pipeline_dag SET source=?, emits='', description=? "
+        "WHERE job_name=?",
+        ("gate.morning", "Gold/FX 跨资产数据", "cross_asset_fetch"),
+    )
+    target_exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? LIMIT 1",
+        ("gate.crypto_daily", "crypto_btc_fetch"),
+    ).fetchone()
+    if not target_exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                "fetch",
+                "gate.crypto_daily",
+                "crypto_btc_fetch",
+                "data.crypto.synced",
+                1,
+                "BTC UTC 日线门禁",
+            ),
+        )
+    validation_exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? LIMIT 1",
+        ("data.crypto.synced", "crypto_research_validation"),
+    ).fetchone()
+    if not validation_exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                "compute",
+                "data.crypto.synced",
+                "crypto_research_validation",
+                "",
+                1,
+                "Crypto 数据→研究验证",
+            ),
+        )
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -1030,4 +1079,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v16 applied")
         except Exception as exc:
             logger.error("Migration v16 failed: %s", exc)
+            raise
+
+    # ── v17: post-UTC-close Crypto acquisition gate ─────────────────────────
+    if 17 not in applied:
+        logger.info("Applying DB migration v17 (Crypto daily gate)")
+        try:
+            _migrate_v17(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (17)")
+            conn.commit()
+            logger.info("Migration v17 applied")
+        except Exception as exc:
+            logger.error("Migration v17 failed: %s", exc)
             raise

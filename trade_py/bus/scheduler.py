@@ -48,6 +48,17 @@ _SCHEDULE_BLUEPRINT: list[dict[str, Any]] = [
         "description": "Run the pre-market feature and score preparation chain.",
     },
     {
+        "id": "gate_crypto_daily",
+        "topic": Topic.GATE_CRYPTO_DAILY,
+        "label": "Crypto UTC-daily assurance",
+        "time": "09:00",
+        "timezone": "Asia/Shanghai",
+        "cadence": "daily",
+        "trading_day_only": False,
+        "market_hours_only": False,
+        "description": "Acquire and assure completed Crypto UTC-daily bars after 00:40 UTC.",
+    },
+    {
         "id": "gate_signal_am",
         "topic": Topic.GATE_SIGNAL_AM,
         "label": "Morning recommendation refresh",
@@ -234,6 +245,7 @@ def register_schedule(bus: EventBus, db: "TradeDB") -> None:
     schedule.every(1).minutes.do(_publish_intraday)
     schedule.every(1).minutes.do(_publish_due_agenda)
     schedule.every().day.at("07:05").do(_guarded(Topic.GATE_PRE_MARKET))
+    schedule.every().day.at("09:00", "Asia/Shanghai").do(_p(Topic.GATE_CRYPTO_DAILY))
     schedule.every().day.at("07:35").do(_guarded(Topic.GATE_SIGNAL_AM))
     schedule.every().day.at("15:15").do(_guarded(Topic.GATE_MARKET_CLOSE))
     schedule.every().day.at("22:00").do(_p(Topic.GATE_EVENING))
