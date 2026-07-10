@@ -13,6 +13,8 @@ from trade_py.utils.data_inspector import (
     fundamental_stats,
     get_data_status,
     kline_freshness_stats,
+    sentiment_stats,
+    events_stats,
 )
 
 
@@ -133,3 +135,54 @@ def test_fund_flow_and_fundamental_status_use_local_parquet_coverage(tmp_path) -
     assert status["fundamental"]["rows"] == 2
     assert any("资金流数据" in line for line in lines)
     assert any("基本面数据" in line for line in lines)
+
+
+def test_sentiment_and_events_status_report_lag_against_trade_date(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    db.trading_calendar_upsert_batch(
+        [
+            {"exchange": "SSE", "trade_date": "2026-03-19", "is_open": 1},
+            {"exchange": "SSE", "trade_date": "2026-03-20", "is_open": 1},
+        ]
+    )
+    for layer in ("silver", "gold"):
+        target = tmp_path / "sentiment" / layer / "2026" / "03"
+        target.mkdir(parents=True)
+        pd.DataFrame(
+            [
+                {
+                    "date": "2026-03-18",
+                    "symbol": "000001.SZ",
+                    "net_sentiment": 0.2,
+                }
+            ]
+        ).to_parquet(target / "2026-03-18.parquet", index=False)
+    with db._conn_lock:
+        db._conn.execute(
+            """
+            INSERT INTO market_events (
+                event_id, event_date, event_type, entity_id,
+                magnitude, breadth, sentiment_score, news_volume, summary, source_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("evt-1", "2026-03-18", "policy", "market", 0.2, 1.0, 0.1, 3, "event", "hash"),
+        )
+        db._conn.execute(
+            """
+            INSERT INTO event_propagations (
+                event_id, symbol, kg_score, hop, typical_days
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("evt-1", "000001.SZ", 0.5, 1, 5),
+        )
+        db._conn.commit()
+
+    sentiment = sentiment_stats(tmp_path)
+    events = events_stats(tmp_path)
+    lines = build_status_lines({"as_of": "2026-03-20", "sentiment": sentiment, "events": events})
+
+    assert sentiment["silver"]["expected_date"] == "2026-03-20"
+    assert sentiment["silver"]["lag_days"] == 2
+    assert sentiment["gold"]["lag_days"] == 2
+    assert events["lag_days"] == 2
+    assert any("lag=2d" in line for line in lines)

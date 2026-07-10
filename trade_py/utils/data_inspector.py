@@ -237,6 +237,28 @@ def _instrument_symbols(data_root: str | Path) -> set[str]:
         return set()
 
 
+def _expected_data_date(data_root: str | Path, *, trading_day: bool = True) -> str:
+    if trading_day:
+        try:
+            from trade_py.db.trade_db import TradeDB
+
+            value = TradeDB(data_root).get_latest_open_trade_date()
+            if value:
+                return str(value)
+        except Exception as exc:
+            logger.debug("expected trading date lookup error: %s", exc)
+    return date.today().isoformat()
+
+
+def _lag_days(watermark: Any, expected: str | None) -> int | None:
+    if not watermark or not expected:
+        return None
+    try:
+        return max((date.fromisoformat(str(expected)[:10]) - date.fromisoformat(str(watermark)[:10])).days, 0)
+    except ValueError:
+        return None
+
+
 def _market_flat_stats(
     data_root: str | Path,
     *,
@@ -401,6 +423,7 @@ def sentiment_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Return Silver/Gold sentiment layer statistics."""
     data_root = Path(data_root)
     result: dict[str, Any] = {}
+    expected = _expected_data_date(data_root, trading_day=True)
 
     silver_dir = data_root / "sentiment" / "silver"
     gold_dir = data_root / "sentiment" / "gold"
@@ -424,9 +447,11 @@ def sentiment_stats(data_root: str | Path = "data") -> dict[str, Any]:
                 "dates": int(dates or 0),
                 "min_date": str(min_d) if min_d else None,
                 "max_date": str(max_d) if max_d else None,
+                "expected_date": expected,
+                "lag_days": _lag_days(max_d, expected),
             }
         else:
-            result["silver"] = {"rows": 0, "dates": 0}
+            result["silver"] = {"rows": 0, "dates": 0, "expected_date": expected, "lag_days": None}
 
         if gold_dir.exists():
             gold_glob = str(gold_dir / "**" / "*.parquet")
@@ -445,9 +470,11 @@ def sentiment_stats(data_root: str | Path = "data") -> dict[str, Any]:
                 "dates": int(dates or 0),
                 "min_date": str(min_d) if min_d else None,
                 "max_date": str(max_d) if max_d else None,
+                "expected_date": expected,
+                "lag_days": _lag_days(max_d, expected),
             }
         else:
-            result["gold"] = {"rows": 0, "dates": 0}
+            result["gold"] = {"rows": 0, "dates": 0, "expected_date": expected, "lag_days": None}
     except Exception as exc:
         logger.debug("sentiment_stats error: %s", exc)
         result["error"] = str(exc)
@@ -460,6 +487,7 @@ def events_stats(data_root: str | Path = "data") -> dict[str, Any]:
     try:
         from trade_py.db.settings_db import SettingsDB
         db = SettingsDB(data_root)
+        expected = _expected_data_date(data_root, trading_day=True)
         events_row = db._conn.execute(
             "SELECT COUNT(*), MIN(event_date), MAX(event_date) FROM market_events"
         ).fetchone()
@@ -473,6 +501,8 @@ def events_stats(data_root: str | Path = "data") -> dict[str, Any]:
             "propagation_count": int(p_count or 0),
             "min_date":          str(e_min) if e_min else None,
             "max_date":          str(e_max) if e_max else None,
+            "expected_date":     expected,
+            "lag_days":          _lag_days(e_max, expected),
         }
     except Exception as exc:
         logger.debug("events_stats error: %s", exc)
@@ -592,9 +622,9 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
     lines += [
         "### 情绪数据",
         f"- {s_ok} Silver 日期数: **{silver.get('dates', 0)}**  ({silver.get('rows', 0):,} 行)",
-        f"  范围: {silver.get('min_date', '—')} ~ {silver.get('max_date', '—')}",
+        f"  范围: {silver.get('min_date', '—')} ~ {silver.get('max_date', '—')}  lag={silver.get('lag_days', '—')}d",
         f"- Gold  日期数: **{gold.get('dates', 0)}**  ({gold.get('rows', 0):,} 行)",
-        f"  范围: {gold.get('min_date', '—')} ~ {gold.get('max_date', '—')}",
+        f"  范围: {gold.get('min_date', '—')} ~ {gold.get('max_date', '—')}  lag={gold.get('lag_days', '—')}d",
         "",
     ]
 
@@ -604,7 +634,7 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
         "### 事件 / KG 传导",
         f"- {ev_ok} 事件数: **{ev.get('event_count', 0):,}**",
         f"- 传导记录: {ev.get('propagation_count', 0):,}",
-        f"- 日期范围: {ev.get('min_date', '—')} ~ {ev.get('max_date', '—')}",
+        f"- 日期范围: {ev.get('min_date', '—')} ~ {ev.get('max_date', '—')}  lag={ev.get('lag_days', '—')}d",
         "",
     ]
 
