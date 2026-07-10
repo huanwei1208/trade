@@ -16,7 +16,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from trade_py.data.paths import KLINE_DIR, KLINE_MANIFEST
+from trade_py.data.paths import FUND_FLOW_DIR, FUNDAMENTAL_DIR, KLINE_DIR, KLINE_MANIFEST
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +227,148 @@ def kline_freshness_stats(data_root: str | Path = "data", sample_limit: int = 10
         return {"stale_ge_1": 0, "error": str(exc)}
 
 
+def _instrument_symbols(data_root: str | Path) -> set[str]:
+    try:
+        from trade_py.db.instruments_db import InstrumentsDB
+
+        return set(InstrumentsDB(data_root).get_all_symbols())
+    except Exception as exc:
+        logger.debug("instrument symbol lookup error: %s", exc)
+        return set()
+
+
+def _market_flat_stats(
+    data_root: str | Path,
+    *,
+    dataset: str,
+    root: Path,
+    date_column: str,
+    sample_limit: int = 10,
+    trading_day_freshness: bool = False,
+) -> dict[str, Any]:
+    files = sorted(root.glob("*.parquet"))
+    db_symbols = _instrument_symbols(data_root)
+    if not files:
+        return {
+            "dataset": dataset,
+            "files": 0,
+            "symbols": 0,
+            "rows": 0,
+            "min_date": None,
+            "max_date": None,
+            "db_symbols": len(db_symbols),
+            "coverage_pct": 0.0,
+            "missing_symbols": len(db_symbols),
+            "missing_sample": sorted(db_symbols)[:sample_limit],
+            "stale_sample": [],
+        }
+    try:
+        import duckdb
+
+        file_list = [str(path) for path in files]
+        con = duckdb.connect()
+        try:
+            summary = con.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS rows,
+                    COUNT(DISTINCT symbol) AS symbols,
+                    MIN({date_column}) AS min_date,
+                    MAX({date_column}) AS max_date
+                FROM read_parquet({file_list!r}, union_by_name=true)
+                """
+            ).fetchone()
+            by_symbol = con.execute(
+                f"""
+                SELECT symbol, MAX({date_column}) AS max_date, COUNT(*) AS rows
+                FROM read_parquet({file_list!r}, union_by_name=true)
+                GROUP BY symbol
+                ORDER BY max_date ASC, symbol
+                """
+            ).fetchall()
+        finally:
+            con.close()
+        rows, symbols, min_date, max_date = summary if summary else (0, 0, None, None)
+        present_symbols = {str(row[0]) for row in by_symbol if row[0]}
+        missing = sorted(db_symbols - present_symbols)
+        coverage_pct = round(len(present_symbols) / len(db_symbols) * 100.0, 1) if db_symbols else 0.0
+        stale_sample: list[dict[str, Any]] = []
+        expected_trade_date: str | None = None
+        if trading_day_freshness:
+            try:
+                from trade_py.db.trade_db import TradeDB
+
+                db = TradeDB(data_root)
+                expected_trade_date = db.get_latest_open_trade_date()
+                if expected_trade_date:
+                    with db._conn_lock:
+                        for symbol, symbol_max_date, row_count in by_symbol[:sample_limit]:
+                            lag_row = db._conn.execute(
+                                """
+                                SELECT COUNT(*) AS missing_trade_days
+                                FROM trading_calendar
+                                WHERE exchange = 'SSE'
+                                  AND is_open = 1
+                                  AND trade_date > ?
+                                  AND trade_date <= ?
+                                """,
+                                (str(symbol_max_date)[:10], expected_trade_date),
+                            ).fetchone()
+                            stale_sample.append({
+                                "symbol": str(symbol),
+                                "watermark": str(symbol_max_date)[:10] if symbol_max_date else None,
+                                "rows": int(row_count or 0),
+                                "trading_day_stale_days": int((lag_row or [0])[0] or 0),
+                            })
+            except Exception as exc:
+                logger.debug("%s trading-day freshness error: %s", dataset, exc)
+        return {
+            "dataset": dataset,
+            "files": len(files),
+            "symbols": int(symbols or 0),
+            "rows": int(rows or 0),
+            "min_date": str(min_date)[:10] if min_date else None,
+            "max_date": str(max_date)[:10] if max_date else None,
+            "db_symbols": len(db_symbols),
+            "coverage_pct": coverage_pct,
+            "missing_symbols": len(missing),
+            "missing_sample": missing[:sample_limit],
+            "expected_trade_date": expected_trade_date,
+            "stale_sample": stale_sample,
+        }
+    except Exception as exc:
+        logger.debug("%s stats error: %s", dataset, exc)
+        return {
+            "dataset": dataset,
+            "files": len(files),
+            "symbols": 0,
+            "rows": 0,
+            "error": str(exc),
+        }
+
+
+def fund_flow_stats(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
+    return _market_flat_stats(
+        data_root,
+        dataset="fund_flow",
+        root=FUND_FLOW_DIR(data_root),
+        date_column="date",
+        sample_limit=sample_limit,
+        trading_day_freshness=True,
+    )
+
+
+def fundamental_stats(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
+    return _market_flat_stats(
+        data_root,
+        dataset="fundamental",
+        root=FUNDAMENTAL_DIR(data_root),
+        date_column="report_date",
+        sample_limit=sample_limit,
+        trading_day_freshness=False,
+    )
+
+
 def db_instrument_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Return instrument DB statistics."""
     try:
@@ -345,6 +487,8 @@ def get_data_status(data_root: str | Path = "data", sample_limit: int = 10) -> d
         "kline":       kline_stats(data_root),
         "kline_coverage": kline_coverage_stats(data_root, sample_limit=sample_limit),
         "kline_freshness": kline_freshness_stats(data_root, sample_limit=sample_limit),
+        "fund_flow":   fund_flow_stats(data_root, sample_limit=sample_limit),
+        "fundamental": fundamental_stats(data_root, sample_limit=sample_limit),
         "instruments": db_instrument_stats(data_root),
         "sentiment":   sentiment_stats(data_root),
         "events":      events_stats(data_root),
@@ -419,6 +563,27 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
         f"- sector_members 行数: {i.get('sector_member_rows', 0):,}",
         "",
     ]
+
+    ff = status.get("fund_flow", {})
+    if ff:
+        lines += [
+            "### 资金流数据",
+            f"- 覆盖率: **{ff.get('coverage_pct', 0.0):.1f}%** ({ff.get('symbols', 0):,} / {ff.get('db_symbols', 0):,})",
+            f"- 文件数: {ff.get('files', 0):,}  行数: {ff.get('rows', 0):,}",
+            f"- 日期范围: {ff.get('min_date', '—')} ~ {ff.get('max_date', '—')}",
+            f"- 交易日基准: {ff.get('expected_trade_date') or '—'}",
+            "",
+        ]
+
+    fundamental = status.get("fundamental", {})
+    if fundamental:
+        lines += [
+            "### 基本面数据",
+            f"- 覆盖率: **{fundamental.get('coverage_pct', 0.0):.1f}%** ({fundamental.get('symbols', 0):,} / {fundamental.get('db_symbols', 0):,})",
+            f"- 文件数: {fundamental.get('files', 0):,}  行数: {fundamental.get('rows', 0):,}",
+            f"- 报告期范围: {fundamental.get('min_date', '—')} ~ {fundamental.get('max_date', '—')}",
+            "",
+        ]
 
     s = status.get("sentiment", {})
     silver = s.get("silver", {})

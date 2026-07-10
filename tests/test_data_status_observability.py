@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pandas as pd
 import pytest
 
 from trade_py.cli.data import _running_job_state
 from trade_py.db.trade_db import TradeDB
-from trade_py.utils.data_inspector import build_status_lines, kline_freshness_stats
+from trade_py.utils.data_inspector import (
+    build_status_lines,
+    fund_flow_stats,
+    fundamental_stats,
+    get_data_status,
+    kline_freshness_stats,
+)
 
 
 def test_kline_freshness_reports_trading_day_lag(tmp_path) -> None:
@@ -62,3 +69,67 @@ def test_running_job_state_classifies_stale_rows(job_name: str, age_hours: float
 
     assert state["status"] == expected
     assert state["age_hours"] == pytest.approx(age_hours)
+
+
+def test_fund_flow_and_fundamental_status_use_local_parquet_coverage(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    db.trading_calendar_upsert_batch(
+        [
+            {"exchange": "SSE", "trade_date": "2026-03-19", "is_open": 1},
+            {"exchange": "SSE", "trade_date": "2026-03-20", "is_open": 1},
+        ]
+    )
+    with db._conn_lock:
+        db._conn.executemany(
+            """
+            INSERT INTO instruments(symbol, name, market, board, industry, status)
+            VALUES (?, ?, 1, 1, 1, 0)
+            """,
+            [
+                ("000001.SZ", "A"),
+                ("000002.SZ", "B"),
+                ("000003.SZ", "C"),
+            ],
+        )
+        db._conn.commit()
+
+    fund_flow_root = tmp_path / "market" / "fund_flow"
+    fund_flow_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"symbol": "000001.SZ", "date": "2026-03-19", "large_order_net_ratio": 0.1},
+            {"symbol": "000001.SZ", "date": "2026-03-20", "large_order_net_ratio": 0.2},
+        ]
+    ).to_parquet(fund_flow_root / "000001_SZ.parquet", index=False)
+    pd.DataFrame(
+        [
+            {"symbol": "000002.SZ", "date": "2026-03-19", "large_order_net_ratio": -0.1},
+        ]
+    ).to_parquet(fund_flow_root / "000002_SZ.parquet", index=False)
+
+    fundamental_root = tmp_path / "market" / "fundamental"
+    fundamental_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"symbol": "000001.SZ", "report_date": pd.Timestamp("2025-12-31"), "roe": 0.1},
+            {"symbol": "000001.SZ", "report_date": pd.Timestamp("2026-03-31"), "roe": 0.11},
+        ]
+    ).to_parquet(fundamental_root / "000001_SZ.parquet", index=False)
+
+    fund_flow = fund_flow_stats(tmp_path, sample_limit=5)
+    fundamental = fundamental_stats(tmp_path, sample_limit=5)
+    status = get_data_status(tmp_path, sample_limit=5)
+    lines = build_status_lines(status)
+
+    assert fund_flow["symbols"] == 2
+    assert fund_flow["coverage_pct"] == pytest.approx(66.7)
+    assert fund_flow["max_date"] == "2026-03-20"
+    assert fund_flow["expected_trade_date"] == "2026-03-20"
+    assert fund_flow["missing_sample"] == ["000003.SZ"]
+    assert fundamental["symbols"] == 1
+    assert fundamental["coverage_pct"] == pytest.approx(33.3)
+    assert fundamental["max_date"] == "2026-03-31"
+    assert status["fund_flow"]["rows"] == 3
+    assert status["fundamental"]["rows"] == 2
+    assert any("资金流数据" in line for line in lines)
+    assert any("基本面数据" in line for line in lines)
