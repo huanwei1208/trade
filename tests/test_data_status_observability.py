@@ -482,10 +482,62 @@ def test_value_quality_recovery_plan_groups_prefixed_datasets(tmp_path) -> None:
     stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
 
     plan_by_component = {item["component"]: item for item in stats["recovery_plan"]}
-    assert plan_by_component["cross_asset"]["command"] == ["trade", "data", "cross-asset", "all"]
+    assert plan_by_component["cross_asset"]["command"] == ["trade", "data", "cross-asset", "gold"]
+    assert plan_by_component["cross_asset"]["mode"] == "targeted_refetch"
     assert plan_by_component["cross_asset"]["datasets"] == ["cross_asset.gold"]
+    assert plan_by_component["cross_asset"]["target"] == {
+        "datasets": ["cross_asset.gold"],
+        "start": "2026-03-20",
+        "end": "2026-03-20",
+    }
+    assert stats["datasets"]["cross_asset.gold"]["invalid_extents"]["date_range"] == {
+        "start": "2026-03-20",
+        "end": "2026-03-20",
+        "rows": 1,
+    }
     assert plan_by_component["macro"]["command"] == ["trade", "data", "macro", "sync"]
     assert plan_by_component["macro"]["datasets"] == ["macro.ppi"]
+
+
+def test_value_quality_targets_fundamental_invalid_report_extents(tmp_path) -> None:
+    fundamental_root = tmp_path / "market" / "fundamental"
+    fundamental_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"symbol": "000001.SZ", "report_date": "2020-12-31", "roe": 0.2},
+            {"symbol": "000001.SZ", "report_date": "2021-03-31", "roe": 2.1},
+            {"symbol": "000001.SZ", "report_date": "2021-06-30", "roe": -2.2},
+            {"symbol": "000002.SZ", "report_date": "2022-12-31", "roe": 1.7},
+            {"symbol": "000003.SZ", "report_date": "2020-12-31", "roe": 1.8},
+        ]
+    ).to_parquet(fundamental_root / "sample.parquet", index=False)
+
+    schema = schema_contract_stats(tmp_path, sample_limit=5)
+    stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
+    fundamental = stats["datasets"]["fundamental"]
+    plan_by_component = {item["component"]: item for item in stats["recovery_plan"]}
+
+    assert fundamental["invalid_extents"]["by_symbol"] == [
+        {"symbol": "000001.SZ", "start": "2021-03-31", "end": "2021-06-30", "rows": 2},
+        {"symbol": "000002.SZ", "start": "2022-12-31", "end": "2022-12-31", "rows": 1},
+        {"symbol": "000003.SZ", "start": "2020-12-31", "end": "2020-12-31", "rows": 1},
+    ]
+    assert plan_by_component["fundamental"]["command"] == [
+        "trade",
+        "data",
+        "fundamental",
+        "sync",
+        "--symbols",
+        "000001.SZ,000002.SZ,000003.SZ",
+        "--start",
+        "2020-12-31",
+    ]
+    assert plan_by_component["fundamental"]["mode"] == "targeted_refetch"
+    assert plan_by_component["fundamental"]["target"] == {
+        "symbols": ["000001.SZ", "000002.SZ", "000003.SZ"],
+        "start": "2020-12-31",
+        "end": "2022-12-31",
+    }
 
 
 def test_value_quality_waives_index_quote_precision_ohlc_drift(tmp_path) -> None:

@@ -751,6 +751,49 @@ def _value_quality_scan(
                         }
                         for row in extent_rows
                     ]
+                elif {"symbol", "report_date"}.issubset(observed_columns):
+                    extent_rows = con.execute(
+                        f"""
+                        SELECT
+                            symbol,
+                            MIN(TRY_CAST(report_date AS DATE)) AS min_date,
+                            MAX(TRY_CAST(report_date AS DATE)) AS max_date,
+                            COUNT(*) AS rows
+                        FROM {table_sql}
+                        WHERE ({invalid_where})
+                          AND symbol IS NOT NULL
+                          AND TRY_CAST(report_date AS DATE) IS NOT NULL
+                        GROUP BY symbol
+                        ORDER BY rows DESC, symbol
+                        LIMIT {int(sample_limit)}
+                        """
+                    ).fetchall()
+                    invalid_extents["by_symbol"] = [
+                        {
+                            "symbol": str(row[0]),
+                            "start": _jsonable(row[1]),
+                            "end": _jsonable(row[2]),
+                            "rows": int(row[3] or 0),
+                        }
+                        for row in extent_rows
+                    ]
+                elif "date" in observed_columns:
+                    extent_row = con.execute(
+                        f"""
+                        SELECT
+                            MIN(TRY_CAST(date AS DATE)) AS min_date,
+                            MAX(TRY_CAST(date AS DATE)) AS max_date,
+                            COUNT(*) AS rows
+                        FROM {table_sql}
+                        WHERE ({invalid_where}) AND TRY_CAST(date AS DATE) IS NOT NULL
+                        """
+                    ).fetchone()
+                    if extent_row and extent_row[0] is not None:
+                        invalid_extents["date_range"] = {
+                            "start": _jsonable(extent_row[0]),
+                            "end": _jsonable(extent_row[1]),
+                            "rows": int(extent_row[2] or 0),
+                        }
         finally:
             con.close()
         failed_checks = [
@@ -961,10 +1004,55 @@ def _sample_symbols_dates(item: dict[str, Any], sample_limit: int) -> dict[str, 
 
 
 def _target_value_recovery(entry: dict[str, Any], datasets: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    if entry.get("component") != "kline":
+    component = str(entry.get("component") or "")
+    if component not in {"kline", "fundamental", "cross_asset"}:
         return entry
-    kline_item = datasets.get("kline") or {}
-    extents = (kline_item.get("invalid_extents") or {}).get("by_symbol") or []
+    if component == "cross_asset":
+        dataset_names = [str(value) for value in entry.get("datasets") or [] if str(value).strip()]
+        date_ranges: dict[str, dict[str, str | int]] = {}
+        for dataset_name in dataset_names:
+            date_range = ((datasets.get(dataset_name) or {}).get("invalid_extents") or {}).get("date_range") or {}
+            start = str(date_range.get("start") or "").strip()[:10]
+            end = str(date_range.get("end") or "").strip()[:10]
+            if start and end:
+                date_ranges[dataset_name] = {
+                    "start": start,
+                    "end": end,
+                    "rows": int(date_range.get("rows") or 0),
+                }
+        sample_dates = [str(value)[:10] for value in entry.get("sample_dates") or [] if str(value).strip()]
+        if not date_ranges and sample_dates and dataset_names:
+            date_ranges[dataset_names[0]] = {
+                "start": min(sample_dates),
+                "end": max(sample_dates),
+                "rows": len(sample_dates),
+            }
+        if not date_ranges:
+            return entry
+        asset_by_dataset = {
+            "cross_asset.gold": "gold",
+            "cross_asset.fx_cnh": "fx",
+            "cross_asset.btc": "btc",
+        }
+        asset = asset_by_dataset.get(dataset_names[0], "all") if len(dataset_names) == 1 else "all"
+        entry["command"] = ["trade", "data", "cross-asset", asset]
+        entry["mode"] = "targeted_refetch"
+        entry["detail"] = (
+            "Re-fetch affected cross-asset data and re-check invalid OHLC/value date ranges; "
+            "inspect source semantics if the same date ranges remain invalid."
+        )
+        first_range = next(iter(date_ranges.values()))
+        entry["target"] = {
+            "datasets": dataset_names,
+            "start": first_range["start"],
+            "end": first_range["end"],
+        }
+        if len(date_ranges) > 1:
+            entry["target"]["date_ranges"] = date_ranges
+        return entry
+    dataset_key = component
+    dataset_item = datasets.get(dataset_key) or {}
+    extents = (dataset_item.get("invalid_extents") or {}).get("by_symbol") or []
     symbols: list[str] = []
     dates: list[str] = []
     for item in extents:
@@ -975,14 +1063,38 @@ def _target_value_recovery(entry: dict[str, Any], datasets: dict[str, dict[str, 
             continue
         symbols.append(symbol)
         dates.extend([start, end])
-    if not symbols:
-        symbols = [str(value) for value in entry.get("sample_symbols") or [] if str(value).strip()]
-        dates = [str(value)[:10] for value in entry.get("sample_dates") or [] if str(value).strip()]
+    for value in entry.get("sample_symbols") or []:
+        symbol = str(value).strip()
+        if symbol:
+            symbols.append(symbol)
+    dates.extend(str(value)[:10] for value in entry.get("sample_dates") or [] if str(value).strip())
     if not symbols or not dates:
         return entry
     symbols = sorted(set(symbols))
     start = min(dates)
     end = max(dates)
+    if component == "fundamental":
+        entry["command"] = [
+            "trade",
+            "data",
+            "fundamental",
+            "sync",
+            "--symbols",
+            ",".join(symbols),
+            "--start",
+            start,
+        ]
+        entry["mode"] = "targeted_refetch"
+        entry["detail"] = (
+            "Re-fetch affected fundamental symbols from the first invalid report date; "
+            "inspect extreme ROE rows before trusting factor outputs if they persist."
+        )
+        entry["target"] = {
+            "symbols": symbols,
+            "start": start,
+            "end": end,
+        }
+        return entry
     entry["command"] = [
         "trade",
         "data",
