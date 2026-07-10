@@ -1035,6 +1035,9 @@ def test_data_quality_gate_fails_on_provider_readiness_breakage() -> None:
     assert gate["components"]["provider_readiness"]["metrics"]["recovery_plan"][0]["provider"] == "coingecko"
     plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
     assert plan_by_component["provider_readiness"]["mode"] == "configure"
+    assert plan_by_component["provider_readiness"]["provider"] == "coingecko"
+    assert plan_by_component["provider_readiness"]["command"] == ["export", "COINGECKO_API_KEY=YOUR_KEY"]
+    assert plan_by_component["provider_readiness"]["missing_required"] == ["tushare", "coingecko"]
 
 
 def test_provider_audit_reports_recent_tushare_auth_failures(tmp_path) -> None:

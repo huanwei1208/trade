@@ -1362,6 +1362,32 @@ def _component(
     return payload
 
 
+def _provider_readiness_gate_recovery(provider_readiness: dict[str, Any]) -> dict[str, Any]:
+    recovery_plan = [
+        item
+        for item in provider_readiness.get("recovery_plan") or []
+        if isinstance(item, dict)
+    ]
+    if recovery_plan:
+        first = dict(recovery_plan[0])
+        return {
+            "command": list(first.get("command") or ["trade", "data", "status", "--strict", "--json"]),
+            "mode": str(first.get("mode") or "configure"),
+            "detail": str(
+                first.get("detail")
+                or "Configure missing provider credentials/packages before running source refresh jobs"
+            ),
+            "provider": first.get("provider"),
+            "missing_required": list(provider_readiness.get("missing_required") or []),
+            "warn_optional": list(provider_readiness.get("warn_optional") or []),
+        }
+    return _recovery(
+        ["trade", "data", "status", "--strict", "--json"],
+        mode="audit",
+        detail="Inspect provider_readiness for missing provider credentials/packages before running source refresh jobs",
+    )
+
+
 def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
     components: dict[str, dict[str, Any]] = {}
 
@@ -1565,11 +1591,7 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
             "reason_codes": provider_reasons,
             "recovery_plan": list(provider_readiness.get("recovery_plan") or []),
         },
-        _recovery(
-            ["trade", "account", "setting-set", "tushare_token", "YOUR_TOKEN"],
-            mode="configure",
-            detail="Configure missing provider credentials/packages before running source refresh jobs",
-        )
+        _provider_readiness_gate_recovery(provider_readiness)
         if provider_status != "pass"
         else None,
     )
