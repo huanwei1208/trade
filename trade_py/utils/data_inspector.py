@@ -86,6 +86,50 @@ _DATA_SOURCE_JOB_POLICIES: dict[str, float] = {
 }
 
 
+_VALUE_QUALITY_RECOVERY: dict[str, dict[str, Any]] = {
+    "kline": {
+        "command": ["trade", "data", "kline", "sync", "--mode", "full"],
+        "mode": "refetch",
+        "detail": "Re-fetch affected K-line symbols from the configured provider and re-run data status.",
+    },
+    "fund_flow": {
+        "command": ["trade", "data", "fund-flow", "sync"],
+        "mode": "refetch",
+        "detail": "Re-fetch affected fund-flow symbols and verify large_order_net_ratio stays within [-1, 1].",
+    },
+    "fundamental": {
+        "command": ["trade", "data", "fundamental", "sync"],
+        "mode": "refetch",
+        "detail": "Re-fetch affected fundamental symbols and inspect extreme ROE rows before trusting factor outputs.",
+    },
+    "index": {
+        "command": ["trade", "data", "market-index", "sync"],
+        "mode": "refetch",
+        "detail": "Re-fetch market or sector index series whose OHLC relationships are inconsistent.",
+    },
+    "northbound": {
+        "command": ["trade", "data", "northbound", "sync"],
+        "mode": "refetch",
+        "detail": "Re-fetch northbound flow data and verify rolling net_5d values are populated.",
+    },
+    "cross_asset": {
+        "command": ["trade", "data", "cross-asset", "all"],
+        "mode": "refetch",
+        "detail": "Re-fetch cross-asset files and verify close/optional OHLC relationships.",
+    },
+    "macro": {
+        "command": ["trade", "data", "macro", "sync"],
+        "mode": "refetch",
+        "detail": "Re-fetch macro datasets with missing required value columns and audit historical nulls.",
+    },
+    "sentiment": {
+        "command": ["trade", "data", "sentiment"],
+        "mode": "recompute",
+        "detail": "Recompute Silver/Gold sentiment layers and verify score/confidence ranges.",
+    },
+}
+
+
 # ── Status helpers ─────────────────────────────────────────────────────────────
 
 
@@ -749,6 +793,79 @@ def _value_conditions_for(dataset: str, observed_columns: set[str]) -> tuple[lis
     return [], ()
 
 
+def _value_recovery_key(dataset: str) -> str:
+    if dataset.startswith("cross_asset."):
+        return "cross_asset"
+    if dataset.startswith("macro."):
+        return "macro"
+    if dataset.startswith("sentiment."):
+        return "sentiment"
+    return dataset
+
+
+def _sample_symbols_dates(item: dict[str, Any], sample_limit: int) -> dict[str, list[str]]:
+    symbols: list[str] = []
+    dates: list[str] = []
+    for row in item.get("sample") or []:
+        symbol = str(row.get("symbol") or "").strip()
+        day = str(row.get("date") or row.get("report_date") or "").strip()[:10]
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+        if day and day not in dates:
+            dates.append(day)
+        if len(symbols) >= sample_limit and len(dates) >= sample_limit:
+            break
+    return {"symbols": symbols[:sample_limit], "dates": dates[:sample_limit]}
+
+
+def _build_value_quality_recovery_plan(
+    datasets: dict[str, dict[str, Any]],
+    *,
+    sample_limit: int,
+) -> list[dict[str, Any]]:
+    plan_by_key: dict[str, dict[str, Any]] = {}
+    for dataset, item in datasets.items():
+        failed_checks = list(item.get("failed_checks") or [])
+        if not failed_checks:
+            continue
+        recovery_key = _value_recovery_key(dataset)
+        spec = _VALUE_QUALITY_RECOVERY.get(recovery_key, {
+            "command": ["trade", "data", "status", "--strict", "--json"],
+            "mode": "audit",
+            "detail": "Inspect value_quality failed checks before trusting this dataset.",
+        })
+        entry = plan_by_key.setdefault(
+            recovery_key,
+            {
+                "component": recovery_key,
+                "command": list(spec["command"]),
+                "mode": spec["mode"],
+                "detail": spec["detail"],
+                "datasets": [],
+                "failed_checks": [],
+                "sample_symbols": [],
+                "sample_dates": [],
+            },
+        )
+        entry["datasets"].append(dataset)
+        entry["failed_checks"].extend(failed_checks)
+        sample = _sample_symbols_dates(item, sample_limit)
+        for symbol in sample["symbols"]:
+            if symbol not in entry["sample_symbols"]:
+                entry["sample_symbols"].append(symbol)
+        for day in sample["dates"]:
+            if day not in entry["sample_dates"]:
+                entry["sample_dates"].append(day)
+    result: list[dict[str, Any]] = []
+    for entry in plan_by_key.values():
+        entry["datasets"] = sorted(set(entry["datasets"]))
+        entry["failed_checks"] = sorted(set(entry["failed_checks"]))
+        entry["sample_symbols"] = entry["sample_symbols"][:sample_limit]
+        entry["sample_dates"] = entry["sample_dates"][:sample_limit]
+        result.append(entry)
+    return sorted(result, key=lambda item: str(item.get("component") or ""))
+
+
 def value_quality_stats(
     data_root: str | Path = "data",
     sample_limit: int = 10,
@@ -826,6 +943,7 @@ def value_quality_stats(
         "checked_rows": checked_rows,
         "failed_checks": failed_checks,
         "blocked_contracts": blocked_contracts,
+        "recovery_plan": _build_value_quality_recovery_plan(datasets, sample_limit=sample_limit),
         "datasets": datasets,
     }
 
@@ -1323,6 +1441,7 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
 
     value_quality = status.get("value_quality") or {}
     value_failed = list(value_quality.get("failed_checks") or [])
+    value_recovery_plan = list(value_quality.get("recovery_plan") or [])
     components["value_quality"] = _component(
         "pass" if not value_failed and value_quality.get("status", "pass") == "pass" else "fail",
         None if not value_failed and value_quality.get("status", "pass") == "pass" else "VALUE_QUALITY_INVALID_ROWS",
@@ -1330,11 +1449,15 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
             "checked_rows": int(value_quality.get("checked_rows") or 0),
             "failed_checks": value_failed,
             "blocked_contracts": list(value_quality.get("blocked_contracts") or []),
+            "recovery_plan": value_recovery_plan,
         },
         _recovery(
             ["trade", "data", "status", "--strict", "--json"],
             mode="audit",
-            detail="Inspect value_quality for invalid dates, duplicate keys, out-of-range factors, or impossible prices",
+            detail=(
+                "Inspect value_quality recovery_plan for targeted refresh commands, "
+                "sample symbols, and sample dates"
+            ),
         )
         if value_failed or value_quality.get("status") == "fail"
         else None,
@@ -1981,11 +2104,13 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
     value_quality = status.get("value_quality", {})
     if value_quality:
         failed = value_quality.get("failed_checks") or []
+        recovery_plan = value_quality.get("recovery_plan") or []
         lines += [
             "### 数据取值质量",
             f"- status: **{value_quality.get('status', 'unknown')}**",
             f"- checked rows: {value_quality.get('checked_rows', 0):,}",
             f"- failed checks: {', '.join(failed) if failed else '—'}",
+            f"- recovery actions: {len(recovery_plan):,}",
             "",
         ]
 

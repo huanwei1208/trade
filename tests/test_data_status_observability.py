@@ -399,6 +399,11 @@ def test_value_quality_status_reports_invalid_values_and_duplicates(tmp_path) ->
     assert "fund_flow.invalid_large_order_net_ratio" in stats["failed_checks"]
     assert "sentiment.gold.net_sentiment_out_of_range" in stats["failed_checks"]
     assert "sentiment.gold.confidence_out_of_range" in stats["failed_checks"]
+    plan_by_component = {item["component"]: item for item in stats["recovery_plan"]}
+    assert plan_by_component["kline"]["command"] == ["trade", "data", "kline", "sync", "--mode", "full"]
+    assert plan_by_component["kline"]["sample_symbols"] == ["000001.SZ"]
+    assert plan_by_component["fund_flow"]["command"] == ["trade", "data", "fund-flow", "sync"]
+    assert plan_by_component["sentiment"]["command"] == ["trade", "data", "sentiment"]
     assert any("数据取值质量" in line for line in lines)
 
 
@@ -416,6 +421,27 @@ def test_value_quality_blocks_on_schema_contract_failures(tmp_path) -> None:
     assert stats["blocked_contracts"] == ["fund_flow"]
     assert stats["datasets"]["fund_flow"]["status"] == "blocked"
     assert stats["datasets"]["fund_flow"]["blocked_by_schema"] is True
+
+
+def test_value_quality_recovery_plan_groups_prefixed_datasets(tmp_path) -> None:
+    cross_asset_root = tmp_path / "market" / "cross_asset"
+    cross_asset_root.mkdir(parents=True)
+    pd.DataFrame(
+        [{"date": "2026-03-20", "open": 10.0, "high": 9.0, "low": 9.5, "close": 10.2}]
+    ).to_parquet(cross_asset_root / "gold.parquet", index=False)
+
+    macro_root = tmp_path / "market" / "macro"
+    macro_root.mkdir(parents=True)
+    pd.DataFrame([{"date": "2026-03-20", "ppi_yoy": None}]).to_parquet(macro_root / "ppi.parquet", index=False)
+
+    schema = schema_contract_stats(tmp_path, sample_limit=5)
+    stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
+
+    plan_by_component = {item["component"]: item for item in stats["recovery_plan"]}
+    assert plan_by_component["cross_asset"]["command"] == ["trade", "data", "cross-asset", "all"]
+    assert plan_by_component["cross_asset"]["datasets"] == ["cross_asset.gold"]
+    assert plan_by_component["macro"]["command"] == ["trade", "data", "macro", "sync"]
+    assert plan_by_component["macro"]["datasets"] == ["macro.ppi"]
 
 
 def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
@@ -481,6 +507,18 @@ def test_data_quality_gate_fails_on_value_quality_breakage() -> None:
             "checked_rows": 123,
             "failed_checks": ["kline.invalid_ohlc_relationship", "fund_flow.invalid_large_order_net_ratio"],
             "blocked_contracts": [],
+            "recovery_plan": [
+                {
+                    "component": "kline",
+                    "command": ["trade", "data", "kline", "sync", "--mode", "full"],
+                    "mode": "refetch",
+                    "detail": "repair kline",
+                    "datasets": ["kline"],
+                    "failed_checks": ["kline.invalid_ohlc_relationship"],
+                    "sample_symbols": ["000001.SZ"],
+                    "sample_dates": ["2026-03-20"],
+                }
+            ],
         },
     }
 
@@ -489,6 +527,7 @@ def test_data_quality_gate_fails_on_value_quality_breakage() -> None:
     assert gate["status"] == "fail"
     assert "VALUE_QUALITY_INVALID_ROWS" in gate["reason_codes"]
     assert gate["components"]["value_quality"]["metrics"]["checked_rows"] == 123
+    assert gate["components"]["value_quality"]["metrics"]["recovery_plan"][0]["component"] == "kline"
     plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
     assert plan_by_component["value_quality"]["mode"] == "audit"
 
