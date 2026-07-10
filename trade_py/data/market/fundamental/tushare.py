@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+_ROE_FEATURE_CLIP = (-1.5, 1.5)
 
 
 def _infer_period(report_date_str: str) -> str:
@@ -274,17 +275,20 @@ def compute_fundamental_features(
     }
     if df.empty:
         return result
+    work = df.copy()
+    work["roe"] = pd.to_numeric(work.get("roe", 0.0), errors="coerce").fillna(0.0)
+    work["roe"] = work["roe"].clip(lower=_ROE_FEATURE_CLIP[0], upper=_ROE_FEATURE_CLIP[1])
     n = len(df)
     q_avail = min(n, 12)
     result["quarters_available"] = q_avail
-    last4 = df.iloc[max(0, n - 4):]
+    last4 = work.iloc[max(0, n - 4):]
     result["roe_ttm"] = float(last4["roe"].mean())
     if n >= 5:
-        prev4 = df.iloc[max(0, n - 8): n - 4]
+        prev4 = work.iloc[max(0, n - 8): n - 4]
         if not prev4.empty:
             result["roe_momentum"] = result["roe_ttm"] - float(prev4["roe"].mean())
-        latest = df.iloc[n - 1]
-        year_ago = df.iloc[n - 5]
+        latest = work.iloc[n - 1]
+        year_ago = work.iloc[n - 5]
         prior_profit = float(year_ago["net_profit"])
         prior_revenue = float(year_ago["revenue"])
         if abs(prior_profit) > 1.0:
