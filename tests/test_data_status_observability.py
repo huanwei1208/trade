@@ -11,6 +11,7 @@ from trade_py.cli.data import _data_status_exit_code, _running_job_state
 from trade_py.db.trade_db import TradeDB
 from trade_py.utils.data_inspector import (
     build_status_lines,
+    cross_source_coverage_stats,
     fund_flow_stats,
     fundamental_stats,
     get_data_status,
@@ -1113,6 +1114,108 @@ def test_data_quality_gate_fails_on_provider_audit_failures() -> None:
     }
     plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
     assert plan_by_component["provider_audit"]["mode"] == "audit"
+
+
+def test_cross_source_coverage_reports_required_missing_and_single_source_optional(tmp_path) -> None:
+    stats = cross_source_coverage_stats(tmp_path)
+    lines = build_status_lines({"as_of": "2026-03-20", "cross_source_coverage": stats})
+
+    assert stats["status"] == "fail"
+    assert stats["required_missing"] == ["cross_asset.btc", "kline"]
+    assert stats["optional_single_source"] == ["cross_asset.fx_cnh", "cross_asset.gold"]
+    assert "REQUIRED_CROSS_SOURCE_EVIDENCE_MISSING" in stats["reason_codes"]
+    assert stats["datasets"]["kline"]["evidence_level"] == "provider_fallback_only"
+    assert stats["datasets"]["cross_asset.btc"]["reason_code"] == "BTC_RECONCILIATION_MISSING"
+    assert any("多源交叉验证覆盖" in line for line in lines)
+
+
+def test_cross_source_coverage_accepts_ready_btc_reconciliation_manifest(tmp_path) -> None:
+    btc_root = tmp_path / "market" / "cross_asset"
+    run_dir = btc_root / "runs" / "btc" / "run-ready"
+    run_dir.mkdir(parents=True)
+    manifest_path = run_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run-ready",
+                "health": {
+                    "cross_source_validation": {
+                        "status": "pass",
+                        "aligned_rows": 3,
+                        "block_rows": 0,
+                        "max_basis_pct": 0.1,
+                    }
+                },
+                "gates": [
+                    {
+                        "gate": "D3",
+                        "status": "pass",
+                        "metrics": {"aligned_rows": 3, "block_rows": 0},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (btc_root / "btc_current.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-ready",
+                "manifest_path": str(manifest_path),
+                "canonical_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stats = cross_source_coverage_stats(tmp_path)
+
+    assert stats["datasets"]["cross_asset.btc"]["status"] == "pass"
+    assert stats["datasets"]["cross_asset.btc"]["evidence_level"] == "provider_reconciliation"
+    assert stats["datasets"]["cross_asset.btc"]["metrics"]["aligned_rows"] == 3
+    assert stats["required_missing"] == ["kline"]
+
+
+def test_data_quality_gate_fails_on_cross_source_coverage_gap() -> None:
+    clean = {
+        "kline_coverage": {"coverage_pct": 100.0},
+        "kline_freshness": {"max_trading_day_stale_days": 0},
+        "fund_flow": {"coverage_pct": 95.0, "stale_sample": [{"trading_day_stale_days": 0}]},
+        "fundamental": {"coverage_pct": 100.0, "max_date": "2025-12-31"},
+        "sentiment": {"gold": {"lag_days": 0, "max_date": "2026-03-20"}},
+        "events": {"lag_days": 0, "event_count": 3},
+        "cross_asset": {
+            "gold": {"exists": True, "lag_days": 0},
+            "fx_cnh": {"exists": True, "lag_days": 0},
+            "btc": {"exists": True, "lag_days": 0},
+        },
+        "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
+        "northbound": {"exists": True, "lag_days": 0},
+        "schema_contracts": {"status": "pass", "checked_files": 12, "failed_contracts": []},
+        "value_quality": {"status": "pass", "checked_rows": 0, "failed_checks": []},
+        "source_stability": {"status": "pass", "reason_codes": []},
+        "metadata_reconciliation": {"status": "pass", "reason_codes": []},
+        "provider_readiness": {"status": "pass", "reason_codes": []},
+        "provider_audit": {"status": "pass", "reason_codes": []},
+        "cross_source_coverage": {
+            "status": "fail",
+            "reason_codes": ["REQUIRED_CROSS_SOURCE_EVIDENCE_MISSING"],
+            "required_missing": ["kline", "cross_asset.btc"],
+            "optional_single_source": ["cross_asset.gold"],
+            "recovery_plan": [{"dataset": "kline", "mode": "design"}],
+        },
+    }
+
+    gate = build_data_quality_gate(clean)
+
+    assert gate["status"] == "fail"
+    assert "CROSS_SOURCE_COVERAGE_INCOMPLETE" in gate["reason_codes"]
+    assert gate["components"]["cross_source_coverage"]["metrics"]["required_missing"] == [
+        "kline",
+        "cross_asset.btc",
+    ]
+    plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
+    assert plan_by_component["cross_source_coverage"]["mode"] == "audit"
 
 
 def test_stale_job_policy_converges_data_jobs(tmp_path) -> None:

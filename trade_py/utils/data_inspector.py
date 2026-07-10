@@ -160,6 +160,7 @@ _PROVIDER_RECOVERY: dict[str, dict[str, Any]] = {
 _TUSHARE_AUDIT_LOG_NAME = "tushare_requests.jsonl"
 _TUSHARE_AUDIT_FAIL_STATUSES = {"auth", "permission", "invalid_request"}
 _TUSHARE_AUDIT_WARN_STATUSES = {"rate_limit", "transient", "unknown"}
+_REQUIRED_CROSS_SOURCE_DATASETS = ("kline", "cross_asset.btc")
 
 
 # ── Status helpers ─────────────────────────────────────────────────────────────
@@ -1588,6 +1589,27 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         else None,
     )
 
+    cross_source = status.get("cross_source_coverage") or {}
+    cross_source_status = str(cross_source.get("status") or "pass")
+    cross_source_reasons = list(cross_source.get("reason_codes") or [])
+    components["cross_source_coverage"] = _component(
+        "fail" if cross_source_status == "fail" else ("warn" if cross_source_status == "warn" else "pass"),
+        None if cross_source_status == "pass" else "CROSS_SOURCE_COVERAGE_INCOMPLETE",
+        {
+            "required_missing": list(cross_source.get("required_missing") or []),
+            "optional_single_source": list(cross_source.get("optional_single_source") or []),
+            "reason_codes": cross_source_reasons,
+            "recovery_plan": list(cross_source.get("recovery_plan") or []),
+        },
+        _recovery(
+            ["trade", "data", "status", "--strict", "--json"],
+            mode="audit",
+            detail="Inspect cross_source_coverage for datasets lacking durable independent-source validation",
+        )
+        if cross_source_status in {"fail", "warn"}
+        else None,
+    )
+
     statuses = [item["status"] for item in components.values()]
     overall = "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass")
     reasons = [
@@ -2296,6 +2318,146 @@ def provider_audit_stats(
     }
 
 
+def _btc_cross_source_item(data_root: str | Path) -> dict[str, Any]:
+    current_path = CROSS_ASSET_DIR(data_root) / "btc_current.json"
+    item = {
+        "dataset": "cross_asset.btc",
+        "required": True,
+        "status": "fail",
+        "evidence_level": "missing",
+        "primary_source": "okx",
+        "shadow_sources": ["coingecko"],
+        "evidence_refs": {"current_pointer": str(current_path)},
+        "reason_code": "BTC_RECONCILIATION_MISSING",
+        "metrics": {},
+    }
+    if not current_path.exists():
+        return item
+    try:
+        current = json.loads(current_path.read_text(encoding="utf-8"))
+        manifest_path = Path(str((current or {}).get("manifest_path") or ""))
+        item["evidence_refs"]["manifest_path"] = str(manifest_path)
+        if not manifest_path.exists():
+            item["reason_code"] = "BTC_MANIFEST_MISSING"
+            return item
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        item["reason_code"] = "BTC_RECONCILIATION_READ_ERROR"
+        item["error"] = str(exc)
+        return item
+
+    health = manifest.get("health") if isinstance(manifest, dict) else {}
+    cross = (health or {}).get("cross_source_validation") or {}
+    gates = manifest.get("gates") or []
+    d3 = next((gate for gate in gates if gate.get("gate") == "D3"), {})
+    status = str(cross.get("status") or d3.get("status") or "")
+    aligned_rows = int(cross.get("aligned_rows") or ((d3.get("metrics") or {}).get("aligned_rows") or 0))
+    block_rows = int(cross.get("block_rows") or ((d3.get("metrics") or {}).get("block_rows") or 0))
+    item["metrics"] = {
+        "aligned_rows": aligned_rows,
+        "block_rows": block_rows,
+        "max_basis_pct": cross.get("max_basis_pct") or (d3.get("metrics") or {}).get("max_basis_pct"),
+    }
+    item["run_id"] = manifest.get("run_id")
+    if status == "pass" and aligned_rows > 0 and block_rows == 0:
+        item.update({
+            "status": "pass",
+            "evidence_level": "provider_reconciliation",
+            "reason_code": None,
+        })
+    else:
+        item["reason_code"] = "BTC_RECONCILIATION_NOT_READY"
+    return item
+
+
+def cross_source_coverage_stats(data_root: str | Path = "data") -> dict[str, Any]:
+    """Inventory datasets with durable independent-source validation evidence."""
+    datasets: dict[str, dict[str, Any]] = {
+        "kline": {
+            "dataset": "kline",
+            "required": True,
+            "status": "warn",
+            "evidence_level": "provider_fallback_only",
+            "primary_source": "tushare",
+            "shadow_sources": ["akshare", "tencent", "baostock"],
+            "reason_code": "KLINE_RECONCILIATION_NOT_PERSISTED",
+            "metrics": {
+                "provider_chain": ["tushare", "akshare", "tencent", "baostock"],
+            },
+            "evidence_refs": {
+                "failure_log": str(Path(data_root) / ".db" / "kline_failures.jsonl"),
+                "manifest_path": str(KLINE_MANIFEST(data_root)),
+            },
+        },
+        "cross_asset.btc": _btc_cross_source_item(data_root),
+        "cross_asset.gold": {
+            "dataset": "cross_asset.gold",
+            "required": False,
+            "status": "warn",
+            "evidence_level": "single_source",
+            "primary_source": "akshare",
+            "shadow_sources": [],
+            "reason_code": "GOLD_SINGLE_SOURCE",
+            "metrics": {},
+            "evidence_refs": {"path": str(CROSS_ASSET_DIR(data_root) / "gold.parquet")},
+        },
+        "cross_asset.fx_cnh": {
+            "dataset": "cross_asset.fx_cnh",
+            "required": False,
+            "status": "warn",
+            "evidence_level": "single_source",
+            "primary_source": "eastmoney",
+            "shadow_sources": [],
+            "reason_code": "FX_SINGLE_SOURCE",
+            "metrics": {},
+            "evidence_refs": {"path": str(CROSS_ASSET_DIR(data_root) / "fx_cnh.parquet")},
+        },
+    }
+    required_missing = sorted(
+        key
+        for key, item in datasets.items()
+        if item.get("required") and item.get("status") != "pass"
+    )
+    optional_single_source = sorted(
+        key
+        for key, item in datasets.items()
+        if not item.get("required") and item.get("status") != "pass"
+    )
+    reason_codes: list[str] = []
+    if required_missing:
+        reason_codes.append("REQUIRED_CROSS_SOURCE_EVIDENCE_MISSING")
+    if optional_single_source:
+        reason_codes.append("OPTIONAL_CROSS_SOURCE_EVIDENCE_MISSING")
+    recovery_plan = [
+        {
+            "dataset": "kline",
+            "command": ["trade", "data", "status", "--strict", "--json"],
+            "mode": "design",
+            "detail": "Persist provider-level kline reconciliation evidence before treating fallback as validation.",
+        }
+        if "kline" in required_missing
+        else None,
+        {
+            "dataset": "cross_asset.btc",
+            "command": ["trade", "data", "cross-asset", "btc", "--mode", "sync", "--strict"],
+            "mode": "sync",
+            "detail": "Run BTC assurance with OKX primary and CoinGecko shadow evidence until D3 reconciliation passes.",
+        }
+        if "cross_asset.btc" in required_missing
+        else None,
+    ]
+    recovery_plan = [item for item in recovery_plan if item is not None]
+    return {
+        "status": "fail" if required_missing else ("warn" if optional_single_source else "pass"),
+        "reason_codes": reason_codes,
+        "required_datasets": list(_REQUIRED_CROSS_SOURCE_DATASETS),
+        "required_missing": required_missing,
+        "optional_single_source": optional_single_source,
+        "datasets": datasets,
+        "recovery_plan": recovery_plan,
+    }
+
+
 # ── Aggregate status ──────────────────────────────────────────────────────────
 
 def get_data_status(
@@ -2323,6 +2485,7 @@ def get_data_status(
         "metadata_reconciliation": metadata_reconciliation_stats(data_root, sample_limit=sample_limit),
         "provider_readiness": provider_readiness_stats(data_root),
         "provider_audit": provider_audit_stats(data_root, sample_limit=sample_limit),
+        "cross_source_coverage": cross_source_coverage_stats(data_root),
         "as_of":       date.today().isoformat(),
     }
     if include_value_quality:
@@ -2551,6 +2714,18 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
             f"- status: **{provider_audit.get('status', 'unknown')}**",
             f"- observed: {'yes' if provider_audit.get('observed') else 'no'}",
             f"- tushare recent requests: {tushare.get('recent_requests', 0):,}",
+            f"- reasons: {', '.join(reasons) if reasons else '—'}",
+            "",
+        ]
+
+    cross_source = status.get("cross_source_coverage", {})
+    if cross_source:
+        reasons = cross_source.get("reason_codes") or []
+        lines += [
+            "### 多源交叉验证覆盖",
+            f"- status: **{cross_source.get('status', 'unknown')}**",
+            f"- required missing: {', '.join(cross_source.get('required_missing') or []) or '—'}",
+            f"- optional single-source: {', '.join(cross_source.get('optional_single_source') or []) or '—'}",
             f"- reasons: {', '.join(reasons) if reasons else '—'}",
             "",
         ]
