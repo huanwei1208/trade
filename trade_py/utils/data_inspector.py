@@ -438,6 +438,335 @@ def schema_contract_stats(data_root: str | Path = "data", sample_limit: int = 10
     }
 
 
+def _parquet_table_sql(files: list[Path]) -> str:
+    return f"read_parquet({[str(path) for path in files]!r}, union_by_name=true)"
+
+
+def _metric_status(metrics: dict[str, int]) -> str:
+    return "fail" if any(value > 0 for key, value in metrics.items() if key != "checked_rows") else "pass"
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def _present_value_column(dataset: str, observed_columns: set[str], required_column: str) -> str | None:
+    if required_column in observed_columns:
+        return required_column
+    for alias in _PARQUET_COLUMN_ALIASES.get(dataset, {}).get(required_column, ()):
+        if alias in observed_columns:
+            return alias
+    return None
+
+
+def _value_quality_scan(
+    dataset: str,
+    files: list[Path],
+    *,
+    observed_columns: set[str],
+    conditions: list[tuple[str, str]],
+    duplicate_key: tuple[str, ...] = (),
+    sample_limit: int = 10,
+) -> dict[str, Any]:
+    if not files:
+        return {
+            "dataset": dataset,
+            "status": "pass",
+            "files": 0,
+            "checked_rows": 0,
+            "metrics": {"checked_rows": 0},
+            "failed_checks": [],
+            "sample": [],
+        }
+
+    try:
+        import duckdb
+
+        table_sql = _parquet_table_sql(files)
+        con = duckdb.connect()
+        try:
+            select_exprs = ["COUNT(*) AS checked_rows"]
+            select_exprs.extend(
+                f"COALESCE(SUM(CASE WHEN {condition} THEN 1 ELSE 0 END), 0) AS {name}"
+                for name, condition in conditions
+            )
+            row = con.execute(f"SELECT {', '.join(select_exprs)} FROM {table_sql}").fetchone()
+            metric_names = ["checked_rows"] + [name for name, _condition in conditions]
+            metrics = {
+                metric_name: int((row or [0] * len(metric_names))[idx] or 0)
+                for idx, metric_name in enumerate(metric_names)
+            }
+            if duplicate_key:
+                key_expr = ", ".join(duplicate_key)
+                dup_row = con.execute(
+                    f"""
+                    SELECT COALESCE(SUM(cnt - 1), 0) AS duplicate_keys
+                    FROM (
+                        SELECT {key_expr}, COUNT(*) AS cnt
+                        FROM {table_sql}
+                        GROUP BY {key_expr}
+                        HAVING COUNT(*) > 1
+                    )
+                    """
+                ).fetchone()
+                metrics["duplicate_keys"] = int((dup_row or [0])[0] or 0)
+
+            sample: list[dict[str, Any]] = []
+            if conditions and sample_limit > 0:
+                sample_columns = [
+                    col
+                    for col in (
+                        "symbol",
+                        "date",
+                        "report_date",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "amount",
+                        "large_order_net_ratio",
+                        "roe",
+                        "total_net",
+                        "net_5d",
+                        "net_sentiment",
+                        "sentiment_score",
+                        "confidence",
+                    )
+                    if col in observed_columns
+                ]
+                if sample_columns:
+                    invalid_where = " OR ".join(f"({condition})" for _name, condition in conditions)
+                    sample_rows = con.execute(
+                        f"""
+                        SELECT {', '.join(sample_columns)}
+                        FROM {table_sql}
+                        WHERE {invalid_where}
+                        LIMIT {int(sample_limit)}
+                        """
+                    ).fetchall()
+                    sample = [
+                        {sample_columns[idx]: _jsonable(row_value) for idx, row_value in enumerate(sample_row)}
+                        for sample_row in sample_rows
+                    ]
+        finally:
+            con.close()
+        failed_checks = [
+            f"{dataset}.{name}"
+            for name, value in metrics.items()
+            if name != "checked_rows" and value > 0
+        ]
+        return {
+            "dataset": dataset,
+            "status": _metric_status(metrics),
+            "files": len(files),
+            "checked_rows": metrics.get("checked_rows", 0),
+            "metrics": metrics,
+            "failed_checks": failed_checks,
+            "sample": sample,
+        }
+    except Exception as exc:
+        return {
+            "dataset": dataset,
+            "status": "fail",
+            "files": len(files),
+            "checked_rows": 0,
+            "metrics": {"checked_rows": 0, "scan_errors": 1},
+            "failed_checks": [f"{dataset}.scan_errors"],
+            "sample": [],
+            "error": str(exc),
+        }
+
+
+def _date_conditions(date_column: str) -> list[tuple[str, str]]:
+    today = date.today().isoformat()
+    return [
+        ("invalid_dates", f"{date_column} IS NULL OR TRY_CAST({date_column} AS DATE) IS NULL"),
+        ("future_dates", f"TRY_CAST({date_column} AS DATE) > DATE '{today}'"),
+    ]
+
+
+def _value_conditions_for(dataset: str, observed_columns: set[str]) -> tuple[list[tuple[str, str]], tuple[str, ...]]:
+    if dataset == "kline":
+        return (
+            _date_conditions("date") + [
+                ("null_ohlc", "open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL"),
+                ("non_positive_ohlc", "open <= 0 OR high <= 0 OR low <= 0 OR close <= 0"),
+                (
+                    "invalid_ohlc_relationship",
+                    "high < low OR high < open OR high < close OR low > open OR low > close",
+                ),
+                ("negative_volume", "volume < 0"),
+                ("negative_amount", "amount < 0"),
+                ("negative_prev_close", "prev_close < 0"),
+                ("negative_vwap", "vwap < 0"),
+            ],
+            ("symbol", "date"),
+        )
+    if dataset == "fund_flow":
+        return (
+            _date_conditions("date") + [
+                (
+                    "invalid_large_order_net_ratio",
+                    "large_order_net_ratio IS NULL OR large_order_net_ratio < -1 OR large_order_net_ratio > 1",
+                ),
+            ],
+            ("symbol", "date"),
+        )
+    if dataset == "fundamental":
+        return (
+            _date_conditions("report_date") + [
+                ("invalid_roe", "roe IS NULL OR ABS(roe) > 1.5"),
+            ],
+            ("symbol", "report_date"),
+        )
+    if dataset.startswith("cross_asset."):
+        conditions = _date_conditions("date") + [
+            ("non_positive_close", "close IS NULL OR close <= 0"),
+        ]
+        if {"open", "high", "low", "close"}.issubset(observed_columns):
+            conditions.extend([
+                ("non_positive_ohlc", "open <= 0 OR high <= 0 OR low <= 0 OR close <= 0"),
+                (
+                    "invalid_ohlc_relationship",
+                    "high < low OR high < open OR high < close OR low > open OR low > close",
+                ),
+            ])
+        return conditions, ("date",)
+    if dataset == "index":
+        conditions = _date_conditions("date") + [
+            ("non_positive_close", "close IS NULL OR close <= 0"),
+        ]
+        if {"open", "high", "low", "close"}.issubset(observed_columns):
+            conditions.extend([
+                ("non_positive_ohlc", "open <= 0 OR high <= 0 OR low <= 0 OR close <= 0"),
+                (
+                    "invalid_ohlc_relationship",
+                    "high < low OR high < open OR high < close OR low > open OR low > close",
+                ),
+            ])
+        return conditions, ()
+    if dataset == "northbound":
+        return (
+            _date_conditions("date") + [
+                ("null_flow_values", "total_net IS NULL OR net_5d IS NULL"),
+            ],
+            ("date",),
+        )
+    if dataset.startswith("macro."):
+        required_value = {
+            "macro.gdp": "q_gdp",
+            "macro.cpi": "nt_yoy",
+            "macro.ppi": "ppi_yoy",
+            "macro.pmi": "mfg_pmi",
+        }.get(dataset)
+        conditions = _date_conditions("date")
+        value_column = _present_value_column(dataset, observed_columns, required_value or "")
+        if value_column:
+            conditions.append(("null_macro_value", f"{value_column} IS NULL"))
+        return conditions, ("date",)
+    if dataset == "sentiment.silver":
+        conditions = _date_conditions("date") + [
+            ("sentiment_score_out_of_range", "sentiment_score IS NULL OR sentiment_score < -1 OR sentiment_score > 1"),
+        ]
+        if "confidence" in observed_columns:
+            conditions.append(("confidence_out_of_range", "confidence < 0 OR confidence > 1"))
+        return conditions, ()
+    if dataset == "sentiment.gold":
+        conditions = _date_conditions("date") + [
+            ("net_sentiment_out_of_range", "net_sentiment IS NULL OR net_sentiment < -1 OR net_sentiment > 1"),
+        ]
+        if "sentiment_score" in observed_columns:
+            conditions.append(("sentiment_score_out_of_range", "sentiment_score < -1 OR sentiment_score > 1"))
+        if "confidence" in observed_columns:
+            conditions.append(("confidence_out_of_range", "confidence < 0 OR confidence > 1"))
+        return conditions, ("date", "symbol")
+    return [], ()
+
+
+def value_quality_stats(
+    data_root: str | Path = "data",
+    sample_limit: int = 10,
+    schema_contracts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    root = Path(data_root)
+    if schema_contracts is None:
+        schema_contracts = schema_contract_stats(root, sample_limit=sample_limit)
+
+    files_by_dataset: dict[str, list[Path]] = {
+        "kline": _resolve_kline_files(root),
+        "fund_flow": sorted(FUND_FLOW_DIR(root).glob("*.parquet")),
+        "fundamental": sorted(FUNDAMENTAL_DIR(root).glob("*.parquet")),
+        "index": sorted(INDEX_DIR(root).glob("*.parquet")),
+        "northbound": [NORTHBOUND_DIR(root) / "daily.parquet"] if (NORTHBOUND_DIR(root) / "daily.parquet").exists() else [],
+    }
+    files_by_dataset.update({
+        f"cross_asset.{name}": [path] if path.exists() else []
+        for name in ("gold", "fx_cnh", "btc")
+        for path, _layout in [_cross_asset_path(root, name)]
+    })
+    files_by_dataset.update({
+        f"macro.{name}": [MACRO_DIR(root) / f"{name}.parquet"] if (MACRO_DIR(root) / f"{name}.parquet").exists() else []
+        for name in ("gdp", "cpi", "ppi", "pmi")
+    })
+    files_by_dataset.update({
+        f"sentiment.{layer}": sorted((root / "sentiment" / layer).glob("**/*.parquet"))
+        for layer in ("silver", "gold")
+    })
+
+    schema_datasets = schema_contracts.get("datasets") if isinstance(schema_contracts, dict) else {}
+    datasets: dict[str, dict[str, Any]] = {}
+    for dataset, files in files_by_dataset.items():
+        schema = (schema_datasets or {}).get(dataset) or {}
+        if schema.get("status") == "fail":
+            datasets[dataset] = {
+                "dataset": dataset,
+                "status": "blocked",
+                "files": len(files),
+                "checked_rows": 0,
+                "metrics": {"checked_rows": 0},
+                "failed_checks": [],
+                "blocked_by_schema": True,
+                "missing_columns": schema.get("missing_columns") or [],
+            }
+            continue
+        observed_columns = set(schema.get("observed_columns") or [])
+        if not observed_columns and files:
+            for path in files:
+                columns, _error = _parquet_columns(path)
+                observed_columns.update(columns)
+        conditions, duplicate_key = _value_conditions_for(dataset, observed_columns)
+        datasets[dataset] = _value_quality_scan(
+            dataset,
+            files,
+            observed_columns=observed_columns,
+            conditions=conditions,
+            duplicate_key=duplicate_key,
+            sample_limit=sample_limit,
+        )
+
+    failed_checks = [
+        check
+        for item in datasets.values()
+        for check in item.get("failed_checks", [])
+    ]
+    checked_rows = sum(int(item.get("checked_rows") or 0) for item in datasets.values())
+    blocked_contracts = [
+        dataset
+        for dataset, item in datasets.items()
+        if item.get("status") == "blocked"
+    ]
+    return {
+        "status": "fail" if failed_checks else "pass",
+        "checked_rows": checked_rows,
+        "failed_checks": failed_checks,
+        "blocked_contracts": blocked_contracts,
+        "datasets": datasets,
+    }
+
+
 def _market_flat_stats(
     data_root: str | Path,
     *,
@@ -929,6 +1258,25 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         else None,
     )
 
+    value_quality = status.get("value_quality") or {}
+    value_failed = list(value_quality.get("failed_checks") or [])
+    components["value_quality"] = _component(
+        "pass" if not value_failed and value_quality.get("status", "pass") == "pass" else "fail",
+        None if not value_failed and value_quality.get("status", "pass") == "pass" else "VALUE_QUALITY_INVALID_ROWS",
+        {
+            "checked_rows": int(value_quality.get("checked_rows") or 0),
+            "failed_checks": value_failed,
+            "blocked_contracts": list(value_quality.get("blocked_contracts") or []),
+        },
+        _recovery(
+            ["trade", "data", "status", "--strict", "--json"],
+            mode="audit",
+            detail="Inspect value_quality for invalid dates, duplicate keys, out-of-range factors, or impossible prices",
+        )
+        if value_failed or value_quality.get("status") == "fail"
+        else None,
+    )
+
     statuses = [item["status"] for item in components.values()]
     overall = "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass")
     reasons = [
@@ -1069,8 +1417,13 @@ def events_stats(data_root: str | Path = "data") -> dict[str, Any]:
 
 # ── Aggregate status ──────────────────────────────────────────────────────────
 
-def get_data_status(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
+def get_data_status(
+    data_root: str | Path = "data",
+    sample_limit: int = 10,
+    include_value_quality: bool = False,
+) -> dict[str, Any]:
     """Return a consolidated status dict across all data layers."""
+    schema_contracts = schema_contract_stats(data_root, sample_limit=sample_limit)
     status = {
         "kline":       kline_stats(data_root),
         "kline_coverage": kline_coverage_stats(data_root, sample_limit=sample_limit),
@@ -1084,9 +1437,15 @@ def get_data_status(data_root: str | Path = "data", sample_limit: int = 10) -> d
         "instruments": db_instrument_stats(data_root),
         "sentiment":   sentiment_stats(data_root),
         "events":      events_stats(data_root),
-        "schema_contracts": schema_contract_stats(data_root, sample_limit=sample_limit),
+        "schema_contracts": schema_contracts,
         "as_of":       date.today().isoformat(),
     }
+    if include_value_quality:
+        status["value_quality"] = value_quality_stats(
+            data_root,
+            sample_limit=sample_limit,
+            schema_contracts=schema_contracts,
+        )
     status["quality_gate"] = build_data_quality_gate(status)
     return status
 
@@ -1241,6 +1600,17 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
             f"- status: **{schema.get('status', 'unknown')}**",
             f"- checked files: {schema.get('checked_files', 0):,}",
             f"- failed contracts: {', '.join(failed) if failed else '—'}",
+            "",
+        ]
+
+    value_quality = status.get("value_quality", {})
+    if value_quality:
+        failed = value_quality.get("failed_checks") or []
+        lines += [
+            "### 数据取值质量",
+            f"- status: **{value_quality.get('status', 'unknown')}**",
+            f"- checked rows: {value_quality.get('checked_rows', 0):,}",
+            f"- failed checks: {', '.join(failed) if failed else '—'}",
             "",
         ]
 

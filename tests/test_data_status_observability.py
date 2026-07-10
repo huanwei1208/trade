@@ -21,6 +21,7 @@ from trade_py.utils.data_inspector import (
     northbound_stats,
     macro_stats,
     schema_contract_stats,
+    value_quality_stats,
     build_data_quality_gate,
 )
 
@@ -142,6 +143,7 @@ def test_fund_flow_and_fundamental_status_use_local_parquet_coverage(tmp_path) -
     assert status["fundamental"]["rows"] == 2
     assert any("资金流数据" in line for line in lines)
     assert any("基本面数据" in line for line in lines)
+    assert "value_quality" not in status
 
 
 def test_sentiment_and_events_status_report_lag_against_trade_date(tmp_path) -> None:
@@ -336,6 +338,83 @@ def test_schema_contract_status_reports_missing_required_columns(tmp_path) -> No
     assert any("数据契约" in line for line in lines)
 
 
+def test_value_quality_status_reports_invalid_values_and_duplicates(tmp_path) -> None:
+    kline_root = tmp_path / "market" / "kline"
+    kline_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "symbol": "000001.SZ",
+                "date": "2026-03-20",
+                "open": 10.0,
+                "high": 9.5,
+                "low": 9.8,
+                "close": 10.2,
+                "volume": 1000,
+                "amount": 102000.0,
+                "turnover_rate": 1.2,
+                "prev_close": 10.1,
+                "vwap": 10.2,
+            },
+            {
+                "symbol": "000001.SZ",
+                "date": "2026-03-20",
+                "open": 10.0,
+                "high": 10.5,
+                "low": 9.8,
+                "close": 10.2,
+                "volume": -1,
+                "amount": 102000.0,
+                "turnover_rate": 1.2,
+                "prev_close": 10.1,
+                "vwap": 10.2,
+            },
+        ]
+    ).to_parquet(kline_root / "000001_SZ.parquet", index=False)
+
+    fund_flow_root = tmp_path / "market" / "fund_flow"
+    fund_flow_root.mkdir(parents=True)
+    pd.DataFrame(
+        [{"symbol": "000001.SZ", "date": "2026-03-20", "large_order_net_ratio": 1.5}]
+    ).to_parquet(fund_flow_root / "000001_SZ.parquet", index=False)
+
+    gold_root = tmp_path / "sentiment" / "gold" / "2026" / "03"
+    gold_root.mkdir(parents=True)
+    pd.DataFrame(
+        [{"date": "2026-03-20", "symbol": "000001.SZ", "net_sentiment": 1.2, "confidence": 1.1}]
+    ).to_parquet(gold_root / "2026-03-20.parquet", index=False)
+
+    schema = schema_contract_stats(tmp_path, sample_limit=5)
+    stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
+    lines = build_status_lines({"as_of": "2026-03-20", "value_quality": stats})
+
+    assert stats["status"] == "fail"
+    assert stats["datasets"]["kline"]["metrics"]["invalid_ohlc_relationship"] == 1
+    assert stats["datasets"]["kline"]["metrics"]["negative_volume"] == 1
+    assert stats["datasets"]["kline"]["metrics"]["duplicate_keys"] == 1
+    assert "kline.invalid_ohlc_relationship" in stats["failed_checks"]
+    assert "fund_flow.invalid_large_order_net_ratio" in stats["failed_checks"]
+    assert "sentiment.gold.net_sentiment_out_of_range" in stats["failed_checks"]
+    assert "sentiment.gold.confidence_out_of_range" in stats["failed_checks"]
+    assert any("数据取值质量" in line for line in lines)
+
+
+def test_value_quality_blocks_on_schema_contract_failures(tmp_path) -> None:
+    fund_flow_root = tmp_path / "market" / "fund_flow"
+    fund_flow_root.mkdir(parents=True)
+    pd.DataFrame(
+        [{"symbol": "000001.SZ", "date": "2026-03-20"}]
+    ).to_parquet(fund_flow_root / "000001_SZ.parquet", index=False)
+
+    schema = schema_contract_stats(tmp_path, sample_limit=5)
+    stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
+
+    assert stats["status"] == "pass"
+    assert stats["blocked_contracts"] == ["fund_flow"]
+    assert stats["datasets"]["fund_flow"]["status"] == "blocked"
+    assert stats["datasets"]["fund_flow"]["blocked_by_schema"] is True
+
+
 def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
     clean = {
         "kline_coverage": {"coverage_pct": 100.0},
@@ -352,6 +431,7 @@ def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
         "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
         "northbound": {"exists": True, "lag_days": 0},
         "schema_contracts": {"status": "pass", "checked_files": 9, "failed_contracts": []},
+        "value_quality": {"status": "pass", "checked_rows": 100, "failed_checks": []},
     }
     degraded = {
         **clean,
@@ -377,6 +457,39 @@ def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
     assert any("数据质量门禁" in line for line in degraded_lines)
 
 
+def test_data_quality_gate_fails_on_value_quality_breakage() -> None:
+    clean = {
+        "kline_coverage": {"coverage_pct": 100.0},
+        "kline_freshness": {"max_trading_day_stale_days": 0},
+        "fund_flow": {"coverage_pct": 95.0, "stale_sample": [{"trading_day_stale_days": 0}]},
+        "fundamental": {"coverage_pct": 100.0, "max_date": "2025-12-31"},
+        "sentiment": {"gold": {"lag_days": 0, "max_date": "2026-03-20"}},
+        "events": {"lag_days": 0, "event_count": 3},
+        "cross_asset": {
+            "gold": {"exists": True, "lag_days": 0},
+            "fx_cnh": {"exists": True, "lag_days": 0},
+            "btc": {"exists": True, "lag_days": 0},
+        },
+        "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
+        "northbound": {"exists": True, "lag_days": 0},
+        "schema_contracts": {"status": "pass", "checked_files": 12, "failed_contracts": []},
+        "value_quality": {
+            "status": "fail",
+            "checked_rows": 123,
+            "failed_checks": ["kline.invalid_ohlc_relationship", "fund_flow.invalid_large_order_net_ratio"],
+            "blocked_contracts": [],
+        },
+    }
+
+    gate = build_data_quality_gate(clean)
+
+    assert gate["status"] == "fail"
+    assert "VALUE_QUALITY_INVALID_ROWS" in gate["reason_codes"]
+    assert gate["components"]["value_quality"]["metrics"]["checked_rows"] == 123
+    plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
+    assert plan_by_component["value_quality"]["mode"] == "audit"
+
+
 def test_data_quality_gate_fails_on_schema_contract_breakage() -> None:
     clean = {
         "kline_coverage": {"coverage_pct": 100.0},
@@ -397,6 +510,7 @@ def test_data_quality_gate_fails_on_schema_contract_breakage() -> None:
             "checked_files": 12,
             "failed_contracts": ["fund_flow", "cross_asset.gold"],
         },
+        "value_quality": {"status": "pass", "checked_rows": 0, "failed_checks": []},
     }
 
     gate = build_data_quality_gate(clean)
@@ -437,6 +551,41 @@ def test_data_status_parser_accepts_strict_flag() -> None:
     assert parsed.command == "status"
     assert parsed.strict is True
     assert parsed.as_json is True
+
+
+def test_data_status_cli_opts_into_value_quality(monkeypatch, tmp_path, capsys) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_get_data_status(data_root, sample_limit=10, include_value_quality=False):
+        seen["data_root"] = data_root
+        seen["sample_limit"] = sample_limit
+        seen["include_value_quality"] = include_value_quality
+        return {
+            "as_of": "2026-03-20",
+            "quality_gate": {"status": "pass", "reason_codes": []},
+            "schema_contracts": {"status": "pass", "checked_files": 0, "failed_contracts": []},
+            "value_quality": {"status": "pass", "checked_rows": 0, "failed_checks": []},
+        }
+
+    monkeypatch.setattr("trade_py.utils.data_inspector.get_data_status", fake_get_data_status)
+
+    rc = data_cli.main([
+        "status",
+        "--data-root",
+        str(tmp_path),
+        "--limit",
+        "3",
+        "--json",
+        "--strict",
+    ])
+
+    assert rc == 0
+    assert seen == {
+        "data_root": str(tmp_path),
+        "sample_limit": 3,
+        "include_value_quality": True,
+    }
+    assert '"value_quality"' in capsys.readouterr().out
 
 
 def test_stale_job_policy_converges_data_jobs(tmp_path) -> None:

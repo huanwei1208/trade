@@ -520,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         from trade_py.utils.data_inspector import build_status_lines, get_data_status
 
-        status = get_data_status(args.data_root, sample_limit=args.limit)
+        status = get_data_status(args.data_root, sample_limit=args.limit, include_value_quality=True)
         if args.as_json:
             print(json.dumps(status, ensure_ascii=False, indent=2))
             return _data_status_exit_code(status, strict=args.strict)
