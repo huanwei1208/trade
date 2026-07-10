@@ -348,6 +348,69 @@ def test_historical_overlap_does_not_substitute_for_daily_acquisition_stability(
     assert stable_attempts.data_readiness == "ready"
 
 
+def test_assurance_manifest_health_summarizes_ready_gate_evidence() -> None:
+    result = assure_btc(
+        _primary_frame([100.0, 101.0, 102.0]),
+        _shadow_frame([100.0, 101.0, 102.0]),
+        config=_small_ready_config(),
+        acquisition_evidence={
+            "providers": {
+                "okx": {
+                    "status": "succeeded",
+                    "attempts": 1,
+                    "retry_count": 0,
+                    "latency_ms": 12,
+                    "rows": 3,
+                    "raw_payload_hashes": ["a" * 64],
+                },
+                "coingecko": {
+                    "status": "succeeded",
+                    "attempts": 1,
+                    "retry_count": 0,
+                    "latency_ms": 10,
+                    "rows": 3,
+                    "raw_payload_hashes": ["b" * 64],
+                },
+            },
+            "daily_attempts": [{"date": "2025-01-04", "qualified": True}],
+            "predecessor": {"status": "missing", "sha256": None},
+        },
+    )
+
+    health = result.manifest["health"]
+    assert result.summary()["health"] == health
+    assert health["data_readiness"] == "ready"
+    assert health["blocking_gate"] is None
+    assert health["accuracy"]["status"] == "pass"
+    assert health["source_stability"]["status"] == "pass"
+    assert health["source_stability"]["providers"]["okx"]["raw_payload_count"] == 1
+    assert health["cross_source_validation"]["status"] == "pass"
+    assert health["cross_source_validation"]["aligned_rows"] == 3
+    assert health["observed"]["row_count"] == 3
+    assert health["observed"]["watermark"] == "2025-01-03"
+
+
+def test_assurance_health_surfaces_source_divergence_block() -> None:
+    result = assure_btc(
+        _primary_frame([100.0, 101.0, 103.0]),
+        _shadow_frame([100.0, 101.0, 99.0]),
+        config=_small_ready_config(),
+        acquisition_evidence={
+            "daily_attempts": [{"date": "2025-01-04", "qualified": True}],
+            "predecessor": {"status": "missing", "sha256": None},
+        },
+    )
+
+    health = result.manifest["health"]
+    assert result.data_readiness == "degraded"
+    assert health["blocking_gate"] == "D3"
+    assert health["blocking_reason_code"] == "SOURCE_DIVERGENCE"
+    assert "SOURCE_DIVERGENCE" in health["reason_codes"]
+    assert health["cross_source_validation"]["status"] == "fail"
+    assert health["cross_source_validation"]["block_rows"] == 1
+    assert health["cross_source_validation"]["max_basis_pct"] == pytest.approx(4.040404)
+
+
 @pytest.mark.parametrize(
     ("revision_pct", "status", "reason_code"),
     [

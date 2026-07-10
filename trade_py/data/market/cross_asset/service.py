@@ -13,6 +13,7 @@ import pandas as pd
 from trade_py.data.market.cross_asset.assurance import (
     BtcAssuranceConfig,
     assure_btc,
+    summarize_btc_health,
 )
 from trade_py.data.market.cross_asset.store import (
     BtcRunStore,
@@ -426,26 +427,57 @@ class BtcMarketDataService:
         try:
             current = self.store.current()
         except ValueError as exc:
+            reason_codes = ["CURRENT_POINTER_INVALID"]
             return {
                 "mode": "validate",
                 "validated": False,
                 "data_readiness": "invalid",
                 "reason_code": "CURRENT_POINTER_INVALID",
-                "reason_codes": ["CURRENT_POINTER_INVALID"],
+                "reason_codes": reason_codes,
                 "error": str(exc),
+                "health": summarize_btc_health(
+                    run_id=None,
+                    data_readiness="invalid",
+                    publishable=False,
+                    gates=[],
+                    reason_codes=reason_codes,
+                    evidence_refs={"current_pointer": str(self.store.current_path)},
+                ),
             }
         if not current:
-            return {**inspect_btc_status(self.data_root), "mode": "validate", "validated": False}
+            payload = {**inspect_btc_status(self.data_root), "mode": "validate", "validated": False}
+            if "health" not in payload:
+                payload["health"] = summarize_btc_health(
+                    run_id=payload.get("run_id"),
+                    data_readiness=str(payload.get("data_readiness") or "invalid"),
+                    publishable=False,
+                    gates=[],
+                    reason_codes=[str(payload.get("reason_code") or "")],
+                    evidence_refs={"canonical_path": str(self.store.compatibility_path)},
+                )
+            return payload
         run_id = str(current.get("run_id") or "")
         run_dir = self.store.run_dir(run_id)
         manifest_path = run_dir / "manifest.json"
         if not manifest_path.exists():
+            reason_codes = ["CURRENT_MANIFEST_MISSING"]
             return {
                 "mode": "validate",
                 "validated": False,
                 "data_readiness": "invalid",
                 "reason_code": "CURRENT_MANIFEST_MISSING",
+                "reason_codes": reason_codes,
                 "run_id": run_id,
+                "current": current,
+                "health": summarize_btc_health(
+                    run_id=run_id,
+                    data_readiness="invalid",
+                    publishable=False,
+                    gates=[],
+                    current=current,
+                    reason_codes=reason_codes,
+                    evidence_refs={"manifest_path": str(manifest_path)},
+                ),
             }
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -473,13 +505,26 @@ class BtcMarketDataService:
                 acquisition_evidence=manifest.get("acquisition_evidence") or {},
             )
         except Exception as exc:
+            reason_codes = ["CURRENT_REPLAY_ERROR"]
             return {
                 "mode": "validate",
                 "validated": False,
                 "data_readiness": "invalid",
                 "reason_code": "CURRENT_REPLAY_ERROR",
+                "reason_codes": reason_codes,
                 "run_id": run_id,
                 "error": f"{type(exc).__name__}: {exc}",
+                "current": current,
+                "health": summarize_btc_health(
+                    run_id=run_id,
+                    data_readiness="invalid",
+                    publishable=False,
+                    gates=(manifest.get("gates") or []) if "manifest" in locals() else [],
+                    manifest=manifest if "manifest" in locals() else None,
+                    current=current,
+                    reason_codes=reason_codes,
+                    evidence_refs={"manifest_path": str(manifest_path)},
+                ),
             }
         replay_errors = []
         if replay.manifest.get("canonical_hash") != manifest.get("canonical_hash"):
@@ -506,6 +551,27 @@ class BtcMarketDataService:
         elif readiness == "ready" and not operational_freshness["fresh"]:
             readiness = "degraded"
             reason_codes.append("CANONICAL_STALE")
+        health = summarize_btc_health(
+            run_id=run_id,
+            data_readiness=readiness,
+            publishable=readiness == "ready",
+            gates=[gate.to_dict() for gate in replay.gates],
+            canonical=replay.canonical,
+            reconciliation=replay.reconciliation,
+            revisions=replay.revisions,
+            acquisition_evidence=manifest.get("acquisition_evidence") or {},
+            manifest=manifest,
+            current=current,
+            operational_freshness=operational_freshness,
+            reason_codes=reason_codes,
+            integrity_errors=integrity_errors,
+            replay_errors=replay_errors,
+            evidence_refs={
+                "manifest_path": str(manifest_path),
+                "run_dir": str(run_dir),
+                "canonical_path": str(self.store.compatibility_path),
+            },
+        )
         return {
             "mode": "validate",
             "validated": readiness == "ready",
@@ -519,6 +585,7 @@ class BtcMarketDataService:
             "operational_freshness": operational_freshness,
             "gates": [gate.to_dict() for gate in replay.gates],
             "manifest": manifest,
+            "health": health,
         }
 
     @staticmethod

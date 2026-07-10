@@ -126,11 +126,17 @@ def _render_model(outcome: EvalOutcome, *, as_json: bool = False) -> None:
     print(f"{'model':<18} {'target':<16} {'status':<10} {'rank_ic':>8} {'mae':>8} {'topk':>8}")
     print("-" * 78)
     for row in rows:
+        rank_ic = row.get("rank_ic")
+        mae = row.get("mae")
+        topk_hit_rate = row.get("topk_hit_rate")
+        rank_ic_text = f"{float(rank_ic):.4f}" if rank_ic is not None else "—"
+        mae_text = f"{float(mae):.4f}" if mae is not None else "—"
+        topk_text = f"{float(topk_hit_rate):.2%}" if topk_hit_rate is not None else "—"
         print(
             f"{row['model_name']:<18} {row['target_name']:<16} {row['status']:<10} "
-            f"{(f'{float(row['rank_ic']):.4f}' if row.get('rank_ic') is not None else '—'):>8} "
-            f"{(f'{float(row['mae']):.4f}' if row.get('mae') is not None else '—'):>8} "
-            f"{(f'{float(row['topk_hit_rate']):.2%}' if row.get('topk_hit_rate') is not None else '—'):>8}"
+            f"{rank_ic_text:>8} "
+            f"{mae_text:>8} "
+            f"{topk_text:>8}"
         )
 
 

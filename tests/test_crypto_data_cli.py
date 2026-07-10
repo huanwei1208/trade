@@ -275,6 +275,11 @@ def test_ready_sync_atomically_publishes_canonical_pointer_raw_and_manifest(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["provider_contracts"]["primary"]["instrument"] == "BTC-USDT"
     assert manifest["provider_contracts"]["shadow"]["quote_asset"] == "USD"
+    assert manifest["health"]["data_readiness"] == "ready"
+    assert manifest["health"]["accuracy"]["status"] == "pass"
+    assert manifest["health"]["source_stability"]["status"] == "pass"
+    assert manifest["health"]["cross_source_validation"]["status"] == "pass"
+    assert result["health"]["observed"]["watermark"] == "2026-01-09"
     assert manifest["retention_policy"] == {
         "minimum_completed_runs": 10,
         "strategy": "retain_all_no_automatic_pruning",
@@ -354,8 +359,13 @@ def test_validate_and_status_downgrade_an_aged_current_run(tmp_path: Path) -> No
     assert validated["data_readiness"] == "degraded"
     assert validated["reason_code"] == "CANONICAL_STALE"
     assert validated["operational_freshness"]["fresh"] is False
+    assert validated["health"]["blocking_gate"] == "freshness"
+    assert validated["health"]["blocking_reason_code"] == "CANONICAL_STALE"
+    assert validated["health"]["freshness"]["status"] == "fail"
+    assert validated["health"]["freshness"]["staleness_days"] == 31
     assert status["data_readiness"] == "degraded"
     assert status["reason_code"] == "CANONICAL_STALE"
+    assert status["health"]["reason_codes"] == ["CANONICAL_STALE"]
 
 
 def test_corrupt_current_pointer_is_invalid_not_legacy_insufficient(tmp_path: Path) -> None:

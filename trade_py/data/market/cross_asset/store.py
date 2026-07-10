@@ -20,6 +20,7 @@ from trade_py.data.market.cross_asset.assurance import (
     _json_hash,
     _watermark,
     assure_btc,
+    summarize_btc_health,
 )
 
 
@@ -336,6 +337,17 @@ class BtcRunStore:
                     hashes[f"raw/{provider}/{index:04d}"] = file_sha256(raw_path)
             manifest = dict(result.manifest)
             manifest["artifact_hashes"] = hashes
+            manifest["health"] = summarize_btc_health(
+                run_id=result.run_id,
+                data_readiness=result.data_readiness,
+                publishable=result.publishable,
+                gates=[gate.to_dict() for gate in result.gates],
+                canonical=result.canonical,
+                reconciliation=result.reconciliation,
+                revisions=result.revisions,
+                acquisition_evidence=manifest.get("acquisition_evidence") or {},
+                manifest=manifest,
+            )
             (staging / "manifest.json").write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
                 encoding="utf-8",
@@ -696,45 +708,118 @@ def inspect_btc_status(data_root: str | Path, *, as_of: Any | None = None) -> di
     try:
         current = store.current()
     except ValueError as exc:
+        reason_codes = ["CURRENT_POINTER_INVALID"]
         return {
             "data_readiness": "invalid",
             "reason_code": "CURRENT_POINTER_INVALID",
+            "reason_codes": reason_codes,
             "error": str(exc),
             "path": str(store.current_path),
+            "health": summarize_btc_health(
+                run_id=None,
+                data_readiness="invalid",
+                publishable=False,
+                gates=[],
+                reason_codes=reason_codes,
+                evidence_refs={"current_pointer": str(store.current_path)},
+            ),
         }
     if current:
         manifest_path = Path(str(current.get("manifest_path") or ""))
         manifest: dict[str, Any] = {}
+        manifest_error = None
         if manifest_path.exists():
             try:
                 value = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest = value if isinstance(value, dict) else {}
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError) as exc:
                 manifest = {}
+                manifest_error = f"{type(exc).__name__}: {exc}"
         freshness = btc_operational_freshness(manifest, as_of=as_of)
         readiness = manifest.get("data_readiness", "degraded")
-        reason_code = None
+        reason_codes = []
+        if manifest_error:
+            readiness = "invalid"
+            reason_codes.append("CURRENT_MANIFEST_INVALID")
         if readiness == "ready" and not freshness["fresh"]:
             readiness = "degraded"
-            reason_code = "CANONICAL_STALE"
+            reason_codes.append("CANONICAL_STALE")
+        health = summarize_btc_health(
+            run_id=str(current.get("run_id") or ""),
+            data_readiness=str(readiness),
+            publishable=readiness == "ready",
+            gates=manifest.get("gates") or [],
+            manifest=manifest,
+            current=current,
+            operational_freshness=freshness,
+            reason_codes=reason_codes,
+            integrity_errors=["manifest"] if manifest_error else [],
+            evidence_refs={
+                "manifest_path": str(manifest_path),
+                "canonical_path": str(store.compatibility_path),
+            },
+        )
         return {
             "data_readiness": readiness,
-            "reason_code": reason_code,
+            "reason_code": reason_codes[0] if reason_codes else None,
+            "reason_codes": reason_codes,
             "current": current,
             "manifest": manifest,
             "operational_freshness": freshness,
+            "health": health,
         }
     path = store.compatibility_path
     if not path.exists():
-        return {"data_readiness": "invalid", "reason_code": "NO_CANONICAL_DATA", "path": str(path)}
+        reason_codes = ["NO_CANONICAL_DATA"]
+        return {
+            "data_readiness": "invalid",
+            "reason_code": "NO_CANONICAL_DATA",
+            "reason_codes": reason_codes,
+            "path": str(path),
+            "health": summarize_btc_health(
+                run_id=None,
+                data_readiness="invalid",
+                publishable=False,
+                gates=[],
+                reason_codes=reason_codes,
+                evidence_refs={"canonical_path": str(path)},
+            ),
+        }
     try:
         frame = pd.read_parquet(path)
     except Exception as exc:
-        return {"data_readiness": "invalid", "reason_code": "CANONICAL_READ_ERROR", "error": str(exc), "path": str(path)}
+        reason_codes = ["CANONICAL_READ_ERROR"]
+        return {
+            "data_readiness": "invalid",
+            "reason_code": "CANONICAL_READ_ERROR",
+            "reason_codes": reason_codes,
+            "error": str(exc),
+            "path": str(path),
+            "health": summarize_btc_health(
+                run_id=None,
+                data_readiness="invalid",
+                publishable=False,
+                gates=[],
+                reason_codes=reason_codes,
+                integrity_errors=["canonical_read"],
+                evidence_refs={"canonical_path": str(path)},
+            ),
+        }
+    reason_codes = ["LEGACY_LINEAGE_MISSING"]
     return {
         "data_readiness": "insufficient_data",
         "reason_code": "LEGACY_LINEAGE_MISSING",
+        "reason_codes": reason_codes,
         "path": str(path),
         "row_count": int(len(frame)),
         "watermark": _watermark(frame),
+        "health": summarize_btc_health(
+            run_id=None,
+            data_readiness="insufficient_data",
+            publishable=False,
+            gates=[],
+            canonical=frame,
+            reason_codes=reason_codes,
+            evidence_refs={"canonical_path": str(path)},
+        ),
     }

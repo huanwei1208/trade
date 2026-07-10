@@ -154,6 +154,7 @@ class BtcAssuranceResult:
             "row_count": int(len(self.canonical)),
             "watermark": _watermark(self.canonical),
             "gates": [gate.to_dict() for gate in self.gates],
+            "health": dict(self.manifest.get("health") or {}),
             "manifest": dict(self.manifest),
         }
 
@@ -204,6 +205,264 @@ def _watermark(frame: pd.DataFrame) -> str | None:
     if values.notna().sum() == 0:
         return None
     return values.max().date().isoformat()
+
+
+def _gate_payload(gate: DataGateResult | dict[str, Any]) -> dict[str, Any]:
+    return gate.to_dict() if isinstance(gate, DataGateResult) else dict(gate)
+
+
+def _nonzero_counts(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, raw in value.items():
+        try:
+            count = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if count:
+            result[str(key)] = count
+    return result
+
+
+def _unique_strings(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
+
+
+def _round_float(value: Any, digits: int = 6) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return round(number, digits)
+
+
+def _dimension_status(
+    gate_map: dict[str, dict[str, Any]],
+    names: tuple[str, ...],
+    *,
+    warn: bool = False,
+) -> str:
+    selected = [gate_map.get(name) for name in names if gate_map.get(name)]
+    if not selected:
+        return "unknown"
+    statuses = {str(gate.get("status") or "unknown") for gate in selected}
+    if "fail" in statuses:
+        return "fail"
+    if statuses == {"pass"}:
+        return "warn" if warn else "pass"
+    return "warn"
+
+
+def summarize_btc_health(
+    *,
+    run_id: str | None,
+    data_readiness: str,
+    publishable: bool,
+    gates: list[DataGateResult | dict[str, Any]],
+    canonical: pd.DataFrame | None = None,
+    reconciliation: pd.DataFrame | None = None,
+    revisions: pd.DataFrame | None = None,
+    acquisition_evidence: dict[str, Any] | None = None,
+    manifest: dict[str, Any] | None = None,
+    current: dict[str, Any] | None = None,
+    operational_freshness: dict[str, Any] | None = None,
+    reason_codes: list[str] | None = None,
+    integrity_errors: list[str] | None = None,
+    replay_errors: list[str] | None = None,
+    evidence_refs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build an operator-facing summary from the audited BTC gate evidence."""
+
+    gate_items = [_gate_payload(gate) for gate in gates]
+    gate_map = {str(gate.get("gate") or ""): gate for gate in gate_items}
+    d0_metrics = gate_map.get("D0", {}).get("metrics") or {}
+    d1_metrics = gate_map.get("D1", {}).get("metrics") or {}
+    d2_metrics = gate_map.get("D2", {}).get("metrics") or {}
+    d3_metrics = gate_map.get("D3", {}).get("metrics") or {}
+    d4_metrics = gate_map.get("D4", {}).get("metrics") or {}
+    acquisition = dict(acquisition_evidence or {})
+    provider_reports = acquisition.get("providers") or {}
+
+    failed_gates = [
+        gate
+        for gate in gate_items
+        if str(gate.get("status") or "") != "pass"
+    ]
+    warning_codes: list[str] = []
+    if int(d3_metrics.get("warn_rows") or 0) > 0:
+        warning_codes.append("SOURCE_DIVERGENCE_WARN")
+    if int(d4_metrics.get("warn_rows") or 0) > 0:
+        warning_codes.append("REVISION_WARN")
+    freshness_reason = (
+        "CANONICAL_STALE"
+        if operational_freshness and not operational_freshness.get("fresh", False)
+        else None
+    )
+    all_reason_codes = _unique_strings([
+        *(gate.get("reason_code") for gate in failed_gates),
+        *warning_codes,
+        freshness_reason,
+        *(reason_codes or []),
+    ])
+
+    blocking_gate = None
+    blocking_reason = None
+    if failed_gates:
+        blocking_gate = str(failed_gates[0].get("gate") or "")
+        blocking_reason = str(failed_gates[0].get("reason_code") or "")
+    elif integrity_errors or replay_errors:
+        blocking_gate = "integrity"
+        blocking_reason = "CURRENT_INTEGRITY_INVALID"
+    elif freshness_reason:
+        blocking_gate = "freshness"
+        blocking_reason = freshness_reason
+
+    latest_reconciliation: dict[str, Any] = {}
+    max_basis_pct = None
+    if reconciliation is not None and not reconciliation.empty:
+        work = reconciliation.copy()
+        if "basis_pct" in work.columns:
+            basis = pd.to_numeric(work["basis_pct"], errors="coerce")
+            if basis.notna().any():
+                max_basis_pct = _round_float(basis.max())
+        if "date" in work.columns:
+            work = work.sort_values("date")
+        latest = work.iloc[-1].to_dict()
+        latest_reconciliation = {
+            "date": str(latest.get("date") or ""),
+            "status": latest.get("status"),
+            "reason_code": latest.get("reason_code"),
+            "basis_pct": _round_float(latest.get("basis_pct")),
+            "primary_close": _round_float(latest.get("primary_close")),
+            "shadow_close": _round_float(latest.get("shadow_close")),
+        }
+
+    provider_health = {
+        str(name): {
+            "status": report.get("status"),
+            "attempts": report.get("attempts"),
+            "retry_count": report.get("retry_count"),
+            "latency_ms": report.get("latency_ms"),
+            "rows": report.get("rows"),
+            "raw_payload_count": len(report.get("raw_payload_hashes") or []),
+            "error_kind": report.get("error_kind"),
+        }
+        for name, report in sorted(provider_reports.items())
+    }
+    qualified_dates = list(d1_metrics.get("qualified_acquisition_dates") or [])
+    predecessor = (
+        d4_metrics.get("predecessor")
+        or acquisition.get("predecessor")
+        or {}
+    )
+    revision_predecessor = (
+        d4_metrics.get("revision_predecessor")
+        or acquisition.get("revision_predecessor")
+        or {}
+    )
+    artifact_hashes = (manifest or {}).get("artifact_hashes") or {}
+
+    return {
+        "run_id": run_id,
+        "data_readiness": data_readiness,
+        "publishable": bool(publishable),
+        "blocking_gate": blocking_gate,
+        "blocking_reason_code": blocking_reason,
+        "reason_codes": all_reason_codes,
+        "gate_status": {
+            str(gate.get("gate") or ""): {
+                "status": gate.get("status"),
+                "reason_code": gate.get("reason_code"),
+            }
+            for gate in gate_items
+        },
+        "accuracy": {
+            "status": _dimension_status(
+                gate_map,
+                ("D0", "D2", "D4"),
+                warn=int(d4_metrics.get("warn_rows") or 0) > 0,
+            ),
+            "missing_primary_columns": list(d0_metrics.get("missing_primary") or []),
+            "missing_shadow_columns": list(d0_metrics.get("missing_shadow") or []),
+            "primary_contract_violations": _nonzero_counts(
+                d0_metrics.get("primary_contract_violations")
+            ),
+            "shadow_contract_violations": _nonzero_counts(
+                d0_metrics.get("shadow_contract_violations")
+            ),
+            "structural_violations": _nonzero_counts(
+                d2_metrics.get("violations")
+            ),
+            "history_days": d2_metrics.get("history_days"),
+            "full_coverage": d2_metrics.get("full_coverage"),
+            "recent_coverage": d2_metrics.get("recent_coverage"),
+            "revision_rows": d4_metrics.get("revision_rows"),
+            "revision_warn_rows": d4_metrics.get("warn_rows"),
+            "revision_block_rows": d4_metrics.get("block_rows"),
+        },
+        "source_stability": {
+            "status": _dimension_status(gate_map, ("D1",)),
+            "providers": provider_health,
+            "successful_acquisition_days": d1_metrics.get("successful_acquisition_days"),
+            "required_successful_acquisition_days": d1_metrics.get(
+                "required_successful_acquisition_days"
+            ),
+            "acquisition_window_days": d1_metrics.get("acquisition_window_days"),
+            "qualified_acquisition_dates_tail": qualified_dates[-5:],
+            "staleness_days": d1_metrics.get("staleness_days"),
+            "maximum_staleness_days": d1_metrics.get("maximum_staleness_days"),
+        },
+        "cross_source_validation": {
+            "status": _dimension_status(
+                gate_map,
+                ("D3",),
+                warn=int(d3_metrics.get("warn_rows") or 0) > 0,
+            ),
+            "rows": d3_metrics.get("rows"),
+            "aligned_rows": d3_metrics.get("aligned_rows"),
+            "warn_rows": d3_metrics.get("warn_rows"),
+            "block_rows": d3_metrics.get("block_rows"),
+            "max_basis_pct": max_basis_pct,
+            "latest": latest_reconciliation,
+        },
+        "freshness": {
+            "status": (
+                "pass"
+                if not operational_freshness or operational_freshness.get("fresh", False)
+                else "fail"
+            ),
+            **dict(operational_freshness or {}),
+        },
+        "lineage": {
+            "status": "fail" if integrity_errors or replay_errors else "pass",
+            "current_run_id": (current or {}).get("run_id"),
+            "previous_current_run_id": (manifest or {}).get("previous_current_run_id"),
+            "predecessor": predecessor,
+            "revision_predecessor": revision_predecessor,
+            "canonical_hash": (manifest or {}).get("canonical_hash"),
+            "canonical_sha256": (current or {}).get("canonical_sha256"),
+            "artifact_hashes": artifact_hashes,
+            "integrity_errors": list(integrity_errors or []),
+            "replay_errors": list(replay_errors or []),
+        },
+        "observed": {
+            "row_count": int(len(canonical)) if canonical is not None else (manifest or {}).get("canonical_rows"),
+            "watermark": _watermark(canonical) if canonical is not None else (manifest or {}).get("watermark"),
+            "input_watermarks": dict((manifest or {}).get("input_watermarks") or {}),
+            "output_watermark": (manifest or {}).get("output_watermark"),
+        },
+        "evidence_refs": dict(evidence_refs or {}),
+    }
 
 
 def _coverage_metrics(
@@ -901,6 +1160,17 @@ def assure_btc(
         "gates": [gate.to_dict() for gate in gates],
         "causal": False,
     }
+    manifest["health"] = summarize_btc_health(
+        run_id=run_id,
+        data_readiness=readiness,
+        publishable=readiness == "ready",
+        gates=gates,
+        canonical=canonical,
+        reconciliation=reconciliation,
+        revisions=revisions,
+        acquisition_evidence=acquisition_evidence,
+        manifest=manifest,
+    )
     return BtcAssuranceResult(
         run_id=run_id,
         data_readiness=readiness,
