@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +63,26 @@ _REQUIRED_PARQUET_COLUMNS: dict[str, tuple[str, ...]] = {
 _PARQUET_COLUMN_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
     "macro.gdp": {"q_gdp": ("gdp",)},
     "macro.pmi": {"mfg_pmi": ("PMI010000",)},
+}
+
+
+_DATA_SOURCE_JOB_POLICIES: dict[str, float] = {
+    "kline_update": 6.0,
+    "fundamental": 4.0,
+    "fund_flow_update": 1.0,
+    "northbound": 1.0,
+    "market_index": 1.0,
+    "market_index_sector": 2.0,
+    "sector_refresh": 2.0,
+    "macro": 2.0,
+    "cross_asset_fetch": 1.0,
+    "crypto_btc_fetch": 1.0,
+    "crypto_research_validation": 1.0,
+    "sentiment_fetch": 2.0,
+    "sentiment_silver": 2.0,
+    "sentiment_gold": 2.0,
+    "sentiment_pipeline": 4.0,
+    "event_pipeline": 2.0,
 }
 
 
@@ -302,6 +322,23 @@ def _lag_days(watermark: Any, expected: str | None) -> int | None:
         return max((date.fromisoformat(str(expected)[:10]) - date.fromisoformat(str(watermark)[:10])).days, 0)
     except ValueError:
         return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace(" ", "T"))
+    except ValueError:
+        return None
+
+
+def _age_hours(value: Any, now: datetime | None = None) -> float | None:
+    started = _parse_datetime(value)
+    if started is None:
+        return None
+    return max(((now or datetime.now()) - started).total_seconds() / 3600.0, 0.0)
 
 
 def _resolve_kline_files(data_root: str | Path = "data") -> list[Path]:
@@ -1277,6 +1314,28 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         else None,
     )
 
+    source_stability = status.get("source_stability") or {}
+    source_reasons = list(source_stability.get("reason_codes") or [])
+    components["source_stability"] = _component(
+        "pass" if not source_reasons and source_stability.get("status", "pass") == "pass" else "fail",
+        None if not source_reasons and source_stability.get("status", "pass") == "pass" else "SOURCE_STABILITY_DEGRADED",
+        {
+            "observed_jobs": int(source_stability.get("observed_jobs") or 0),
+            "recent_runs": int(source_stability.get("recent_runs") or 0),
+            "recent_errors": int(source_stability.get("recent_errors") or 0),
+            "stale_running": int(source_stability.get("stale_running") or 0),
+            "error_rate": float(source_stability.get("error_rate") or 0.0),
+            "reason_codes": source_reasons,
+        },
+        _recovery(
+            ["trade", "data", "backfill", "status"],
+            mode="audit",
+            detail="Inspect recent data-source job failures and stale running jobs before trusting refreshed data",
+        )
+        if source_reasons or source_stability.get("status") == "fail"
+        else None,
+    )
+
     statuses = [item["status"] for item in components.values()]
     overall = "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass")
     reasons = [
@@ -1415,6 +1474,122 @@ def events_stats(data_root: str | Path = "data") -> dict[str, Any]:
         return {"event_count": 0, "error": str(exc)}
 
 
+def source_stability_stats(
+    data_root: str | Path = "data",
+    sample_limit: int = 10,
+    recent_limit: int = 240,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return operational stability from recent data-source job runs."""
+    try:
+        from trade_py.db.trade_db import TradeDB
+
+        db = TradeDB(data_root)
+        runs = db.job_runs_recent(limit=max(int(recent_limit), len(_DATA_SOURCE_JOB_POLICIES) * 8))
+    except Exception as exc:
+        logger.debug("source stability stats error: %s", exc)
+        return {
+            "status": "unknown",
+            "tracked_jobs": sorted(_DATA_SOURCE_JOB_POLICIES),
+            "observed_jobs": 0,
+            "recent_runs": 0,
+            "recent_errors": 0,
+            "stale_running": 0,
+            "reason_codes": ["SOURCE_STABILITY_UNAVAILABLE"],
+            "error": str(exc),
+            "jobs": {},
+            "error_sample": [],
+            "stale_sample": [],
+        }
+
+    now = now or datetime.now()
+    runs_by_job: dict[str, list[dict[str, Any]]] = {}
+    for row in runs:
+        job_name = str(row.get("job_name") or "")
+        if job_name not in _DATA_SOURCE_JOB_POLICIES:
+            continue
+        runs_by_job.setdefault(job_name, []).append(row)
+
+    jobs: dict[str, dict[str, Any]] = {}
+    error_sample: list[dict[str, Any]] = []
+    stale_sample: list[dict[str, Any]] = []
+    recent_errors = 0
+    recent_runs = 0
+    stale_running = 0
+
+    for job_name, threshold_hours in _DATA_SOURCE_JOB_POLICIES.items():
+        job_runs = runs_by_job.get(job_name, [])
+        latest = job_runs[0] if job_runs else None
+        recent_window = job_runs[:10]
+        error_runs = [row for row in recent_window if str(row.get("status") or "") == "error"]
+        running_runs = [row for row in recent_window if str(row.get("status") or "") == "running"]
+        stale_runs: list[dict[str, Any]] = []
+        for row in running_runs:
+            age = _age_hours(row.get("started_at"), now=now)
+            if age is not None and age > threshold_hours:
+                stale_runs.append({**row, "age_hours": round(age, 2)})
+        recent_runs += len(recent_window)
+        recent_errors += len(error_runs)
+        stale_running += len(stale_runs)
+        if error_runs:
+            for row in error_runs[:sample_limit]:
+                if len(error_sample) >= sample_limit:
+                    break
+                error_sample.append({
+                    "job_name": job_name,
+                    "status": row.get("status"),
+                    "started_at": row.get("started_at"),
+                    "completed_at": row.get("completed_at"),
+                    "summary": row.get("result_summary"),
+                })
+        if stale_runs:
+            for row in stale_runs[:sample_limit]:
+                if len(stale_sample) >= sample_limit:
+                    break
+                stale_sample.append({
+                    "job_name": job_name,
+                    "started_at": row.get("started_at"),
+                    "age_hours": row.get("age_hours"),
+                    "stale_after_hours": threshold_hours,
+                    "summary": row.get("result_summary"),
+                })
+        latest_age = _age_hours((latest or {}).get("started_at"), now=now) if latest else None
+        jobs[job_name] = {
+            "status": str((latest or {}).get("status") or "unknown"),
+            "latest_run_id": (latest or {}).get("id"),
+            "latest_started_at": (latest or {}).get("started_at"),
+            "latest_completed_at": (latest or {}).get("completed_at"),
+            "latest_age_hours": round(latest_age, 2) if latest_age is not None else None,
+            "recent_runs": len(recent_window),
+            "recent_errors": len(error_runs),
+            "running": len(running_runs),
+            "stale_running": len(stale_runs),
+            "stale_after_hours": threshold_hours,
+            "latest_summary": (latest or {}).get("result_summary"),
+        }
+
+    reason_codes: list[str] = []
+    if stale_running:
+        reason_codes.append("SOURCE_JOB_STALE_RUNNING")
+    if recent_errors:
+        reason_codes.append("SOURCE_JOB_RECENT_ERRORS")
+    observed_jobs = sum(1 for item in jobs.values() if item.get("recent_runs"))
+    error_rate = round(recent_errors / recent_runs, 4) if recent_runs else 0.0
+    return {
+        "status": "fail" if stale_running or recent_errors else "pass",
+        "tracked_jobs": sorted(_DATA_SOURCE_JOB_POLICIES),
+        "observed_jobs": observed_jobs,
+        "recent_runs": recent_runs,
+        "recent_errors": recent_errors,
+        "stale_running": stale_running,
+        "error_rate": error_rate,
+        "reason_codes": reason_codes,
+        "jobs": jobs,
+        "error_sample": error_sample,
+        "stale_sample": stale_sample,
+    }
+
+
 # ── Aggregate status ──────────────────────────────────────────────────────────
 
 def get_data_status(
@@ -1438,6 +1613,7 @@ def get_data_status(
         "sentiment":   sentiment_stats(data_root),
         "events":      events_stats(data_root),
         "schema_contracts": schema_contracts,
+        "source_stability": source_stability_stats(data_root, sample_limit=sample_limit),
         "as_of":       date.today().isoformat(),
     }
     if include_value_quality:
@@ -1611,6 +1787,19 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
             f"- status: **{value_quality.get('status', 'unknown')}**",
             f"- checked rows: {value_quality.get('checked_rows', 0):,}",
             f"- failed checks: {', '.join(failed) if failed else '—'}",
+            "",
+        ]
+
+    source_stability = status.get("source_stability", {})
+    if source_stability:
+        reasons = source_stability.get("reason_codes") or []
+        lines += [
+            "### 数据源稳定性",
+            f"- status: **{source_stability.get('status', 'unknown')}**",
+            f"- observed jobs: {source_stability.get('observed_jobs', 0):,}",
+            f"- recent errors: {source_stability.get('recent_errors', 0):,}",
+            f"- stale running: {source_stability.get('stale_running', 0):,}",
+            f"- reasons: {', '.join(reasons) if reasons else '—'}",
             "",
         ]
 

@@ -21,6 +21,7 @@ from trade_py.utils.data_inspector import (
     northbound_stats,
     macro_stats,
     schema_contract_stats,
+    source_stability_stats,
     value_quality_stats,
     build_data_quality_gate,
 )
@@ -586,6 +587,128 @@ def test_data_status_cli_opts_into_value_quality(monkeypatch, tmp_path, capsys) 
         "include_value_quality": True,
     }
     assert '"value_quality"' in capsys.readouterr().out
+
+
+def test_source_stability_reports_recent_errors_and_stale_running_jobs(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    now = datetime.fromisoformat("2026-03-20T12:00:00")
+    with db._conn_lock:
+        db._conn.executemany(
+            """
+            INSERT INTO job_runs(job_name, stage, status, started_at, completed_at, result_summary)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "kline_update",
+                    "fetch",
+                    "error",
+                    "2026-03-20 10:00:00",
+                    "2026-03-20 10:02:00",
+                    "provider timeout",
+                ),
+                (
+                    "fund_flow_update",
+                    "fetch",
+                    "running",
+                    "2026-03-20 10:30:00",
+                    None,
+                    None,
+                ),
+                (
+                    "macro",
+                    "fetch",
+                    "ok",
+                    "2026-03-20 11:30:00",
+                    "2026-03-20 11:31:00",
+                    "ok",
+                ),
+                (
+                    "recommend",
+                    "decision",
+                    "error",
+                    "2026-03-20 11:00:00",
+                    "2026-03-20 11:02:00",
+                    "not a data-source job",
+                ),
+            ],
+        )
+        db._conn.commit()
+
+    stats = source_stability_stats(tmp_path, sample_limit=5, now=now)
+    lines = build_status_lines({"as_of": "2026-03-20", "source_stability": stats})
+
+    assert stats["status"] == "fail"
+    assert stats["observed_jobs"] == 3
+    assert stats["recent_errors"] == 1
+    assert stats["stale_running"] == 1
+    assert "recommend" not in stats["jobs"]
+    assert "SOURCE_JOB_RECENT_ERRORS" in stats["reason_codes"]
+    assert "SOURCE_JOB_STALE_RUNNING" in stats["reason_codes"]
+    assert stats["error_sample"][0]["job_name"] == "kline_update"
+    assert stats["stale_sample"][0]["job_name"] == "fund_flow_update"
+    assert any("数据源稳定性" in line for line in lines)
+
+
+def test_source_stability_passes_without_recent_data_source_failures(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    now = datetime.fromisoformat("2026-03-20T12:00:00")
+    with db._conn_lock:
+        db._conn.executemany(
+            """
+            INSERT INTO job_runs(job_name, stage, status, started_at, completed_at, result_summary)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("kline_update", "fetch", "ok", "2026-03-20 09:00:00", "2026-03-20 09:10:00", "ok"),
+                ("fund_flow_update", "fetch", "running", "2026-03-20 11:30:00", None, None),
+            ],
+        )
+        db._conn.commit()
+
+    stats = source_stability_stats(tmp_path, sample_limit=5, now=now)
+
+    assert stats["status"] == "pass"
+    assert stats["recent_errors"] == 0
+    assert stats["stale_running"] == 0
+    assert stats["reason_codes"] == []
+
+
+def test_data_quality_gate_fails_on_source_stability_breakage() -> None:
+    clean = {
+        "kline_coverage": {"coverage_pct": 100.0},
+        "kline_freshness": {"max_trading_day_stale_days": 0},
+        "fund_flow": {"coverage_pct": 95.0, "stale_sample": [{"trading_day_stale_days": 0}]},
+        "fundamental": {"coverage_pct": 100.0, "max_date": "2025-12-31"},
+        "sentiment": {"gold": {"lag_days": 0, "max_date": "2026-03-20"}},
+        "events": {"lag_days": 0, "event_count": 3},
+        "cross_asset": {
+            "gold": {"exists": True, "lag_days": 0},
+            "fx_cnh": {"exists": True, "lag_days": 0},
+            "btc": {"exists": True, "lag_days": 0},
+        },
+        "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
+        "northbound": {"exists": True, "lag_days": 0},
+        "schema_contracts": {"status": "pass", "checked_files": 12, "failed_contracts": []},
+        "value_quality": {"status": "pass", "checked_rows": 0, "failed_checks": []},
+        "source_stability": {
+            "status": "fail",
+            "observed_jobs": 2,
+            "recent_runs": 3,
+            "recent_errors": 1,
+            "stale_running": 1,
+            "error_rate": 0.3333,
+            "reason_codes": ["SOURCE_JOB_RECENT_ERRORS", "SOURCE_JOB_STALE_RUNNING"],
+        },
+    }
+
+    gate = build_data_quality_gate(clean)
+
+    assert gate["status"] == "fail"
+    assert "SOURCE_STABILITY_DEGRADED" in gate["reason_codes"]
+    assert gate["components"]["source_stability"]["metrics"]["recent_errors"] == 1
+    plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
+    assert plan_by_component["source_stability"]["command"] == ["trade", "data", "backfill", "status"]
 
 
 def test_stale_job_policy_converges_data_jobs(tmp_path) -> None:
