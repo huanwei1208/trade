@@ -1172,10 +1172,22 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             ("evaluate_source", 2.0),
             ("evaluate_daily", 2.0),
             ("window_score", 1.0),
+            ("kline_update", 6.0),
             ("fund_flow_update", 1.0),
+            ("fundamental", 4.0),
             ("northbound", 1.0),
+            ("market_index", 1.0),
+            ("market_index_sector", 2.0),
+            ("sector_refresh", 2.0),
+            ("macro", 2.0),
+            ("cross_asset_fetch", 1.0),
+            ("crypto_btc_fetch", 1.0),
+            ("crypto_research_validation", 1.0),
             ("event_pipeline", 2.0),
             ("sentiment_pipeline", 4.0),
+            ("sentiment_fetch", 2.0),
+            ("sentiment_silver", 2.0),
+            ("sentiment_gold", 2.0),
         ]
         total = 0
         with self._conn_lock:

@@ -347,3 +347,42 @@ def test_data_status_parser_accepts_strict_flag() -> None:
     assert parsed.command == "status"
     assert parsed.strict is True
     assert parsed.as_json is True
+
+
+def test_stale_job_policy_converges_data_jobs(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    with db._conn_lock:
+        db._conn.execute(
+            """
+            INSERT INTO job_runs(job_name, stage, status, started_at)
+            VALUES (?, ?, 'running', datetime('now', 'localtime', '-8 hours'))
+            """,
+            ("kline_update", "fetch"),
+        )
+        db._conn.execute(
+            """
+            INSERT INTO job_runs(job_name, stage, status, started_at)
+            VALUES (?, ?, 'running', datetime('now', 'localtime', '-2 hours'))
+            """,
+            ("crypto_btc_fetch", "fetch"),
+        )
+        db._conn.execute(
+            """
+            INSERT INTO job_runs(job_name, stage, status, started_at)
+            VALUES (?, ?, 'running', datetime('now', 'localtime', '-10 minutes'))
+            """,
+            ("kline_update", "fetch"),
+        )
+        db._conn.commit()
+
+    marked = db.job_runs_mark_stale_by_policy()
+
+    with db._conn_lock:
+        rows = db._conn.execute(
+            "SELECT job_name, status, result_summary FROM job_runs ORDER BY id"
+        ).fetchall()
+
+    assert marked == 2
+    assert [row["status"] for row in rows] == ["error", "error", "running"]
+    assert "marked stale by policy" in rows[0]["result_summary"]
+    assert "marked stale by policy" in rows[1]["result_summary"]
