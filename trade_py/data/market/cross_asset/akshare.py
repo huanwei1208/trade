@@ -53,6 +53,37 @@ def _watermark_date(df: pd.DataFrame | None) -> str | None:
     return val.strftime("%Y-%m-%d")
 
 
+def _validate_ohlc_frame(asset: str, df: pd.DataFrame) -> None:
+    if df is None or df.empty:
+        return
+    required = {"date", "open", "high", "low", "close"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(f"{asset} OHLC data missing columns: {missing}")
+    work = df.copy()
+    for column in ("open", "high", "low", "close"):
+        work[column] = pd.to_numeric(work[column], errors="coerce")
+    invalid = work[
+        work[["open", "high", "low", "close"]].isna().any(axis=1)
+        | work[["open", "high", "low", "close"]].le(0).any(axis=1)
+        | (work["high"] < work["low"])
+        | (work["high"] < work["open"])
+        | (work["high"] < work["close"])
+        | (work["low"] > work["open"])
+        | (work["low"] > work["close"])
+    ].copy()
+    if invalid.empty:
+        return
+    invalid["date"] = pd.to_datetime(invalid["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    sample = invalid[["date", "open", "high", "low", "close"]].head(5).to_dict(orient="records")
+    start = str(invalid["date"].min())[:10]
+    end = str(invalid["date"].max())[:10]
+    raise ValueError(
+        f"{asset} OHLC data failed validation rows={len(invalid)} "
+        f"dates={start}..{end} sample={sample}"
+    )
+
+
 # ── Gold (SGE Au99.99, CNY/gram) ───────────────────────────────────────────────
 
 def fetch_gold(data_root: str = _DEFAULT_DATA_ROOT) -> pd.DataFrame:
@@ -85,6 +116,7 @@ def fetch_gold(data_root: str = _DEFAULT_DATA_ROOT) -> pd.DataFrame:
         df = pd.concat([existing, df], ignore_index=True).drop_duplicates(subset=["date"])
         df = df.sort_values("date").reset_index(drop=True)
 
+    _validate_ohlc_frame("gold", df)
     df.to_parquet(path, index=False)
     logger.info("Gold saved: %d rows → %s", len(df), path)
     return df
@@ -122,6 +154,7 @@ def fetch_fx_cnh(data_root: str = _DEFAULT_DATA_ROOT) -> pd.DataFrame:
         df = pd.concat([existing, df], ignore_index=True).drop_duplicates(subset=["date"])
         df = df.sort_values("date").reset_index(drop=True)
 
+    _validate_ohlc_frame("fx_cnh", df)
     df.to_parquet(path, index=False)
     logger.info("USD/CNH saved: %d rows → %s", len(df), path)
     return df
