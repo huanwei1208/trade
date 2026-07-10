@@ -447,6 +447,49 @@ def test_value_quality_recovery_plan_groups_prefixed_datasets(tmp_path) -> None:
     assert plan_by_component["macro"]["datasets"] == ["macro.ppi"]
 
 
+def test_value_quality_waives_known_historical_ppi_yoy_gap(tmp_path) -> None:
+    macro_root = tmp_path / "market" / "macro"
+    macro_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"date": "1993-01-01", "ppi_yoy": None, "ppi_accu": 17.90},
+            {"date": "1996-09-01", "ppi_yoy": None, "ppi_accu": 3.53},
+            {"date": "1996-10-01", "ppi_yoy": 0.34, "ppi_accu": 3.21},
+        ]
+    ).to_parquet(macro_root / "ppi.parquet", index=False)
+
+    schema = schema_contract_stats(tmp_path, sample_limit=5)
+    stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
+    ppi = stats["datasets"]["macro.ppi"]
+
+    assert ppi["status"] == "pass"
+    assert ppi["metrics"]["null_macro_value"] == 0
+    assert ppi["metrics"]["waived_null_macro_value"] == 2
+    assert "macro.ppi.null_macro_value" not in stats["failed_checks"]
+    assert "macro" not in {item["component"] for item in stats["recovery_plan"]}
+
+
+def test_value_quality_still_fails_on_actionable_ppi_yoy_nulls(tmp_path) -> None:
+    macro_root = tmp_path / "market" / "macro"
+    macro_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"date": "1996-09-01", "ppi_yoy": None, "ppi_accu": 3.53},
+            {"date": "1996-10-01", "ppi_yoy": None, "ppi_accu": 3.21},
+        ]
+    ).to_parquet(macro_root / "ppi.parquet", index=False)
+
+    schema = schema_contract_stats(tmp_path, sample_limit=5)
+    stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
+    ppi = stats["datasets"]["macro.ppi"]
+
+    assert ppi["status"] == "fail"
+    assert ppi["metrics"]["null_macro_value"] == 1
+    assert ppi["metrics"]["waived_null_macro_value"] == 1
+    assert "macro.ppi.null_macro_value" in stats["failed_checks"]
+    assert stats["recovery_plan"][0]["component"] == "macro"
+
+
 def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
     clean = {
         "kline_coverage": {"coverage_pct": 100.0},

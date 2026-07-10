@@ -177,6 +177,9 @@ _KLINE_RECONCILIATION_COMMAND = [
     "tencent",
     "--json",
 ]
+_MACRO_VALUE_START_DATES = {
+    "macro.ppi": "1996-10-01",
+}
 
 
 # ── Status helpers ─────────────────────────────────────────────────────────────
@@ -599,7 +602,11 @@ def _parquet_table_sql(files: list[Path]) -> str:
 
 
 def _metric_status(metrics: dict[str, int]) -> str:
-    return "fail" if any(value > 0 for key, value in metrics.items() if key != "checked_rows") else "pass"
+    return "fail" if any(
+        value > 0
+        for key, value in metrics.items()
+        if key != "checked_rows" and not key.startswith("waived_")
+    ) else "pass"
 
 
 def _jsonable(value: Any) -> Any:
@@ -624,6 +631,7 @@ def _value_quality_scan(
     observed_columns: set[str],
     conditions: list[tuple[str, str]],
     duplicate_key: tuple[str, ...] = (),
+    waivers: dict[str, str] | None = None,
     sample_limit: int = 10,
 ) -> dict[str, Any]:
     if not files:
@@ -648,8 +656,16 @@ def _value_quality_scan(
                 f"COALESCE(SUM(CASE WHEN {condition} THEN 1 ELSE 0 END), 0) AS {name}"
                 for name, condition in conditions
             )
+            for name, condition in (waivers or {}).items():
+                select_exprs.append(
+                    f"COALESCE(SUM(CASE WHEN {condition} THEN 1 ELSE 0 END), 0) AS waived_{name}"
+                )
             row = con.execute(f"SELECT {', '.join(select_exprs)} FROM {table_sql}").fetchone()
-            metric_names = ["checked_rows"] + [name for name, _condition in conditions]
+            metric_names = (
+                ["checked_rows"]
+                + [name for name, _condition in conditions]
+                + [f"waived_{name}" for name in (waivers or {})]
+            )
             metrics = {
                 metric_name: int((row or [0] * len(metric_names))[idx] or 0)
                 for idx, metric_name in enumerate(metric_names)
@@ -712,7 +728,7 @@ def _value_quality_scan(
         failed_checks = [
             f"{dataset}.{name}"
             for name, value in metrics.items()
-            if name != "checked_rows" and value > 0
+            if name != "checked_rows" and not name.startswith("waived_") and value > 0
         ]
         return {
             "dataset": dataset,
@@ -821,7 +837,11 @@ def _value_conditions_for(dataset: str, observed_columns: set[str]) -> tuple[lis
         conditions = _date_conditions("date")
         value_column = _present_value_column(dataset, observed_columns, required_value or "")
         if value_column:
-            conditions.append(("null_macro_value", f"{value_column} IS NULL"))
+            start_date = _MACRO_VALUE_START_DATES.get(dataset)
+            condition = f"{value_column} IS NULL"
+            if start_date:
+                condition = f"{condition} AND TRY_CAST(date AS DATE) >= DATE '{start_date}'"
+            conditions.append(("null_macro_value", condition))
         return conditions, ("date",)
     if dataset == "sentiment.silver":
         conditions = _date_conditions("date") + [
@@ -840,6 +860,28 @@ def _value_conditions_for(dataset: str, observed_columns: set[str]) -> tuple[lis
             conditions.append(("confidence_out_of_range", "confidence < 0 OR confidence > 1"))
         return conditions, ("date", "symbol")
     return [], ()
+
+
+def _value_waivers_for(dataset: str, observed_columns: set[str]) -> dict[str, str]:
+    if not dataset.startswith("macro."):
+        return {}
+    required_value = {
+        "macro.gdp": "q_gdp",
+        "macro.cpi": "nt_yoy",
+        "macro.ppi": "ppi_yoy",
+        "macro.pmi": "mfg_pmi",
+    }.get(dataset)
+    value_column = _present_value_column(dataset, observed_columns, required_value or "")
+    start_date = _MACRO_VALUE_START_DATES.get(dataset)
+    if not value_column or not start_date:
+        return {}
+    return {
+        "null_macro_value": (
+            f"{value_column} IS NULL "
+            f"AND TRY_CAST(date AS DATE) IS NOT NULL "
+            f"AND TRY_CAST(date AS DATE) < DATE '{start_date}'"
+        )
+    }
 
 
 def _value_recovery_key(dataset: str) -> str:
@@ -967,12 +1009,14 @@ def value_quality_stats(
                 columns, _error = _parquet_columns(path)
                 observed_columns.update(columns)
         conditions, duplicate_key = _value_conditions_for(dataset, observed_columns)
+        waivers = _value_waivers_for(dataset, observed_columns)
         datasets[dataset] = _value_quality_scan(
             dataset,
             files,
             observed_columns=observed_columns,
             conditions=conditions,
             duplicate_key=duplicate_key,
+            waivers=waivers,
             sample_limit=sample_limit,
         )
 
