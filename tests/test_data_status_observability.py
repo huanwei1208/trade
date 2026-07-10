@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -20,6 +21,7 @@ from trade_py.utils.data_inspector import (
     index_stats,
     northbound_stats,
     macro_stats,
+    metadata_reconciliation_stats,
     schema_contract_stats,
     source_stability_stats,
     value_quality_stats,
@@ -709,6 +711,153 @@ def test_data_quality_gate_fails_on_source_stability_breakage() -> None:
     assert gate["components"]["source_stability"]["metrics"]["recent_errors"] == 1
     plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
     assert plan_by_component["source_stability"]["command"] == ["trade", "data", "backfill", "status"]
+
+
+def test_metadata_reconciliation_reports_manifest_and_sync_state_drift(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    kline_root = tmp_path / "market" / "kline"
+    kline_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "symbol": "000001.SZ",
+                "date": "2026-03-19",
+                "open": 10.0,
+                "high": 10.2,
+                "low": 9.8,
+                "close": 10.1,
+                "volume": 1000,
+                "amount": 101000.0,
+                "turnover_rate": 1.0,
+                "prev_close": 10.0,
+                "vwap": 10.1,
+            },
+            {
+                "symbol": "000001.SZ",
+                "date": "2026-03-20",
+                "open": 10.1,
+                "high": 10.4,
+                "low": 10.0,
+                "close": 10.3,
+                "volume": 1200,
+                "amount": 123600.0,
+                "turnover_rate": 1.1,
+                "prev_close": 10.1,
+                "vwap": 10.3,
+            },
+        ]
+    ).to_parquet(kline_root / "000001_SZ.parquet", index=False)
+    (kline_root / "_manifest.json").write_text(
+        json.dumps(
+            {
+                "dataset": "kline",
+                "layout": "per_symbol",
+                "entries": {
+                    "000001_SZ": {
+                        "rows": 3,
+                        "date_min": "2026-03-18",
+                        "date_max": "2026-03-21",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    db.sync_state_set("tushare_kline", "daily", "000001.SZ", last_date="2026-03-21", row_count=3)
+
+    stats = metadata_reconciliation_stats(tmp_path, sample_limit=5)
+    lines = build_status_lines({"as_of": "2026-03-20", "metadata_reconciliation": stats})
+
+    assert stats["status"] == "fail"
+    assert "MANIFEST_PARQUET_MISMATCH" in stats["reason_codes"]
+    assert "SYNC_STATE_PARQUET_MISMATCH" in stats["reason_codes"]
+    assert stats["manifest"]["metrics"]["row_mismatches"] == 1
+    assert stats["manifest"]["metrics"]["date_mismatches"] == 1
+    assert stats["sync_state"]["metrics"]["watermark_ahead"] == 1
+    assert stats["sync_state"]["metrics"]["row_count_mismatches"] == 1
+    assert any("元数据交叉校验" in line for line in lines)
+
+
+def test_metadata_reconciliation_passes_when_manifest_sync_and_parquet_match(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    kline_root = tmp_path / "market" / "kline"
+    kline_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "symbol": "000001.SZ",
+                "date": "2026-03-20",
+                "open": 10.0,
+                "high": 10.2,
+                "low": 9.8,
+                "close": 10.1,
+                "volume": 1000,
+                "amount": 101000.0,
+                "turnover_rate": 1.0,
+                "prev_close": 10.0,
+                "vwap": 10.1,
+            }
+        ]
+    ).to_parquet(kline_root / "000001_SZ.parquet", index=False)
+    (kline_root / "_manifest.json").write_text(
+        json.dumps(
+            {
+                "dataset": "kline",
+                "layout": "per_symbol",
+                "entries": {
+                    "000001_SZ": {
+                        "rows": 1,
+                        "date_min": "2026-03-20",
+                        "date_max": "2026-03-20",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    db.sync_state_set("tushare_kline", "daily", "000001.SZ", last_date="2026-03-20", row_count=1)
+
+    stats = metadata_reconciliation_stats(tmp_path, sample_limit=5)
+
+    assert stats["status"] == "pass"
+    assert stats["reason_codes"] == []
+    assert stats["manifest"]["metrics"]["checked_entries"] == 1
+    assert stats["sync_state"]["metrics"]["checked_rows"] == 1
+
+
+def test_data_quality_gate_fails_on_metadata_reconciliation_mismatch() -> None:
+    clean = {
+        "kline_coverage": {"coverage_pct": 100.0},
+        "kline_freshness": {"max_trading_day_stale_days": 0},
+        "fund_flow": {"coverage_pct": 95.0, "stale_sample": [{"trading_day_stale_days": 0}]},
+        "fundamental": {"coverage_pct": 100.0, "max_date": "2025-12-31"},
+        "sentiment": {"gold": {"lag_days": 0, "max_date": "2026-03-20"}},
+        "events": {"lag_days": 0, "event_count": 3},
+        "cross_asset": {
+            "gold": {"exists": True, "lag_days": 0},
+            "fx_cnh": {"exists": True, "lag_days": 0},
+            "btc": {"exists": True, "lag_days": 0},
+        },
+        "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
+        "northbound": {"exists": True, "lag_days": 0},
+        "schema_contracts": {"status": "pass", "checked_files": 12, "failed_contracts": []},
+        "value_quality": {"status": "pass", "checked_rows": 0, "failed_checks": []},
+        "source_stability": {"status": "pass", "reason_codes": []},
+        "metadata_reconciliation": {
+            "status": "fail",
+            "reason_codes": ["MANIFEST_PARQUET_MISMATCH"],
+            "manifest": {"metrics": {"checked_entries": 1, "row_mismatches": 1}},
+            "sync_state": {"metrics": {"checked_rows": 0}},
+        },
+    }
+
+    gate = build_data_quality_gate(clean)
+
+    assert gate["status"] == "fail"
+    assert "METADATA_RECONCILIATION_MISMATCH" in gate["reason_codes"]
+    assert gate["components"]["metadata_reconciliation"]["metrics"]["reason_codes"] == ["MANIFEST_PARQUET_MISMATCH"]
+    plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
+    assert plan_by_component["metadata_reconciliation"]["mode"] == "audit"
 
 
 def test_stale_job_policy_converges_data_jobs(tmp_path) -> None:

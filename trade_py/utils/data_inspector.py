@@ -372,6 +372,32 @@ def _parquet_columns(path: Path) -> tuple[set[str], str | None]:
             return set(), f"{arrow_exc}; duckdb fallback: {duck_exc}"
 
 
+def _single_parquet_date_stats(path: Path, date_column: str = "date") -> dict[str, Any]:
+    try:
+        import duckdb
+
+        con = duckdb.connect()
+        try:
+            row = con.execute(
+                f"""
+                SELECT COUNT(*) AS rows,
+                       MIN({date_column}) AS min_date,
+                       MAX({date_column}) AS max_date
+                FROM read_parquet('{path}', union_by_name=true)
+                """
+            ).fetchone()
+        finally:
+            con.close()
+        rows, min_date, max_date = row if row else (0, None, None)
+        return {
+            "rows": int(rows or 0),
+            "min_date": str(min_date)[:10] if min_date else None,
+            "max_date": str(max_date)[:10] if max_date else None,
+        }
+    except Exception as exc:
+        return {"rows": 0, "min_date": None, "max_date": None, "error": str(exc)}
+
+
 def _schema_contract(
     dataset: str,
     files: list[Path],
@@ -1336,6 +1362,25 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         else None,
     )
 
+    metadata_reconciliation = status.get("metadata_reconciliation") or {}
+    metadata_reasons = list(metadata_reconciliation.get("reason_codes") or [])
+    components["metadata_reconciliation"] = _component(
+        "pass" if not metadata_reasons and metadata_reconciliation.get("status", "pass") == "pass" else "fail",
+        None if not metadata_reasons and metadata_reconciliation.get("status", "pass") == "pass" else "METADATA_RECONCILIATION_MISMATCH",
+        {
+            "reason_codes": metadata_reasons,
+            "manifest": ((metadata_reconciliation.get("manifest") or {}).get("metrics") or {}),
+            "sync_state": ((metadata_reconciliation.get("sync_state") or {}).get("metrics") or {}),
+        },
+        _recovery(
+            ["trade", "data", "status", "--strict", "--json"],
+            mode="audit",
+            detail="Inspect metadata_reconciliation for manifest, sync_state, and parquet drift",
+        )
+        if metadata_reasons or metadata_reconciliation.get("status") == "fail"
+        else None,
+    )
+
     statuses = [item["status"] for item in components.values()]
     overall = "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass")
     reasons = [
@@ -1590,6 +1635,159 @@ def source_stability_stats(
     }
 
 
+def metadata_reconciliation_stats(
+    data_root: str | Path = "data",
+    sample_limit: int = 10,
+) -> dict[str, Any]:
+    """Cross-check metadata indexes/watermarks against local parquet artifacts."""
+    root = Path(data_root)
+    sample_cap = max(1, int(sample_limit))
+    manifest = _load_kline_manifest(root)
+    entries = manifest.get("entries") if isinstance(manifest, dict) else {}
+    entries = entries if isinstance(entries, dict) else {}
+    manifest_sample = list(entries.items())[: max(sample_cap, 1)]
+
+    manifest_metrics = {
+        "checked_entries": 0,
+        "missing_files": 0,
+        "row_mismatches": 0,
+        "date_mismatches": 0,
+        "read_errors": 0,
+    }
+    manifest_failures: list[dict[str, Any]] = []
+    for key, raw_entry in manifest_sample:
+        entry = raw_entry if isinstance(raw_entry, dict) else {}
+        symbol = key.replace("_", ".")
+        path = _resolve_kline_dir(root) / f"{key}.parquet"
+        manifest_metrics["checked_entries"] += 1
+        if not path.exists():
+            manifest_metrics["missing_files"] += 1
+            manifest_failures.append({"symbol": symbol, "reason": "missing_file", "path": str(path)})
+            continue
+        stats = _single_parquet_date_stats(path)
+        if stats.get("error"):
+            manifest_metrics["read_errors"] += 1
+            manifest_failures.append({"symbol": symbol, "reason": "read_error", "path": str(path), "error": stats.get("error")})
+            continue
+        expected_rows = int(entry.get("rows") or 0)
+        actual_rows = int(stats.get("rows") or 0)
+        expected_min = str(entry.get("date_min") or "")[:10] or None
+        expected_max = str(entry.get("date_max") or "")[:10] or None
+        actual_min = stats.get("min_date")
+        actual_max = stats.get("max_date")
+        reasons: list[str] = []
+        if expected_rows != actual_rows:
+            manifest_metrics["row_mismatches"] += 1
+            reasons.append("row_mismatch")
+        if expected_min != actual_min or expected_max != actual_max:
+            manifest_metrics["date_mismatches"] += 1
+            reasons.append("date_mismatch")
+        if reasons:
+            manifest_failures.append({
+                "symbol": symbol,
+                "reason": ",".join(reasons),
+                "manifest": {"rows": expected_rows, "min_date": expected_min, "max_date": expected_max},
+                "parquet": {"rows": actual_rows, "min_date": actual_min, "max_date": actual_max},
+                "path": str(path),
+            })
+        if len(manifest_failures) >= sample_cap:
+            break
+
+    sync_metrics = {
+        "checked_rows": 0,
+        "missing_files": 0,
+        "watermark_ahead": 0,
+        "watermark_behind": 0,
+        "row_count_mismatches": 0,
+        "read_errors": 0,
+    }
+    sync_failures: list[dict[str, Any]] = []
+    try:
+        from trade_py.db.trade_db import TradeDB
+
+        db = TradeDB(root)
+        with db._conn_lock:
+            rows = db._conn.execute(
+                """
+                SELECT source, dataset, symbol, last_date, row_count
+                FROM sync_state
+                WHERE source = 'tushare_kline'
+                  AND dataset = 'daily'
+                  AND COALESCE(symbol, '') != ''
+                ORDER BY updated_at DESC, symbol
+                LIMIT ?
+                """,
+                (max(sample_cap * 4, sample_cap),),
+            ).fetchall()
+    except Exception as exc:
+        rows = []
+        sync_failures.append({"reason": "sync_state_read_error", "error": str(exc)})
+        sync_metrics["read_errors"] += 1
+
+    for row in rows:
+        if sync_metrics["checked_rows"] >= sample_cap:
+            break
+        symbol = str(row["symbol"] or "")
+        safe_symbol = symbol.replace(".", "_")
+        path = _resolve_kline_dir(root) / f"{safe_symbol}.parquet"
+        sync_metrics["checked_rows"] += 1
+        if not path.exists():
+            sync_metrics["missing_files"] += 1
+            sync_failures.append({"symbol": symbol, "reason": "missing_file", "path": str(path), "sync_last_date": row["last_date"]})
+            continue
+        stats = _single_parquet_date_stats(path)
+        if stats.get("error"):
+            sync_metrics["read_errors"] += 1
+            sync_failures.append({"symbol": symbol, "reason": "read_error", "path": str(path), "error": stats.get("error")})
+            continue
+        sync_last = str(row["last_date"] or "")[:10] or None
+        parquet_last = stats.get("max_date")
+        reasons: list[str] = []
+        if sync_last and parquet_last:
+            if sync_last > parquet_last:
+                sync_metrics["watermark_ahead"] += 1
+                reasons.append("watermark_ahead")
+            elif sync_last < parquet_last:
+                sync_metrics["watermark_behind"] += 1
+                reasons.append("watermark_behind")
+        row_count = row["row_count"]
+        if row_count is not None and int(row_count or 0) > int(stats.get("rows") or 0):
+            sync_metrics["row_count_mismatches"] += 1
+            reasons.append("row_count_exceeds_parquet")
+        if reasons:
+            sync_failures.append({
+                "symbol": symbol,
+                "reason": ",".join(reasons),
+                "sync": {"last_date": sync_last, "row_count": row_count},
+                "parquet": {"max_date": parquet_last, "rows": stats.get("rows")},
+                "path": str(path),
+            })
+        if len(sync_failures) >= sample_cap:
+            break
+
+    manifest_failed = sum(value for key, value in manifest_metrics.items() if key != "checked_entries")
+    sync_failed = sum(value for key, value in sync_metrics.items() if key != "checked_rows")
+    reason_codes: list[str] = []
+    if manifest_failed:
+        reason_codes.append("MANIFEST_PARQUET_MISMATCH")
+    if sync_failed:
+        reason_codes.append("SYNC_STATE_PARQUET_MISMATCH")
+    return {
+        "status": "fail" if reason_codes else "pass",
+        "reason_codes": reason_codes,
+        "manifest": {
+            "status": "fail" if manifest_failed else "pass",
+            "metrics": manifest_metrics,
+            "sample": manifest_failures[:sample_cap],
+        },
+        "sync_state": {
+            "status": "fail" if sync_failed else "pass",
+            "metrics": sync_metrics,
+            "sample": sync_failures[:sample_cap],
+        },
+    }
+
+
 # ── Aggregate status ──────────────────────────────────────────────────────────
 
 def get_data_status(
@@ -1614,6 +1812,7 @@ def get_data_status(
         "events":      events_stats(data_root),
         "schema_contracts": schema_contracts,
         "source_stability": source_stability_stats(data_root, sample_limit=sample_limit),
+        "metadata_reconciliation": metadata_reconciliation_stats(data_root, sample_limit=sample_limit),
         "as_of":       date.today().isoformat(),
     }
     if include_value_quality:
@@ -1799,6 +1998,20 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
             f"- observed jobs: {source_stability.get('observed_jobs', 0):,}",
             f"- recent errors: {source_stability.get('recent_errors', 0):,}",
             f"- stale running: {source_stability.get('stale_running', 0):,}",
+            f"- reasons: {', '.join(reasons) if reasons else '—'}",
+            "",
+        ]
+
+    metadata = status.get("metadata_reconciliation", {})
+    if metadata:
+        reasons = metadata.get("reason_codes") or []
+        manifest_metrics = (metadata.get("manifest") or {}).get("metrics") or {}
+        sync_metrics = (metadata.get("sync_state") or {}).get("metrics") or {}
+        lines += [
+            "### 元数据交叉校验",
+            f"- status: **{metadata.get('status', 'unknown')}**",
+            f"- manifest checked: {manifest_metrics.get('checked_entries', 0):,}",
+            f"- sync_state checked: {sync_metrics.get('checked_rows', 0):,}",
             f"- reasons: {', '.join(reasons) if reasons else '—'}",
             "",
         ]
