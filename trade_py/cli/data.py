@@ -293,6 +293,22 @@ def make_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--stale-days", type=int, default=None, help="Only show symbols stale >= N days")
     p_status.add_argument("--limit", type=int, default=50)
 
+    p_reconcile = kline_sub.add_parser(
+        "reconcile",
+        description="对本地 K线与影子 provider 做收盘价交叉校验并写入 reconciliation/current.json",
+    )
+    p_reconcile.add_argument("--data-root", default=str(default_data_root()))
+    p_reconcile.add_argument("--symbols", required=True, help="Comma-separated symbols to reconcile")
+    p_reconcile.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
+    p_reconcile.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    p_reconcile.add_argument("--shadow-provider", choices=["akshare", "tencent", "baostock"], default="akshare")
+    p_reconcile.add_argument("--adjust", choices=["hfq", "qfq", "none"], default="none")
+    p_reconcile.add_argument("--warn-basis-pct", type=float, default=0.5)
+    p_reconcile.add_argument("--block-basis-pct", type=float, default=2.0)
+    p_reconcile.add_argument("--minimum-checked-rows", type=int, default=1)
+    p_reconcile.add_argument("--dry-run", action="store_true")
+    p_reconcile.add_argument("--json", action="store_true", dest="as_json")
+
     p_cross = sub.add_parser(
         "cross-asset",
         description="跨资产行情抓取 (gold/btc/fx/cnh)",
@@ -902,6 +918,35 @@ def main(argv: list[str] | None = None) -> int:
                     f"{row['stale_days']:>10} {row['last_error_kind']:<20}"
                 )
             return 0
+        if args.kline_cmd == "reconcile":
+            from trade_py.data.market.kline.reconciliation import reconcile_kline
+
+            symbols = [symbol.strip() for symbol in str(args.symbols).split(",") if symbol.strip()]
+            payload = reconcile_kline(
+                args.data_root,
+                symbols=symbols,
+                start=args.start,
+                end=args.end,
+                shadow_provider=args.shadow_provider,
+                adjust=args.adjust,
+                warn_basis_pct=args.warn_basis_pct,
+                block_basis_pct=args.block_basis_pct,
+                minimum_checked_rows=args.minimum_checked_rows,
+                dry_run=args.dry_run,
+            )
+            if args.as_json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+            else:
+                metrics = payload.get("metrics") or {}
+                mode = "dry-run" if payload.get("dry_run") else "write"
+                print(
+                    f"kline_reconcile mode={mode} status={payload.get('status')} "
+                    f"checked_rows={metrics.get('checked_rows', 0)} "
+                    f"block_rows={metrics.get('block_rows', 0)} "
+                    f"warn_rows={metrics.get('warn_rows', 0)} "
+                    f"artifact={payload.get('artifact_path') or '-'}"
+                )
+            return 0 if str(payload.get("status") or "") == "pass" else 2
 
     if args.command == "cross-asset":
         if args.asset == "btc":

@@ -633,6 +633,48 @@ def test_data_status_cli_opts_into_value_quality(monkeypatch, tmp_path, capsys) 
     assert '"value_quality"' in capsys.readouterr().out
 
 
+def test_kline_reconcile_cli_wires_arguments(monkeypatch, tmp_path, capsys) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_reconcile_kline(data_root, **kwargs):
+        seen["data_root"] = data_root
+        seen.update(kwargs)
+        return {
+            "status": "pass",
+            "artifact_path": str(tmp_path / "market" / "kline" / "reconciliation" / "current.json"),
+            "metrics": {"checked_rows": 2, "block_rows": 0, "warn_rows": 0},
+        }
+
+    monkeypatch.setattr("trade_py.data.market.kline.reconciliation.reconcile_kline", fake_reconcile_kline)
+
+    rc = data_cli.main([
+        "kline",
+        "reconcile",
+        "--data-root",
+        str(tmp_path),
+        "--symbols",
+        "000001.SZ,000002.SZ",
+        "--start",
+        "2026-03-19",
+        "--end",
+        "2026-03-20",
+        "--shadow-provider",
+        "akshare",
+        "--adjust",
+        "none",
+        "--dry-run",
+    ])
+
+    assert rc == 0
+    assert seen["data_root"] == str(tmp_path)
+    assert seen["symbols"] == ["000001.SZ", "000002.SZ"]
+    assert seen["start"] == "2026-03-19"
+    assert seen["end"] == "2026-03-20"
+    assert seen["shadow_provider"] == "akshare"
+    assert seen["dry_run"] is True
+    assert "kline_reconcile" in capsys.readouterr().out
+
+
 def test_source_stability_reports_recent_errors_and_stale_running_jobs(tmp_path) -> None:
     db = TradeDB(tmp_path)
     now = datetime.fromisoformat("2026-03-20T12:00:00")
