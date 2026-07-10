@@ -364,12 +364,25 @@ def test_value_quality_status_reports_invalid_values_and_duplicates(tmp_path) ->
             },
             {
                 "symbol": "000001.SZ",
-                "date": "2026-03-20",
+                "date": "2026-03-21",
                 "open": 10.0,
                 "high": 10.5,
                 "low": 9.8,
                 "close": 10.2,
                 "volume": -1,
+                "amount": 102000.0,
+                "turnover_rate": 1.2,
+                "prev_close": 10.1,
+                "vwap": 10.2,
+            },
+            {
+                "symbol": "000001.SZ",
+                "date": "2026-03-21",
+                "open": 10.0,
+                "high": 10.5,
+                "low": 9.8,
+                "close": 10.2,
+                "volume": 1000,
                 "amount": 102000.0,
                 "turnover_rate": 1.2,
                 "prev_close": 10.1,
@@ -403,8 +416,36 @@ def test_value_quality_status_reports_invalid_values_and_duplicates(tmp_path) ->
     assert "sentiment.gold.net_sentiment_out_of_range" in stats["failed_checks"]
     assert "sentiment.gold.confidence_out_of_range" in stats["failed_checks"]
     plan_by_component = {item["component"]: item for item in stats["recovery_plan"]}
-    assert plan_by_component["kline"]["command"] == ["trade", "data", "kline", "sync", "--mode", "full"]
+    assert plan_by_component["kline"]["command"] == [
+        "trade",
+        "data",
+        "kline",
+        "sync",
+        "--mode",
+        "range",
+        "--symbols",
+        "000001.SZ",
+        "--start",
+        "2026-03-20",
+        "--end",
+        "2026-03-21",
+        "--provider",
+        "tushare",
+        "--adjust",
+        "none",
+    ]
+    assert plan_by_component["kline"]["mode"] == "targeted_refetch"
+    assert plan_by_component["kline"]["target"] == {
+        "symbols": ["000001.SZ"],
+        "start": "2026-03-20",
+        "end": "2026-03-21",
+        "provider": "tushare",
+        "adjust": "none",
+    }
     assert plan_by_component["kline"]["sample_symbols"] == ["000001.SZ"]
+    assert stats["datasets"]["kline"]["invalid_extents"]["by_symbol"] == [
+        {"symbol": "000001.SZ", "start": "2026-03-20", "end": "2026-03-21", "rows": 2}
+    ]
     assert plan_by_component["fund_flow"]["command"] == ["trade", "data", "fund-flow", "sync"]
     assert plan_by_component["sentiment"]["command"] == ["trade", "data", "sentiment"]
     assert any("数据取值质量" in line for line in lines)

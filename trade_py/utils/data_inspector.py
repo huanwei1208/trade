@@ -689,6 +689,7 @@ def _value_quality_scan(
                 metrics["duplicate_keys"] = int((dup_row or [0])[0] or 0)
 
             sample: list[dict[str, Any]] = []
+            invalid_extents: dict[str, Any] = {}
             if conditions and sample_limit > 0:
                 sample_columns = [
                     col
@@ -712,8 +713,8 @@ def _value_quality_scan(
                     )
                     if col in observed_columns
                 ]
+                invalid_where = " OR ".join(f"({condition})" for _name, condition in conditions)
                 if sample_columns:
-                    invalid_where = " OR ".join(f"({condition})" for _name, condition in conditions)
                     sample_rows = con.execute(
                         f"""
                         SELECT {', '.join(sample_columns)}
@@ -725,6 +726,30 @@ def _value_quality_scan(
                     sample = [
                         {sample_columns[idx]: _jsonable(row_value) for idx, row_value in enumerate(sample_row)}
                         for sample_row in sample_rows
+                    ]
+                if {"symbol", "date"}.issubset(observed_columns):
+                    extent_rows = con.execute(
+                        f"""
+                        SELECT
+                            symbol,
+                            MIN(TRY_CAST(date AS DATE)) AS min_date,
+                            MAX(TRY_CAST(date AS DATE)) AS max_date,
+                            COUNT(*) AS rows
+                        FROM {table_sql}
+                        WHERE ({invalid_where}) AND symbol IS NOT NULL AND TRY_CAST(date AS DATE) IS NOT NULL
+                        GROUP BY symbol
+                        ORDER BY rows DESC, symbol
+                        LIMIT {int(sample_limit)}
+                        """
+                    ).fetchall()
+                    invalid_extents["by_symbol"] = [
+                        {
+                            "symbol": str(row[0]),
+                            "start": _jsonable(row[1]),
+                            "end": _jsonable(row[2]),
+                            "rows": int(row[3] or 0),
+                        }
+                        for row in extent_rows
                     ]
         finally:
             con.close()
@@ -741,6 +766,7 @@ def _value_quality_scan(
             "metrics": metrics,
             "failed_checks": failed_checks,
             "sample": sample,
+            "invalid_extents": invalid_extents,
         }
     except Exception as exc:
         return {
@@ -934,6 +960,62 @@ def _sample_symbols_dates(item: dict[str, Any], sample_limit: int) -> dict[str, 
     return {"symbols": symbols[:sample_limit], "dates": dates[:sample_limit]}
 
 
+def _target_value_recovery(entry: dict[str, Any], datasets: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    if entry.get("component") != "kline":
+        return entry
+    kline_item = datasets.get("kline") or {}
+    extents = (kline_item.get("invalid_extents") or {}).get("by_symbol") or []
+    symbols: list[str] = []
+    dates: list[str] = []
+    for item in extents:
+        symbol = str((item or {}).get("symbol") or "").strip()
+        start = str((item or {}).get("start") or "").strip()[:10]
+        end = str((item or {}).get("end") or "").strip()[:10]
+        if not symbol or not start or not end:
+            continue
+        symbols.append(symbol)
+        dates.extend([start, end])
+    if not symbols:
+        symbols = [str(value) for value in entry.get("sample_symbols") or [] if str(value).strip()]
+        dates = [str(value)[:10] for value in entry.get("sample_dates") or [] if str(value).strip()]
+    if not symbols or not dates:
+        return entry
+    symbols = sorted(set(symbols))
+    start = min(dates)
+    end = max(dates)
+    entry["command"] = [
+        "trade",
+        "data",
+        "kline",
+        "sync",
+        "--mode",
+        "range",
+        "--symbols",
+        ",".join(symbols),
+        "--start",
+        start,
+        "--end",
+        end,
+        "--provider",
+        "tushare",
+        "--adjust",
+        "none",
+    ]
+    entry["mode"] = "targeted_refetch"
+    entry["detail"] = (
+        "Re-fetch the sampled K-line symbol/date window with unadjusted prices; "
+        "use a broader sync only if the targeted refresh still leaves value_quality failures."
+    )
+    entry["target"] = {
+        "symbols": symbols,
+        "start": start,
+        "end": end,
+        "provider": "tushare",
+        "adjust": "none",
+    }
+    return entry
+
+
 def _build_value_quality_recovery_plan(
     datasets: dict[str, dict[str, Any]],
     *,
@@ -978,7 +1060,7 @@ def _build_value_quality_recovery_plan(
         entry["failed_checks"] = sorted(set(entry["failed_checks"]))
         entry["sample_symbols"] = entry["sample_symbols"][:sample_limit]
         entry["sample_dates"] = entry["sample_dates"][:sample_limit]
-        result.append(entry)
+        result.append(_target_value_recovery(entry, datasets))
     return sorted(result, key=lambda item: str(item.get("component") or ""))
 
 
