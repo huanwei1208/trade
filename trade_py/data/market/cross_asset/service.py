@@ -17,6 +17,7 @@ from trade_py.data.market.cross_asset.assurance import (
 )
 from trade_py.data.market.cross_asset.store import (
     BtcRunStore,
+    btc_live_pilot_checklist,
     btc_operational_freshness,
     file_sha256,
     inspect_btc_status,
@@ -428,7 +429,7 @@ class BtcMarketDataService:
             current = self.store.current()
         except ValueError as exc:
             reason_codes = ["CURRENT_POINTER_INVALID"]
-            return {
+            payload = {
                 "mode": "validate",
                 "validated": False,
                 "data_readiness": "invalid",
@@ -444,6 +445,8 @@ class BtcMarketDataService:
                     evidence_refs={"current_pointer": str(self.store.current_path)},
                 ),
             }
+            payload["live_pilot"] = btc_live_pilot_checklist(self.data_root, payload)
+            return payload
         if not current:
             payload = {**inspect_btc_status(self.data_root), "mode": "validate", "validated": False}
             if "health" not in payload:
@@ -461,7 +464,7 @@ class BtcMarketDataService:
         manifest_path = run_dir / "manifest.json"
         if not manifest_path.exists():
             reason_codes = ["CURRENT_MANIFEST_MISSING"]
-            return {
+            payload = {
                 "mode": "validate",
                 "validated": False,
                 "data_readiness": "invalid",
@@ -479,6 +482,8 @@ class BtcMarketDataService:
                     evidence_refs={"manifest_path": str(manifest_path)},
                 ),
             }
+            payload["live_pilot"] = btc_live_pilot_checklist(self.data_root, payload)
+            return payload
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             integrity_errors = self._verify_artifacts(run_dir, manifest)
@@ -506,7 +511,7 @@ class BtcMarketDataService:
             )
         except Exception as exc:
             reason_codes = ["CURRENT_REPLAY_ERROR"]
-            return {
+            payload = {
                 "mode": "validate",
                 "validated": False,
                 "data_readiness": "invalid",
@@ -526,6 +531,8 @@ class BtcMarketDataService:
                     evidence_refs={"manifest_path": str(manifest_path)},
                 ),
             }
+            payload["live_pilot"] = btc_live_pilot_checklist(self.data_root, payload)
+            return payload
         replay_errors = []
         if replay.manifest.get("canonical_hash") != manifest.get("canonical_hash"):
             replay_errors.append("canonical_hash")
@@ -572,7 +579,7 @@ class BtcMarketDataService:
                 "canonical_path": str(self.store.compatibility_path),
             },
         )
-        return {
+        payload = {
             "mode": "validate",
             "validated": readiness == "ready",
             "data_readiness": readiness,
@@ -587,6 +594,8 @@ class BtcMarketDataService:
             "manifest": manifest,
             "health": health,
         }
+        payload["live_pilot"] = btc_live_pilot_checklist(self.data_root, payload)
+        return payload
 
     @staticmethod
     def _verify_artifacts(run_dir: Path, manifest: dict[str, Any]) -> list[str]:

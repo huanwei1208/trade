@@ -60,6 +60,129 @@ def btc_operational_freshness(
     }
 
 
+def _pilot_item(
+    name: str,
+    status: str,
+    detail: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "status": status,
+        "detail": detail,
+        "evidence": evidence or {},
+    }
+
+
+def _count_qualified_days(manifest: dict[str, Any]) -> int:
+    evidence = manifest.get("acquisition_evidence") or {}
+    dates = {
+        str(attempt.get("date"))
+        for attempt in (evidence.get("daily_attempts") or [])
+        if attempt.get("qualified") and attempt.get("date")
+    }
+    return len(dates)
+
+
+def _has_provider_revision_overlap(manifest: dict[str, Any]) -> bool:
+    revision = (manifest.get("gates") or [])
+    d4 = next((gate for gate in revision if gate.get("gate") == "D4"), {})
+    metrics = d4.get("metrics") or {}
+    required = int(metrics.get("minimum_revision_overlap_days") or 0)
+    observed = int(metrics.get("revision_rows") or 0)
+    return required > 0 and observed >= required
+
+
+def btc_live_pilot_checklist(data_root: str | Path, status_payload: dict[str, Any]) -> dict[str, Any]:
+    """Summarize live-pilot evidence without performing network or data mutations."""
+
+    store = BtcRunStore(data_root)
+    current = status_payload.get("current") or {}
+    manifest = status_payload.get("manifest") or {}
+    readiness = str(status_payload.get("data_readiness") or "invalid")
+    acquisition = manifest.get("acquisition_evidence") or {}
+    providers = acquisition.get("providers") or {}
+    qualified_days = _count_qualified_days(manifest)
+    required_days = int((manifest.get("config") or {}).get("minimum_successful_acquisition_days") or 29)
+    has_revision_overlap = _has_provider_revision_overlap(manifest)
+    publish_audits = list((store.cross_asset_root / "audit" / "publish").glob("*.json"))
+    rollback_audits = list((store.cross_asset_root / "audit" / "rollback").glob("*.json"))
+    ads_pointer = store.data_root / "warehouse" / "ads" / "_crypto_validation_current.json"
+    coingecko_key_configured = bool(
+        os.environ.get("COINGECKO_API_KEY") or os.environ.get("COINGECKO_DEMO_API_KEY")
+    )
+    latest_provider_status = {
+        name: {
+            "status": report.get("status"),
+            "rows": report.get("rows"),
+            "error_kind": report.get("error_kind"),
+            "raw_payload_count": len(report.get("raw_payload_hashes") or []),
+        }
+        for name, report in sorted(providers.items())
+    }
+    okx_ready = (providers.get("okx") or {}).get("status") == "succeeded"
+    coingecko_ready = (providers.get("coingecko") or {}).get("status") == "succeeded"
+
+    items = [
+        _pilot_item(
+            "coingecko_credentials",
+            "pass" if coingecko_key_configured else "pending",
+            "CoinGecko API key is configured" if coingecko_key_configured else "CoinGecko API key is not configured in this runtime",
+            {"env": ["COINGECKO_API_KEY", "COINGECKO_DEMO_API_KEY"]},
+        ),
+        _pilot_item(
+            "provider_contracts",
+            "pass" if okx_ready and coingecko_ready else "pending",
+            "latest OKX and CoinGecko captures succeeded" if okx_ready and coingecko_ready else "latest provider success is not yet proven",
+            latest_provider_status,
+        ),
+        _pilot_item(
+            "published_current",
+            "pass" if current and readiness == "ready" else ("fail" if readiness == "invalid" else "pending"),
+            "BTC current pointer is ready" if current and readiness == "ready" else "BTC current pointer is not ready",
+            {"run_id": current.get("run_id"), "readiness": readiness},
+        ),
+        _pilot_item(
+            "ads_current_pointer",
+            "pass" if ads_pointer.exists() else "pending",
+            "crypto ADS current pointer exists" if ads_pointer.exists() else "crypto ADS current pointer is not present",
+            {"path": str(ads_pointer)},
+        ),
+        _pilot_item(
+            "qualified_acquisition_days",
+            "pass" if qualified_days >= required_days else "pending",
+            f"{qualified_days}/{required_days} qualified acquisition days observed",
+            {"qualified_days": qualified_days, "required_days": required_days},
+        ),
+        _pilot_item(
+            "revision_overlap",
+            "pass" if has_revision_overlap else "pending",
+            "provider-native revision overlap requirement is satisfied" if has_revision_overlap else "provider-native revision overlap is not yet proven",
+            {"minimum_revision_overlap_days": (manifest.get("config") or {}).get("minimum_revision_overlap_days")},
+        ),
+        _pilot_item(
+            "first_pointer_switch",
+            "pass" if publish_audits else "pending",
+            "publish audit exists" if publish_audits else "no publish audit has been recorded",
+            {"audit_count": len(publish_audits)},
+        ),
+        _pilot_item(
+            "rollback_rehearsal",
+            "pass" if rollback_audits else "pending",
+            "rollback audit exists" if rollback_audits else "no rollback rehearsal audit has been recorded",
+            {"audit_count": len(rollback_audits)},
+        ),
+    ]
+    return {
+        "status": (
+            "pass"
+            if all(item["status"] == "pass" for item in items)
+            else ("fail" if any(item["status"] == "fail" for item in items) else "pending")
+        ),
+        "items": items,
+    }
+
+
 class BtcRunStore:
     def __init__(self, data_root: str | Path) -> None:
         self.data_root = Path(data_root)
@@ -709,7 +832,7 @@ def inspect_btc_status(data_root: str | Path, *, as_of: Any | None = None) -> di
         current = store.current()
     except ValueError as exc:
         reason_codes = ["CURRENT_POINTER_INVALID"]
-        return {
+        payload = {
             "data_readiness": "invalid",
             "reason_code": "CURRENT_POINTER_INVALID",
             "reason_codes": reason_codes,
@@ -724,6 +847,8 @@ def inspect_btc_status(data_root: str | Path, *, as_of: Any | None = None) -> di
                 evidence_refs={"current_pointer": str(store.current_path)},
             ),
         }
+        payload["live_pilot"] = btc_live_pilot_checklist(data_root, payload)
+        return payload
     if current:
         manifest_path = Path(str(current.get("manifest_path") or ""))
         manifest: dict[str, Any] = {}
@@ -759,7 +884,7 @@ def inspect_btc_status(data_root: str | Path, *, as_of: Any | None = None) -> di
                 "canonical_path": str(store.compatibility_path),
             },
         )
-        return {
+        payload = {
             "data_readiness": readiness,
             "reason_code": reason_codes[0] if reason_codes else None,
             "reason_codes": reason_codes,
@@ -768,10 +893,12 @@ def inspect_btc_status(data_root: str | Path, *, as_of: Any | None = None) -> di
             "operational_freshness": freshness,
             "health": health,
         }
+        payload["live_pilot"] = btc_live_pilot_checklist(data_root, payload)
+        return payload
     path = store.compatibility_path
     if not path.exists():
         reason_codes = ["NO_CANONICAL_DATA"]
-        return {
+        payload = {
             "data_readiness": "invalid",
             "reason_code": "NO_CANONICAL_DATA",
             "reason_codes": reason_codes,
@@ -785,11 +912,13 @@ def inspect_btc_status(data_root: str | Path, *, as_of: Any | None = None) -> di
                 evidence_refs={"canonical_path": str(path)},
             ),
         }
+        payload["live_pilot"] = btc_live_pilot_checklist(data_root, payload)
+        return payload
     try:
         frame = pd.read_parquet(path)
     except Exception as exc:
         reason_codes = ["CANONICAL_READ_ERROR"]
-        return {
+        payload = {
             "data_readiness": "invalid",
             "reason_code": "CANONICAL_READ_ERROR",
             "reason_codes": reason_codes,
@@ -805,8 +934,10 @@ def inspect_btc_status(data_root: str | Path, *, as_of: Any | None = None) -> di
                 evidence_refs={"canonical_path": str(path)},
             ),
         }
+        payload["live_pilot"] = btc_live_pilot_checklist(data_root, payload)
+        return payload
     reason_codes = ["LEGACY_LINEAGE_MISSING"]
-    return {
+    payload = {
         "data_readiness": "insufficient_data",
         "reason_code": "LEGACY_LINEAGE_MISSING",
         "reason_codes": reason_codes,
@@ -823,3 +954,5 @@ def inspect_btc_status(data_root: str | Path, *, as_of: Any | None = None) -> di
             evidence_refs={"canonical_path": str(path)},
         ),
     }
+    payload["live_pilot"] = btc_live_pilot_checklist(data_root, payload)
+    return payload

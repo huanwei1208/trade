@@ -366,6 +366,11 @@ def test_validate_and_status_downgrade_an_aged_current_run(tmp_path: Path) -> No
     assert status["data_readiness"] == "degraded"
     assert status["reason_code"] == "CANONICAL_STALE"
     assert status["health"]["reason_codes"] == ["CANONICAL_STALE"]
+    assert status["live_pilot"]["status"] == "pending"
+    assert {
+        item["name"]: item["status"]
+        for item in status["live_pilot"]["items"]
+    }["ads_current_pointer"] == "pending"
 
 
 def test_corrupt_current_pointer_is_invalid_not_legacy_insufficient(tmp_path: Path) -> None:
@@ -429,6 +434,64 @@ def test_daily_acquisition_and_staged_revision_bootstrap_publish_validate_rollba
     assert rollback["run_id"] == third_run_id
     assert service.store.current()["run_id"] == third_run_id
     assert Path(rollback["rollback_audit_path"]).is_file()
+
+
+def test_status_live_pilot_reports_local_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [pd.Timestamp("2026-01-10T12:00:00Z")]
+    config = BtcAssuranceConfig(
+        minimum_history_days=3,
+        recent_window_days=3,
+        recent_coverage_required=1.0,
+        full_coverage_required=1.0,
+        shadow_days=3,
+        shadow_required_days=3,
+        acquisition_window_days=3,
+        minimum_successful_acquisition_days=3,
+        minimum_revision_overlap_days=2,
+    )
+    service = BtcMarketDataService(
+        tmp_path,
+        primary_provider=_RollingFrozenProvider(OKX_BTC_CONTRACT),
+        shadow_provider=_RollingFrozenProvider(COINGECKO_BTC_SHADOW_CONTRACT),
+        config=config,
+        days=3,
+        max_attempts=1,
+        sleep=lambda _seconds: None,
+        now=lambda: clock[0],
+    )
+    monkeypatch.setenv("COINGECKO_API_KEY", "fixture-key")
+
+    first = service.sync(as_of=clock[0])
+    clock[0] += pd.Timedelta(days=1)
+    service.sync(as_of=clock[0])
+    clock[0] += pd.Timedelta(days=1)
+    third = service.sync(as_of=clock[0])
+    clock[0] += pd.Timedelta(days=1)
+    service.sync(as_of=clock[0])
+    service.store.rollback(third["run_id"])
+    ads_pointer = tmp_path / "warehouse" / "ads" / "_crypto_validation_current.json"
+    ads_pointer.parent.mkdir(parents=True)
+    ads_pointer.write_text(
+        json.dumps({"run_id": "validation", "generation_id": "generation"}),
+        encoding="utf-8",
+    )
+
+    status = service.status()
+    pilot = {item["name"]: item for item in status["live_pilot"]["items"]}
+
+    assert status["live_pilot"]["status"] == "pass"
+    assert pilot["coingecko_credentials"]["status"] == "pass"
+    assert pilot["provider_contracts"]["status"] == "pass"
+    assert pilot["published_current"]["status"] == "pass"
+    assert pilot["ads_current_pointer"]["status"] == "pass"
+    assert pilot["qualified_acquisition_days"]["evidence"]["qualified_days"] == 3
+    assert pilot["qualified_acquisition_days"]["status"] == "pass"
+    assert pilot["revision_overlap"]["status"] == "pass"
+    assert pilot["first_pointer_switch"]["status"] == "pass"
+    assert pilot["rollback_rehearsal"]["status"] == "pass"
 
 
 class _CliService:
