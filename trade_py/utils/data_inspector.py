@@ -30,6 +30,42 @@ from trade_py.data.paths import (
 logger = logging.getLogger(__name__)
 
 
+_REQUIRED_PARQUET_COLUMNS: dict[str, tuple[str, ...]] = {
+    "kline": (
+        "symbol",
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "turnover_rate",
+        "prev_close",
+        "vwap",
+    ),
+    "fund_flow": ("symbol", "date", "large_order_net_ratio"),
+    "fundamental": ("symbol", "report_date", "roe"),
+    "cross_asset.gold": ("date", "close"),
+    "cross_asset.fx_cnh": ("date", "close"),
+    "cross_asset.btc": ("date", "close"),
+    "index": ("date", "close"),
+    "northbound": ("date", "total_net", "net_5d"),
+    "macro.gdp": ("date", "q_gdp"),
+    "macro.cpi": ("date", "nt_yoy"),
+    "macro.ppi": ("date", "ppi_yoy"),
+    "macro.pmi": ("date", "mfg_pmi"),
+    "sentiment.silver": ("date", "symbol", "sentiment_score", "sentiment_label"),
+    "sentiment.gold": ("date", "symbol", "net_sentiment"),
+}
+
+
+_PARQUET_COLUMN_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
+    "macro.gdp": {"q_gdp": ("gdp",)},
+    "macro.pmi": {"mfg_pmi": ("PMI010000",)},
+}
+
+
 # ── Status helpers ─────────────────────────────────────────────────────────────
 
 
@@ -266,6 +302,140 @@ def _lag_days(watermark: Any, expected: str | None) -> int | None:
         return max((date.fromisoformat(str(expected)[:10]) - date.fromisoformat(str(watermark)[:10])).days, 0)
     except ValueError:
         return None
+
+
+def _resolve_kline_files(data_root: str | Path = "data") -> list[Path]:
+    kline_dir = _resolve_kline_dir(data_root)
+    if not kline_dir.exists():
+        return []
+    files = sorted(kline_dir.glob("*.parquet"))
+    if files:
+        return files
+    return sorted(kline_dir.glob("**/*.parquet"))
+
+
+def _parquet_columns(path: Path) -> tuple[set[str], str | None]:
+    try:
+        import pyarrow.parquet as pq
+
+        return {str(name) for name in pq.read_schema(path).names}, None
+    except Exception as arrow_exc:
+        try:
+            import duckdb
+
+            con = duckdb.connect()
+            try:
+                rows = con.execute(
+                    f"DESCRIBE SELECT * FROM read_parquet({[str(path)]!r}, union_by_name=true)"
+                ).fetchall()
+            finally:
+                con.close()
+            return {str(row[0]) for row in rows if row and row[0]}, None
+        except Exception as duck_exc:
+            return set(), f"{arrow_exc}; duckdb fallback: {duck_exc}"
+
+
+def _schema_contract(
+    dataset: str,
+    files: list[Path],
+    required_columns: tuple[str, ...],
+    *,
+    sample_limit: int,
+) -> dict[str, Any]:
+    aliases = _PARQUET_COLUMN_ALIASES.get(dataset, {})
+    missing_sample: list[dict[str, Any]] = []
+    error_sample: list[dict[str, Any]] = []
+    observed_columns: set[str] = set()
+    missing_columns: set[str] = set()
+    checked_files = 0
+
+    for path in files:
+        columns, error = _parquet_columns(path)
+        if error:
+            error_sample.append({"path": str(path), "error": error})
+            continue
+        checked_files += 1
+        observed_columns.update(columns)
+        missing = sorted(
+            column
+            for column in required_columns
+            if column not in columns and not any(alias in columns for alias in aliases.get(column, ()))
+        )
+        if missing:
+            missing_columns.update(missing)
+            missing_sample.append({"path": str(path), "missing_columns": missing})
+
+    return {
+        "dataset": dataset,
+        "status": "fail" if missing_sample or error_sample else "pass",
+        "files": len(files),
+        "checked_files": checked_files,
+        "required_columns": list(required_columns),
+        "column_aliases": {key: list(value) for key, value in aliases.items()},
+        "observed_columns": sorted(observed_columns),
+        "missing_columns": sorted(missing_columns),
+        "missing_files": len(missing_sample),
+        "missing_sample": missing_sample[:sample_limit],
+        "error_files": len(error_sample),
+        "error_sample": error_sample[:sample_limit],
+    }
+
+
+def schema_contract_stats(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
+    root = Path(data_root)
+    specs: list[tuple[str, list[Path], tuple[str, ...]]] = [
+        ("kline", _resolve_kline_files(root), _REQUIRED_PARQUET_COLUMNS["kline"]),
+        ("fund_flow", sorted(FUND_FLOW_DIR(root).glob("*.parquet")), _REQUIRED_PARQUET_COLUMNS["fund_flow"]),
+        ("fundamental", sorted(FUNDAMENTAL_DIR(root).glob("*.parquet")), _REQUIRED_PARQUET_COLUMNS["fundamental"]),
+        ("index", sorted(INDEX_DIR(root).glob("*.parquet")), _REQUIRED_PARQUET_COLUMNS["index"]),
+        (
+            "northbound",
+            [NORTHBOUND_DIR(root) / "daily.parquet"] if (NORTHBOUND_DIR(root) / "daily.parquet").exists() else [],
+            _REQUIRED_PARQUET_COLUMNS["northbound"],
+        ),
+    ]
+    specs.extend(
+        (
+            f"cross_asset.{name}",
+            [path] if path.exists() else [],
+            _REQUIRED_PARQUET_COLUMNS[f"cross_asset.{name}"],
+        )
+        for name in ("gold", "fx_cnh", "btc")
+        for path, _layout in [_cross_asset_path(root, name)]
+    )
+    specs.extend(
+        (
+            f"macro.{name}",
+            [MACRO_DIR(root) / f"{name}.parquet"] if (MACRO_DIR(root) / f"{name}.parquet").exists() else [],
+            _REQUIRED_PARQUET_COLUMNS[f"macro.{name}"],
+        )
+        for name in ("gdp", "cpi", "ppi", "pmi")
+    )
+    specs.extend(
+        (
+            f"sentiment.{layer}",
+            sorted((root / "sentiment" / layer).glob("**/*.parquet")),
+            _REQUIRED_PARQUET_COLUMNS[f"sentiment.{layer}"],
+        )
+        for layer in ("silver", "gold")
+    )
+
+    datasets = {
+        dataset: _schema_contract(dataset, files, required_columns, sample_limit=sample_limit)
+        for dataset, files, required_columns in specs
+    }
+    failed_contracts = [
+        dataset
+        for dataset, contract in datasets.items()
+        if contract.get("status") == "fail"
+    ]
+    checked_files = sum(int(contract.get("checked_files") or 0) for contract in datasets.values())
+    return {
+        "status": "fail" if failed_contracts else "pass",
+        "checked_files": checked_files,
+        "failed_contracts": failed_contracts,
+        "datasets": datasets,
+    }
 
 
 def _market_flat_stats(
@@ -741,6 +911,24 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         else None,
     )
 
+    schema = status.get("schema_contracts") or {}
+    schema_failed = list(schema.get("failed_contracts") or [])
+    components["schema_contracts"] = _component(
+        "pass" if not schema_failed and schema.get("status", "pass") == "pass" else "fail",
+        None if not schema_failed and schema.get("status", "pass") == "pass" else "SCHEMA_CONTRACT_MISSING_COLUMNS",
+        {
+            "checked_files": int(schema.get("checked_files") or 0),
+            "failed_contracts": schema_failed,
+        },
+        _recovery(
+            ["trade", "data", "status", "--strict", "--json"],
+            mode="audit",
+            detail="Inspect schema_contracts and regenerate parquet files with the required normalized columns",
+        )
+        if schema_failed or schema.get("status") == "fail"
+        else None,
+    )
+
     statuses = [item["status"] for item in components.values()]
     overall = "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass")
     reasons = [
@@ -896,6 +1084,7 @@ def get_data_status(data_root: str | Path = "data", sample_limit: int = 10) -> d
         "instruments": db_instrument_stats(data_root),
         "sentiment":   sentiment_stats(data_root),
         "events":      events_stats(data_root),
+        "schema_contracts": schema_contract_stats(data_root, sample_limit=sample_limit),
         "as_of":       date.today().isoformat(),
     }
     status["quality_gate"] = build_data_quality_gate(status)
@@ -1043,6 +1232,17 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
                 f"range={item.get('min_date') or '—'} ~ {item.get('max_date') or '—'}"
             )
         lines.append("")
+
+    schema = status.get("schema_contracts", {})
+    if schema:
+        failed = schema.get("failed_contracts") or []
+        lines += [
+            "### 数据契约",
+            f"- status: **{schema.get('status', 'unknown')}**",
+            f"- checked files: {schema.get('checked_files', 0):,}",
+            f"- failed contracts: {', '.join(failed) if failed else '—'}",
+            "",
+        ]
 
     s = status.get("sentiment", {})
     silver = s.get("silver", {})

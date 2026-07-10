@@ -20,6 +20,7 @@ from trade_py.utils.data_inspector import (
     index_stats,
     northbound_stats,
     macro_stats,
+    schema_contract_stats,
     build_data_quality_gate,
 )
 
@@ -281,6 +282,60 @@ def test_index_northbound_and_macro_status_use_local_files(tmp_path) -> None:
     assert any("宏观数据" in line for line in lines)
 
 
+def test_schema_contract_status_reports_missing_required_columns(tmp_path) -> None:
+    kline_root = tmp_path / "market" / "kline"
+    kline_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "symbol": "000001.SZ",
+                "date": "2026-03-20",
+                "open": 10.0,
+                "high": 10.5,
+                "low": 9.8,
+                "close": 10.2,
+                "volume": 1000,
+                "amount": 102000.0,
+                "turnover_rate": 1.2,
+                "prev_close": 10.1,
+                "vwap": 10.2,
+            }
+        ]
+    ).to_parquet(kline_root / "000001_SZ.parquet", index=False)
+
+    fund_flow_root = tmp_path / "market" / "fund_flow"
+    fund_flow_root.mkdir(parents=True)
+    pd.DataFrame(
+        [{"symbol": "000001.SZ", "date": "2026-03-20"}]
+    ).to_parquet(fund_flow_root / "000001_SZ.parquet", index=False)
+
+    cross_asset_root = tmp_path / "market" / "cross_asset"
+    cross_asset_root.mkdir(parents=True)
+    pd.DataFrame(
+        [{"date": "2026-03-20"}]
+    ).to_parquet(cross_asset_root / "gold.parquet", index=False)
+
+    macro_root = tmp_path / "market" / "macro"
+    macro_root.mkdir(parents=True)
+    pd.DataFrame([{"date": "2025-12-31", "gdp": 5.2}]).to_parquet(macro_root / "gdp.parquet", index=False)
+    pd.DataFrame([{"date": "2026-03-01", "PMI010000": 50.2}]).to_parquet(macro_root / "pmi.parquet", index=False)
+
+    stats = schema_contract_stats(tmp_path, sample_limit=5)
+    lines = build_status_lines({"as_of": "2026-03-20", "schema_contracts": stats})
+
+    assert stats["status"] == "fail"
+    assert stats["datasets"]["kline"]["status"] == "pass"
+    assert "fund_flow" in stats["failed_contracts"]
+    assert stats["datasets"]["fund_flow"]["missing_columns"] == ["large_order_net_ratio"]
+    assert "cross_asset.gold" in stats["failed_contracts"]
+    assert stats["datasets"]["cross_asset.gold"]["missing_columns"] == ["close"]
+    assert stats["datasets"]["macro.gdp"]["status"] == "pass"
+    assert stats["datasets"]["macro.gdp"]["column_aliases"] == {"q_gdp": ["gdp"]}
+    assert stats["datasets"]["macro.pmi"]["status"] == "pass"
+    assert stats["datasets"]["macro.pmi"]["column_aliases"] == {"mfg_pmi": ["PMI010000"]}
+    assert any("数据契约" in line for line in lines)
+
+
 def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
     clean = {
         "kline_coverage": {"coverage_pct": 100.0},
@@ -296,6 +351,7 @@ def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
         },
         "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
         "northbound": {"exists": True, "lag_days": 0},
+        "schema_contracts": {"status": "pass", "checked_files": 9, "failed_contracts": []},
     }
     degraded = {
         **clean,
@@ -319,6 +375,40 @@ def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
     assert plan_by_component["sentiment_gold"]["command"] == ["trade", "data", "sentiment"]
     assert degraded_gate["components"]["kline"]["recovery"]["mode"] == "refresh"
     assert any("数据质量门禁" in line for line in degraded_lines)
+
+
+def test_data_quality_gate_fails_on_schema_contract_breakage() -> None:
+    clean = {
+        "kline_coverage": {"coverage_pct": 100.0},
+        "kline_freshness": {"max_trading_day_stale_days": 0},
+        "fund_flow": {"coverage_pct": 95.0, "stale_sample": [{"trading_day_stale_days": 0}]},
+        "fundamental": {"coverage_pct": 100.0, "max_date": "2025-12-31"},
+        "sentiment": {"gold": {"lag_days": 0, "max_date": "2026-03-20"}},
+        "events": {"lag_days": 0, "event_count": 3},
+        "cross_asset": {
+            "gold": {"exists": True, "lag_days": 0},
+            "fx_cnh": {"exists": True, "lag_days": 0},
+            "btc": {"exists": True, "lag_days": 0},
+        },
+        "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
+        "northbound": {"exists": True, "lag_days": 0},
+        "schema_contracts": {
+            "status": "fail",
+            "checked_files": 12,
+            "failed_contracts": ["fund_flow", "cross_asset.gold"],
+        },
+    }
+
+    gate = build_data_quality_gate(clean)
+
+    assert gate["status"] == "fail"
+    assert "SCHEMA_CONTRACT_MISSING_COLUMNS" in gate["reason_codes"]
+    assert gate["components"]["schema_contracts"]["metrics"]["failed_contracts"] == [
+        "fund_flow",
+        "cross_asset.gold",
+    ]
+    plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
+    assert plan_by_component["schema_contracts"]["mode"] == "audit"
 
 
 @pytest.mark.parametrize(
