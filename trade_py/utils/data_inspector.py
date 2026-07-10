@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections import Counter, deque
 from importlib.util import find_spec
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -154,6 +155,11 @@ _PROVIDER_RECOVERY: dict[str, dict[str, Any]] = {
         "detail": "Set COINGECKO_API_KEY or COINGECKO_DEMO_API_KEY before BTC shadow reconciliation.",
     },
 }
+
+
+_TUSHARE_AUDIT_LOG_NAME = "tushare_requests.jsonl"
+_TUSHARE_AUDIT_FAIL_STATUSES = {"auth", "permission", "invalid_request"}
+_TUSHARE_AUDIT_WARN_STATUSES = {"rate_limit", "transient", "unknown"}
 
 
 # ── Status helpers ─────────────────────────────────────────────────────────────
@@ -1551,6 +1557,37 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
         else None,
     )
 
+    provider_audit = status.get("provider_audit") or {}
+    audit_status = str(provider_audit.get("status") or "pass")
+    audit_reasons = list(provider_audit.get("reason_codes") or [])
+    components["provider_audit"] = _component(
+        "fail" if audit_status == "fail" else ("warn" if audit_status == "warn" else "pass"),
+        None if audit_status in {"pass", "unknown"} else "PROVIDER_AUDIT_DEGRADED",
+        {
+            "observed": bool(provider_audit.get("observed")),
+            "reason_codes": audit_reasons,
+            "providers": {
+                name: {
+                    "status": item.get("status"),
+                    "recent_requests": item.get("recent_requests"),
+                    "status_counts": item.get("status_counts"),
+                    "fail_statuses": item.get("fail_statuses"),
+                    "warn_statuses": item.get("warn_statuses"),
+                }
+                for name, item in ((provider_audit.get("providers") or {}).items())
+                if isinstance(item, dict)
+            },
+            "recovery_plan": list(provider_audit.get("recovery_plan") or []),
+        },
+        _recovery(
+            ["trade", "data", "status", "--strict", "--json"],
+            mode="audit",
+            detail="Inspect provider_audit samples and recovery_plan for recent provider request failures",
+        )
+        if audit_status in {"fail", "warn"}
+        else None,
+    )
+
     statuses = [item["status"] for item in components.values()]
     overall = "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass")
     reasons = [
@@ -2119,6 +2156,146 @@ def provider_readiness_stats(data_root: str | Path = "data") -> dict[str, Any]:
     }
 
 
+def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: deque[dict[str, Any]] = deque(maxlen=max(1, int(limit)))
+    try:
+        with path.open("r", encoding="utf-8") as fp:
+            for line in fp:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    rows.append(payload)
+    except Exception as exc:
+        logger.debug("jsonl tail read error path=%s: %s", path, exc)
+        return [{"status": "read_error", "error_message": str(exc), "endpoint": ""}]
+    return list(rows)
+
+
+def _provider_audit_recovery(status: str) -> dict[str, Any]:
+    if status == "auth":
+        return {
+            "status": status,
+            "command": ["trade", "account", "setting-set", "tushare_token", "YOUR_TOKEN"],
+            "mode": "configure",
+            "detail": "Refresh the Tushare token and rerun the affected data sync.",
+        }
+    if status == "permission":
+        return {
+            "status": status,
+            "command": ["trade", "data", "status", "--strict", "--json"],
+            "mode": "audit",
+            "detail": "Check Tushare quota/permissions for the failing endpoint before retrying.",
+        }
+    if status == "invalid_request":
+        return {
+            "status": status,
+            "command": ["trade", "data", "status", "--strict", "--json"],
+            "mode": "audit",
+            "detail": "Inspect endpoint parameters or field lists; retries will not fix invalid requests.",
+        }
+    if status == "rate_limit":
+        return {
+            "status": status,
+            "command": ["trade", "account", "setting-set", "tushare.rate_limit_backoff_sec", "5,15,30,45,60"],
+            "mode": "tune",
+            "detail": "Increase backoff or lower request concurrency before the next refresh.",
+        }
+    if status == "transient":
+        return {
+            "status": status,
+            "command": ["trade", "data", "backfill", "status"],
+            "mode": "retry",
+            "detail": "Retry after provider/network recovers and verify job history.",
+        }
+    return {
+        "status": status,
+        "command": ["trade", "data", "status", "--strict", "--json"],
+        "mode": "audit",
+        "detail": "Inspect provider audit samples for unknown failures.",
+    }
+
+
+def provider_audit_stats(
+    data_root: str | Path = "data",
+    sample_limit: int = 10,
+    recent_limit: int = 200,
+) -> dict[str, Any]:
+    """Summarize recent provider request audit logs without making network calls."""
+    root = Path(data_root)
+    path = root / ".db" / _TUSHARE_AUDIT_LOG_NAME
+    rows = _read_jsonl_tail(path, max(int(recent_limit), int(sample_limit)))
+    if not rows:
+        return {
+            "status": "unknown",
+            "observed": False,
+            "reason_codes": [],
+            "providers": {
+                "tushare": {
+                    "status": "unknown",
+                    "audit_log_path": str(path),
+                    "recent_requests": 0,
+                    "status_counts": {},
+                    "endpoint_counts": {},
+                    "sample": [],
+                }
+            },
+            "recovery_plan": [],
+        }
+
+    status_counts = Counter(str(row.get("status") or "unknown") for row in rows)
+    endpoint_counts = Counter(str(row.get("endpoint") or "") for row in rows if row.get("endpoint"))
+    fail_statuses = sorted(status for status in _TUSHARE_AUDIT_FAIL_STATUSES if status_counts.get(status, 0) > 0)
+    warn_statuses = sorted(status for status in _TUSHARE_AUDIT_WARN_STATUSES if status_counts.get(status, 0) > 0)
+    reason_codes: list[str] = []
+    if fail_statuses:
+        reason_codes.append("PROVIDER_AUDIT_RECENT_FAILURES")
+    if warn_statuses:
+        reason_codes.append("PROVIDER_AUDIT_RECENT_WARNINGS")
+    problem_statuses = set(fail_statuses) | set(warn_statuses)
+    sample = [
+        {
+            "provider": "tushare",
+            "ts": row.get("ts"),
+            "endpoint": row.get("endpoint"),
+            "status": row.get("status"),
+            "error_type": row.get("error_type"),
+            "error_message": str(row.get("error_message") or "")[:200],
+            "retry_index": row.get("retry_index"),
+            "wait_ms": row.get("wait_ms"),
+        }
+        for row in rows
+        if str(row.get("status") or "unknown") in problem_statuses
+    ][: max(1, int(sample_limit))]
+    recovery_plan = [_provider_audit_recovery(status) for status in fail_statuses + warn_statuses]
+    provider_status = "fail" if fail_statuses else ("warn" if warn_statuses else "pass")
+    return {
+        "status": provider_status,
+        "observed": True,
+        "reason_codes": reason_codes,
+        "providers": {
+            "tushare": {
+                "status": provider_status,
+                "audit_log_path": str(path),
+                "recent_requests": len(rows),
+                "status_counts": dict(sorted(status_counts.items())),
+                "endpoint_counts": dict(endpoint_counts.most_common(10)),
+                "fail_statuses": fail_statuses,
+                "warn_statuses": warn_statuses,
+                "sample": sample,
+            }
+        },
+        "sample": sample,
+        "recovery_plan": recovery_plan,
+    }
+
+
 # ── Aggregate status ──────────────────────────────────────────────────────────
 
 def get_data_status(
@@ -2145,6 +2322,7 @@ def get_data_status(
         "source_stability": source_stability_stats(data_root, sample_limit=sample_limit),
         "metadata_reconciliation": metadata_reconciliation_stats(data_root, sample_limit=sample_limit),
         "provider_readiness": provider_readiness_stats(data_root),
+        "provider_audit": provider_audit_stats(data_root, sample_limit=sample_limit),
         "as_of":       date.today().isoformat(),
     }
     if include_value_quality:
@@ -2360,6 +2538,19 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
             f"- missing required: {', '.join(providers.get('missing_required') or []) or '—'}",
             f"- optional warnings: {', '.join(providers.get('warn_optional') or []) or '—'}",
             f"- recovery actions: {len(recovery_plan):,}",
+            f"- reasons: {', '.join(reasons) if reasons else '—'}",
+            "",
+        ]
+
+    provider_audit = status.get("provider_audit", {})
+    if provider_audit:
+        reasons = provider_audit.get("reason_codes") or []
+        tushare = (provider_audit.get("providers") or {}).get("tushare") or {}
+        lines += [
+            "### 数据源请求审计",
+            f"- status: **{provider_audit.get('status', 'unknown')}**",
+            f"- observed: {'yes' if provider_audit.get('observed') else 'no'}",
+            f"- tushare recent requests: {tushare.get('recent_requests', 0):,}",
             f"- reasons: {', '.join(reasons) if reasons else '—'}",
             "",
         ]

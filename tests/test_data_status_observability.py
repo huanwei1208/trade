@@ -22,6 +22,7 @@ from trade_py.utils.data_inspector import (
     northbound_stats,
     macro_stats,
     metadata_reconciliation_stats,
+    provider_audit_stats,
     provider_readiness_stats,
     schema_contract_stats,
     source_stability_stats,
@@ -991,6 +992,127 @@ def test_data_quality_gate_fails_on_provider_readiness_breakage() -> None:
     assert gate["components"]["provider_readiness"]["metrics"]["recovery_plan"][0]["provider"] == "coingecko"
     plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
     assert plan_by_component["provider_readiness"]["mode"] == "configure"
+
+
+def test_provider_audit_reports_recent_tushare_auth_failures(tmp_path) -> None:
+    audit_path = tmp_path / ".db" / "tushare_requests.jsonl"
+    audit_path.parent.mkdir(parents=True)
+    rows = [
+        {"ts": "2026-03-20T09:00:00", "endpoint": "daily", "status": "success", "retry_index": 0},
+        {
+            "ts": "2026-03-20T09:01:00",
+            "endpoint": "daily_basic",
+            "status": "auth",
+            "error_type": "TushareAuthError",
+            "error_message": "invalid token",
+            "retry_index": 0,
+            "wait_ms": 0.0,
+        },
+    ]
+    audit_path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+    stats = provider_audit_stats(tmp_path, sample_limit=5)
+    lines = build_status_lines({"as_of": "2026-03-20", "provider_audit": stats})
+
+    assert stats["status"] == "fail"
+    assert stats["observed"] is True
+    assert stats["providers"]["tushare"]["status_counts"]["auth"] == 1
+    assert stats["providers"]["tushare"]["fail_statuses"] == ["auth"]
+    assert stats["sample"][0]["endpoint"] == "daily_basic"
+    assert stats["recovery_plan"][0]["command"] == ["trade", "account", "setting-set", "tushare_token", "YOUR_TOKEN"]
+    assert "PROVIDER_AUDIT_RECENT_FAILURES" in stats["reason_codes"]
+    assert any("数据源请求审计" in line for line in lines)
+
+
+def test_provider_audit_warns_on_recent_rate_limits(tmp_path) -> None:
+    audit_path = tmp_path / ".db" / "tushare_requests.jsonl"
+    audit_path.parent.mkdir(parents=True)
+    audit_path.write_text(
+        json.dumps(
+            {
+                "ts": "2026-03-20T09:01:00",
+                "endpoint": "moneyflow",
+                "status": "rate_limit",
+                "error_type": "TushareRateLimitError",
+                "error_message": "too many requests",
+                "retry_index": 2,
+                "wait_ms": 15000,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stats = provider_audit_stats(tmp_path, sample_limit=5)
+
+    assert stats["status"] == "warn"
+    assert stats["providers"]["tushare"]["warn_statuses"] == ["rate_limit"]
+    assert "PROVIDER_AUDIT_RECENT_WARNINGS" in stats["reason_codes"]
+    assert stats["recovery_plan"][0]["mode"] == "tune"
+
+
+def test_provider_audit_is_unknown_when_no_log_exists(tmp_path) -> None:
+    stats = provider_audit_stats(tmp_path, sample_limit=5)
+
+    assert stats["status"] == "unknown"
+    assert stats["observed"] is False
+    assert stats["reason_codes"] == []
+    assert stats["providers"]["tushare"]["recent_requests"] == 0
+
+
+def test_data_quality_gate_fails_on_provider_audit_failures() -> None:
+    clean = {
+        "kline_coverage": {"coverage_pct": 100.0},
+        "kline_freshness": {"max_trading_day_stale_days": 0},
+        "fund_flow": {"coverage_pct": 95.0, "stale_sample": [{"trading_day_stale_days": 0}]},
+        "fundamental": {"coverage_pct": 100.0, "max_date": "2025-12-31"},
+        "sentiment": {"gold": {"lag_days": 0, "max_date": "2026-03-20"}},
+        "events": {"lag_days": 0, "event_count": 3},
+        "cross_asset": {
+            "gold": {"exists": True, "lag_days": 0},
+            "fx_cnh": {"exists": True, "lag_days": 0},
+            "btc": {"exists": True, "lag_days": 0},
+        },
+        "index": {"coverage_pct": 100.0, "stale_sample": [{"lag_days": 0}]},
+        "northbound": {"exists": True, "lag_days": 0},
+        "schema_contracts": {"status": "pass", "checked_files": 12, "failed_contracts": []},
+        "value_quality": {"status": "pass", "checked_rows": 0, "failed_checks": []},
+        "source_stability": {"status": "pass", "reason_codes": []},
+        "metadata_reconciliation": {"status": "pass", "reason_codes": []},
+        "provider_readiness": {"status": "pass", "reason_codes": []},
+        "provider_audit": {
+            "status": "fail",
+            "observed": True,
+            "reason_codes": ["PROVIDER_AUDIT_RECENT_FAILURES"],
+            "providers": {
+                "tushare": {
+                    "status": "fail",
+                    "recent_requests": 2,
+                    "status_counts": {"auth": 1, "success": 1},
+                    "fail_statuses": ["auth"],
+                    "warn_statuses": [],
+                }
+            },
+            "recovery_plan": [
+                {
+                    "status": "auth",
+                    "command": ["trade", "account", "setting-set", "tushare_token", "YOUR_TOKEN"],
+                    "mode": "configure",
+                    "detail": "refresh token",
+                }
+            ],
+        },
+    }
+
+    gate = build_data_quality_gate(clean)
+
+    assert gate["status"] == "fail"
+    assert "PROVIDER_AUDIT_DEGRADED" in gate["reason_codes"]
+    assert gate["components"]["provider_audit"]["metrics"]["providers"]["tushare"]["status_counts"] == {
+        "auth": 1,
+        "success": 1,
+    }
+    plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
+    assert plan_by_component["provider_audit"]["mode"] == "audit"
 
 
 def test_stale_job_policy_converges_data_jobs(tmp_path) -> None:
