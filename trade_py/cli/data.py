@@ -75,6 +75,17 @@ def _running_job_state(row: dict, *, now: datetime | None = None) -> dict[str, o
     }
 
 
+def _data_status_exit_code(status: dict, *, strict: bool) -> int:
+    if not strict:
+        return 0
+    gate_status = str((status.get("quality_gate") or {}).get("status") or "unknown")
+    if gate_status == "pass":
+        return 0
+    if gate_status == "warn":
+        return 3
+    return 2
+
+
 def _extract_flag_value(argv: list[str], flag: str, default: str) -> str:
     for i, token in enumerate(argv):
         if token == flag and i + 1 < len(argv):
@@ -234,6 +245,7 @@ def make_parser() -> argparse.ArgumentParser:
     p_data_status.add_argument("--data-root", default=str(default_data_root()))
     p_data_status.add_argument("--json", action="store_true", dest="as_json")
     p_data_status.add_argument("--limit", type=int, default=10, help="Missing/stale samples to show")
+    p_data_status.add_argument("--strict", action="store_true", help="Exit non-zero when the aggregate quality gate is not pass")
 
     p_backfill = sub.add_parser(
         "backfill",
@@ -511,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         status = get_data_status(args.data_root, sample_limit=args.limit)
         if args.as_json:
             print(json.dumps(status, ensure_ascii=False, indent=2))
-            return 0
+            return _data_status_exit_code(status, strict=args.strict)
 
         for line in build_status_lines(status):
             print(line)
@@ -543,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"{row['stale_days']:>10}"
                 )
             print()
-        return 0
+        return _data_status_exit_code(status, strict=args.strict)
 
     if args.command == "warehouse" and args.warehouse_cmd == "materialize-rss":
         from trade_py.data.warehouse import materialize_rss_research_loop

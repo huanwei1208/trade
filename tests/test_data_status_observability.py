@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from trade_py.cli.data import _running_job_state
+from trade_py.cli import data as data_cli
+from trade_py.cli.data import _data_status_exit_code, _running_job_state
 from trade_py.db.trade_db import TradeDB
 from trade_py.utils.data_inspector import (
     build_status_lines,
@@ -313,3 +314,31 @@ def test_data_quality_gate_summarizes_clean_and_degraded_status() -> None:
     assert "KLINE_STALE_OR_LOW_COVERAGE" in degraded_gate["reason_codes"]
     assert "SENTIMENT_GOLD_STALE" in degraded_gate["reason_codes"]
     assert any("数据质量门禁" in line for line in degraded_lines)
+
+
+@pytest.mark.parametrize(
+    ("gate_status", "strict", "expected"),
+    [
+        ("pass", False, 0),
+        ("warn", False, 0),
+        ("pass", True, 0),
+        ("warn", True, 3),
+        ("fail", True, 2),
+        ("unknown", True, 2),
+    ],
+)
+def test_data_status_strict_exit_code_uses_quality_gate(
+    gate_status: str,
+    strict: bool,
+    expected: int,
+) -> None:
+    assert _data_status_exit_code({"quality_gate": {"status": gate_status}}, strict=strict) == expected
+
+
+def test_data_status_parser_accepts_strict_flag() -> None:
+    parser = data_cli.make_parser()
+    parsed = parser.parse_args(["status", "--strict", "--json"])
+
+    assert parsed.command == "status"
+    assert parsed.strict is True
+    assert parsed.as_json is True
