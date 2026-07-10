@@ -1592,6 +1592,20 @@ def create_app():
         today = date.today().isoformat()
         gate = db.quality_gate_get()
         try:
+            from trade_py.utils.data_inspector import get_data_status
+            data_status = get_data_status(data_root, sample_limit=8)
+        except Exception as exc:  # pragma: no cover - defensive web path
+            logger.warning("data status failed: %s", exc)
+            data_status = {
+                "quality_gate": {
+                    "status": "unknown",
+                    "reason_codes": ["DATA_STATUS_ERROR"],
+                    "components": {},
+                    "recovery_plan": [],
+                    "error": str(exc),
+                }
+            }
+        try:
             from scripts.backup import backup_doctor
             backup_health = backup_doctor(data_root)
         except Exception as exc:  # pragma: no cover - defensive web path
@@ -1610,6 +1624,8 @@ def create_app():
             "inference_models": _inference.model_names,
             "models_loaded_at": _inference.loaded_at,
             "quality_gate": gate,
+            "data_quality_gate": data_status.get("quality_gate"),
+            "data_status": data_status,
             "due_agenda": db.agenda_queue_due(limit=10),
             "planned_events": db.planned_events_list(
                 start_date=today,

@@ -500,6 +500,13 @@ export type StatusPayload = {
     reason_summary?: string;
     metrics_json?: Record<string, unknown>;
   };
+  data_quality_gate?: {
+    status?: string;
+    reason_codes?: string[];
+    components?: Record<string, unknown>;
+    recovery_plan?: Array<{ component?: string; command?: string[]; mode?: string; detail?: string }>;
+  };
+  data_status?: Record<string, unknown>;
   due_agenda?: Array<Record<string, unknown>>;
   planned_events?: Array<Record<string, unknown>>;
   backups?: Array<Record<string, unknown>>;
