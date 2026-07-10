@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -59,6 +59,39 @@ class SyncSummary:
     results: dict[str, SymbolSyncResult]
     sync_mode: str = "symbol_loop"
     api_calls: int | None = None
+
+
+def _kline_value_error(frame: pd.DataFrame) -> str | None:
+    if frame.empty:
+        return None
+    checks = {
+        "non_positive_ohlc": ["open", "high", "low", "close"],
+        "negative_amount": ["amount"],
+        "negative_prev_close": ["prev_close"],
+        "negative_vwap": ["vwap"],
+    }
+    failures: list[str] = []
+    for name, columns in checks.items():
+        present = [column for column in columns if column in frame.columns]
+        if not present:
+            continue
+        values = frame[present].apply(pd.to_numeric, errors="coerce")
+        if name == "non_positive_ohlc":
+            bad_mask = values.le(0).any(axis=1)
+        else:
+            bad_mask = values.lt(0).any(axis=1)
+        bad_rows = int(bad_mask.sum())
+        if bad_rows:
+            failures.append(f"{name}={bad_rows}")
+    if not failures:
+        return None
+    dates = pd.to_datetime(frame.get("date"), errors="coerce")
+    valid_dates = dates.dropna()
+    if valid_dates.empty:
+        date_range = "unknown"
+    else:
+        date_range = f"{valid_dates.min().date()}..{valid_dates.max().date()}"
+    return f"provider returned invalid K-line values ({', '.join(failures)}) dates={date_range}"
 
 
 class KlineSyncService:
@@ -226,6 +259,7 @@ class KlineSyncService:
         symbol_rows: dict[str, int] = {symbol: 0 for symbol in symbols}
         symbol_min_date: dict[str, date] = {}
         symbol_max_date: dict[str, date] = {}
+        symbol_frames: dict[str, list[pd.DataFrame]] = {symbol: [] for symbol in symbols}
 
         for trade_date_chunk in trade_date_chunks:
             try:
@@ -247,13 +281,7 @@ class KlineSyncService:
                 frame = self._filter_frame_to_ranges(frame, ranges)
                 if frame.empty:
                     continue
-                merged = frame.drop_duplicates(subset=["date"], keep="last").sort_values("date").reset_index(drop=True)
-                self._fetcher.save_parquet(symbol, merged)
-                min_d = self._parse_date(str(merged["date"].min()))
-                max_d = self._parse_date(str(merged["date"].max()))
-                symbol_min_date[symbol] = min(min_d, symbol_min_date.get(symbol, min_d))
-                symbol_max_date[symbol] = max(max_d, symbol_max_date.get(symbol, max_d))
-                symbol_rows[symbol] += len(merged)
+                symbol_frames[symbol].append(frame)
 
         for symbol in symbols:
             ranges = target_ranges[symbol]
@@ -269,6 +297,40 @@ class KlineSyncService:
                 empty += 1
                 continue
             rows = symbol_rows.get(symbol, 0)
+            frames = symbol_frames.get(symbol) or []
+            if frames:
+                merged = pd.concat(frames, ignore_index=True)
+                merged = merged.drop_duplicates(subset=["date"], keep="last").sort_values("date").reset_index(drop=True)
+                value_error = _kline_value_error(merged)
+                if value_error:
+                    failed += 1
+                    self._record_failure(
+                        symbol=symbol,
+                        provider="tushare",
+                        start=str(merged["date"].min())[:10],
+                        end=str(merged["date"].max())[:10],
+                        error_kind="provider_bad_values",
+                        error_message=value_error,
+                    )
+                    logger.error("kline batch rejected symbol=%s error=%s", symbol, value_error)
+                    results[symbol] = SymbolSyncResult(
+                        symbol=symbol,
+                        ok=False,
+                        rows=0,
+                        provider="tushare",
+                        start=ranges[0][0].isoformat(),
+                        end=ranges[-1][1].isoformat(),
+                        error_kind="provider_bad_values",
+                        error_message=value_error,
+                    )
+                    continue
+                self._fetcher.save_parquet(symbol, merged)
+                min_d = self._parse_date(str(merged["date"].min()))
+                max_d = self._parse_date(str(merged["date"].max()))
+                symbol_min_date[symbol] = min_d
+                symbol_max_date[symbol] = max_d
+                symbol_rows[symbol] = len(merged)
+                rows = symbol_rows.get(symbol, 0)
             if rows > 0:
                 min_d = symbol_min_date[symbol]
                 max_d = symbol_max_date[symbol]
@@ -344,7 +406,7 @@ class KlineSyncService:
         error_message: str,
     ) -> None:
         payload = {
-            "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "symbol": symbol,
             "provider": provider,
             "start": start,
@@ -462,6 +524,40 @@ class KlineSyncService:
                         merged = pd.concat(parts, ignore_index=True)
                         merged = merged.drop_duplicates(subset=["date"], keep="last")
                         merged = merged.sort_values("date").reset_index(drop=True)
+                        value_error = _kline_value_error(merged)
+                        if value_error:
+                            failed += 1
+                            rows = 0
+                            results[symbol] = SymbolSyncResult(
+                                symbol=symbol,
+                                ok=False,
+                                rows=0,
+                                provider=provider_name,
+                                start=start_d.isoformat(),
+                                end=end_d.isoformat(),
+                                error_kind="provider_bad_values",
+                                error_message=value_error,
+                            )
+                            self._record_failure(
+                                symbol=symbol,
+                                provider=provider_name,
+                                start=str(merged["date"].min())[:10],
+                                end=str(merged["date"].max())[:10],
+                                error_kind="provider_bad_values",
+                                error_message=value_error,
+                            )
+                            logger.error(
+                                "kline sync rejected symbol=%s provider=%s error=%s",
+                                symbol,
+                                provider_name,
+                                value_error,
+                            )
+                            if bar is not None:
+                                bar.update(1)
+                                bar.set_description(_desc())
+                            if opts.fail_fast:
+                                break
+                            continue
                         self._fetcher.save_parquet(symbol, merged)
                         min_d = self._parse_date(str(merged["date"].min()))
                         max_d = self._parse_date(str(merged["date"].max()))
