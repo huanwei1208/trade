@@ -665,6 +665,56 @@ def test_unpublished_assurance_run_suppresses_active_evidence_with_lineage(
     )
 
 
+def test_crypto_ads_outputs_persist_data_health_json() -> None:
+    health = {
+        "data_readiness": "degraded",
+        "blocking_gate": "D3",
+        "blocking_reason_code": "SOURCE_DIVERGENCE",
+        "cross_source_validation": {"status": "fail", "block_rows": 1},
+        "evidence_refs": {"manifest_path": "/tmp/btc/manifest.json"},
+    }
+    outputs = build_crypto_validation_outputs(
+        data_assurance={
+            "run_id": "data-diverged",
+            "data_readiness": "degraded",
+            "health": health,
+            "gates": [
+                {
+                    "gate": "D3",
+                    "status": "fail",
+                    "reason_code": "SOURCE_DIVERGENCE",
+                }
+            ],
+        },
+        validation={
+            "run_id": "validation-diverged",
+            "status": "candidate",
+            "data_readiness": "degraded",
+            "reasons": ["DATA_READINESS_DEGRADED"],
+            "lifecycle": {
+                "active_signal_status": "candidate",
+                "activate_run": True,
+                "suppressed_by_data_gate": True,
+            },
+        },
+        reconciliation=pd.DataFrame(),
+    )
+
+    readiness_health = json.loads(
+        outputs["ads_crypto_data_readiness_report"].iloc[0]["data_health_json"]
+    )
+    validation_health = json.loads(
+        outputs["ads_crypto_volatility_validation"].iloc[0]["data_health_json"]
+    )
+    audit_health = json.loads(
+        outputs["ads_research_validation_run"].iloc[0]["data_health_json"]
+    )
+
+    assert readiness_health == health
+    assert validation_health["blocking_gate"] == "D3"
+    assert audit_health["cross_source_validation"]["block_rows"] == 1
+
+
 def test_crypto_profile_dry_run_does_not_create_warehouse(tmp_path: Path) -> None:
     result = validate_crypto_btc_profile(tmp_path, dry_run=True)
 
@@ -1416,6 +1466,16 @@ def test_crypto_profile_cli_persists_four_ads_tables_idempotently(
         "ads_research_validation_run",
     }
     assert len(first_frames["ads_crypto_provider_reconciliation"]) == 3
+    readiness_health = json.loads(
+        first_frames["ads_crypto_data_readiness_report"].iloc[0]["data_health_json"]
+    )
+    run_audit_health = json.loads(
+        first_frames["ads_research_validation_run"].iloc[0]["data_health_json"]
+    )
+    assert readiness_health["data_readiness"] == "ready"
+    assert readiness_health["source_stability"]["status"] == "pass"
+    assert readiness_health["cross_source_validation"]["aligned_rows"] == 3
+    assert run_audit_health["observed"]["watermark"] == "2026-01-09"
     assert all(
         len(frame) == 1
         for table, frame in first_frames.items()

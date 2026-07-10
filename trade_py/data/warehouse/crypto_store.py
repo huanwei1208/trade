@@ -242,6 +242,7 @@ def build_crypto_validation_outputs(
         or (data_assurance.get("manifest") or {}).get("manifest_path")
         or ""
     )
+    data_health = data_assurance.get("health") or manifest.get("health") or {}
     common = {
         "run_id": validation_run_id,
         "generation_id": generation_id,
@@ -258,6 +259,7 @@ def build_crypto_validation_outputs(
         "publishable": bool(data_assurance.get("data_readiness") == "ready"),
         "reason_codes": _json(failed_reasons),
         "gates": _json(gates),
+        "data_health_json": _json(data_health),
         "input_hash": (validation.get("input_evidence") or {}).get("input_hash"),
     }])
 
@@ -299,6 +301,7 @@ def build_crypto_validation_outputs(
         "folds": _json(validation.get("folds") or []),
         "placebos": _json(validation.get("placebos") or {}),
         "input_evidence": _json(validation.get("input_evidence") or {}),
+        "data_health_json": _json(data_health),
         "evidence_hash": validation.get("evidence_hash"),
         "recommendation": None,
         "active_signal_status": lifecycle.get("active_signal_status", "candidate"),
@@ -318,6 +321,7 @@ def build_crypto_validation_outputs(
         "reason_codes": _json(validation.get("reasons") or []),
         "configuration": _json(validation.get("configuration") or {}),
         "input_evidence": _json(validation.get("input_evidence") or {}),
+        "data_health_json": _json(data_health),
         "output_evidence_hash": validation.get("evidence_hash"),
         "active_signal_status": lifecycle.get("active_signal_status", "candidate"),
         "lifecycle": _json(lifecycle),
