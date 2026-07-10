@@ -16,7 +16,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from trade_py.data.paths import FUND_FLOW_DIR, FUNDAMENTAL_DIR, KLINE_DIR, KLINE_MANIFEST
+from trade_py.data.paths import CROSS_ASSET_DIR, FUND_FLOW_DIR, FUNDAMENTAL_DIR, KLINE_DIR, KLINE_MANIFEST
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +391,57 @@ def fundamental_stats(data_root: str | Path = "data", sample_limit: int = 10) ->
     )
 
 
+def _cross_asset_path(data_root: str | Path, name: str) -> tuple[Path, str]:
+    root = Path(data_root)
+    canonical = CROSS_ASSET_DIR(root) / f"{name}.parquet"
+    if canonical.exists():
+        return canonical, "market/cross_asset"
+    legacy = root / "cross_asset" / f"{name}.parquet"
+    return legacy, "cross_asset"
+
+
+def cross_asset_stats(data_root: str | Path = "data") -> dict[str, Any]:
+    expected = _expected_data_date(data_root, trading_day=False)
+    result: dict[str, Any] = {}
+    for name in ("gold", "fx_cnh", "btc"):
+        path, layout = _cross_asset_path(data_root, name)
+        item: dict[str, Any] = {
+            "path": str(path),
+            "layout": layout,
+            "exists": path.exists(),
+            "rows": 0,
+            "min_date": None,
+            "max_date": None,
+            "expected_date": expected,
+            "lag_days": None,
+        }
+        if path.exists():
+            try:
+                import duckdb
+
+                con = duckdb.connect()
+                try:
+                    row = con.execute(
+                        f"""
+                        SELECT COUNT(*) AS rows, MIN(date) AS min_date, MAX(date) AS max_date
+                        FROM read_parquet('{path}', union_by_name=true)
+                        """
+                    ).fetchone()
+                finally:
+                    con.close()
+                rows, min_date, max_date = row if row else (0, None, None)
+                item.update({
+                    "rows": int(rows or 0),
+                    "min_date": str(min_date)[:10] if min_date else None,
+                    "max_date": str(max_date)[:10] if max_date else None,
+                    "lag_days": _lag_days(max_date, expected),
+                })
+            except Exception as exc:
+                item["error"] = str(exc)
+        result[name] = item
+    return result
+
+
 def db_instrument_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Return instrument DB statistics."""
     try:
@@ -519,6 +570,7 @@ def get_data_status(data_root: str | Path = "data", sample_limit: int = 10) -> d
         "kline_freshness": kline_freshness_stats(data_root, sample_limit=sample_limit),
         "fund_flow":   fund_flow_stats(data_root, sample_limit=sample_limit),
         "fundamental": fundamental_stats(data_root, sample_limit=sample_limit),
+        "cross_asset": cross_asset_stats(data_root),
         "instruments": db_instrument_stats(data_root),
         "sentiment":   sentiment_stats(data_root),
         "events":      events_stats(data_root),
@@ -614,6 +666,19 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
             f"- 报告期范围: {fundamental.get('min_date', '—')} ~ {fundamental.get('max_date', '—')}",
             "",
         ]
+
+    cross = status.get("cross_asset", {})
+    if cross:
+        lines += ["### 跨资产数据"]
+        for key, label in (("gold", "Gold"), ("fx_cnh", "USD/CNH"), ("btc", "BTC")):
+            item = cross.get(key, {})
+            exists = "yes" if item.get("exists") else "no"
+            lines.append(
+                f"- {label}: exists={exists} rows={item.get('rows', 0):,} "
+                f"range={item.get('min_date') or '—'} ~ {item.get('max_date') or '—'} "
+                f"lag={item.get('lag_days', '—')}d layout={item.get('layout') or '—'}"
+            )
+        lines.append("")
 
     s = status.get("sentiment", {})
     silver = s.get("silver", {})

@@ -15,6 +15,7 @@ from trade_py.utils.data_inspector import (
     kline_freshness_stats,
     sentiment_stats,
     events_stats,
+    cross_asset_stats,
 )
 
 
@@ -186,3 +187,34 @@ def test_sentiment_and_events_status_report_lag_against_trade_date(tmp_path) -> 
     assert sentiment["gold"]["lag_days"] == 2
     assert events["lag_days"] == 2
     assert any("lag=2d" in line for line in lines)
+
+
+def test_cross_asset_status_reports_canonical_files_and_lag(tmp_path) -> None:
+    canonical = tmp_path / "market" / "cross_asset"
+    legacy = tmp_path / "cross_asset"
+    canonical.mkdir(parents=True)
+    legacy.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"date": "2026-03-19", "close": 2100.0},
+            {"date": "2026-03-20", "close": 2110.0},
+        ]
+    ).to_parquet(canonical / "gold.parquet", index=False)
+    pd.DataFrame(
+        [{"date": "2026-03-01", "close": 2000.0}]
+    ).to_parquet(legacy / "gold.parquet", index=False)
+    pd.DataFrame(
+        [{"date": "2026-03-18", "close": 7.2}]
+    ).to_parquet(legacy / "fx_cnh.parquet", index=False)
+
+    stats = cross_asset_stats(tmp_path)
+    lines = build_status_lines({"as_of": "2026-03-21", "cross_asset": stats})
+
+    assert stats["gold"]["exists"] is True
+    assert stats["gold"]["layout"] == "market/cross_asset"
+    assert stats["gold"]["rows"] == 2
+    assert stats["gold"]["max_date"] == "2026-03-20"
+    assert stats["fx_cnh"]["exists"] is True
+    assert stats["fx_cnh"]["layout"] == "cross_asset"
+    assert stats["btc"]["exists"] is False
+    assert any("跨资产数据" in line for line in lines)
