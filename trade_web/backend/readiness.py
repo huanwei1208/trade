@@ -33,6 +33,7 @@ DATASET_CATALOG: tuple[DatasetMeta, ...] = (
     DatasetMeta("belief_state", "Belief State", True, ("today", "candidates", "symbol", "belief"), "belief_update"),
     DatasetMeta("recommendation", "Recommendation", True, ("today", "candidates", "symbol", "recommendations"), "recommend"),
     DatasetMeta("models", "Models", False, ("signals", "belief", "recommendations", "trust"), "model_train"),
+    DatasetMeta("crypto_btc", "Crypto BTC", False, ("research", "trust", "ops"), "crypto_btc_fetch"),
     DatasetMeta("sector_map", "Sector Map", False, ("events", "signals", "belief"), "sector_refresh"),
 )
 
@@ -48,6 +49,7 @@ DOWNSTREAM_JOB_MAP: dict[str, list[str]] = {
     "belief_state": ["recommend", "evaluate_daily"],
     "recommendation": ["evaluate_daily"],
     "models": ["belief_update", "recommend", "evaluate_daily"],
+    "crypto_btc": ["crypto_research_validation"],
     "sector_map": ["event_extract", "kg_propagate", "window_score", "belief_update", "recommend", "evaluate_daily"],
 }
 
@@ -237,6 +239,58 @@ def _collect_freshness_by_date(db, date_from: str, date_to: str) -> dict[str, di
         item["details"] = _safe_json(item.get("details_json"), {})
         payload[str(item.get("as_of_date"))][str(item.get("dataset"))] = item
     return payload
+
+
+def _clean_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"nan", "nat", "none"}:
+        return None
+    return text
+
+
+def _collect_crypto_btc_current(data_root: str | Path) -> dict[str, Any] | None:
+    try:
+        from trade_py.data.warehouse.crypto import read_crypto_validation_outputs
+
+        snapshot = read_crypto_validation_outputs(data_root)
+        readiness_frame = (snapshot.get("tables") or {}).get("ads_crypto_data_readiness_report")
+        if readiness_frame is None or readiness_frame.empty:
+            return None
+        row = readiness_frame.iloc[0].to_dict()
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    health = _safe_json(row.get("data_health_json"), {})
+    observed = health.get("observed") if isinstance(health, dict) else {}
+    reason_codes = _safe_json(row.get("reason_codes"), [])
+    if not isinstance(reason_codes, list):
+        reason_codes = []
+    watermark = _clean_text(row.get("watermark")) or _clean_text((observed or {}).get("watermark"))
+    return {
+        "data_readiness": _clean_text(row.get("data_readiness")) or "invalid",
+        "watermark": watermark,
+        "data_health": health if isinstance(health, dict) else {},
+        "reason_codes": [str(item) for item in reason_codes],
+        "evidence_ref": _clean_text(row.get("evidence_ref")),
+        "data_run_id": _clean_text(row.get("data_run_id")),
+        "validation_run_id": _clean_text(row.get("run_id")),
+        "generation_id": _clean_text(row.get("generation_id")),
+        "row_count": (observed or {}).get("row_count") if isinstance(observed, dict) else None,
+    }
+
+
+def _crypto_readiness_status(raw: Any, *, covered: bool) -> str:
+    if not covered:
+        return "MISSING"
+    status = str(raw or "").strip().lower()
+    if status == "ready":
+        return "READY"
+    if status == "degraded":
+        return "LATE_READY"
+    if status == "insufficient_data":
+        return "PARTIAL"
+    if status == "invalid":
+        return "MISSING"
+    return "UNKNOWN"
 
 
 def _collect_last_date_distribution(db, source: str, dataset: str) -> tuple[list[tuple[str, int]], str | None]:
@@ -463,6 +517,8 @@ def _hash_cell_snapshot(dataset: str, day: str, cell: dict[str, Any], base_finge
         "lag_days": cell.get("lag_days"),
         "source_last_date": cell.get("source_last_date"),
         "reason_codes": cell.get("reason_codes"),
+        "data_health": cell.get("data_health"),
+        "evidence_ref": cell.get("evidence_ref"),
         "base_fingerprint": base_fingerprint,
     }
     return hashlib.sha1(json.dumps(raw, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -496,6 +552,8 @@ def _build_cell(
     last_backfill_at: str | None = None,
     history: list[dict[str, Any]] | None = None,
     reason_codes: list[str] | None = None,
+    data_health: dict[str, Any] | None = None,
+    evidence_ref: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "id": f"{dataset.key}:{day_iso}",
@@ -511,6 +569,8 @@ def _build_cell(
         "affected_outputs": list(dataset.impacts),
         "history": history or [],
         "reason_codes": reason_codes or [],
+        "data_health": data_health or {},
+        "evidence_ref": evidence_ref,
         "changed_since_last_ready": False,
         "fingerprint": None,
     }
@@ -564,8 +624,10 @@ def build_readiness_grid(
 
     needs_gold_dates = any(item.key in {"sentiment_gold", "events"} for item in catalog)
     needs_silver_dates = any(item.key == "sentiment_silver" for item in catalog)
+    needs_crypto_btc = any(item.key == "crypto_btc" for item in catalog)
     sentiment_gold_dates = _list_daily_files(Path(data_root) / "sentiment" / "gold") if needs_gold_dates else set()
     sentiment_silver_dates = _list_daily_files(Path(data_root) / "sentiment" / "silver") if needs_silver_dates else set()
+    crypto_btc_current = _collect_crypto_btc_current(data_root) if needs_crypto_btc else None
     latest_gold = _latest_path_date(sentiment_gold_dates)
     latest_silver = _latest_path_date(sentiment_silver_dates)
 
@@ -774,6 +836,41 @@ def build_readiness_grid(
                     last_backfill_at=last_backfill_at,
                     history=_history_summary(cell_history),
                     reason_codes=[],
+                )
+            elif dataset.key == "crypto_btc":
+                watermark = _clean_text((crypto_btc_current or {}).get("watermark"))
+                watermark_day = _to_date(watermark)
+                covered = bool(watermark_day and watermark_day >= day)
+                data_health = (
+                    (crypto_btc_current or {}).get("data_health")
+                    if isinstance((crypto_btc_current or {}).get("data_health"), dict)
+                    else {}
+                )
+                reason_codes = list((crypto_btc_current or {}).get("reason_codes") or [])
+                blocking_reason = data_health.get("blocking_reason_code") if data_health else None
+                if blocking_reason and str(blocking_reason) not in reason_codes:
+                    reason_codes.append(str(blocking_reason))
+                if crypto_btc_current is None:
+                    reason_codes = ["missing_crypto_ads_current"]
+                elif not covered:
+                    reason_codes = reason_codes or ["crypto_btc_not_current_for_day"]
+                cell = _build_cell(
+                    dataset,
+                    day_iso,
+                    status=_crypto_readiness_status(
+                        (crypto_btc_current or {}).get("data_readiness"),
+                        covered=covered,
+                    ),
+                    row_count=int((crypto_btc_current or {}).get("row_count") or 1) if covered else 0,
+                    expected_count=1,
+                    coverage_pct=1.0 if covered else 0.0,
+                    lag_days=max(0, (day - watermark_day).days) if watermark_day else None,
+                    source_last_date=watermark,
+                    last_backfill_at=last_backfill_at,
+                    history=_history_summary(cell_history),
+                    reason_codes=reason_codes,
+                    data_health=data_health,
+                    evidence_ref=(crypto_btc_current or {}).get("evidence_ref"),
                 )
             elif dataset.key == "sector_map":
                 member_count = int(sector_row["count"] or 0)
