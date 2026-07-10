@@ -16,6 +16,9 @@ from trade_py.utils.data_inspector import (
     sentiment_stats,
     events_stats,
     cross_asset_stats,
+    index_stats,
+    northbound_stats,
+    macro_stats,
 )
 
 
@@ -218,3 +221,59 @@ def test_cross_asset_status_reports_canonical_files_and_lag(tmp_path) -> None:
     assert stats["fx_cnh"]["layout"] == "cross_asset"
     assert stats["btc"]["exists"] is False
     assert any("跨资产数据" in line for line in lines)
+
+
+def test_index_northbound_and_macro_status_use_local_files(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    db.trading_calendar_upsert_batch(
+        [
+            {"exchange": "SSE", "trade_date": "2026-03-19", "is_open": 1},
+            {"exchange": "SSE", "trade_date": "2026-03-20", "is_open": 1},
+        ]
+    )
+    index_root = tmp_path / "market" / "index"
+    index_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"date": "2026-03-19", "close": 3000.0},
+            {"date": "2026-03-20", "close": 3010.0},
+        ]
+    ).to_parquet(index_root / "000001_SH.parquet", index=False)
+    pd.DataFrame(
+        [{"date": "2026-03-19", "close": 4000.0}]
+    ).to_parquet(index_root / "sector_801010_SI.parquet", index=False)
+
+    northbound_root = tmp_path / "market" / "northbound"
+    northbound_root.mkdir(parents=True)
+    pd.DataFrame(
+        [{"date": "2026-03-19", "total_net": 1.2, "net_5d": 3.4}]
+    ).to_parquet(northbound_root / "daily.parquet", index=False)
+
+    macro_root = tmp_path / "market" / "macro"
+    macro_root.mkdir(parents=True)
+    pd.DataFrame([{"date": "2025-12-31", "q_gdp": 5.2}]).to_parquet(macro_root / "gdp.parquet", index=False)
+    pd.DataFrame([{"date": "2026-02-28", "nt_yoy": 0.5}]).to_parquet(macro_root / "cpi.parquet", index=False)
+
+    index = index_stats(tmp_path, sample_limit=5)
+    northbound = northbound_stats(tmp_path)
+    macro = macro_stats(tmp_path)
+    lines = build_status_lines({
+        "as_of": "2026-03-20",
+        "index": index,
+        "northbound": northbound,
+        "macro": macro,
+    })
+
+    assert index["indices"] == 2
+    assert index["rows"] == 3
+    assert index["max_date"] == "2026-03-20"
+    assert index["expected_trade_date"] == "2026-03-20"
+    assert northbound["exists"] is True
+    assert northbound["max_date"] == "2026-03-19"
+    assert northbound["lag_days"] == 1
+    assert macro["gdp"]["exists"] is True
+    assert macro["gdp"]["max_date"] == "2025-12-31"
+    assert macro["ppi"]["exists"] is False
+    assert any("指数数据" in line for line in lines)
+    assert any("北向资金" in line for line in lines)
+    assert any("宏观数据" in line for line in lines)

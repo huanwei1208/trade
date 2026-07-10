@@ -16,7 +16,16 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from trade_py.data.paths import CROSS_ASSET_DIR, FUND_FLOW_DIR, FUNDAMENTAL_DIR, KLINE_DIR, KLINE_MANIFEST
+from trade_py.data.paths import (
+    CROSS_ASSET_DIR,
+    FUND_FLOW_DIR,
+    FUNDAMENTAL_DIR,
+    INDEX_DIR,
+    KLINE_DIR,
+    KLINE_MANIFEST,
+    MACRO_DIR,
+    NORTHBOUND_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -442,6 +451,161 @@ def cross_asset_stats(data_root: str | Path = "data") -> dict[str, Any]:
     return result
 
 
+def index_stats(data_root: str | Path = "data", sample_limit: int = 10) -> dict[str, Any]:
+    root = INDEX_DIR(data_root)
+    expected = _expected_data_date(data_root, trading_day=True)
+    files = sorted(root.glob("*.parquet"))
+    try:
+        from trade_py.data.market.index.tushare import DEFAULT_INDICES, SW_SECTOR_INDICES
+
+        expected_indices = len(DEFAULT_INDICES) + len(SW_SECTOR_INDICES)
+    except Exception:
+        expected_indices = 0
+    if not files:
+        return {
+            "dataset": "index",
+            "files": 0,
+            "indices": 0,
+            "expected_indices": expected_indices,
+            "coverage_pct": 0.0,
+            "rows": 0,
+            "min_date": None,
+            "max_date": None,
+            "expected_trade_date": expected,
+            "stale_sample": [],
+        }
+    try:
+        import duckdb
+
+        file_list = [str(path) for path in files]
+        con = duckdb.connect()
+        try:
+            summary = con.execute(
+                f"""
+                SELECT COUNT(*) AS rows, MIN(date) AS min_date, MAX(date) AS max_date
+                FROM read_parquet({file_list!r}, union_by_name=true)
+                """
+            ).fetchone()
+        finally:
+            con.close()
+        rows, min_date, max_date = summary if summary else (0, None, None)
+        stale_sample: list[dict[str, Any]] = []
+        for path in files[:sample_limit]:
+            try:
+                frame = duckdb.sql(
+                    f"SELECT COUNT(*) AS rows, MAX(date) AS max_date FROM read_parquet('{path}', union_by_name=true)"
+                ).fetchone()
+                row_count, index_max = frame if frame else (0, None)
+                stale_sample.append({
+                    "index": path.stem,
+                    "watermark": str(index_max)[:10] if index_max else None,
+                    "rows": int(row_count or 0),
+                    "lag_days": _lag_days(index_max, expected),
+                })
+            except Exception:
+                continue
+        return {
+            "dataset": "index",
+            "files": len(files),
+            "indices": len(files),
+            "expected_indices": expected_indices,
+            "coverage_pct": round(len(files) / expected_indices * 100.0, 1) if expected_indices else 0.0,
+            "rows": int(rows or 0),
+            "min_date": str(min_date)[:10] if min_date else None,
+            "max_date": str(max_date)[:10] if max_date else None,
+            "expected_trade_date": expected,
+            "stale_sample": stale_sample,
+        }
+    except Exception as exc:
+        logger.debug("index stats error: %s", exc)
+        return {
+            "dataset": "index",
+            "files": len(files),
+            "indices": 0,
+            "expected_indices": expected_indices,
+            "coverage_pct": 0.0,
+            "rows": 0,
+            "error": str(exc),
+        }
+
+
+def northbound_stats(data_root: str | Path = "data") -> dict[str, Any]:
+    path = NORTHBOUND_DIR(data_root) / "daily.parquet"
+    expected = _expected_data_date(data_root, trading_day=True)
+    item: dict[str, Any] = {
+        "exists": path.exists(),
+        "path": str(path),
+        "rows": 0,
+        "min_date": None,
+        "max_date": None,
+        "expected_trade_date": expected,
+        "lag_days": None,
+    }
+    if not path.exists():
+        return item
+    try:
+        import duckdb
+
+        con = duckdb.connect()
+        try:
+            row = con.execute(
+                f"""
+                SELECT COUNT(*) AS rows, MIN(date) AS min_date, MAX(date) AS max_date
+                FROM read_parquet('{path}', union_by_name=true)
+                """
+            ).fetchone()
+        finally:
+            con.close()
+        rows, min_date, max_date = row if row else (0, None, None)
+        item.update({
+            "rows": int(rows or 0),
+            "min_date": str(min_date)[:10] if min_date else None,
+            "max_date": str(max_date)[:10] if max_date else None,
+            "lag_days": _lag_days(max_date, expected),
+        })
+    except Exception as exc:
+        item["error"] = str(exc)
+    return item
+
+
+def macro_stats(data_root: str | Path = "data") -> dict[str, Any]:
+    root = MACRO_DIR(data_root)
+    result: dict[str, Any] = {}
+    for name in ("gdp", "cpi", "ppi", "pmi"):
+        path = root / f"{name}.parquet"
+        item: dict[str, Any] = {
+            "exists": path.exists(),
+            "path": str(path),
+            "rows": 0,
+            "min_date": None,
+            "max_date": None,
+        }
+        if path.exists():
+            try:
+                import duckdb
+
+                con = duckdb.connect()
+                try:
+                    row = con.execute(
+                        f"""
+                        SELECT COUNT(*) AS rows, MIN(date) AS min_date, MAX(date) AS max_date
+                        FROM read_parquet('{path}', union_by_name=true)
+                        """
+                    ).fetchone()
+                finally:
+                    con.close()
+                rows, min_date, max_date = row if row else (0, None, None)
+                item.update({
+                    "rows": int(rows or 0),
+                    "min_date": str(min_date)[:10] if min_date else None,
+                    "max_date": str(max_date)[:10] if max_date else None,
+                })
+            except Exception as exc:
+                item["error"] = str(exc)
+        result[name] = item
+    return result
+
+
 def db_instrument_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Return instrument DB statistics."""
     try:
@@ -571,6 +735,9 @@ def get_data_status(data_root: str | Path = "data", sample_limit: int = 10) -> d
         "fund_flow":   fund_flow_stats(data_root, sample_limit=sample_limit),
         "fundamental": fundamental_stats(data_root, sample_limit=sample_limit),
         "cross_asset": cross_asset_stats(data_root),
+        "index":       index_stats(data_root, sample_limit=sample_limit),
+        "northbound":  northbound_stats(data_root),
+        "macro":       macro_stats(data_root),
         "instruments": db_instrument_stats(data_root),
         "sentiment":   sentiment_stats(data_root),
         "events":      events_stats(data_root),
@@ -677,6 +844,37 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
                 f"- {label}: exists={exists} rows={item.get('rows', 0):,} "
                 f"range={item.get('min_date') or '—'} ~ {item.get('max_date') or '—'} "
                 f"lag={item.get('lag_days', '—')}d layout={item.get('layout') or '—'}"
+            )
+        lines.append("")
+
+    index = status.get("index", {})
+    if index:
+        lines += [
+            "### 指数数据",
+            f"- 覆盖率: **{index.get('coverage_pct', 0.0):.1f}%** ({index.get('indices', 0):,} / {index.get('expected_indices', 0):,})",
+            f"- 文件数: {index.get('files', 0):,}  行数: {index.get('rows', 0):,}",
+            f"- 日期范围: {index.get('min_date', '—')} ~ {index.get('max_date', '—')}",
+            "",
+        ]
+
+    northbound = status.get("northbound", {})
+    if northbound:
+        lines += [
+            "### 北向资金",
+            f"- exists: {'yes' if northbound.get('exists') else 'no'}",
+            f"- 行数: {northbound.get('rows', 0):,}",
+            f"- 日期范围: {northbound.get('min_date', '—')} ~ {northbound.get('max_date', '—')}  lag={northbound.get('lag_days', '—')}d",
+            "",
+        ]
+
+    macro = status.get("macro", {})
+    if macro:
+        lines += ["### 宏观数据"]
+        for key in ("gdp", "cpi", "ppi", "pmi"):
+            item = macro.get(key, {})
+            lines.append(
+                f"- {key}: exists={'yes' if item.get('exists') else 'no'} rows={item.get('rows', 0):,} "
+                f"range={item.get('min_date') or '—'} ~ {item.get('max_date') or '—'}"
             )
         lines.append("")
 
