@@ -180,6 +180,9 @@ _KLINE_RECONCILIATION_COMMAND = [
 _MACRO_VALUE_START_DATES = {
     "macro.ppi": "1996-10-01",
 }
+_OHLC_RELATIONSHIP_TOLERANCE = {
+    "index": 0.010001,
+}
 
 
 # ── Status helpers ─────────────────────────────────────────────────────────────
@@ -808,6 +811,7 @@ def _value_conditions_for(dataset: str, observed_columns: set[str]) -> tuple[lis
             ])
         return conditions, ("date",)
     if dataset == "index":
+        tolerance = _OHLC_RELATIONSHIP_TOLERANCE.get(dataset, 0.0)
         conditions = _date_conditions("date") + [
             ("non_positive_close", "close IS NULL OR close <= 0"),
         ]
@@ -816,7 +820,13 @@ def _value_conditions_for(dataset: str, observed_columns: set[str]) -> tuple[lis
                 ("non_positive_ohlc", "open <= 0 OR high <= 0 OR low <= 0 OR close <= 0"),
                 (
                     "invalid_ohlc_relationship",
-                    "high < low OR high < open OR high < close OR low > open OR low > close",
+                    (
+                        f"high + {tolerance} < low "
+                        f"OR high + {tolerance} < open "
+                        f"OR high + {tolerance} < close "
+                        f"OR low - {tolerance} > open "
+                        f"OR low - {tolerance} > close"
+                    ),
                 ),
             ])
         return conditions, ()
@@ -863,6 +873,21 @@ def _value_conditions_for(dataset: str, observed_columns: set[str]) -> tuple[lis
 
 
 def _value_waivers_for(dataset: str, observed_columns: set[str]) -> dict[str, str]:
+    if dataset == "index" and {"open", "high", "low", "close"}.issubset(observed_columns):
+        tolerance = _OHLC_RELATIONSHIP_TOLERANCE["index"]
+        strict = "high < low OR high < open OR high < close OR low > open OR low > close"
+        beyond_tolerance = (
+            f"high + {tolerance} < low "
+            f"OR high + {tolerance} < open "
+            f"OR high + {tolerance} < close "
+            f"OR low - {tolerance} > open "
+            f"OR low - {tolerance} > close"
+        )
+        return {
+            "invalid_ohlc_relationship": (
+                f"({strict}) AND NOT ({beyond_tolerance})"
+            )
+        }
     if not dataset.startswith("macro."):
         return {}
     required_value = {

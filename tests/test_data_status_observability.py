@@ -447,6 +447,73 @@ def test_value_quality_recovery_plan_groups_prefixed_datasets(tmp_path) -> None:
     assert plan_by_component["macro"]["datasets"] == ["macro.ppi"]
 
 
+def test_value_quality_waives_index_quote_precision_ohlc_drift(tmp_path) -> None:
+    index_root = tmp_path / "market" / "index"
+    index_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "date": "2026-03-20",
+                "open": 4236.15,
+                "high": 4349.82,
+                "low": 4206.75,
+                "close": 4349.83,
+            }
+        ]
+    ).to_parquet(index_root / "000001_SH.parquet", index=False)
+
+    schema = schema_contract_stats(tmp_path, sample_limit=5)
+    stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
+    index = stats["datasets"]["index"]
+
+    assert index["status"] == "pass"
+    assert index["metrics"]["invalid_ohlc_relationship"] == 0
+    assert index["metrics"]["waived_invalid_ohlc_relationship"] == 1
+    assert "index.invalid_ohlc_relationship" not in stats["failed_checks"]
+
+
+def test_value_quality_fails_index_ohlc_breaks_beyond_precision(tmp_path) -> None:
+    index_root = tmp_path / "market" / "index"
+    index_root.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "date": "2026-03-20",
+                "open": 4236.15,
+                "high": 4349.82,
+                "low": 4206.75,
+                "close": 4350.0,
+            }
+        ]
+    ).to_parquet(index_root / "000001_SH.parquet", index=False)
+
+    schema = schema_contract_stats(tmp_path, sample_limit=5)
+    stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
+    index = stats["datasets"]["index"]
+
+    assert index["status"] == "fail"
+    assert index["metrics"]["invalid_ohlc_relationship"] == 1
+    assert index["metrics"]["waived_invalid_ohlc_relationship"] == 0
+    assert "index.invalid_ohlc_relationship" in stats["failed_checks"]
+
+
+def test_value_quality_does_not_waive_cross_asset_ohlc_breaks(tmp_path) -> None:
+    cross_asset_root = tmp_path / "market" / "cross_asset"
+    cross_asset_root.mkdir(parents=True)
+    pd.DataFrame(
+        [{"date": "2026-03-20", "open": 280.40, "high": 281.25, "low": 279.50, "close": 281.83}]
+    ).to_parquet(cross_asset_root / "gold.parquet", index=False)
+
+    schema = schema_contract_stats(tmp_path, sample_limit=5)
+    stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
+    gold = stats["datasets"]["cross_asset.gold"]
+
+    assert gold["status"] == "fail"
+    assert gold["metrics"]["invalid_ohlc_relationship"] == 1
+    assert "waived_invalid_ohlc_relationship" not in gold["metrics"]
+    assert "cross_asset.gold.invalid_ohlc_relationship" in stats["failed_checks"]
+
+
 def test_value_quality_waives_known_historical_ppi_yoy_gap(tmp_path) -> None:
     macro_root = tmp_path / "market" / "macro"
     macro_root.mkdir(parents=True)
