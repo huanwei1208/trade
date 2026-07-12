@@ -105,8 +105,18 @@ def make_binance_contract(base_asset: str, quote_asset: str = DEFAULT_QUOTE_ASSE
 # Backwards-compatible BTC contracts
 OKX_BTC_CONTRACT = make_okx_contract("BTC")
 BINANCE_BTC_SHADOW_CONTRACT = make_binance_contract("BTC")
-# Kept for backwards compatibility, now points to Binance instead of paid CoinGecko
-COINGECKO_BTC_SHADOW_CONTRACT = BINANCE_BTC_SHADOW_CONTRACT
+# IMPORTANT: The D3 shadow provider is **Binance**, NOT an independent third
+# source like CoinGecko. There is NO third independent price source wired in;
+# D3 reconciliation is TWO-SOURCE ONLY (OKX primary vs Binance shadow).
+# Operators must NOT interpret "shadow agreement" as triangulation — if both
+# OKX and Binance print the same wrong bar, D3 will report ANOMALY_NONE even
+# though no independent corroboration exists. Adding a real third source
+# (e.g. CoinGecko) is future work and is NOT wired up here.
+BINANCE_SHADOW_CONTRACT_ALIAS = BINANCE_BTC_SHADOW_CONTRACT
+# Deprecated misnomer — kept only for backwards compatibility with callers
+# that still import this name. Use BINANCE_BTC_SHADOW_CONTRACT or
+# BINANCE_SHADOW_CONTRACT_ALIAS instead.
+COINGECKO_BTC_SHADOW_CONTRACT = BINANCE_SHADOW_CONTRACT_ALIAS
 
 
 @dataclass(frozen=True)
@@ -357,7 +367,8 @@ def normalize_binance_klines(
     )
 
 
-# Backwards-compatible alias
+# Backwards-compatible alias - shadow provider is Binance (NOT CoinGecko).
+# A real independent third source is not yet wired; D3 is two-source only.
 normalize_coingecko_market_chart = normalize_binance_klines
 
 
@@ -614,7 +625,10 @@ class BinanceDailyProvider:
         )
 
 
-# Backwards-compatible alias - now uses Binance (free, no key) instead of CoinGecko
+# Backwards-compatible alias.
+# NOTE: Despite the historical "CoinGecko" name, this provider is backed by
+# Binance. There is NO third independent source in D3; shadow agreement means
+# "OKX agrees with Binance", not true triangulation.
 CoinGeckoBtcDailyShadowProvider = lambda **kwargs: BinanceDailyProvider(base_asset="BTC", **{k: v for k, v in kwargs.items() if k not in ("api_key", "require_api_key", "api_key_header")})
 
 
@@ -633,6 +647,7 @@ __all__ = [
     "make_binance_contract",
     "OKX_BTC_CONTRACT",
     "BINANCE_BTC_SHADOW_CONTRACT",
+    "BINANCE_SHADOW_CONTRACT_ALIAS",
     "COINGECKO_BTC_SHADOW_CONTRACT",
     "normalize_okx_candles",
     "normalize_binance_klines",

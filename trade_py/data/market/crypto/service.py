@@ -59,8 +59,10 @@ class BtcMarketDataService:
             raise ValueError("max_attempts must be in [1, 3]")
         self.data_root = Path(data_root)
         self.primary_provider = primary_provider or OkxBtcDailyProvider(base_asset="BTC")
-        # Shadow provider uses Binance: 100% free, no API key required, full OHLCV data
-        # This replaces the paid CoinGecko API key requirement entirely
+        # Shadow provider uses Binance (free, no API key, full OHLCV).
+        # IMPORTANT: this is NOT an independent third source like CoinGecko.
+        # D3 reconciliation is TWO-SOURCE ONLY (OKX primary vs Binance shadow);
+        # there is no triangulation against an independent venue.
         self.shadow_provider = shadow_provider or BinanceDailyProvider(base_asset="BTC")
         self.config = config or BtcAssuranceConfig()
         self.days = days

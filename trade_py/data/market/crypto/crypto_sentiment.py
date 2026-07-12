@@ -104,11 +104,21 @@ def fetch_fear_greed(limit: int = 30) -> list[FearGreedRecord]:
         return []
 
     records: list[FearGreedRecord] = []
+    skipped_bad_value = 0
+    skipped_bad_ts = 0
     for item in payload.get("data", []):
         try:
             ts = int(item.get("timestamp", 0))
             value = int(item.get("value", 50))
             classification = str(item.get("value_classification", "Neutral"))
+            # Validate timestamp: must be a reasonable Unix epoch (>= 2010-01-01).
+            if ts <= 1262304000:
+                skipped_bad_ts += 1
+                continue
+            # Validate Fear & Greed value: must be integer in [0, 100].
+            if value < 0 or value > 100:
+                skipped_bad_value += 1
+                continue
             dt = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
             records.append(FearGreedRecord(
                 date=dt,
@@ -116,8 +126,13 @@ def fetch_fear_greed(limit: int = 30) -> list[FearGreedRecord]:
                 value_classification=classification,
                 timestamp_unix=ts,
             ))
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, OSError, OverflowError) as exc:
             logger.debug("Fear & Greed record parse error: %s", exc)
+    if skipped_bad_value or skipped_bad_ts:
+        logger.warning(
+            "Skipped %d Fear & Greed records with out-of-range value and %d with invalid timestamp",
+            skipped_bad_value, skipped_bad_ts,
+        )
     records.sort(key=lambda r: r.timestamp_unix)
     return records
 
@@ -125,11 +140,17 @@ def fetch_fear_greed(limit: int = 30) -> list[FearGreedRecord]:
 from email.utils import parsedate_to_datetime
 
 
-def _parse_pub_date(raw: str) -> str:
-    """Best-effort parse of a publication date string to ISO 8601 UTC."""
+def _parse_pub_date(raw: str) -> str | None:
+    """Best-effort parse of a publication date string to ISO 8601 UTC.
+
+    Returns None if the input is empty or unparseable. Callers MUST skip
+    articles with None dates instead of fabricating "now" as a fallback,
+    because silently timestamping old/broken articles as "now" poisons
+    recency features and creates fake news spikes.
+    """
     raw = raw.strip()
     if not raw:
-        return datetime.now(timezone.utc).isoformat()
+        return None
     for parser in (
         lambda s: parsedate_to_datetime(s),
         lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")),
@@ -141,12 +162,18 @@ def _parse_pub_date(raw: str) -> str:
             return dt.astimezone(timezone.utc).isoformat()
         except Exception:
             continue
-    return datetime.now(timezone.utc).isoformat()
+    return None
 
 
 def _parse_rss_xml(source: str, xml_bytes: bytes) -> list[CryptoNewsItem]:
-    """Parse RSS/Atom XML into CryptoNewsItem list."""
+    """Parse RSS/Atom XML into CryptoNewsItem list.
+
+    Items with an unparseable pubDate are SKIPPED (with a count-logged
+    WARNING) rather than backfilled with "now", to avoid poisoning recency
+    features.
+    """
     items: list[CryptoNewsItem] = []
+    skipped_no_date = 0
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError as exc:
@@ -154,6 +181,21 @@ def _parse_rss_xml(source: str, xml_bytes: bytes) -> list[CryptoNewsItem]:
         return items
 
     ns = {"atom": "http://www.w3.org/2005/Atom", "dc": "http://purl.org/dc/elements/1.1/"}
+
+    def _append(title: str, link: str, pub: str | None, desc: str) -> None:
+        nonlocal skipped_no_date
+        if not title or not link:
+            return
+        if not pub:
+            skipped_no_date += 1
+            return
+        items.append(CryptoNewsItem(
+            source=source,
+            title=title,
+            url=link,
+            published_at=pub,
+            summary=desc,
+        ))
 
     # RSS 2.0: <item> elements
     for item in root.iter("item"):
@@ -167,14 +209,7 @@ def _parse_rss_xml(source: str, xml_bytes: bytes) -> list[CryptoNewsItem]:
         desc = (desc_el.text or "").strip() if desc_el is not None and desc_el.text else ""
         # Strip HTML tags from description
         desc = re.sub(r"<[^>]+>", "", desc)[:500]
-        if title and link:
-            items.append(CryptoNewsItem(
-                source=source,
-                title=title,
-                url=link,
-                published_at=pub,
-                summary=desc,
-            ))
+        _append(title, link, pub, desc)
 
     # Atom: <entry> elements
     for entry in root.iter("{http://www.w3.org/2005/Atom}entry"):
@@ -190,15 +225,13 @@ def _parse_rss_xml(source: str, xml_bytes: bytes) -> list[CryptoNewsItem]:
         summary = ""
         if summary_el is not None and summary_el.text:
             summary = re.sub(r"<[^>]+>", "", summary_el.text)[:500]
-        if title and link:
-            items.append(CryptoNewsItem(
-                source=source,
-                title=title,
-                url=link,
-                published_at=pub,
-                summary=summary,
-            ))
+        _append(title, link, pub, summary)
 
+    if skipped_no_date:
+        logger.warning(
+            "Skipped %d RSS items from %s due to unparseable publication date",
+            skipped_no_date, source,
+        )
     return items
 
 
@@ -237,6 +270,7 @@ def fetch_binance_announcements() -> list[CryptoNewsItem]:
         return []
 
     items: list[CryptoNewsItem] = []
+    skipped_no_date = 0
     articles = payload.get("data", {}).get("articles", [])
     for art in articles:
         title = str(art.get("title", "")).strip()
@@ -247,8 +281,11 @@ def fetch_binance_announcements() -> list[CryptoNewsItem]:
         url = f"https://www.binance.com/en/support/announcement/{code}"
         try:
             dt = datetime.fromtimestamp(release_date / 1000, tz=timezone.utc).isoformat()
-        except (ValueError, OSError):
-            dt = datetime.now(timezone.utc).isoformat()
+        except (ValueError, OSError, OverflowError, TypeError):
+            # Do NOT fall back to datetime.now() — that would timestamp
+            # every broken article "now", poisoning recency features.
+            skipped_no_date += 1
+            continue
         items.append(CryptoNewsItem(
             source="binance",
             title=title,
@@ -256,6 +293,11 @@ def fetch_binance_announcements() -> list[CryptoNewsItem]:
             published_at=dt,
             summary="",
         ))
+    if skipped_no_date:
+        logger.warning(
+            "Skipped %d Binance announcements with unparseable releaseDate",
+            skipped_no_date,
+        )
     return items
 
 
@@ -275,6 +317,7 @@ def fetch_reddit_crypto(subreddit: str = "CryptoCurrency", limit: int = 25) -> l
         return []
 
     items: list[CryptoNewsItem] = []
+    skipped_no_date = 0
     posts = payload.get("data", {}).get("children", [])
     for post in posts:
         d = post.get("data", {})
@@ -282,14 +325,16 @@ def fetch_reddit_crypto(subreddit: str = "CryptoCurrency", limit: int = 25) -> l
         permalink = str(d.get("permalink", ""))
         created_utc = d.get("created_utc", 0)
         selftext = str(d.get("selftext", ""))[:300]
-        score = d.get("score", 0)
         if not title:
             continue
         url = f"https://www.reddit.com{permalink}"
         try:
             dt = datetime.fromtimestamp(float(created_utc), tz=timezone.utc).isoformat()
-        except (ValueError, TypeError, OSError):
-            dt = datetime.now(timezone.utc).isoformat()
+        except (ValueError, TypeError, OSError, OverflowError):
+            # Do NOT fall back to datetime.now() — backfills with broken
+            # timestamps must not be silently stamped "now".
+            skipped_no_date += 1
+            continue
         items.append(CryptoNewsItem(
             source=f"reddit-{subreddit}",
             title=title,
@@ -297,6 +342,11 @@ def fetch_reddit_crypto(subreddit: str = "CryptoCurrency", limit: int = 25) -> l
             published_at=dt,
             summary=selftext,
         ))
+    if skipped_no_date:
+        logger.warning(
+            "Skipped %d Reddit posts from r/%s with unparseable created_utc",
+            skipped_no_date, subreddit,
+        )
     return items
 
 
@@ -337,12 +387,43 @@ def save_fear_greed_parquet(records: list[FearGreedRecord], output_path: Path) -
 
 
 def save_crypto_news_parquet(items: list[CryptoNewsItem], output_path: Path) -> None:
-    """Save news items to parquet (append mode by date)."""
+    """Save news items to parquet (append mode by date).
+
+    URL-based deduplication is applied before writing so the same article
+    fetched from multiple paths does not get duplicated rows in parquet.
+    Articles without a parseable date are dropped here as a defense-in-depth
+    guard (callers should already have filtered them out).
+    """
     import pandas as pd
     if not items:
         return
-    rows = [item.to_dict() for item in items]
+    # Defense-in-depth: drop items with no published_at (shouldn't happen if
+    # callers honor the contract, but do not let them hit parquet).
+    clean: list[CryptoNewsItem] = []
+    bad_date = 0
+    for item in items:
+        if not item.published_at:
+            bad_date += 1
+            continue
+        clean.append(item)
+    if bad_date:
+        logger.warning(
+            "Dropped %d news items with missing published_at before saving %s",
+            bad_date, output_path,
+        )
+    if not clean:
+        return
+    rows = [item.to_dict() for item in clean]
     df = pd.DataFrame(rows)
+    if "url" in df.columns:
+        before = len(df)
+        df = df.drop_duplicates(subset=["url"], keep="first")
+        dropped = before - len(df)
+        if dropped:
+            logger.warning(
+                "Dropped %d duplicate-URL news rows before saving %s",
+                dropped, output_path,
+            )
     df["fetched_at"] = datetime.now(timezone.utc).isoformat()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output_path, index=False)

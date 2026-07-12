@@ -55,6 +55,43 @@ class KlineProvider(Protocol):
         ...
 
 
+def _validate_ohlc_frame(symbol: str, df: pd.DataFrame) -> None:
+    """Reject frames with NaN/non-positive/inconsistent OHLC prices.
+
+    Mirrors the pattern used in trade_py/data/market/crypto/akshare.py.
+    Rows that fail these checks indicate corrupted upstream data and must
+    not be silently written to parquet.
+    """
+    if df is None or df.empty:
+        return
+    required = {"date", "open", "high", "low", "close"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(f"{symbol} kline OHLC data missing columns: {missing}")
+    work = df.copy()
+    for column in ("open", "high", "low", "close"):
+        work[column] = pd.to_numeric(work[column], errors="coerce")
+    invalid = work[
+        work[["open", "high", "low", "close"]].isna().any(axis=1)
+        | work[["open", "high", "low", "close"]].le(0).any(axis=1)
+        | (work["high"] < work["low"])
+        | (work["high"] < work["open"])
+        | (work["high"] < work["close"])
+        | (work["low"] > work["open"])
+        | (work["low"] > work["close"])
+    ].copy()
+    if invalid.empty:
+        return
+    invalid["date"] = pd.to_datetime(invalid["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    sample = invalid[["date", "open", "high", "low", "close"]].head(5).to_dict(orient="records")
+    start = str(invalid["date"].min())[:10]
+    end = str(invalid["date"].max())[:10]
+    raise ValueError(
+        f"{symbol} kline OHLC data failed validation rows={len(invalid)} "
+        f"dates={start}..{end} sample={sample}"
+    )
+
+
 def _finalize_frame(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=_COLUMN_ORDER)
@@ -62,7 +99,15 @@ def _finalize_frame(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["symbol"] = ensure_symbol(symbol)
     out["date"] = pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
-    for col in ["open", "close", "high", "low", "volume", "amount", "turnover_rate"]:
+    # Price columns: coerce but DO NOT fillna(0.0) — NaN means "bad/missing",
+    # not "zero". Zero-prices poison downstream training.
+    for col in ["open", "close", "high", "low"]:
+        if col not in out.columns:
+            out[col] = np.nan
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    # Volume/amount/turnover_rate are volume-like; fillna(0) is acceptable for
+    # non-trading days after coercion.
+    for col in ["volume", "amount", "turnover_rate"]:
         if col not in out.columns:
             out[col] = 0.0
         out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
@@ -79,13 +124,39 @@ def _finalize_frame(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
         prev_close = prev_close.where(prev_close.notna() & (prev_close > 0), derived_prev)
     shifted_prev = out["close"].shift(1)
     prev_close = prev_close.where(prev_close.notna() & (prev_close > 0), shifted_prev)
-    out["prev_close"] = pd.to_numeric(prev_close, errors="coerce").fillna(0.0)
+    # prev_close is a price — leave NaN, do not zero-fill.
+    out["prev_close"] = pd.to_numeric(prev_close, errors="coerce")
     total_shares = out["volume"] * 100
-    out["vwap"] = (out["amount"] / total_shares.where(total_shares > 0, other=float("nan"))).fillna(0.0)
+    # vwap = amount / total_shares; when volume==0, vwap must be NaN, not 0.
+    out["vwap"] = out["amount"] / total_shares.where(total_shares > 0, other=float("nan"))
+
+    # Drop rows that claim to be real trading days (volume > 0) but have NaN
+    # prices in any OHLC column — these are parse/upstream failures that would
+    # otherwise silently poison parquet.
+    ohlc_cols = ["open", "high", "low", "close"]
+    bad_mask = (out["volume"] > 0) & out[ohlc_cols].isna().any(axis=1)
+    if bad_mask.any():
+        bad_count = int(bad_mask.sum())
+        bad_dates = out.loc[bad_mask, "date"].head(5).tolist()
+        logger.warning(
+            "Dropping %d corrupted kline rows for %s (volume>0 but NaN OHLC); sample dates=%s",
+            bad_count, symbol, bad_dates,
+        )
+        out = out.loc[~bad_mask].reset_index(drop=True)
+
     out = out.drop_duplicates(subset=["date"], keep="last")
+    # Strict OHLC validation: rejects any remaining NaN/non-positive/inconsistent
+    # price rows so we never write poisoned data to parquet.
+    _validate_ohlc_frame(symbol, out)
     for col in _COLUMN_ORDER:
         if col not in out.columns:
-            out[col] = 0.0
+            # Non-price columns default to 0.0 on absence; price columns were
+            # already validated above, so we only fill columns like
+            # turnover_rate/prev_close/vwap that may be legitimately absent.
+            if col in ("open", "high", "low", "close"):
+                out[col] = np.nan
+            else:
+                out[col] = 0.0
     return out[_COLUMN_ORDER]
 
 
@@ -207,8 +278,11 @@ class TencentKlineProvider:
                 continue
             normalized_rows.append(values[:7] if len(values) >= 7 else values[:6] + [None])
         raw = pd.DataFrame(normalized_rows, columns=["date", "open", "close", "high", "low", "volume", "amount"])
-        for col in ("open", "close", "high", "low", "volume"):
-            raw[col] = pd.to_numeric(raw[col], errors="coerce").fillna(0.0)
+        # Do NOT zero-fill prices: NaN signals parse failure and will be caught
+        # by _finalize_frame's NaN-OHLC + volume>0 guard.
+        for col in ("open", "close", "high", "low"):
+            raw[col] = pd.to_numeric(raw[col], errors="coerce")
+        raw["volume"] = pd.to_numeric(raw["volume"], errors="coerce").fillna(0.0)
         raw["amount"] = pd.to_numeric(raw["amount"], errors="coerce")
         raw["amount"] = raw["amount"].where(raw["amount"].notna() & (raw["amount"] > 0), raw["volume"] * 100.0 * raw["close"])
         raw["turnover_rate"] = 0.0

@@ -20,16 +20,20 @@ from trade_py.data.market.crypto.providers import (
     make_binance_contract,
     OKX_BTC_CONTRACT,
     BINANCE_BTC_SHADOW_CONTRACT,
+    BINANCE_SHADOW_CONTRACT_ALIAS,
+    # Deprecated misnomer (shadow is Binance, no third independent source).
     COINGECKO_BTC_SHADOW_CONTRACT,
     OKX_HISTORY_CANDLES_URL,
     BINANCE_KLINES_URL,
     normalize_okx_candles,
     normalize_binance_klines,
+    # Deprecated alias (backed by Binance normalizer).
     normalize_coingecko_market_chart,
     okx_canonical_candidate,
     OkxDailyProvider,
     OkxBtcDailyProvider,
     BinanceDailyProvider,
+    # Deprecated misnomer (class actually wraps Binance).
     CoinGeckoBtcDailyShadowProvider,
     BtcProviderCapture,
     BtcProviderError,

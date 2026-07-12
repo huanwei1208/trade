@@ -12,7 +12,7 @@ import pandas as pd
 
 from trade_py.data.market.crypto.btc import (
     BTC_PROVIDER_SCHEMA_VERSION,
-    COINGECKO_BTC_SHADOW_CONTRACT,
+    BINANCE_BTC_SHADOW_CONTRACT,
     OKX_BTC_CONTRACT,
 )
 
@@ -66,7 +66,7 @@ PRIMARY_CONTRACT = {
 }
 
 SHADOW_CONTRACT = {
-    key: getattr(COINGECKO_BTC_SHADOW_CONTRACT, key)
+    key: getattr(BINANCE_BTC_SHADOW_CONTRACT, key)
     for key in ("provider", "venue", "instrument", "base_asset", "quote_asset", "interval")
 }
 

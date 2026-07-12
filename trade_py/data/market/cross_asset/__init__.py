@@ -27,7 +27,8 @@ from trade_py.data.market.crypto.providers import (
     CRYPTO_PROVIDER_COLUMNS as BTC_PROVIDER_COLUMNS,
     CRYPTO_PROVIDER_REQUIRED_COLUMNS as BTC_PROVIDER_REQUIRED_COLUMNS,
     DEFAULT_CRYPTO_ASSETS,
-    BINANCE_BTC_SHADOW_CONTRACT as COINGECKO_BTC_SHADOW_CONTRACT,
+    BINANCE_BTC_SHADOW_CONTRACT,
+    BINANCE_SHADOW_CONTRACT_ALIAS,
     OKX_BTC_CONTRACT,
     CryptoProviderCapture as BtcProviderCapture,
     CryptoProviderContract as BtcProviderContract,
@@ -35,13 +36,21 @@ from trade_py.data.market.crypto.providers import (
     CryptoProviderError as BtcProviderError,
     CryptoProviderResponseError as BtcProviderResponseError,
     BtcProviderCredentialError,
-    BinanceDailyProvider as CoinGeckoBtcDailyShadowProvider,
+    BinanceDailyProvider,
     OkxDailyProvider,
     OkxBtcDailyProvider,
-    BinanceDailyProvider,
     normalize_okx_candles,
     normalize_binance_klines,
     okx_canonical_candidate,
+)
+# BTC-specific aliases (classes and function aliases) live in btc.py
+from trade_py.data.market.crypto.btc import (
+    BinanceBtcDailyShadowProvider,
+    # Deprecated misnomer (class is backed by Binance, not CoinGecko).
+    CoinGeckoBtcDailyShadowProvider,
+    normalize_binance_shadow_klines,
+    # Deprecated alias (binance normalizer, not coingecko).
+    normalize_coingecko_market_chart,
 )
 from trade_py.data.market.crypto.assurance import (
     BtcAssuranceConfig,
@@ -63,10 +72,18 @@ from trade_py.data.market.cross_asset.akshare import (  # noqa: E402
     fetch_all,
 )
 
+# Deprecated misnomer constant: shadow is Binance; there is NO third independent
+# source in D3 (two-source reconciliation only, OKX vs Binance). Retained for
+# backwards compatibility with existing importers.
+COINGECKO_BTC_SHADOW_CONTRACT = BINANCE_BTC_SHADOW_CONTRACT
+
 __all__ = [
     "BTC_PROVIDER_COLUMNS",
     "BTC_PROVIDER_REQUIRED_COLUMNS",
     "DEFAULT_CRYPTO_ASSETS",
+    "BINANCE_BTC_SHADOW_CONTRACT",
+    "BINANCE_SHADOW_CONTRACT_ALIAS",
+    # Deprecated misnomer (constant is Binance shadow contract, not CoinGecko).
     "COINGECKO_BTC_SHADOW_CONTRACT",
     "OKX_BTC_CONTRACT",
     "BtcProviderCapture",
@@ -81,8 +98,10 @@ __all__ = [
     "BtcMarketDataService",
     "DataGateResult",
     "BinanceDailyProvider",
-    "OkxDailyProvider",
+    "BinanceBtcDailyShadowProvider",
+    # Deprecated misnomer.
     "CoinGeckoBtcDailyShadowProvider",
+    "OkxDailyProvider",
     "OkxBtcDailyProvider",
     "fetch_gold",
     "fetch_fx_cnh",
@@ -91,6 +110,9 @@ __all__ = [
     "fetch_all",
     "normalize_okx_candles",
     "normalize_binance_klines",
+    "normalize_binance_shadow_klines",
+    # Deprecated alias.
+    "normalize_coingecko_market_chart",
     "okx_canonical_candidate",
     "assure_btc",
     "btc_operational_freshness",

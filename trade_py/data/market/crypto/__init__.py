@@ -42,8 +42,16 @@ from trade_py.data.market.crypto.providers import (
 )
 from trade_py.data.market.crypto.btc import (
     OkxBtcDailyProvider,
+    BinanceBtcDailyShadowProvider,
+    # Deprecated misnomer (class is backed by Binance, not CoinGecko).
     CoinGeckoBtcDailyShadowProvider,
+    BINANCE_BTC_SHADOW_CONTRACT,
+    BINANCE_SHADOW_CONTRACT_ALIAS,
+    # Deprecated misnomer — retained for import backwards-compat only.
     COINGECKO_BTC_SHADOW_CONTRACT,
+    BINANCE_KLINES_URL,
+    BINANCE_SHADOW_MARKET_CHART_URL,
+    # Deprecated misnomer constant.
     COINGECKO_MARKET_CHART_URL,
     BtcProviderCapture,
     BtcProviderContract,
@@ -54,6 +62,9 @@ from trade_py.data.market.crypto.btc import (
     BTC_PROVIDER_COLUMNS,
     BTC_PROVIDER_REQUIRED_COLUMNS,
     BTC_PROVIDER_SCHEMA_VERSION,
+    normalize_binance_klines,
+    normalize_binance_shadow_klines,
+    # Deprecated alias.
     normalize_coingecko_market_chart,
 )
 from trade_py.data.market.crypto.assurance import (
@@ -117,8 +128,16 @@ __all__ = [
     "BTC_PROVIDER_REQUIRED_COLUMNS",
     "BTC_PROVIDER_SCHEMA_VERSION",
     "OkxBtcDailyProvider",
+    "BinanceBtcDailyShadowProvider",
+    # Deprecated misnomer (class is backed by Binance).
     "CoinGeckoBtcDailyShadowProvider",
+    "BINANCE_BTC_SHADOW_CONTRACT",
+    "BINANCE_SHADOW_CONTRACT_ALIAS",
+    # Deprecated misnomer constant.
     "COINGECKO_BTC_SHADOW_CONTRACT",
+    "BINANCE_KLINES_URL",
+    "BINANCE_SHADOW_MARKET_CHART_URL",
+    # Deprecated misnomer constant.
     "COINGECKO_MARKET_CHART_URL",
     "BtcProviderCapture",
     "BtcProviderContract",
@@ -126,6 +145,9 @@ __all__ = [
     "BtcProviderCredentialError",
     "BtcProviderError",
     "BtcProviderResponseError",
+    "normalize_binance_klines",
+    "normalize_binance_shadow_klines",
+    # Deprecated alias (backed by Binance normalizer, not CoinGecko).
     "normalize_coingecko_market_chart",
     # Assurance gates (D0-D4)
     "BtcAssuranceConfig",
