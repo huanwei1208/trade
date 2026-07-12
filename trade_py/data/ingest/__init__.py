@@ -6,7 +6,11 @@ from trade_py.data.ingest.crypto import (
     INGESTOR_REGISTRY,
     get_ingestor,
 )
-from trade_py.data.ingest.batch import BatchIngestEngine, BatchIngestConfig
+from trade_py.data.ingest.batch import (
+    BatchIngestEngine,
+    BatchIngestConfig,
+    migrate_cross_asset_paths,
+)
 
 __all__ = [
     "AssetIngestor",
@@ -18,4 +22,5 @@ __all__ = [
     "get_ingestor",
     "BatchIngestEngine",
     "BatchIngestConfig",
+    "migrate_cross_asset_paths",
 ]

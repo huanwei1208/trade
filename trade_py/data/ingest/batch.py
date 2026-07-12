@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -16,9 +17,197 @@ import pandas as pd
 
 from trade_py.data.ingest.base import AssetIngestor, IngestResult
 from trade_py.data.ingest.crypto import get_ingestor
+from trade_py.data.paths import CRYPTO_DIR, FX_DIR, COMMODITY_DIR
 from trade_py.db.trade_db import TradeDB
 
 logger = logging.getLogger(__name__)
+
+# Migration sentinel filename placed in data_root after a successful migration run
+# so we don't repeatedly re-scan.
+_MIGRATION_SENTINEL = ".cross_asset_migrated"
+
+
+# ── Legacy path mappings ──────────────────────────────────────────────────────
+# Maps from (asset_class, symbol_lower) -> relative legacy path under market/cross_asset/.
+# Used so that _find_existing_path can locate data that was written before the
+# per-asset-class directory split.
+
+_LEGACY_CRYPTO_SUBDIR = "crypto"  # cross_asset/crypto/btc.parquet etc.
+
+# FX legacy names: fx.USDCNH -> fx_cnh.parquet (also accepted: usdcnh.parquet in fx dir already)
+_FX_LEGACY_FNAME = {
+    "usdcnh": "fx_cnh.parquet",
+}
+
+# Commodity legacy names: commodity.gold -> gold.parquet (in cross_asset root)
+_COMMODITY_LEGACY_FNAME = {
+    "gold": "gold.parquet",
+    "au99.99": "gold.parquet",
+}
+
+
+def _asset_class_dir(data_root: Path, asset_class: str) -> Path:
+    """Return the canonical output directory for an asset class, creating it if needed."""
+    if asset_class == "crypto":
+        return Path(CRYPTO_DIR(data_root))
+    if asset_class == "fx":
+        return Path(FX_DIR(data_root))
+    if asset_class == "commodity":
+        return Path(COMMODITY_DIR(data_root))
+    # Fallback for unknown / future classes: data/market/<asset_class>/
+    p = data_root / "market" / asset_class
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _canonical_output_path(data_root: Path, asset: dict) -> Path:
+    """Return the canonical (new-layout) output path for an asset.
+
+    crypto.<SYM>    -> market/crypto/<sym_lower>.parquet
+    fx.<SYM>        -> market/fx/<sym_lower>.parquet
+    commodity.<SYM> -> market/commodity/<sym_lower>.parquet
+    Other classes   -> market/<class>/<sym_lower>.parquet
+    """
+    asset_class = asset["asset_class"]
+    sym = asset["symbol"].lower()
+    return _asset_class_dir(data_root, asset_class) / f"{sym}.parquet"
+
+
+def _legacy_output_path(data_root: Path, asset: dict) -> Path | None:
+    """Return the legacy cross_asset path for an asset, or None if no legacy mapping exists.
+
+    This is used only for backwards-compatible reads during the migration window.
+    """
+    cross_asset = data_root / "market" / "cross_asset"
+    asset_class = asset["asset_class"]
+    asset_id = asset.get("asset_id", "")
+    sym = asset["symbol"].lower()
+
+    if asset_class == "crypto":
+        # crypto lived under cross_asset/crypto/<sym>.parquet AND for BTC also cross_asset/btc.parquet
+        # We return the subdir path as the primary legacy location.
+        return cross_asset / _LEGACY_CRYPTO_SUBDIR / f"{sym}.parquet"
+
+    if asset_class == "fx":
+        slug = asset_id.split(".", 1)[1] if "." in asset_id else sym
+        legacy_name = _FX_LEGACY_FNAME.get(slug.lower(), f"fx_{slug.lower()}.parquet")
+        return cross_asset / legacy_name
+
+    if asset_class == "commodity":
+        slug = asset_id.split(".", 1)[1] if "." in asset_id else sym
+        legacy_name = _COMMODITY_LEGACY_FNAME.get(slug.lower(), f"{slug.lower()}.parquet")
+        return cross_asset / legacy_name
+
+    return None
+
+
+def _find_existing_path(data_root: Path, asset: dict) -> Path | None:
+    """Resolve the path to load existing data from.
+
+    Preference order:
+      1. Canonical new-layout path (if file exists).
+      2. Legacy cross_asset path (if file exists) - for backwards compat; on next
+         write the data will be (re)written to the canonical path and the legacy
+         file can be cleaned up manually.
+      3. Canonical path (does not exist yet, used for new writes).
+    """
+    canonical = _canonical_output_path(data_root, asset)
+    if canonical.exists():
+        return canonical
+    legacy = _legacy_output_path(data_root, asset)
+    if legacy is not None and legacy.exists():
+        logger.info(
+            "Asset %s: reading from legacy path %s (will write to %s on next flush)",
+            asset.get("asset_id"), legacy, canonical,
+        )
+        return legacy
+    return canonical
+
+
+def migrate_cross_asset_paths(data_root: str | Path) -> dict[str, int]:
+    """One-shot migration from the old market/cross_asset/ layout to the per-class layout.
+
+    Mapping:
+      cross_asset/gold.parquet                       -> commodity/gold.parquet
+      cross_asset/fx_cnh.parquet                     -> fx/usdcnh.parquet
+      cross_asset/crypto/<sym>.parquet (btc,eth,sol) -> crypto/<sym>.parquet
+      cross_asset/btc.parquet (assured snapshot)     -> crypto/btc.parquet
+      cross_asset/crypto/fear_greed.parquet          -> crypto/fear_greed.parquet
+
+    Skips files whose destination already exists. Returns a dict of counts
+    {copied, skipped, missing_src}. Leaves the source cross_asset/ tree intact
+    so the migration is non-destructive; operators can delete it after verifying.
+    """
+    data_root = Path(data_root)
+    cross_asset = data_root / "market" / "cross_asset"
+    sentinel = data_root / _MIGRATION_SENTINEL
+
+    stats = {"copied": 0, "skipped": 0, "missing_src": 0}
+
+    if sentinel.exists():
+        logger.debug("cross_asset migration already completed (sentinel present); skipping")
+        return stats
+
+    if not cross_asset.exists():
+        # Nothing to migrate; mark done so we don't re-check.
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("no-op: no cross_asset/ directory found\n")
+        return stats
+
+    # Ensure target dirs exist
+    crypto_dir = Path(CRYPTO_DIR(data_root))
+    fx_dir = Path(FX_DIR(data_root))
+    commodity_dir = Path(COMMODITY_DIR(data_root))
+
+    def _safe_copy(src: Path, dst: Path) -> str:
+        if not src.exists():
+            return "missing_src"
+        if dst.exists():
+            return "skipped"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        logger.info("migrate: %s -> %s", src, dst)
+        return "copied"
+
+    # ── commodity ─────────────────────────────────────────────────────────────
+    for src_name, dst_name in [("gold.parquet", "gold.parquet")]:
+        res = _safe_copy(cross_asset / src_name, commodity_dir / dst_name)
+        stats[res] += 1
+
+    # ── fx ────────────────────────────────────────────────────────────────────
+    for src_name, dst_name in [("fx_cnh.parquet", "usdcnh.parquet")]:
+        res = _safe_copy(cross_asset / src_name, fx_dir / dst_name)
+        stats[res] += 1
+
+    # ── crypto (nested subdir) ────────────────────────────────────────────────
+    crypto_sub = cross_asset / _LEGACY_CRYPTO_SUBDIR
+    if crypto_sub.exists() and crypto_sub.is_dir():
+        for src in crypto_sub.glob("*.parquet"):
+            res = _safe_copy(src, crypto_dir / src.name)
+            stats[res] += 1
+
+    # ── crypto (root-level assured snapshot, e.g. cross_asset/btc.parquet) ────
+    # Copy to crypto/<name>.parquet if not already present from the subdir pass.
+    for src in cross_asset.glob("*.parquet"):
+        # Skip the non-crypto flat files we already handled explicitly.
+        if src.name in {"gold.parquet", "fx_cnh.parquet"}:
+            continue
+        # Heuristic: any other flat parquet in cross_asset/ is treated as a
+        # crypto snapshot (e.g. btc.parquet) and copied into crypto/.
+        res = _safe_copy(src, crypto_dir / src.name)
+        stats[res] += 1
+
+    # Write sentinel so we don't rerun
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text(
+        f"cross_asset migration completed. "
+        f"copied={stats['copied']} skipped={stats['skipped']} missing_src={stats['missing_src']}\n"
+    )
+    logger.info(
+        "cross_asset migration finished: copied=%d skipped=%d missing_src=%d",
+        stats["copied"], stats["skipped"], stats["missing_src"],
+    )
+    return stats
 
 
 def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
@@ -91,6 +280,7 @@ class BatchIngestEngine:
         self._rate_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._flush_thread: threading.Thread | None = None
+        self._migration_run: bool = False
 
     def _get_db(self) -> TradeDB:
         if self._db is None:
@@ -106,25 +296,23 @@ class BatchIngestEngine:
             return self._rate_limiters[venue]
 
     def _asset_output_path(self, asset: dict) -> Path:
-        """Get parquet output path for an asset."""
-        asset_class = asset["asset_class"]
-        asset_id = asset["asset_id"]
-        if asset_class == "crypto":
-            return self.data_root / "market" / "cross_asset" / "crypto" / f"{asset['symbol'].lower()}.parquet"
-        elif asset_class == "commodity":
-            # Legacy compatibility: commodity.gold -> gold.parquet
-            slug = asset_id.split(".", 1)[1] if "." in asset_id else asset["symbol"].lower()
-            name_map = {"gold": "gold", "au99.99": "gold"}
-            fname = name_map.get(slug.lower(), slug.lower())
-            return self.data_root / "market" / "cross_asset" / f"{fname}.parquet"
-        elif asset_class == "fx":
-            # Legacy compatibility: fx.USDCNH -> fx_cnh.parquet
-            slug = asset_id.split(".", 1)[1] if "." in asset_id else asset["symbol"].lower()
-            if slug.upper() == "USDCNH":
-                return self.data_root / "market" / "cross_asset" / "fx_cnh.parquet"
-            return self.data_root / "market" / "cross_asset" / f"fx_{slug.lower()}.parquet"
-        else:
-            return self.data_root / "market" / asset_class / f"{asset['symbol'].lower()}.parquet"
+        """Get the canonical (new-layout) parquet output path for an asset.
+
+        Writes always go to the per-asset-class directory. For reading existing
+        data on a migrated-away tree, see _find_existing_path which falls back
+        to legacy cross_asset locations.
+        """
+        return _canonical_output_path(self.data_root, asset)
+
+    def _ensure_migration(self) -> None:
+        """Run the cross_asset -> per-class migration exactly once per engine instance."""
+        if self._migration_run:
+            return
+        self._migration_run = True
+        try:
+            migrate_cross_asset_paths(self.data_root)
+        except Exception as e:
+            logger.warning("cross_asset migration failed (non-fatal): %s", e)
 
     def _load_existing(self, path: Path) -> pd.DataFrame | None:
         if path.exists():
@@ -153,7 +341,7 @@ class BatchIngestEngine:
                 self._flush_asset(asset_id)
 
     def _flush_asset(self, asset_id: str) -> None:
-        """Flush buffered data for one asset to disk."""
+        """Flush buffered data for one asset to disk (canonical new path)."""
         with self._buffer_lock:
             if asset_id not in self._write_buffers:
                 return
@@ -206,6 +394,10 @@ class BatchIngestEngine:
         ingestor = get_ingestor(venue)
         limiter = self._get_rate_limiter(venue, min_interval_ms)
 
+        # Canonical write path; existing lookup checks legacy fallback too.
+        write_path = self._asset_output_path(asset)
+        read_path = _find_existing_path(self.data_root, asset) if not full_refresh else write_path
+
         last_error = None
         for attempt in range(1, self.config.retry_max_attempts + 1):
             try:
@@ -213,9 +405,8 @@ class BatchIngestEngine:
 
                 # Determine how many days to fetch
                 existing = None
-                path = self._asset_output_path(asset)
                 if not full_refresh:
-                    existing = self._load_existing(path)
+                    existing = self._load_existing(read_path)
                 watermark = self._watermark_date(existing)
 
                 if watermark and not full_refresh:
@@ -393,7 +584,13 @@ class BatchIngestEngine:
         full_refresh: bool = False,
         progress_cb: Callable[[IngestResult], None] | None = None,
     ) -> list[IngestResult]:
-        """Ingest all enabled assets, optionally filtered by class or symbol list."""
+        """Ingest all enabled assets, optionally filtered by class or symbol list.
+
+        On the first call per engine instance this also runs the one-shot
+        cross_asset -> per-class directory migration.
+        """
+        self._ensure_migration()
+
         db = self._get_db()
         all_assets = db.asset_registry_list(asset_class=asset_class, enabled_only=True)
 
@@ -411,4 +608,9 @@ class BatchIngestEngine:
         return self.ingest_batch(assets, full_refresh=full_refresh, progress_cb=progress_cb)
 
 
-__all__ = ["BatchIngestEngine", "BatchIngestConfig", "IngestResult"]
+__all__ = [
+    "BatchIngestEngine",
+    "BatchIngestConfig",
+    "IngestResult",
+    "migrate_cross_asset_paths",
+]

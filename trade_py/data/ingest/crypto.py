@@ -9,10 +9,16 @@ from typing import Any
 import pandas as pd
 
 from trade_py.data.ingest.base import AssetIngestor
-from trade_py.data.market.cross_asset.providers import (
-    OkxDailyProvider,
-    BinanceDailyProvider,
-)
+try:
+    from trade_py.data.market.crypto.providers import (
+        OkxDailyProvider,
+        BinanceDailyProvider,
+    )
+except ImportError:
+    from trade_py.data.market.cross_asset.providers import (  # type: ignore[no-redef]
+        OkxDailyProvider,
+        BinanceDailyProvider,
+    )
 
 logger = logging.getLogger(__name__)
 
