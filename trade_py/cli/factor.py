@@ -1,6 +1,12 @@
+"""trade factor — DEPRECATED top-level shim.
+
+Use ``trade research factor <cmd>`` instead. This module retains all original
+functionality but prints a DeprecationWarning on invocation.
+"""
 from __future__ import annotations
 
 import argparse
+import sys
 
 from trade_py.analysis.factor_evaluation import factor_metrics, factor_status
 from trade_py.infra.settings import default_data_root
@@ -69,7 +75,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="trade factor",
-        description="因子仓与因子评估",
+        description="[DEPRECATED] 因子仓与因子评估 — 请使用 `trade research factor`",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[global_flag_parent()],
     )
@@ -120,6 +126,12 @@ def make_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    msg = (
+        "DeprecationWarning: 'trade factor' is deprecated; "
+        "use 'trade research factor' instead."
+    )
+    print(msg, file=sys.stderr)
+
     args = make_parser().parse_args(argv or [])
     if args.command == "status":
         return _cmd_status(args)

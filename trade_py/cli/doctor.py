@@ -1,4 +1,9 @@
-"""Unified `trade doctor` command — aggregates all health checks into one view."""
+"""trade doctor — DEPRECATED alias for ``trade status`` (comprehensive health check).
+
+The core health-check logic lives here as ``run_doctor()``, which is imported by
+``trade status`` (overview). The CLI entry point ``main()`` prints a
+DeprecationWarning and forwards to ``trade status`` (which calls run_doctor).
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,17 +15,30 @@ from pathlib import Path
 from trade_py.cli import global_flag_parent
 
 
-def make_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="trade doctor", description="Unified system health check (data + jobs + readiness)",
-                                parents=[global_flag_parent()])
+def _make_doctor_parser() -> argparse.ArgumentParser:
+    """Internal parser (no deprecation prefix in prog, used by status)."""
+    p = argparse.ArgumentParser(prog="trade doctor", add_help=False)
     p.add_argument("--json", action="store_true", help="Output JSON report")
     p.add_argument("--data-root", default="data", help="Data root directory")
     p.add_argument("--strict", action="store_true", help="Exit non-zero on any warn/fail")
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = make_parser().parse_args(argv)
+def make_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="trade doctor",
+        description="[DEPRECATED] 请使用 `trade status` (综合健康体检)",
+        parents=[global_flag_parent()],
+    )
+    p.add_argument("--json", action="store_true", help="Output JSON report")
+    p.add_argument("--data-root", default="data", help="Data root directory")
+    p.add_argument("--strict", action="store_true", help="Exit non-zero on any warn/fail")
+    return p
+
+
+def run_doctor(argv: list[str] | None = None) -> int:
+    """Core doctor logic (no deprecation warning) — called by status overview."""
+    args = _make_doctor_parser().parse_args(argv)
     data_root = Path(args.data_root)
 
     report: dict = {
@@ -184,7 +202,7 @@ def _print_doctor_report(report: dict) -> None:
     print(f"=== Trade Doctor  ({report['as_of']})  status: {status_icon} ===\n")
 
     for check_name, check in report["checks"].items():
-        icon = {"pass": "✓", "warn": "!", "fail": "✗", "error": "?"}.get(check.get("status", ""), "·")
+        icon = {"pass": "+", "warn": "!", "fail": "x", "error": "?"}.get(check.get("status", ""), ".")
         print(f"  [{icon}] {check_name}: {check.get('status', 'unknown')}")
 
     if report["issues"]:
@@ -204,6 +222,17 @@ def _print_doctor_report(report: dict) -> None:
         print("\nAll checks passed. System healthy.")
 
 
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point — prints deprecation warning, then runs doctor via status."""
+    msg = (
+        "DeprecationWarning: 'trade doctor' is deprecated; "
+        "use 'trade status' instead."
+    )
+    print(msg, file=sys.stderr)
+
+    # Run the core logic directly (to avoid circular import with status module).
+    return run_doctor(argv)
+
+
 if __name__ == "__main__":
-    import sys
     raise SystemExit(main())

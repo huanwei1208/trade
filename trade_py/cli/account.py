@@ -13,7 +13,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="trade account",
-        description="账户与自选股管理",
+        description="[DEPRECATED: watchlist moved to `trade config watch`] 账户与自选股管理 / 候选股推荐",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[global_flag_parent()],
     )

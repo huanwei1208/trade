@@ -1,7 +1,13 @@
+"""trade model — DEPRECATED top-level shim.
+
+Use ``trade research model <cmd>`` instead. This module retains all original
+functionality but prints a DeprecationWarning on invocation.
+"""
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -321,7 +327,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="trade model",
-        description="模型与信号分析 — 窗口得分/情绪IC/预测/训练",
+        description="[DEPRECATED] 模型与信号分析 — 请使用 `trade research model`",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[global_flag_parent()],
     )
@@ -462,6 +468,12 @@ def make_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    msg = (
+        "DeprecationWarning: 'trade model' is deprecated; "
+        "use 'trade research model' instead."
+    )
+    print(msg, file=sys.stderr)
+
     argv = argv or []
     args = make_parser().parse_args(argv)
 

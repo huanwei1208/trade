@@ -1,9 +1,17 @@
+"""trade data — data fetch/ingest domain (post CLI convergence).
+
+Status / jobs-status / source-CRUD subcommands are DEPRECATED at top-level and
+print DeprecationWarnings pointing to ``trade status data`` / ``trade status jobs`` /
+``trade config source``. Their implementations remain here because ``config source``
+delegates CRUD operations to this module via ``source_main_internal()``.
+"""
 from __future__ import annotations
 
 import argparse
 import csv
 import json
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +23,20 @@ from trade_py.data.market.kline import KlineSyncOptions, KlineSyncService
 from trade_py.db.settings_db import SettingsDB
 
 logger = logging.getLogger(__name__)
+
+# When set to True, deprecation warnings for moved subcommands are suppressed.
+# Used by config.py which internally delegates source CRUD to this module.
+_INTERNAL_CALL = False
+
+
+def _depr_warn(old: str, new: str) -> None:
+    if _INTERNAL_CALL:
+        return
+    msg = (
+        f"DeprecationWarning: 'trade data {old}' is deprecated; "
+        f"use '{new}' instead."
+    )
+    print(msg, file=sys.stderr)
 
 _DATA_ROOT_ARG = str(default_data_root())
 _READ_ONLY_SENTIMENT_COMMANDS = {"status", "sources", "doctor", "inspect", "sample"}
@@ -243,7 +265,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="trade data",
-        description="数据采集 — K线/情绪/跨资产",
+        description="数据采集 — K线/情绪/跨资产/资金流/财务/北向/指数/宏观/新闻/仓库/实时/BTC",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[global_flag_parent()],
     )
@@ -810,6 +832,7 @@ def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
 
     if args.command == "status":
+        _depr_warn("status", "trade status data")
         from trade_py.utils.data_inspector import build_status_lines, get_data_status
 
         status = get_data_status(args.data_root, sample_limit=args.limit, include_value_quality=True)
@@ -1239,6 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     if args.command in ("source", "sources"):
+        _depr_warn("source", "trade config source")
         from trade_py.db.trade_db import TradeDB
         db = TradeDB(args.data_root)
 
@@ -1352,6 +1376,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.command in ("backfill", "jobs") and args.backfill_cmd == "status":
+        _depr_warn("jobs status", "trade status jobs")
         from trade_py.db.trade_db import TradeDB
 
         db = TradeDB(args.data_root)

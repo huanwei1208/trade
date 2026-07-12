@@ -1,20 +1,15 @@
-"""trade event — event management and DAG inspection.
+"""trade event — control-plane: trigger / run / sync / add / rebuild / backfill.
 
-Subcommands:
-  trigger <topic>   Publish an event to the bus
-  run <job>         Run a job directly (bypasses bus)
-  list              Show recent event_log entries
-  runs              Show recent job_runs
-  dag               Show pipeline_dag (stage→source→job→emits)
-  sync              Sync events from Gold sentiment data
-  add               Manually create a market event
-  backfill          Backfill 5d/20d returns for event_propagations
+Post CLI convergence: list/runs/dag moved to ``trade show`` and enable/disable
+moved to ``trade config dag``. Those subcommands remain here as deprecated shims
+that print warnings and forward to the new locations.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from datetime import date
@@ -97,19 +92,21 @@ def _track_event_run(
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade event",
-        description="事件管理 / DAG 查看 / 直接触发",
+        description="事件控制平面 — 触发/运行/同步/新建/重建/回填 (list/runs/dag 已移至 show; enable/disable 已移至 config dag)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[global_flag_parent()],
         epilog=(
             "示例:\n"
             "  trade event trigger gate.morning        # 触发晨盘 gate\n"
             "  trade event run kline_update            # 直接运行 job\n"
-            "  trade event dag                         # 查看 pipeline DAG\n"
-            "  trade event list --limit 20             # 查看最近事件日志\n"
-            "  trade event runs --stage compute        # 查看 compute 阶段 job 执行历史\n"
             "  trade event sync --from 2026-01-01      # 补齐事件库\n"
             "  trade event add --type policy_positive --magnitude 0.7\n"
             "  trade event backfill                    # 回填实际收益\n"
+            "  trade event rebuild                     # 重建事件库\n"
+            "  trade show dag                          # 查看 pipeline DAG (原 event dag)\n"
+            "  trade show events                       # 查看最近事件日志 (原 event list)\n"
+            "  trade show runs                         # 查看 job 执行历史 (原 event runs)\n"
+            "  trade config dag enable kline_update    # 启用 DAG 节点 (原 event enable)\n"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="<command>")
@@ -399,12 +396,29 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv or []
     args = make_parser().parse_args(argv)
 
+    # Deprecated commands: still work but print warning
+    if args.command == "list":
+        print(
+            "Note: 'trade event list' is deprecated; use 'trade show events' instead.",
+            file=sys.stderr,
+        )
+        return _cmd_list(args)
+    if args.command == "runs":
+        print(
+            "Note: 'trade event runs' is deprecated; use 'trade show runs' instead.",
+            file=sys.stderr,
+        )
+        return _cmd_runs(args)
+    if args.command == "dag":
+        print(
+            "Note: 'trade event dag' is deprecated; use 'trade show dag' instead.",
+            file=sys.stderr,
+        )
+        return _cmd_dag(args)
+
     dispatch = {
         "trigger":  _cmd_trigger,
         "run":      _cmd_run,
-        "list":     _cmd_list,
-        "runs":     _cmd_runs,
-        "dag":      _cmd_dag,
         "enable":   lambda a: _cmd_enable_disable(a, True),
         "disable":  lambda a: _cmd_enable_disable(a, False),
         "sync":     _cmd_sync,

@@ -30,7 +30,6 @@ def make_parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list", description="列出最近备份", parents=[common])
     p_list.add_argument("--limit", type=int, default=20)
 
-    sub.add_parser("doctor", description="检查远端备份驱动配置", parents=[common])
     return parser
 
 
@@ -84,17 +83,6 @@ def main(argv: list[str] | None = None) -> int:
                 f"{row.get('size_bytes', 0):>10}  {row.get('created_at')}  "
                 f"{row.get('driver') or 'local'}"
             )
-        return 0
-
-    if args.command == "doctor":
-        import sys as _sys
-        print("Note: 'trade backup doctor' is deprecated; use 'trade config doctor' instead.", file=_sys.stderr)
-        result = backup_doctor(args.data_root)
-        print(
-            f"backend={result['backend']} enabled={result['enabled']} "
-            f"gdrive_available={result['google_drive_available']} "
-            f"folder_id={result['google_drive_folder_id'] or '-'} key_file={result['google_drive_key_file'] or '-'}"
-        )
         return 0
 
     return 1

@@ -77,7 +77,7 @@ def _mask(value: Any) -> str:
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade config",
-        description="配置管理 — 数据源/密钥/路径/DAG 开关/自选股/备份",
+        description="统一配置管理 — 数据源/密钥/路径/DAG 开关/自选股/备份 (converged surface; data source / event enable-disable / account watchlist all delegate here)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[global_flag_parent()],
         epilog=(
@@ -87,11 +87,14 @@ def make_parser() -> argparse.ArgumentParser:
             "trade config get tushare_token            # 读取单个设置\n"
             "trade config set tushare_token abc123     # 写入设置 (DB)\n"
             "trade config doctor                       # 检查密钥/路径/备份配置\n"
-            "trade config source list                  # 数据源列表 (同 trade data source list)\n"
+            "trade config source list                  # 数据源列表 (原 trade data source list)\n"
             "trade config source enable BTC            # 启用数据源\n"
+            "trade config source add ...               # 新增数据源\n"
             "trade config watch list                   # 自选股列表\n"
+            "trade config watch add 600000.SH          # 添加自选股\n"
             "trade config dag list                     # DAG 任务开关状态\n"
             "trade config dag enable kline_update      # 启用 DAG 节点\n"
+            "trade config dag disable kline_update     # 禁用 DAG 节点\n"
         ),
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -370,6 +373,8 @@ def _is_source_command(args) -> bool:
 
 def _cmd_source(args) -> int:
     from trade_py.cli import data as data_cli
+    # Suppress deprecation warning since config source is the canonical path.
+    data_cli._INTERNAL_CALL = True
     src_argv: list[str] = ["source"]
     if args.src_cmd:
         src_argv.append(args.src_cmd)
