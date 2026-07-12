@@ -16,20 +16,15 @@ evidence-driven, auditable, and easy to review.
 
 ## Change Rules
 
-- Start with `git status -sb`. Do not overwrite, delete, or stage unrelated dirty
-  work. Treat untracked local data, `.nvim/`, cache, and generated artifacts as
-  user/runtime state unless the task explicitly targets them.
-- Prefer stable boundaries over broad rewrites: route behavior through CLI/API
-  facades, keep business logic in service/domain modules, keep DB/data access in
-  owner modules, and keep C++ engine changes inside `engine/`.
-- Do not grow catch-all files. Split by domain, service, adapter, repository, or
-  UI surface when a module starts mixing responsibilities.
-- Public contracts need compatibility thought before code: CLI arguments, API
-  payloads, DB schema, parquet layout, and engine interfaces must document
-  migration/default/fallback behavior.
-- For recommendation, causal, trust, backtest, or quality-gate work, expose input
-  evidence, confidence/calibration state, and unknown/failure states. Do not
-  present heuristic scaffolding as a validated model.
+- **Isolation via git worktree (MANDATORY)**: Every feature/refactor/bugfix implementation MUST create and use a dedicated git worktree on a new branch before making any code changes. This prevents multi-agent interference and keeps the main working tree clean. Naming convention: `wt/<feature-slug>-<yyyymmdd>`. Example: `git worktree add ../trade-wt-asset-split -b wt/asset-split-20260712`. Never commit directly to master/main from a worktree until the branch is ready for PR/merge.
+- **Commit after every implementation unit (MANDATORY)**: After each logically complete change (module added, bug fixed, refactor step done), commit immediately. Do not accumulate uncommitted changes. Commit messages should clearly state scope, validation, and compatibility notes.
+- **Push every 3–5 commits (MANDATORY)**: After accumulating 3 to 5 local commits on a feature branch, push the branch to the remote to prevent work loss. Use `git push -u origin <branch>` for the first push, then `git push` thereafter.
+- **Unit tests required (MANDATORY)**: Every behavior change must have corresponding unit tests added or updated near the touched path. If tests are deferred for a specific reason, explicitly state the no-test reason and residual risk, and create a follow-up task tracking the missing coverage.
+- Start with `git status -sb` in the active worktree. Do not overwrite, delete, or stage unrelated dirty work. Treat untracked local data, `.nvim/`, cache, and generated artifacts as user/runtime state unless the task explicitly targets them.
+- Prefer stable boundaries over broad rewrites: route behavior through CLI/API facades, keep business logic in service/domain modules, keep DB/data access in owner modules, and keep C++ engine changes inside `engine/`.
+- Do not grow catch-all files. Split by domain, service, adapter, repository, or UI surface when a module starts mixing responsibilities.
+- Public contracts need compatibility thought before code: CLI arguments, API payloads, DB schema, parquet layout, and engine interfaces must document migration/default/fallback behavior.
+- For recommendation, causal, trust, backtest, or quality-gate work, expose input evidence, confidence/calibration state, and unknown/failure states. Do not present heuristic scaffolding as a validated model.
 
 ## OpenSpec
 
