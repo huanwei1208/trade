@@ -190,12 +190,13 @@ def _render_gate(outcome: EvalOutcome, *, as_json: bool = False) -> None:
 
 
 def make_parser() -> argparse.ArgumentParser:
-    from trade_py.cli import epilog_from_subparsers
+    from trade_py.cli import epilog_from_subparsers, global_flag_parent
 
     parser = argparse.ArgumentParser(
         prog="trade evaluate",
         description="评估层与质量门禁",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

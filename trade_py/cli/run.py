@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 from trade_py.jobs import JOB_REGISTRY
 
@@ -43,6 +44,7 @@ def make_parser() -> argparse.ArgumentParser:
         prog="trade run",
         description="统一触发入口：高层事件 / agenda / 单个 job",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
         epilog=(
             "示例:\n"
             "  trade run morning\n"

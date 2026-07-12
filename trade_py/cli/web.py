@@ -16,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ def make_parser() -> argparse.ArgumentParser:
         prog="trade web",
         description="启动 DAG Web UI + 在线推理服务 (FastAPI)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
         epilog=(
             "示例:\n"
             "  trade web                      # http://localhost:8080\n"

@@ -837,6 +837,31 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             );
             CREATE INDEX IF NOT EXISTS idx_ep_event  ON event_propagations(event_id);
             CREATE INDEX IF NOT EXISTS idx_ep_symbol ON event_propagations(symbol);
+
+            -- ASSET: unified asset registry for meta-driven ingest
+            CREATE TABLE IF NOT EXISTS asset_registry (
+                asset_id        TEXT PRIMARY KEY,
+                asset_class     TEXT NOT NULL,
+                symbol          TEXT NOT NULL,
+                quote_asset     TEXT NOT NULL DEFAULT 'USD',
+                venue           TEXT,
+                interval        TEXT NOT NULL DEFAULT '1d',
+                enabled         INTEGER NOT NULL DEFAULT 1,
+                priority        INTEGER NOT NULL DEFAULT 5,
+                batch_size      INTEGER NOT NULL DEFAULT 100,
+                min_interval_ms INTEGER NOT NULL DEFAULT 300,
+                backfill_days   INTEGER NOT NULL DEFAULT 730,
+                watermark_date  TEXT,
+                last_sync_at    TIMESTAMP,
+                last_sync_status TEXT,
+                last_error      TEXT,
+                last_rows       INTEGER DEFAULT 0,
+                config_json     TEXT NOT NULL DEFAULT '{}',
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_asset_class ON asset_registry(asset_class, enabled, priority);
+            CREATE INDEX IF NOT EXISTS idx_asset_venue ON asset_registry(venue);
         """)
         self._conn.commit()
         self._ensure_instruments_columns()
@@ -1444,6 +1469,144 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
 
     def last_download_date(self, symbol: str) -> Optional[date]:
         return self.sync_state_get("tushare_kline", "daily", symbol)
+
+    # ── Asset Registry ──────────────────────────────────────────────────────
+
+    def asset_registry_upsert(self, asset: dict) -> None:
+        """Upsert a single asset into registry."""
+        config_json = asset.get("config_json")
+        if isinstance(config_json, dict):
+            config_json = json.dumps(config_json)
+        self._conn.execute(
+            """
+            INSERT INTO asset_registry
+                (asset_id, asset_class, symbol, quote_asset, venue, interval,
+                 enabled, priority, batch_size, min_interval_ms, backfill_days,
+                 watermark_date, last_sync_at, last_sync_status, last_error, last_rows,
+                 config_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(asset_id) DO UPDATE SET
+                asset_class = excluded.asset_class,
+                symbol = excluded.symbol,
+                quote_asset = excluded.quote_asset,
+                venue = excluded.venue,
+                interval = excluded.interval,
+                enabled = excluded.enabled,
+                priority = excluded.priority,
+                batch_size = excluded.batch_size,
+                min_interval_ms = excluded.min_interval_ms,
+                backfill_days = excluded.backfill_days,
+                config_json = excluded.config_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                asset["asset_id"], asset["asset_class"], asset["symbol"],
+                asset.get("quote_asset", "USD"), asset.get("venue"),
+                asset.get("interval", "1d"), int(asset.get("enabled", 1)),
+                int(asset.get("priority", 5)), int(asset.get("batch_size", 100)),
+                int(asset.get("min_interval_ms", 300)), int(asset.get("backfill_days", 730)),
+                asset.get("watermark_date"), asset.get("last_sync_at"),
+                asset.get("last_sync_status"), asset.get("last_error"),
+                int(asset.get("last_rows", 0)), config_json or "{}",
+            ),
+        )
+        self._conn.commit()
+
+    def asset_registry_upsert_batch(self, assets: list[dict]) -> None:
+        """Bulk upsert assets."""
+        with self._conn_lock:
+            for asset in assets:
+                self.asset_registry_upsert(asset)
+
+    def asset_registry_list(
+        self,
+        asset_class: str | None = None,
+        enabled_only: bool = False,
+    ) -> list[dict]:
+        """List assets, optionally filtered by class and enabled status."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if asset_class:
+            clauses.append("asset_class = ?")
+            params.append(asset_class)
+        if enabled_only:
+            clauses.append("enabled = 1")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        order = "ORDER BY priority DESC, asset_class, asset_id"
+        rows = self._conn.execute(
+            f"SELECT * FROM asset_registry {where} {order}",
+            params,
+        ).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            if d.get("config_json"):
+                try:
+                    d["config"] = json.loads(d["config_json"])
+                except (ValueError, TypeError):
+                    d["config"] = {}
+            else:
+                d["config"] = {}
+            results.append(d)
+        return results
+
+    def asset_registry_get(self, asset_id: str) -> dict | None:
+        """Get single asset by ID."""
+        row = self._conn.execute(
+            "SELECT * FROM asset_registry WHERE asset_id = ?", (asset_id,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("config_json"):
+            try:
+                d["config"] = json.loads(d["config_json"])
+            except (ValueError, TypeError):
+                d["config"] = {}
+        else:
+            d["config"] = {}
+        return d
+
+    def asset_registry_update_sync_status(
+        self,
+        asset_id: str,
+        status: str,
+        watermark_date: str | None = None,
+        rows: int = 0,
+        error: str | None = None,
+    ) -> None:
+        """Update sync status after an ingest run."""
+        with self._conn_lock:
+            self._conn.execute(
+                """
+                UPDATE asset_registry SET
+                    last_sync_status = ?,
+                    last_sync_at = CURRENT_TIMESTAMP,
+                    last_error = ?,
+                    last_rows = ?,
+                    watermark_date = COALESCE(?, watermark_date),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE asset_id = ?
+                """,
+                (status, error, rows, watermark_date, asset_id),
+            )
+            self._conn.commit()
+
+    def asset_registry_set_enabled(self, asset_id: str, enabled: bool) -> None:
+        with self._conn_lock:
+            self._conn.execute(
+                "UPDATE asset_registry SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE asset_id = ?",
+                (1 if enabled else 0, asset_id),
+            )
+            self._conn.commit()
+
+    def asset_registry_delete(self, asset_id: str) -> bool:
+        with self._conn_lock:
+            cur = self._conn.execute(
+                "DELETE FROM asset_registry WHERE asset_id = ?", (asset_id,)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     # ── Trading Calendar / Agenda ────────────────────────────────────────────
 

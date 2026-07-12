@@ -175,9 +175,9 @@ def _ready_service(data_root: Path) -> BtcMarketDataService:
         _provider_frame(
             COINGECKO_BTC_SHADOW_CONTRACT,
             closes,
-            run_id="fixture-coingecko",
+            run_id="fixture-binance",
         ),
-        b'{"provider":"coingecko","fixture":true}',
+        b'{"provider":"binance","fixture":true}',
     )
     config = BtcAssuranceConfig(
         minimum_history_days=3,
@@ -274,7 +274,7 @@ def test_ready_sync_atomically_publishes_canonical_pointer_raw_and_manifest(
     manifest_path = run_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["provider_contracts"]["primary"]["instrument"] == "BTC-USDT"
-    assert manifest["provider_contracts"]["shadow"]["quote_asset"] == "USD"
+    assert manifest["provider_contracts"]["shadow"]["quote_asset"] == "USDT"
     assert manifest["health"]["data_readiness"] == "ready"
     assert manifest["health"]["accuracy"]["status"] == "pass"
     assert manifest["health"]["source_stability"]["status"] == "pass"
@@ -291,10 +291,10 @@ def test_ready_sync_atomically_publishes_canonical_pointer_raw_and_manifest(
         "reconciliation",
         "revisions",
         "raw/okx/0000",
-        "raw/coingecko/0000",
+        "raw/binance/0000",
     }
     assert expected_artifacts <= set(manifest["artifact_hashes"])
-    for provider in ("okx", "coingecko"):
+    for provider in ("okx", "binance"):
         raw_path = run_dir / "raw" / provider / "0000.json"
         assert raw_path.exists()
         assert (
@@ -483,7 +483,7 @@ def test_status_live_pilot_reports_local_evidence(
     pilot = {item["name"]: item for item in status["live_pilot"]["items"]}
 
     assert status["live_pilot"]["status"] == "pass"
-    assert pilot["coingecko_credentials"]["status"] == "pass"
+    assert pilot["free_api_mode"]["status"] == "pass"
     assert pilot["provider_contracts"]["status"] == "pass"
     assert pilot["published_current"]["status"] == "pass"
     assert pilot["ads_current_pointer"]["status"] == "pass"

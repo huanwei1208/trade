@@ -1162,15 +1162,14 @@ def test_provider_readiness_reports_required_credentials_and_optional_modules(
     stats = provider_readiness_stats(tmp_path)
     lines = build_status_lines({"as_of": "2026-03-20", "provider_readiness": stats})
 
-    assert stats["status"] == "fail"
-    assert "coingecko" in stats["missing_required"]
+    # Tushare is the only credential-required provider; binance/okx are free (no key)
+    assert stats["status"] == "warn"
+    assert "tushare" not in stats["missing_required"]
     assert "akshare" in stats["warn_optional"]
     assert stats["providers"]["tushare"]["credential_present"] is True
-    assert stats["providers"]["coingecko"]["credential_present"] is False
-    assert "PROVIDER_REQUIRED_UNAVAILABLE" in stats["reason_codes"]
+    assert stats["providers"]["binance"]["credential_required"] is False
     assert "PROVIDER_OPTIONAL_UNAVAILABLE" in stats["reason_codes"]
     plan_by_provider = {item["provider"]: item for item in stats["recovery_plan"]}
-    assert plan_by_provider["coingecko"]["command"] == ["export", "COINGECKO_API_KEY=YOUR_KEY"]
     assert plan_by_provider["akshare"]["missing_modules"] == ["akshare"]
     assert any("数据源可用性" in line for line in lines)
 
@@ -1180,7 +1179,6 @@ def test_provider_readiness_passes_when_required_credentials_and_modules_exist(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("TUSHARE_TOKEN", "tushare-token")
-    monkeypatch.setenv("COINGECKO_API_KEY", "coingecko-key")
     monkeypatch.setattr("trade_py.utils.data_inspector._module_available", lambda _module: True)
 
     stats = provider_readiness_stats(tmp_path)
@@ -1189,7 +1187,9 @@ def test_provider_readiness_passes_when_required_credentials_and_modules_exist(
     assert stats["missing_required"] == []
     assert stats["warn_optional"] == []
     assert stats["recovery_plan"] == []
-    assert stats["providers"]["coingecko"]["credential_present"] is True
+    assert stats["providers"]["tushare"]["credential_present"] is True
+    assert stats["providers"]["binance"]["credential_required"] is False
+    assert stats["providers"]["okx"]["credential_required"] is False
 
 
 def test_data_quality_gate_fails_on_provider_readiness_breakage() -> None:
@@ -1214,14 +1214,14 @@ def test_data_quality_gate_fails_on_provider_readiness_breakage() -> None:
         "provider_readiness": {
             "status": "fail",
             "reason_codes": ["PROVIDER_REQUIRED_UNAVAILABLE"],
-            "missing_required": ["tushare", "coingecko"],
+            "missing_required": ["tushare"],
             "warn_optional": [],
             "recovery_plan": [
                 {
-                    "provider": "coingecko",
-                    "command": ["export", "COINGECKO_API_KEY=YOUR_KEY"],
+                    "provider": "tushare",
+                    "command": ["export", "TUSHARE_TOKEN=YOUR_TOKEN"],
                     "mode": "configure",
-                    "detail": "set CoinGecko key",
+                    "detail": "set Tushare token",
                 }
             ],
         },
@@ -1233,14 +1233,13 @@ def test_data_quality_gate_fails_on_provider_readiness_breakage() -> None:
     assert "PROVIDER_READINESS_DEGRADED" in gate["reason_codes"]
     assert gate["components"]["provider_readiness"]["metrics"]["missing_required"] == [
         "tushare",
-        "coingecko",
     ]
-    assert gate["components"]["provider_readiness"]["metrics"]["recovery_plan"][0]["provider"] == "coingecko"
+    assert gate["components"]["provider_readiness"]["metrics"]["recovery_plan"][0]["provider"] == "tushare"
     plan_by_component = {item["component"]: item for item in gate["recovery_plan"]}
     assert plan_by_component["provider_readiness"]["mode"] == "configure"
-    assert plan_by_component["provider_readiness"]["provider"] == "coingecko"
-    assert plan_by_component["provider_readiness"]["command"] == ["export", "COINGECKO_API_KEY=YOUR_KEY"]
-    assert plan_by_component["provider_readiness"]["missing_required"] == ["tushare", "coingecko"]
+    assert plan_by_component["provider_readiness"]["provider"] == "tushare"
+    assert plan_by_component["provider_readiness"]["command"] == ["export", "TUSHARE_TOKEN=YOUR_TOKEN"]
+    assert plan_by_component["provider_readiness"]["missing_required"] == ["tushare"]
 
 
 def test_provider_audit_reports_recent_tushare_auth_failures(tmp_path) -> None:

@@ -317,12 +317,13 @@ def _cmd_nlp_train(args: argparse.Namespace) -> int:
 
 
 def make_parser() -> argparse.ArgumentParser:
-    from trade_py.cli import epilog_from_subparsers
+    from trade_py.cli import epilog_from_subparsers, global_flag_parent
 
     parser = argparse.ArgumentParser(
         prog="trade model",
         description="模型与信号分析 — 窗口得分/情绪IC/预测/训练",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

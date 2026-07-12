@@ -34,6 +34,8 @@ DATASET_CATALOG: tuple[DatasetMeta, ...] = (
     DatasetMeta("recommendation", "Recommendation", True, ("today", "candidates", "symbol", "recommendations"), "recommend"),
     DatasetMeta("models", "Models", False, ("signals", "belief", "recommendations", "trust"), "model_train"),
     DatasetMeta("crypto_btc", "Crypto BTC", False, ("research", "trust", "ops"), "crypto_btc_fetch"),
+    DatasetMeta("crypto_news", "Crypto News", False, ("events", "signals", "research"), "crypto_news_sentiment"),
+    DatasetMeta("crypto_fear_greed", "Fear & Greed", False, ("research", "signals"), "crypto_news_sentiment"),
     DatasetMeta("sector_map", "Sector Map", False, ("events", "signals", "belief"), "sector_refresh"),
 )
 
@@ -50,6 +52,8 @@ DOWNSTREAM_JOB_MAP: dict[str, list[str]] = {
     "recommendation": ["evaluate_daily"],
     "models": ["belief_update", "recommend", "evaluate_daily"],
     "crypto_btc": ["crypto_research_validation"],
+    "crypto_news": ["event_extract", "belief_update", "evaluate_daily"],
+    "crypto_fear_greed": ["belief_update", "evaluate_daily"],
     "sector_map": ["event_extract", "kg_propagate", "window_score", "belief_update", "recommend", "evaluate_daily"],
 }
 

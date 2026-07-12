@@ -51,7 +51,7 @@ def _primary_frame(
                 hashlib.sha256(f"primary-{index}".encode()).hexdigest()
                 for index in range(len(closes))
             ],
-            "schema_version": "btc-provider-v1",
+            "schema_version": "crypto-provider-v2",
             "run_id": run_id,
         }
     )
@@ -64,17 +64,21 @@ def _shadow_frame(
     run_id: str = "fixture-shadow",
 ) -> pd.DataFrame:
     dates = pd.date_range(start, periods=len(closes), freq="D", tz="UTC")
+    close = pd.Series(closes, dtype="float64")
     return pd.DataFrame(
         {
-            "provider": "coingecko",
-            "venue": "coingecko",
-            "instrument": "BTC-USD",
+            "provider": "binance",
+            "venue": "binance",
+            "instrument": "BTCUSDT",
             "base_asset": "BTC",
-            "quote_asset": "USD",
-            "interval": "daily",
+            "quote_asset": "USDT",
+            "interval": "1d",
             "bar_open_at": dates,
             "bar_close_at": dates + pd.Timedelta(days=1),
-            "close": pd.Series(closes, dtype="float64"),
+            "open": close,
+            "high": close * 1.01,
+            "low": close * 0.99,
+            "close": close,
             "volume": [2000.0 + index for index in range(len(closes))],
             "is_final": True,
             "fetched_at": _FETCHED_AT,
@@ -83,7 +87,7 @@ def _shadow_frame(
                 hashlib.sha256(f"shadow-{index}".encode()).hexdigest()
                 for index in range(len(closes))
             ],
-            "schema_version": "btc-provider-v1",
+            "schema_version": "crypto-provider-v2",
             "run_id": run_id,
         }
     )
@@ -125,7 +129,7 @@ def _ready_result(
         },
         raw_payloads={
             "okx": (b'{"fixture":"okx"}',),
-            "coingecko": (b'{"fixture":"coingecko"}',),
+            "binance": (b'{"fixture":"binance"}',),
         },
     )
     assert result.data_readiness == "ready"
@@ -159,11 +163,11 @@ def _seed_current(store: BtcRunStore) -> tuple[str, str]:
 @pytest.mark.parametrize(
     ("target", "column", "mixed_value"),
     [
-        ("primary", "provider", "coingecko"),
+        ("primary", "provider", "binance"),
         ("primary", "quote_asset", "USD"),
-        ("primary", "interval", "daily"),
+        ("primary", "interval", "1d"),
         ("shadow", "provider", "okx"),
-        ("shadow", "quote_asset", "USDT"),
+        ("shadow", "quote_asset", "USD"),
         ("shadow", "interval", "1Dutc"),
     ],
 )
@@ -363,7 +367,7 @@ def test_assurance_manifest_health_summarizes_ready_gate_evidence() -> None:
                     "rows": 3,
                     "raw_payload_hashes": ["a" * 64],
                 },
-                "coingecko": {
+                "binance": {
                     "status": "succeeded",
                     "attempts": 1,
                     "retry_count": 0,

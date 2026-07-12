@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, timedelta
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 
 _DATA_ROOT = str(default_data_root())
@@ -12,6 +13,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade status",
         description="统一状态总览：质量门禁 / 未来事件 / agenda / 最近执行",
+        parents=[global_flag_parent()],
     )
     parser.add_argument("--data-root", default=_DATA_ROOT)
     parser.add_argument("--limit", type=int, default=5)

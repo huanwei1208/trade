@@ -895,6 +895,115 @@ def _migrate_v17(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v18(conn: sqlite3.Connection) -> None:
+    """Create asset_registry table and seed default assets (crypto/fx/commodity)."""
+    # Table already created in _init_schema, ensure indexes exist
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_asset_class ON asset_registry(asset_class, enabled, priority)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_asset_venue ON asset_registry(venue)
+    """)
+
+    # Seed default assets if table is empty
+    count = conn.execute("SELECT COUNT(*) FROM asset_registry").fetchone()[0]
+    if count == 0:
+        default_assets = [
+            # Crypto: 5 major assets, OKX primary, Binance shadow configured via config_json
+            ("crypto.BTC",  "crypto", "BTC",  "USDT", "okx",     "1d", 1, 10, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            ("crypto.ETH",  "crypto", "ETH",  "USDT", "okx",     "1d", 1,  9, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            ("crypto.SOL",  "crypto", "SOL",  "USDT", "okx",     "1d", 1,  8, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            ("crypto.BNB",  "crypto", "BNB",  "USDT", "okx",     "1d", 1,  7, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            ("crypto.XRP",  "crypto", "XRP",  "USDT", "okx",     "1d", 1,  6, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            # Commodities
+            ("commodity.gold", "commodity", "Au99.99", "CNY", "sge", "1d", 1, 5, 1, 1000, 3650, '{}'),
+            # FX
+            ("fx.USDCNH", "fx", "USDCNH", "CNY", "eastmoney", "1d", 1, 5, 1, 1000, 3650, '{}'),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO asset_registry
+                (asset_id, asset_class, symbol, quote_asset, venue, interval,
+                 enabled, priority, batch_size, min_interval_ms, backfill_days, config_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            default_assets,
+        )
+    conn.commit()
+
+
+def _migrate_v19(conn: sqlite3.Connection) -> None:
+    """Update DAG to use meta-driven asset_batch_ingest instead of hardcoded BTC job."""
+    if not _table_exists(conn, "pipeline_dag"):
+        return
+    # Update existing crypto_btc_fetch row to route to generic ingest
+    conn.execute(
+        "UPDATE pipeline_dag SET description='通用资产批量采集 (BTC legacy)' WHERE job_name='crypto_btc_fetch'"
+    )
+    # Disable legacy cross_asset_fetch, use meta-driven instead
+    conn.execute(
+        "UPDATE pipeline_dag SET enabled=0 WHERE job_name='cross_asset_fetch'"
+    )
+    # Add commodity asset ingest
+    exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? AND config_json LIKE ?",
+        ("gate.morning", "asset_batch_ingest", '%"asset_class": "commodity"%'),
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description, config_json) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                "fetch",
+                "gate.morning",
+                "asset_batch_ingest",
+                "data.asset.ingested",
+                1,
+                "Morning 大宗商品采集 (gold)",
+                '{"asset_class": "commodity"}',
+            ),
+        )
+    # Add FX asset ingest
+    exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? AND config_json LIKE ?",
+        ("gate.morning", "asset_batch_ingest", '%"asset_class": "fx"%'),
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description, config_json) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                "fetch",
+                "gate.morning",
+                "asset_batch_ingest",
+                "data.asset.ingested",
+                1,
+                "Morning 汇率采集 (USDCNH)",
+                '{"asset_class": "fx"}',
+            ),
+        )
+    # Add crypto asset batch ingest
+    exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? AND config_json LIKE ?",
+        ("gate.crypto_daily", "asset_batch_ingest", '%"asset_class": "crypto"%'),
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description, config_json) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                "fetch",
+                "gate.crypto_daily",
+                "asset_batch_ingest",
+                "data.batch.completed",
+                1,
+                "Crypto 资产批量采集 (BTC/ETH/SOL/BNB/XRP)",
+                '{"asset_class": "crypto"}',
+            ),
+        )
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -1091,4 +1200,28 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v17 applied")
         except Exception as exc:
             logger.error("Migration v17 failed: %s", exc)
+            raise
+
+    # ── v18: unified asset registry for meta-driven ingest ────────────────────
+    if 18 not in applied:
+        logger.info("Applying DB migration v18 (asset registry)")
+        try:
+            _migrate_v18(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (18)")
+            conn.commit()
+            logger.info("Migration v18 applied")
+        except Exception as exc:
+            logger.error("Migration v18 failed: %s", exc)
+            raise
+
+    # ── v19: update DAG for generic asset batch ingest ──────────────────────
+    if 19 not in applied:
+        logger.info("Applying DB migration v19 (asset ingest DAG)")
+        try:
+            _migrate_v19(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (19)")
+            conn.commit()
+            logger.info("Migration v19 applied")
+        except Exception as exc:
+            logger.error("Migration v19 failed: %s", exc)
             raise

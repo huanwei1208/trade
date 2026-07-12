@@ -125,6 +125,18 @@ def _normalise_sector_token(token: str) -> str:
             "法律服务": SW.SocialService,
             "电力": SW.Utilities,
             "股市": SW.NonBankFinancial,
+            "crypto": SW.NonBankFinancial,
+            "crypto_l1": SW.NonBankFinancial,
+            "crypto_l2": SW.NonBankFinancial,
+            "crypto_defi": SW.NonBankFinancial,
+            "crypto_exchange": SW.NonBankFinancial,
+            "crypto_regulation": SW.NonBankFinancial,
+            "crypto_stablecoin": SW.NonBankFinancial,
+            "crypto_mining": SW.NonBankFinancial,
+            "crypto_nft": SW.Media,
+            "crypto_meme": SW.Media,
+            "crypto_ai": SW.Computer,
+            "crypto_general": SW.NonBankFinancial,
         }
 
         lowered = raw.replace(" ", "").replace("-", "").replace("_", "").lower()
@@ -169,7 +181,12 @@ def _normalise_event_type(raw_type: object, primary_sector: str,
         "defense_spending_up", "macro_recovery", "macro_slowdown",
         "geopolitical_risk", "earnings_beat", "earnings_miss",
         "merger_acquisition", "regulatory_tightening",
-        "supply_disruption", "other",
+        "supply_disruption",
+        "etf_approval", "etf_rejection", "hack_exploit", "exchange_bankruptcy",
+        "exchange_listing", "exchange_delisting", "regulation_ban",
+        "protocol_upgrade", "halving", "defi_exploit", "stablecoin_depeg",
+        "institutional_adoption", "macro_cpi",
+        "other",
     }
     if raw in known:
         return raw

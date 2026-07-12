@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, timedelta
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 
 _DATA_ROOT = str(default_data_root())
@@ -12,6 +13,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade inspect",
         description="统一查看入口：dag / calendar / agenda / kg / factors / models / events / health",
+        parents=[global_flag_parent()],
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

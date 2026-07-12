@@ -52,6 +52,10 @@ _REQUIRED_PARQUET_COLUMNS: dict[str, tuple[str, ...]] = {
     "cross_asset.gold": ("date", "close"),
     "cross_asset.fx_cnh": ("date", "close"),
     "cross_asset.btc": ("date", "close"),
+    "cross_asset.eth": ("date", "close"),
+    "cross_asset.sol": ("date", "close"),
+    "cross_asset.bnb": ("date", "close"),
+    "cross_asset.xrp": ("date", "close"),
     "index": ("date", "close"),
     "northbound": ("date", "total_net", "net_5d"),
     "macro.gdp": ("date", "q_gdp"),
@@ -80,6 +84,7 @@ _DATA_SOURCE_JOB_POLICIES: dict[str, float] = {
     "macro": 2.0,
     "cross_asset_fetch": 1.0,
     "crypto_btc_fetch": 1.0,
+    "crypto_news_sentiment": 1.0,
     "crypto_research_validation": 1.0,
     "sentiment_fetch": 2.0,
     "sentiment_silver": 2.0,
@@ -116,9 +121,9 @@ _VALUE_QUALITY_RECOVERY: dict[str, dict[str, Any]] = {
         "detail": "Re-fetch northbound flow data and verify rolling net_5d values are populated.",
     },
     "cross_asset": {
-        "command": ["trade", "data", "cross-asset", "all"],
+        "command": ["trade", "data", "sync"],
         "mode": "refetch",
-        "detail": "Re-fetch cross-asset files and verify close/optional OHLC relationships.",
+        "detail": "Re-fetch cross-asset files via meta-driven batch sync and verify close/optional OHLC relationships.",
     },
     "macro": {
         "command": ["trade", "data", "macro", "sync"],
@@ -138,7 +143,7 @@ _PYTHON_PROVIDER_MODULES: dict[str, tuple[str, ...]] = {
     "baostock": ("baostock",),
     "tencent": ("requests",),
     "okx": ("requests",),
-    "coingecko": ("requests",),
+    "binance": ("requests",),
     "tushare": ("tushare",),
 }
 
@@ -149,10 +154,10 @@ _PROVIDER_RECOVERY: dict[str, dict[str, Any]] = {
         "mode": "configure",
         "detail": "Configure Tushare token before running A-share market, fundamental, macro, and flow refresh jobs.",
     },
-    "coingecko": {
-        "command": ["export", "COINGECKO_API_KEY=YOUR_KEY"],
-        "mode": "configure",
-        "detail": "Set COINGECKO_API_KEY or COINGECKO_DEMO_API_KEY before BTC shadow reconciliation.",
+    "binance": {
+        "command": [],
+        "mode": "free",
+        "detail": "Binance public API is free and keyless - no configuration required for crypto shadow reconciliation.",
     },
 }
 
@@ -562,7 +567,7 @@ def schema_contract_stats(data_root: str | Path = "data", sample_limit: int = 10
             [path] if path.exists() else [],
             _REQUIRED_PARQUET_COLUMNS[f"cross_asset.{name}"],
         )
-        for name in ("gold", "fx_cnh", "btc")
+        for name in ("gold", "fx_cnh", "btc", "eth", "sol", "bnb", "xrp")
         for path, _layout in [_cross_asset_path(root, name)]
     )
     specs.extend(
@@ -1029,13 +1034,20 @@ def _target_value_recovery(entry: dict[str, Any], datasets: dict[str, dict[str, 
             }
         if not date_ranges:
             return entry
-        asset_by_dataset = {
-            "cross_asset.gold": "gold",
+        class_by_dataset = {
+            "cross_asset.gold": "commodity",
             "cross_asset.fx_cnh": "fx",
-            "cross_asset.btc": "btc",
+            "cross_asset.btc": "crypto",
+            "cross_asset.eth": "crypto",
+            "cross_asset.sol": "crypto",
+            "cross_asset.bnb": "crypto",
+            "cross_asset.xrp": "crypto",
         }
-        asset = asset_by_dataset.get(dataset_names[0], "all") if len(dataset_names) == 1 else "all"
-        entry["command"] = ["trade", "data", "cross-asset", asset]
+        asset_class = class_by_dataset.get(dataset_names[0]) if len(dataset_names) == 1 else None
+        if asset_class:
+            entry["command"] = ["trade", "data", "sync", "--class", asset_class]
+        else:
+            entry["command"] = ["trade", "data", "sync"]
         entry["mode"] = "targeted_refetch"
         entry["detail"] = (
             "Re-fetch affected cross-asset data and re-check invalid OHLC/value date ranges; "
@@ -1397,6 +1409,9 @@ def _cross_asset_path(data_root: str | Path, name: str) -> tuple[Path, str]:
     canonical = CROSS_ASSET_DIR(root) / f"{name}.parquet"
     if canonical.exists():
         return canonical, "market/cross_asset"
+    crypto_path = CROSS_ASSET_DIR(root) / "crypto" / f"{name}.parquet"
+    if crypto_path.exists():
+        return crypto_path, "market/cross_asset/crypto"
     legacy = root / "cross_asset" / f"{name}.parquet"
     return legacy, "cross_asset"
 
@@ -1404,7 +1419,7 @@ def _cross_asset_path(data_root: str | Path, name: str) -> tuple[Path, str]:
 def cross_asset_stats(data_root: str | Path = "data") -> dict[str, Any]:
     expected = _expected_data_date(data_root, trading_day=False)
     result: dict[str, Any] = {}
-    for name in ("gold", "fx_cnh", "btc"):
+    for name in ("gold", "fx_cnh", "btc", "eth", "sol", "bnb", "xrp"):
         path, layout = _cross_asset_path(data_root, name)
         item: dict[str, Any] = {
             "path": str(path),
@@ -1440,6 +1455,21 @@ def cross_asset_stats(data_root: str | Path = "data") -> dict[str, Any]:
             except Exception as exc:
                 item["error"] = str(exc)
         result[name] = item
+    fng_path = Path(data_root) / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
+    fng_item: dict[str, Any] = {"path": str(fng_path), "exists": fng_path.exists(), "rows": 0, "min_date": None, "max_date": None, "expected_date": expected, "lag_days": None}
+    if fng_path.exists():
+        try:
+            import duckdb
+            con = duckdb.connect()
+            try:
+                row = con.execute(f"SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM read_parquet('{fng_path}')").fetchone()
+            finally:
+                con.close()
+            rows, min_d, max_d = row if row else (0, None, None)
+            fng_item.update({"rows": int(rows or 0), "min_date": str(min_d)[:10] if min_d else None, "max_date": str(max_d)[:10] if max_d else None, "lag_days": _lag_days(max_d, expected)})
+        except Exception as exc:
+            fng_item["error"] = str(exc)
+    result["fear_greed"] = fng_item
     return result
 
 
@@ -1715,24 +1745,47 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
     )
 
     cross = status.get("cross_asset") or {}
+    required_cross = ("gold", "fx_cnh", "btc")
+    optional_cross = ("eth", "sol", "bnb", "xrp", "fear_greed")
     cross_metrics = {
         key: {
             "exists": (cross.get(key) or {}).get("exists"),
             "lag_days": (cross.get(key) or {}).get("lag_days"),
         }
-        for key in ("gold", "fx_cnh", "btc")
+        for key in required_cross + optional_cross
     }
     cross_bad = [
         key
-        for key, item in cross_metrics.items()
-        if not item.get("exists") or item.get("lag_days") is None or int(item.get("lag_days") or 0) > 7
+        for key in required_cross
+        if not cross_metrics[key].get("exists") or cross_metrics[key].get("lag_days") is None or int(cross_metrics[key].get("lag_days") or 0) > 7
     ]
+    optional_stale = [
+        key
+        for key in optional_cross
+        if cross_metrics[key].get("exists") and (cross_metrics[key].get("lag_days") is None or int(cross_metrics[key].get("lag_days") or 0) > 7)
+    ]
+    cross_bad.extend(optional_stale)
     components["cross_asset"] = _component(
         "pass" if not cross_bad else "warn",
         None if not cross_bad else "CROSS_ASSET_STALE_OR_MISSING",
         cross_metrics,
-        _recovery(["trade", "data", "cross-asset", "all"], mode="refresh", detail="Refresh gold and FX cross-asset sources")
+        _recovery(["trade", "data", "sync", "--crypto"], mode="refresh", detail="Refresh cross-asset crypto/gold/FX data sources")
         if cross_bad
+        else None,
+    )
+
+    news = status.get("news") or {}
+    bronze = news.get("bronze") or {}
+    silver = news.get("silver") or {}
+    bronze_lag = bronze.get("lag_days")
+    bronze_rows = int(bronze.get("rows") or 0)
+    news_stale = bronze_rows > 0 and (bronze_lag is None or int(bronze_lag) > 1)
+    components["crypto_news"] = _component(
+        "warn" if news_stale else "pass",
+        "CRYPTO_NEWS_STALE" if news_stale else None,
+        {"bronze_rows": bronze_rows, "silver_rows": silver.get("rows"), "lag_days": bronze_lag, "urgent_events": silver.get("urgent_events", 0)},
+        _recovery(["trade", "data", "news", "fetch"], mode="refresh", detail="Fetch latest crypto news and Fear & Greed index")
+        if news_stale
         else None,
     )
 
@@ -2017,6 +2070,76 @@ def sentiment_stats(data_root: str | Path = "data") -> dict[str, Any]:
             result["gold"] = {"rows": 0, "dates": 0, "expected_date": expected, "lag_days": None}
     except Exception as exc:
         logger.debug("sentiment_stats error: %s", exc)
+        result["error"] = str(exc)
+
+    return result
+
+
+def news_stats(data_root: str | Path = "data") -> dict[str, Any]:
+    """Return crypto news Bronze/Silver statistics."""
+    data_root = Path(data_root)
+    result: dict[str, Any] = {}
+    expected = _expected_data_date(data_root, trading_day=False)
+
+    bronze_dir = data_root / "news" / "bronze"
+    silver_dir = data_root / "news" / "silver"
+
+    try:
+        import duckdb
+
+        if bronze_dir.exists():
+            bronze_glob = str(bronze_dir / "**" / "*.parquet")
+            con = duckdb.connect()
+            try:
+                row = con.execute(f"""
+                    SELECT COUNT(*) AS rows,
+                           COUNT(DISTINCT source) AS sources,
+                           MIN(published_at) AS min_ts,
+                           MAX(published_at) AS max_ts
+                    FROM read_parquet('{bronze_glob}', union_by_name=true)
+                """).fetchone()
+            finally:
+                con.close()
+            rows, sources, min_ts, max_ts = row if row else (0, 0, None, None)
+            result["bronze"] = {
+                "rows": int(rows or 0),
+                "sources": int(sources or 0),
+                "min_ts": str(min_ts)[:10] if min_ts else None,
+                "max_ts": str(max_ts)[:10] if max_ts else None,
+                "expected_date": expected,
+                "lag_days": _lag_days(max_ts, expected),
+            }
+        else:
+            result["bronze"] = {"rows": 0, "sources": 0, "expected_date": expected, "lag_days": None}
+
+        if silver_dir.exists():
+            silver_glob = str(silver_dir / "**" / "*.parquet")
+            con = duckdb.connect()
+            try:
+                row = con.execute(f"""
+                    SELECT COUNT(*) AS rows,
+                           COUNT(DISTINCT source) AS sources,
+                           MIN(published_at) AS min_ts,
+                           MAX(published_at) AS max_ts,
+                           SUM(CASE WHEN is_urgent THEN 1 ELSE 0 END) AS urgent_count
+                    FROM read_parquet('{silver_glob}', union_by_name=true)
+                """).fetchone()
+            finally:
+                con.close()
+            rows, sources, min_ts, max_ts, urgent = row if row else (0, 0, None, None, 0)
+            result["silver"] = {
+                "rows": int(rows or 0),
+                "sources": int(sources or 0),
+                "min_ts": str(min_ts)[:10] if min_ts else None,
+                "max_ts": str(max_ts)[:10] if max_ts else None,
+                "urgent_events": int(urgent or 0),
+                "expected_date": expected,
+                "lag_days": _lag_days(max_ts, expected),
+            }
+        else:
+            result["silver"] = {"rows": 0, "sources": 0, "urgent_events": 0, "expected_date": expected, "lag_days": None}
+    except Exception as exc:
+        logger.debug("news_stats error: %s", exc)
         result["error"] = str(exc)
 
     return result
@@ -2361,11 +2484,6 @@ def provider_readiness_stats(data_root: str | Path = "data") -> dict[str, Any]:
         or _defaults_provider_value(("providers", "tushare", "token"))
         or ""
     ).strip()
-    coingecko_key = str(
-        os.environ.get("COINGECKO_API_KEY")
-        or os.environ.get("COINGECKO_DEMO_API_KEY")
-        or ""
-    ).strip()
 
     providers: dict[str, dict[str, Any]] = {
         "tushare": {
@@ -2379,16 +2497,27 @@ def provider_readiness_stats(data_root: str | Path = "data") -> dict[str, Any]:
             },
             "used_by": ["kline", "fund_flow", "fundamental", "index", "northbound", "macro", "calendar"],
         },
-        "coingecko": {
-            "status": "pass" if coingecko_key and all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["coingecko"]) else "fail",
-            "credential_required": True,
-            "credential_present": bool(coingecko_key),
-            "credential_sources": ["env:COINGECKO_API_KEY", "env:COINGECKO_DEMO_API_KEY"],
+        "okx": {
+            "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["okx"]) else "warn",
+            "credential_required": False,
+            "credential_present": None,
+            "credential_sources": [],
             "modules": {
                 module: _module_available(module)
-                for module in _PYTHON_PROVIDER_MODULES["coingecko"]
+                for module in _PYTHON_PROVIDER_MODULES["okx"]
             },
-            "used_by": ["cross_asset.btc.shadow_reconciliation"],
+            "used_by": ["cross_asset.crypto.primary"],
+        },
+        "binance": {
+            "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["binance"]) else "warn",
+            "credential_required": False,
+            "credential_present": None,
+            "credential_sources": [],
+            "modules": {
+                module: _module_available(module)
+                for module in _PYTHON_PROVIDER_MODULES["binance"]
+            },
+            "used_by": ["cross_asset.crypto.shadow_reconciliation"],
         },
         "akshare": {
             "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["akshare"]) else "warn",
@@ -2627,7 +2756,7 @@ def _btc_cross_source_item(data_root: str | Path) -> dict[str, Any]:
         "status": "fail",
         "evidence_level": "missing",
         "primary_source": "okx",
-        "shadow_sources": ["coingecko"],
+        "shadow_sources": ["binance"],
         "evidence_refs": {"current_pointer": str(current_path)},
         "required_artifact": {
             "current_pointer": str(current_path),
@@ -2635,7 +2764,7 @@ def _btc_cross_source_item(data_root: str | Path) -> dict[str, Any]:
             "cross_source_status": "pass",
             "minimum_aligned_rows": 1,
             "maximum_block_rows": 0,
-            "required_shadow_sources": ["coingecko"],
+            "required_shadow_sources": ["binance"],
         },
         "reason_code": "BTC_RECONCILIATION_MISSING",
         "metrics": {},
@@ -2796,7 +2925,7 @@ def _cross_source_recovery_item(dataset: str, item: dict[str, Any]) -> dict[str,
             "command": ["trade", "data", "cross-asset", "btc", "--mode", "sync", "--strict"],
             "mode": "sync",
             "detail": (
-                "Run BTC assurance with OKX primary and CoinGecko shadow evidence until "
+                "Run BTC assurance with OKX primary and Binance shadow evidence until "
                 "D3 reconciliation passes and btc_current.json points at the manifest."
             ),
         }
@@ -2887,6 +3016,7 @@ def get_data_status(
         "macro":       macro_stats(data_root),
         "instruments": db_instrument_stats(data_root),
         "sentiment":   sentiment_stats(data_root),
+        "news":        news_stats(data_root),
         "events":      events_stats(data_root),
         "schema_contracts": schema_contracts,
         "source_stability": source_stability_stats(data_root, sample_limit=sample_limit),
@@ -3007,7 +3137,7 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
     cross = status.get("cross_asset", {})
     if cross:
         lines += ["### 跨资产数据"]
-        for key, label in (("gold", "Gold"), ("fx_cnh", "USD/CNH"), ("btc", "BTC")):
+        for key, label in (("gold", "Gold"), ("fx_cnh", "USD/CNH"), ("btc", "BTC"), ("eth", "ETH"), ("sol", "SOL"), ("bnb", "BNB"), ("xrp", "XRP"), ("fear_greed", "Fear&Greed")):
             item = cross.get(key, {})
             exists = "yes" if item.get("exists") else "no"
             lines.append(
@@ -3157,6 +3287,19 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
         f"  范围: {silver.get('min_date', '—')} ~ {silver.get('max_date', '—')}  lag={silver.get('lag_days', '—')}d",
         f"- Gold  日期数: **{gold.get('dates', 0)}**  ({gold.get('rows', 0):,} 行)",
         f"  范围: {gold.get('min_date', '—')} ~ {gold.get('max_date', '—')}  lag={gold.get('lag_days', '—')}d",
+        "",
+    ]
+
+    n = status.get("news", {})
+    n_bronze = n.get("bronze", {})
+    n_silver = n.get("silver", {})
+    n_ok = status_emoji(n_bronze.get("rows", 0), 1)
+    lines += [
+        "### Crypto 新闻",
+        f"- {n_ok} Bronze 文章数: **{n_bronze.get('rows', 0):,}**  sources={n_bronze.get('sources', 0)}",
+        f"  范围: {n_bronze.get('min_ts', '—')} ~ {n_bronze.get('max_ts', '—')}  lag={n_bronze.get('lag_days', '—')}d",
+        f"- Silver 分析数: **{n_silver.get('rows', 0):,}**  urgent={n_silver.get('urgent_events', 0)}",
+        f"  范围: {n_silver.get('min_ts', '—')} ~ {n_silver.get('max_ts', '—')}  lag={n_silver.get('lag_days', '—')}d",
         "",
     ]
 

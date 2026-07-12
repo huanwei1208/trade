@@ -67,12 +67,13 @@ def _track_kg_run(
 
 
 def make_parser() -> argparse.ArgumentParser:
-    from trade_py.cli import epilog_from_subparsers
+    from trade_py.cli import epilog_from_subparsers, global_flag_parent
 
     parser = argparse.ArgumentParser(
         prog="trade kg",
         description="Learned KG 候选边学习 / 审核 / 上线",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

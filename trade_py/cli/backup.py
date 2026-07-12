@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 
 
@@ -12,6 +13,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade backup",
         description="TradeDB 备份与恢复",
+        parents=[global_flag_parent()],
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -85,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "doctor":
+        import sys as _sys
+        print("Note: 'trade backup doctor' is deprecated; use 'trade config doctor' instead.", file=_sys.stderr)
         result = backup_doctor(args.data_root)
         print(
             f"backend={result['backend']} enabled={result['enabled']} "

@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root, resolve_repo_path, load_defaults
 from trade_py.data.pipeline.paths import bronze_path, bronze_root
 from trade_py.db.settings_db import SettingsDB
@@ -349,7 +350,8 @@ def _build_parser(argv: list[str]) -> tuple[argparse.Namespace, bool]:
         return defs.get(key, fallback)
 
     parser = argparse.ArgumentParser(prog="trade data sentiment",
-                                     description="News sentiment pipeline")
+                                     description="News sentiment pipeline",
+                                     parents=[global_flag_parent()])
     parser.add_argument("--date", default=None, help="Single date (YYYY-MM-DD)")
     parser.add_argument("--start", default=None, help="Range start (YYYY-MM-DD)")
     parser.add_argument("--end",   default=None, help="Range end (YYYY-MM-DD)")
@@ -694,7 +696,8 @@ def _run_pipeline_loop(args, dates: list[date],
 # ---------------------------------------------------------------------------
 
 def _cmd_status(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog="trade data sentiment status")
+    p = argparse.ArgumentParser(prog="trade data sentiment status",
+                                parents=[global_flag_parent()])
     p.add_argument("--data-root", default=str(default_data_root()))
     p.add_argument("--lookback", type=int, default=30, help="Lookback window in days")
     args = p.parse_args(argv)
@@ -719,7 +722,8 @@ def _cmd_status(argv: list[str]) -> int:
 
 
 def _cmd_sources(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog="trade data sentiment sources")
+    p = argparse.ArgumentParser(prog="trade data sentiment sources",
+                                parents=[global_flag_parent()])
     p.add_argument("--rsshub-base-url", default=None)
     p.add_argument("--catalog", default=None, help="Filter by catalog name")
     p.add_argument("--region", default=None, help="Filter by region")
@@ -787,7 +791,8 @@ def _cmd_sources(argv: list[str]) -> int:
 
 
 def _cmd_doctor(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog="trade data sentiment doctor")
+    p = argparse.ArgumentParser(prog="trade data sentiment doctor",
+                                parents=[global_flag_parent()])
     p.add_argument("--rss-feeds", default="auto", help="Feed names or selectors like catalog:global_public")
     p.add_argument("--catalog", default=None, help="Filter by catalog when --rss-feeds=auto")
     p.add_argument("--region", default=None, help="Filter by region when --rss-feeds=auto")
@@ -935,7 +940,8 @@ def _cmd_inspect(argv: list[str]) -> int:
     import textwrap
     import pandas as pd
 
-    p = argparse.ArgumentParser(prog="trade data sentiment inspect")
+    p = argparse.ArgumentParser(prog="trade data sentiment inspect",
+                                parents=[global_flag_parent()])
     p.add_argument("source", help="Bronze source: rss, gdelt, cls")
     p.add_argument("date",   help="Date (YYYY-MM-DD)")
     p.add_argument("--feed",          default=None,  help="Filter by feed name")
@@ -1066,7 +1072,8 @@ def _cmd_sample(argv: list[str]) -> int:
     import textwrap
     import pandas as pd
 
-    p = argparse.ArgumentParser(prog="trade data sentiment sample")
+    p = argparse.ArgumentParser(prog="trade data sentiment sample",
+                                parents=[global_flag_parent()])
     p.add_argument("--date", default=None, help="Date to sample (YYYY-MM-DD, default: today)")
     p.add_argument("--label", default=None,
                    choices=["positive", "negative", "neutral"],
@@ -1138,7 +1145,8 @@ def _cmd_apply_corrections(argv: list[str]) -> int:
     import pandas as pd
     from datetime import datetime as _dt
 
-    p = argparse.ArgumentParser(prog="trade data sentiment apply-corrections")
+    p = argparse.ArgumentParser(prog="trade data sentiment apply-corrections",
+                                parents=[global_flag_parent()])
     p.add_argument("--date", required=True, help="Date to apply corrections (YYYY-MM-DD)")
     p.add_argument("--data-root", default=str(default_data_root()))
     p.add_argument("--dry-run", action="store_true", help="Show what would change without saving")

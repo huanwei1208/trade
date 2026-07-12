@@ -46,6 +46,19 @@ class EventType(str, Enum):
     merger_acquisition    = "merger_acquisition"     # 并购重组
     regulatory_tightening = "regulatory_tightening"  # 监管收紧（互联网/教育等）
     supply_disruption     = "supply_disruption"      # 供应链中断
+    # Crypto events
+    etf_approval          = "etf_approval"           # Crypto ETF获批
+    etf_rejection         = "etf_rejection"          # Crypto ETF被拒/延迟
+    hack_exploit          = "hack_exploit"           # 黑客攻击/合约漏洞
+    exchange_bankruptcy   = "exchange_bankruptcy"    # 交易所破产
+    exchange_listing      = "exchange_listing"       # 交易所上新
+    exchange_delisting    = "exchange_delisting"     # 交易所下币
+    regulation_ban        = "regulation_ban"         # 加密禁令
+    protocol_upgrade      = "protocol_upgrade"       # 协议升级/硬分叉
+    halving               = "halving"                # 减半事件
+    defi_exploit          = "defi_exploit"           # DeFi协议攻击
+    stablecoin_depeg      = "stablecoin_depeg"       # 稳定币脱锚
+    institutional_adoption= "institutional_adoption" # 机构采用
     other                 = "other"                  # 其他
 
 

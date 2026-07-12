@@ -14,6 +14,7 @@ import json
 import logging
 from datetime import date
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade daily",
         description="每日流水线管理（EBRT）",
+        parents=[global_flag_parent()],
     )
     parser.add_argument(
         "action",

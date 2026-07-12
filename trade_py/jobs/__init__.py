@@ -85,45 +85,236 @@ def _job_cross_asset(data_root: str, config: dict | None = None) -> str:
 
 
 def _job_crypto_btc_fetch(data_root: str, config: dict | None = None) -> str:
+    """Legacy BTC fetch: runs assurance-gated sync with BtcMarketDataService."""
     from trade_py.data.market.cross_asset.service import BtcMarketDataService
-    from trade_py.data.warehouse.crypto import validate_crypto_btc_profile
+    service = BtcMarketDataService(data_root)
+    payload = service.sync()
+    if not payload.get("published", False):
+        readiness = payload.get("data_readiness", "unknown")
+        raise RuntimeError(f"BTC 数据未发布完成: readiness={readiness}")
+    return f"BTC 同步完成: run_id={payload.get('run_id')}"
 
+
+def _crypto_news_to_sentiment_silver(analyzed: list[dict], today: str) -> list[dict]:
+    """Map crypto news analysis records to sentiment/silver-compatible rows.
+
+    One fan-out row per mentioned crypto symbol, plus a _CRYPTO_MARKET_ row
+    for market-wide items, so the event pipeline can consume them.
+    """
+    rows: list[dict] = []
+    for a in analyzed:
+        symbols = a.get("affected_symbols") or []
+        sectors = a.get("affected_sectors") or []
+        event_type = a.get("event_type", "other")
+        market_scope = a.get("market_scope", "individual")
+        scope_map = {"market": "market", "sector": "sector", "individual": "company"}
+        impact_scope = scope_map.get(market_scope, "sector" if symbols else "market")
+        is_market_wide = impact_scope == "market" or len(sectors) >= 2 or not symbols
+
+        targets: list[str] = []
+        if is_market_wide:
+            targets.append("_CRYPTO_MARKET_")
+        targets.extend(symbols)
+
+        for sym in targets:
+            rows.append({
+                "date": today,
+                "symbol": sym,
+                "source": a.get("source", "crypto"),
+                "content_hash": a.get("content_hash", ""),
+                "title": a.get("title", ""),
+                "text": a.get("summary", ""),
+                "sentiment_score": float(a.get("sentiment_score", 0.0)),
+                "sentiment_label": a.get("sentiment_label", "neutral"),
+                "event_type": event_type,
+                "event_magnitude": float(a.get("event_magnitude", 0.0)),
+                "affected_sectors": ",".join(sectors),
+                "key_entities": ",".join(symbols),
+                "summary": (a.get("title", "") or "")[:200],
+                "confidence": float(a.get("event_confidence", 0.5)),
+                "published_at": a.get("published_at", ""),
+                "policy_signal": 1 if event_type in {"regulation_ban", "regulatory_action", "etf_approval", "etf_rejection"} else 0,
+                "market_impact_scope": impact_scope,
+                "time_sensitivity": a.get("urgency", "short_term" if a.get("is_urgent") else "normal"),
+                "event_chain": event_type,
+                "semantic_mode": "base",
+                "semantic_source": "crypto_base",
+                "base_sentiment_score": float(a.get("sentiment_score", 0.0)),
+                "base_sentiment_label": a.get("sentiment_label", "neutral"),
+                "base_event_type": event_type,
+                "base_event_magnitude": float(a.get("event_magnitude", 0.0)),
+                "base_affected_sectors": ",".join(sectors),
+                "base_key_entities": ",".join(symbols),
+                "base_summary": (a.get("title", "") or "")[:200],
+                "base_confidence": float(a.get("event_confidence", 0.5)),
+                "base_policy_signal": 1 if event_type in {"regulation_ban", "regulatory_action", "etf_approval", "etf_rejection"} else 0,
+                "base_market_impact_scope": impact_scope,
+                "base_time_sensitivity": a.get("urgency", "short_term" if a.get("is_urgent") else "normal"),
+                "base_event_chain": event_type,
+                "base_entity_density": min(1.0, (len(symbols) + len(sectors)) / 5.0),
+                "base_novelty_score": float(a.get("novelty_score", 1.0)),
+                "base_noise_score": float(a.get("noise_score", 0.0)),
+            })
+    return rows
+
+
+def _job_crypto_news_sentiment(data_root: str, config: dict | None = None) -> str:
+    """Fetch crypto news and Fear & Greed Index, run base sentiment analysis, publish bus events."""
+    import json
+    from pathlib import Path
+    from trade_py.data.market.cross_asset.crypto_sentiment import (
+        fetch_fear_greed, fetch_all_crypto_news, save_fear_greed_parquet,
+        save_crypto_news_parquet,
+    )
+    from trade_py.intelligence.crypto_base_factors import analyze_crypto_news, compute_fear_greed_category
+    from trade_py.db.trade_db import TradeDB
+    from trade_py.bus import get_bus, Topic
+
+    root = Path(data_root)
+    today = date.today().isoformat()
+
+    # 1. Fear & Greed Index
+    fng_records = fetch_fear_greed(limit=90)
+    fng_path = root / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
+    if fng_records:
+        save_fear_greed_parquet(fng_records, fng_path)
+    fng_latest = fng_records[-1] if fng_records else None
+    fng_summary = f"fear_greed={fng_latest.value} ({fng_latest.value_classification})" if fng_latest else "fear_greed=unavailable"
+
+    # 2. Crypto news from all free sources
+    news_by_source = fetch_all_crypto_news()
+    total_articles = sum(len(items) for items in news_by_source.values())
+
+    # 3. Analyze each article and collect urgent events
+    analyzed = []
+    urgent_events = []
+    source_credibility = {
+        "coindesk": 0.9, "cointelegraph": 0.7, "decrypt": 0.8,
+        "bitcoinmagazine": 0.7, "binance": 0.85,
+    }
+    for source, items in news_by_source.items():
+        cred = source_credibility.get(source, 0.5 if source.startswith("reddit") else 0.7)
+        news_path = root / "news" / "bronze" / source / f"{today}.parquet"
+        save_crypto_news_parquet(items, news_path)
+        for item in items:
+            analysis = analyze_crypto_news(item.title, item.summary, source_credibility=cred)
+            record = {
+                **item.to_dict(),
+                **analysis.to_dict(),
+                "date": today,
+            }
+            analyzed.append(record)
+            if analysis.is_urgent:
+                urgent_events.append(record)
+
+    # 4. Save analyzed silver data (news-specific path)
+    if analyzed:
+        import pandas as pd
+        silver_df = pd.DataFrame(analyzed)
+        silver_path = root / "news" / "silver" / f"{today}.parquet"
+        silver_path.parent.mkdir(parents=True, exist_ok=True)
+        silver_df.to_parquet(silver_path, index=False)
+
+        # 4b. Also write to main sentiment/silver for event pipeline integration
+        sentiment_silver_rows = _crypto_news_to_sentiment_silver(analyzed, today)
+        if sentiment_silver_rows:
+            sdf = pd.DataFrame(sentiment_silver_rows)
+            ss_dir = root / "sentiment" / "silver" / "crypto"
+            ss_dir.mkdir(parents=True, exist_ok=True)
+            sdf.to_parquet(ss_dir / f"{today}.parquet", index=False)
+
+    # 5. Publish bus events
     try:
-        result = BtcMarketDataService(data_root).sync()
+        db = TradeDB(data_root)
+        bus = get_bus(db)
+        bus.publish(Topic.NEWS_FETCHED, {
+            "date": today,
+            "total_articles": total_articles,
+            "sources": list(news_by_source.keys()),
+        })
+        bus.publish(Topic.NEWS_ANALYZED, {
+            "date": today,
+            "total_analyzed": len(analyzed),
+            "urgent_count": len(urgent_events),
+            "event_types": list({a["event_type"] for a in analyzed if a["event_type"] != "other"}),
+            "fear_greed": fng_latest.to_dict() if fng_latest else None,
+        })
+        for evt in urgent_events[:10]:
+            bus.publish(Topic.NEWS_URGENT, {
+                "date": today,
+                "title": evt["title"],
+                "url": evt["url"],
+                "source": evt["source"],
+                "event_type": evt["event_type"],
+                "sentiment_score": evt["sentiment_score"],
+                "event_magnitude": evt["event_magnitude"],
+                "affected_symbols": evt["affected_symbols"],
+            }, parent_event_id=None)
+        if fng_latest:
+            bus.publish(Topic.FEAR_GREED_UPDATED, fng_latest.to_dict())
+        db.close()
     except Exception as exc:
-        failure = {
-            "mode": "sync",
-            "run_id": "",
-            "data_readiness": "invalid",
-            "published": False,
-            "reason_code": "BTC_ACQUISITION_EXCEPTION",
-            "reason_codes": ["BTC_ACQUISITION_EXCEPTION"],
-            "error": f"{type(exc).__name__}: {exc}",
-            "observed_at": datetime.now(timezone.utc).isoformat(),
-            "gates": [],
-        }
-        try:
-            validate_crypto_btc_profile(
-                data_root,
-                data_assurance_override=failure,
-            )
-        except Exception as suppression_exc:
-            raise RuntimeError(
-                "BTC acquisition failed and active Crypto evidence could not be suppressed: "
-                f"{type(suppression_exc).__name__}: {suppression_exc}"
-            ) from exc
-        raise
-    if not result.get("published"):
-        suppression = validate_crypto_btc_profile(
-            data_root,
-            data_assurance_override=result,
+        logger.warning("Failed to publish news bus events: %s", exc)
+
+    event_types_used = {a["event_type"] for a in analyzed if a["event_type"] != "other"}
+    return f"Crypto news: {total_articles} articles from {len(news_by_source)} sources, {len(urgent_events)} urgent, events={event_types_used}, {fng_summary}"
+
+
+def _job_global_macro(data_root: str, config: dict | None = None) -> str:
+    """Fetch global macro data from FRED (requires FRED_API_KEY env var). Graceful no-op without key."""
+    from pathlib import Path
+    from trade_py.data.market.macro.fred import fetch_all_global_macro, save_macro_parquet
+
+    root = Path(data_root)
+    points = fetch_all_global_macro(limit=365)
+    if not points:
+        return "Global macro: no FRED_API_KEY set or network unavailable, skipped"
+    counts = save_macro_parquet(points, root / "macro")
+    return f"Global macro (FRED): fetched {sum(counts.values())} points for {len(counts)} series: {list(counts.keys())}"
+
+
+def _job_asset_batch_ingest(
+    data_root: str,
+    config: dict | None = None,
+    asset_class: str | None = None,
+) -> str:
+    """Generic meta-driven asset batch ingest.
+
+    Config options:
+        asset_class: filter by asset class (crypto/fx/commodity/stock)
+        symbols: optional list of symbols to sync
+        full_refresh: if True, ignore watermark and re-fetch all history
+    """
+    from trade_py.data.ingest.batch import BatchIngestEngine
+
+    config = config or {}
+    target_class = asset_class or config.get("asset_class")
+    symbols = config.get("symbols")
+    full_refresh = bool(config.get("full_refresh", False))
+
+    engine = BatchIngestEngine(data_root)
+    try:
+        results = engine.ingest_by_class(
+            asset_class=target_class,
+            symbols=symbols,
+            full_refresh=full_refresh,
         )
-        raise RuntimeError(
-            "BTC assurance 未发布: "
-            f"readiness={result.get('data_readiness')} run_id={result.get('run_id')} "
-            f"active={((suppression.get('validation') or {}).get('lifecycle') or {}).get('active_signal_status')}"
-        )
-    return f"BTC assurance 已发布: run_id={result.get('run_id')}"
+    finally:
+        engine.stop()
+
+    success = sum(1 for r in results if r.success)
+    failed = len(results) - success
+    new_rows = sum(r.new_rows for r in results if r.success)
+    assets = ", ".join(r.asset_id for r in results if r.success)
+
+    if failed > 0 and success == 0:
+        failed_assets = ", ".join(r.asset_id for r in results if not r.success)
+        raise RuntimeError(f"All asset ingest failed: {failed_assets}")
+
+    msg = f"Assets synced: {success}/{len(results)}, new rows={new_rows}, assets=[{assets}]"
+    if failed > 0:
+        msg += f", FAILED={failed}"
+    return msg
 
 
 def _job_crypto_research_validation(data_root: str, config: dict | None = None) -> str:
@@ -641,8 +832,12 @@ JOB_REGISTRY: dict[str, JobDef] = {
         ["daily 07:00"], "fetch", ["market", "gold", "fx"],
     ),
     "crypto_btc_fetch": JobDef(
-        "crypto_btc_fetch", _job_crypto_btc_fetch, "BTC UTC 日线采集与门禁",
+        "crypto_btc_fetch", _job_crypto_btc_fetch, "BTC UTC 日线采集 (legacy, uses generic ingest)",
         ["daily 09:00"], "fetch", ["market", "crypto"],
+    ),
+    "asset_batch_ingest": JobDef(
+        "asset_batch_ingest", _job_asset_batch_ingest, "Meta-driven 批量资产数据采集 (crypto/fx/commodity)",
+        ["daily 09:00"], "fetch", ["market", "ingest", "crypto", "fx", "commodity"],
     ),
     "crypto_research_validation": JobDef(
         "crypto_research_validation",
@@ -651,6 +846,10 @@ JOB_REGISTRY: dict[str, JobDef] = {
         ["after crypto sync"],
         "compute",
         ["market", "crypto", "validation"],
+    ),
+    "crypto_news_sentiment": JobDef(
+        "crypto_news_sentiment", _job_crypto_news_sentiment, "Crypto news + Fear & Greed + base sentiment",
+        ["daily 08:30", "intraday every_30min"], "fetch", ["news", "crypto", "sentiment", "nlp"],
     ),
     "market_index": JobDef(
         "market_index", _job_market_index, "市场/行业指数同步",
@@ -679,6 +878,10 @@ JOB_REGISTRY: dict[str, JobDef] = {
     "macro": JobDef(
         "macro", _job_macro, "宏观数据同步",
         ["sunday 08:00"], "fetch", ["market"],
+    ),
+    "global_macro": JobDef(
+        "global_macro", _job_global_macro, "Global macro (FRED: DXY/VIX/rates/CPI)",
+        ["daily 09:00", "sunday 08:15"], "fetch", ["macro", "global"],
     ),
     # COMPUTE stage
     "window_score": JobDef(

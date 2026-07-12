@@ -12,6 +12,7 @@ import argparse
 import logging
 from datetime import date
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade ops",
         description="运营检查与维护（EBRT）",
+        parents=[global_flag_parent()],
     )
     sub = parser.add_subparsers(dest="action", metavar="<操作>")
 

@@ -22,11 +22,11 @@ from trade_py.data.market.cross_asset.store import (
     file_sha256,
     inspect_btc_status,
 )
-from trade_py.data.market.cross_asset.btc import (
-    BTC_PROVIDER_COLUMNS,
-    BtcProviderCapture,
-    CoinGeckoBtcDailyShadowProvider,
-    OkxBtcDailyProvider,
+from trade_py.data.market.cross_asset.providers import (
+    CRYPTO_PROVIDER_COLUMNS as BTC_PROVIDER_COLUMNS,
+    BinanceDailyProvider,
+    CryptoProviderCapture as BtcProviderCapture,
+    OkxDailyProvider as OkxBtcDailyProvider,
     okx_canonical_candidate,
 )
 
@@ -44,7 +44,7 @@ class BtcMarketDataService:
         data_root: str | Path,
         *,
         primary_provider: OkxBtcDailyProvider | None = None,
-        shadow_provider: CoinGeckoBtcDailyShadowProvider | None = None,
+        shadow_provider: BinanceDailyProvider | None = None,
         config: BtcAssuranceConfig | None = None,
         days: int = 730,
         shadow_days: int | None = None,
@@ -58,14 +58,10 @@ class BtcMarketDataService:
         if max_attempts < 1 or max_attempts > 3:
             raise ValueError("max_attempts must be in [1, 3]")
         self.data_root = Path(data_root)
-        self.primary_provider = primary_provider or OkxBtcDailyProvider()
-        self.shadow_provider = shadow_provider or CoinGeckoBtcDailyShadowProvider(
-            api_key=(
-                os.environ.get("COINGECKO_API_KEY")
-                or os.environ.get("COINGECKO_DEMO_API_KEY")
-            ),
-            require_api_key=True,
-        )
+        self.primary_provider = primary_provider or OkxBtcDailyProvider(base_asset="BTC")
+        # Shadow provider uses Binance: 100% free, no API key required, full OHLCV data
+        # This replaces the paid CoinGecko API key requirement entirely
+        self.shadow_provider = shadow_provider or BinanceDailyProvider(base_asset="BTC")
         self.config = config or BtcAssuranceConfig()
         self.days = days
         self.shadow_days = shadow_days or self.config.shadow_days
@@ -172,7 +168,7 @@ class BtcMarketDataService:
                     for name in ("primary", "shadow")
                 )
                 raw_ok = True
-                for provider in ("okx", "coingecko"):
+                for provider in ("okx", "binance"):
                     raw_entries = [
                         (str(name), str(value))
                         for name, value in artifacts.items()
@@ -188,7 +184,7 @@ class BtcMarketDataService:
                             break
                 provider_ok = all(
                     (providers.get(provider) or {}).get("status") == "succeeded"
-                    for provider in ("okx", "coingecko")
+                    for provider in ("okx", "binance")
                 )
                 gates = {
                     gate.get("gate"): gate
@@ -314,12 +310,12 @@ class BtcMarketDataService:
             "okx", self.primary_provider, as_of=effective_as_of, days=self.days
         )
         shadow_capture, shadow_report = self._capture(
-            "coingecko",
+            "binance",
             self.shadow_provider,
             as_of=effective_as_of,
             days=self.shadow_days,
         )
-        provider_reports = {"okx": primary_report, "coingecko": shadow_report}
+        provider_reports = {"okx": primary_report, "binance": shadow_report}
         acquisition = self._acquisition_evidence(provider_reports)
         current_qualified = (
             primary_capture is not None
@@ -401,7 +397,7 @@ class BtcMarketDataService:
             existing=existing,
             config=self.config,
             acquisition_evidence=acquisition,
-            raw_payloads={"okx": primary_raw, "coingecko": shadow_raw},
+            raw_payloads={"okx": primary_raw, "binance": shadow_raw},
         )
         summary: dict[str, Any] = {
             **result.summary(),

@@ -108,9 +108,6 @@ def btc_live_pilot_checklist(data_root: str | Path, status_payload: dict[str, An
     publish_audits = list((store.cross_asset_root / "audit" / "publish").glob("*.json"))
     rollback_audits = list((store.cross_asset_root / "audit" / "rollback").glob("*.json"))
     ads_pointer = store.data_root / "warehouse" / "ads" / "_crypto_validation_current.json"
-    coingecko_key_configured = bool(
-        os.environ.get("COINGECKO_API_KEY") or os.environ.get("COINGECKO_DEMO_API_KEY")
-    )
     latest_provider_status = {
         name: {
             "status": report.get("status"),
@@ -121,19 +118,19 @@ def btc_live_pilot_checklist(data_root: str | Path, status_payload: dict[str, An
         for name, report in sorted(providers.items())
     }
     okx_ready = (providers.get("okx") or {}).get("status") == "succeeded"
-    coingecko_ready = (providers.get("coingecko") or {}).get("status") == "succeeded"
+    binance_ready = (providers.get("binance") or {}).get("status") == "succeeded"
 
     items = [
         _pilot_item(
-            "coingecko_credentials",
-            "pass" if coingecko_key_configured else "pending",
-            "CoinGecko API key is configured" if coingecko_key_configured else "CoinGecko API key is not configured in this runtime",
-            {"env": ["COINGECKO_API_KEY", "COINGECKO_DEMO_API_KEY"]},
+            "free_api_mode",
+            "pass",
+            "Using free public APIs (OKX primary + Binance shadow), no API key required",
+            {"primary": "okx", "shadow": "binance"},
         ),
         _pilot_item(
             "provider_contracts",
-            "pass" if okx_ready and coingecko_ready else "pending",
-            "latest OKX and CoinGecko captures succeeded" if okx_ready and coingecko_ready else "latest provider success is not yet proven",
+            "pass" if okx_ready and binance_ready else "pending",
+            "latest OKX and Binance captures succeeded" if okx_ready and binance_ready else "latest provider success is not yet proven",
             latest_provider_status,
         ),
         _pilot_item(
@@ -323,7 +320,7 @@ class BtcRunStore:
                 for name in hashes
                 if str(name).startswith("raw/") and len(str(name).split("/", 2)) == 3
             }
-            for provider in ("okx", "coingecko"):
+            for provider in ("okx", "binance"):
                 if provider not in raw_providers:
                     errors.append(f"raw/{provider}:missing")
         return sorted(set(errors))

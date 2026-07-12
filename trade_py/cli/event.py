@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import date
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 from trade_py.jobs import JOB_REGISTRY, run_job
 
@@ -98,6 +99,7 @@ def make_parser() -> argparse.ArgumentParser:
         prog="trade event",
         description="事件管理 / DAG 查看 / 直接触发",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
         epilog=(
             "示例:\n"
             "  trade event trigger gate.morning        # 触发晨盘 gate\n"
@@ -307,12 +309,19 @@ def _cmd_dag(args: argparse.Namespace) -> int:
 
 
 def _cmd_enable_disable(args: argparse.Namespace, enable: bool) -> int:
+    import sys as _sys
+    action_word = "enable" if enable else "disable"
+    print(
+        f"Note: 'trade event {action_word}' is deprecated; "
+        f"use 'trade config dag {action_word} {args.job_name}' instead.",
+        file=_sys.stderr,
+    )
     from trade_py.db.trade_db import TradeDB
 
     db = TradeDB(args.data_root)
     n = db.pipeline_dag_set_enabled_by_job(args.job_name, enable)
-    action = "启用" if enable else "禁用"
-    print(f"已{action} {n} 条 pipeline_dag 节点（job_name={args.job_name}）")
+    action_cn = "启用" if enable else "禁用"
+    print(f"已{action_cn} {n} 条 pipeline_dag 节点（job_name={args.job_name}）")
     return 0
 
 

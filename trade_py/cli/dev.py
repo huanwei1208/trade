@@ -14,6 +14,7 @@ import json
 import logging
 from datetime import date
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trade dev",
         description="开发调试工具（EBRT）",
+        parents=[global_flag_parent()],
     )
     sub = parser.add_subparsers(dest="cmd", metavar="<命令>")
 

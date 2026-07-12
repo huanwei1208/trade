@@ -54,6 +54,8 @@ class Topic:
     INDEX_SYNCED          = "data.index.synced"
     SENTIMENT_SYNCED      = "data.sentiment.synced"
     CRYPTO_SYNCED         = "data.crypto.synced"
+    ASSET_INGESTED        = "data.asset.ingested"
+    BATCH_INGEST_COMPLETED = "data.batch.completed"
     WINDOW_SCORE_UPDATED  = "signal.window.updated"
     FEATURES_BUILT        = "model.features.built"
     LABELS_BUILT          = "model.labels.built"
@@ -65,6 +67,13 @@ class Topic:
     SENTIMENT_GOLD_DONE        = "sentiment.gold_done"
     EVENTS_EXTRACTED           = "events.extracted"
     SIGNALS_EVENTS_UPDATED     = "signals.events_updated"
+
+    # Crypto news/sentiment chain
+    NEWS_FETCHED               = "news.fetched"
+    NEWS_ANALYZED              = "news.analyzed"
+    NEWS_URGENT                = "news.urgent"
+    CRYPTO_SENTIMENT_UPDATED   = "data.crypto.sentiment"
+    FEAR_GREED_UPDATED         = "data.crypto.fear_greed"
 
     # EBRT topics
     BELIEF_UPDATED             = "belief.updated"
@@ -97,19 +106,48 @@ class Event:
 
 # ── EventBus ───────────────────────────────────────────────────────────────────
 
-class EventBus:
-    """In-process pub/sub with SQLite persistence.
+# Channel routing: map topic prefixes to dedicated thread pools to avoid congestion
+_CHANNEL_INGEST_PREFIXES = ("gate.", "data.", "agenda.")  # Data ingest/fetch tasks
+_CHANNEL_COMPUTE_PREFIXES = ("signal.", "model.", "sentiment.", "events.", "belief.", "recommend.", "news.")  # Compute/ML/signal/news tasks
+_CHANNEL_IO_PREFIXES = ()  # All others default to IO pool (webhooks, backup, reports)
 
-    pub path: write event_log row (status=pending) → submit handlers to thread pool
-    Each handler runs in a separate thread; on completion, updates event_log row to ok/error.
+
+def _resolve_channel(topic: str) -> str:
+    """Resolve topic to channel name for thread pool isolation."""
+    if topic.startswith(_CHANNEL_INGEST_PREFIXES):
+        return "ingest"
+    if topic.startswith(_CHANNEL_COMPUTE_PREFIXES):
+        return "compute"
+    return "io"
+
+
+class EventBus:
+    """In-process pub/sub with SQLite persistence and multi-channel thread pool isolation.
+
+    pub path: write event_log row (status=pending) → route to channel-specific pool → submit handlers
+    Each channel has its own thread pool to prevent ingest traffic from blocking compute tasks.
+    Channels:
+      - ingest (4 workers): data fetch/ingest/sync (gate.*, data.*, agenda.*)
+      - compute (4 workers): features/signals/models/sentiment/events
+      - io (2 workers): webhooks/backups/reports and all other tasks
     """
 
-    def __init__(self, db: "TradeDB", max_workers: int = 6) -> None:
+    def __init__(self, db: "TradeDB",
+                 ingest_workers: int = 4,
+                 compute_workers: int = 4,
+                 io_workers: int = 2) -> None:
         self._db = db
-        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bus")
+        # Isolated thread pools per channel
+        self._pools = {
+            "ingest": ThreadPoolExecutor(max_workers=ingest_workers, thread_name_prefix="bus-ingest"),
+            "compute": ThreadPoolExecutor(max_workers=compute_workers, thread_name_prefix="bus-compute"),
+            "io": ThreadPoolExecutor(max_workers=io_workers, thread_name_prefix="bus-io"),
+        }
+        # Backwards compat: default pool for any legacy direct ._pool access
+        self._pool = self._pools["io"]
         self._subs: dict[str, list[Callable[[Event], None]]] = defaultdict(list)
         self._active_lock = threading.RLock()
-        self._active_tasks_by_event: dict[int, int] = {}
+        self._active_tasks_by_event: dict[int, int] = defaultdict(int)
 
     def subscribe(self, topic: str, handler: Callable[[Event], None]) -> None:
         """Register a handler for a topic. Handlers run asynchronously."""
@@ -136,10 +174,12 @@ class EventBus:
         if not handlers:
             self._db.event_log_complete(eid, "ok", "<no_handler>")
         else:
+            channel = _resolve_channel(topic)
+            pool = self._pools[channel]
             for h in handlers:
                 self._mark_handler_started(event.id)
                 try:
-                    self._pool.submit(self._run_handler, h, event)
+                    pool.submit(self._run_handler, h, event)
                 except Exception:
                     self._mark_handler_finished(event.id)
                     raise
@@ -201,7 +241,8 @@ class EventBus:
         return False
 
     def shutdown(self, wait: bool = True) -> None:
-        self._pool.shutdown(wait=wait)
+        for pool in self._pools.values():
+            pool.shutdown(wait=wait)
 
 
 # ── DAG bootstrap ──────────────────────────────────────────────────────────────

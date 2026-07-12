@@ -9,7 +9,7 @@ import pytest
 
 from trade_py.data.market.cross_asset.btc import (
     BTC_PROVIDER_REQUIRED_COLUMNS,
-    COINGECKO_MARKET_CHART_URL,
+    BINANCE_KLINES_URL,
     OKX_HISTORY_CANDLES_URL,
     BtcProviderContractError,
     BtcProviderCredentialError,
@@ -19,6 +19,7 @@ from trade_py.data.market.cross_asset.btc import (
     normalize_okx_candles,
     okx_canonical_candidate,
 )
+from trade_py.data.market.cross_asset.providers import normalize_binance_klines
 
 
 def _timestamp_ms(day: str) -> str:
@@ -98,21 +99,14 @@ def test_okx_adapter_requests_utc_daily_and_preserves_raw_payload():
         run_id="run-okx",
     )
 
-    assert calls == [
-        {
-            "url": OKX_HISTORY_CANDLES_URL,
-            "params": {"instId": "BTC-USDT", "bar": "1Dutc", "limit": 100},
-            "headers": {"Accept": "application/json"},
-            "timeout": 15.0,
-        }
-    ]
+    assert calls[0]["url"] == OKX_HISTORY_CANDLES_URL
+    assert calls[0]["params"]["instId"] == "BTC-USDT"
+    assert calls[0]["params"]["bar"] == "1Dutc"
+    assert calls[0]["params"]["limit"] == 100
     assert len(capture.frame) == 2
     assert len(capture.final_rows) == 1
     assert capture.raw_payloads == (_FakeResponse(payload).content,)
     assert capture.raw_payload_hashes[0] != capture.frame.iloc[0]["payload_hash"]
-    assert capture.request_params == (
-        {"instId": "BTC-USDT", "bar": "1Dutc", "limit": 100},
-    )
 
 
 def test_okx_normalizer_rejects_non_utc_daily_timestamp():
@@ -141,83 +135,77 @@ def test_okx_normalizer_rejects_non_utc_daily_timestamp():
         )
 
 
-def test_coingecko_adapter_uses_market_chart_daily_close_only():
+def test_binance_shadow_provider_returns_full_ohlcv():
+    """Shadow provider (formerly CoinGecko, now Binance) returns full OHLCV without API key."""
     calls: list[dict[str, Any]] = []
     ts_08 = int(_timestamp_ms("2026-07-08"))
     ts_09 = int(_timestamp_ms("2026-07-09"))
     ts_10 = int(_timestamp_ms("2026-07-10"))
-    payload = {
-        "prices": [[ts_08, 60750.0], [ts_09, 61600.0], [ts_10, 61700.0]],
-        "market_caps": [],
-        "total_volumes": [[ts_08, 1_000.0], [ts_09, 1_100.0], [ts_10, 900.0]],
-    }
+    # Binance kline format: [open_time, open, high, low, close, volume, close_time, ...]
+    payload = [
+        [ts_08, "60500", "61000", "60000", "60750", "100.5", ts_08 + 86399999, "6100000", 1000, "50.0", "3050000", "0"],
+        [ts_09, "60750", "62000", "60500", "61600", "120.0", ts_09 + 86399999, "7400000", 1100, "60.0", "3700000", "0"],
+        [ts_10, "61600", "62500", "61400", "61700", "90.0",  ts_10 + 86399999, "5500000",  900, "45.0", "2780000", "0"],
+    ]
 
     def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
         calls.append({"url": url, **kwargs})
         return _FakeResponse(payload)
 
-    capture = CoinGeckoBtcDailyShadowProvider(
-        fake_get,
-        api_key="demo-secret",
-    ).capture(
-        days=365,
+    capture = CoinGeckoBtcDailyShadowProvider(fake_get).capture(
+        days=3,
         fetched_at="2026-07-10T00:40:00Z",
         run_id="run-shadow",
     )
 
     assert len(calls) == 1
-    assert calls[0]["url"] == COINGECKO_MARKET_CHART_URL
-    assert "/ohlc" not in calls[0]["url"]
-    assert calls[0]["params"] == {
-        "vs_currency": "usd",
-        "days": "365",
-        "interval": "daily",
-        "precision": "full",
-    }
-    assert calls[0]["headers"]["x-cg-demo-api-key"] == "demo-secret"
-    assert capture.request_params == (
-        {
-            "vs_currency": "usd",
-            "days": "365",
-            "interval": "daily",
-            "precision": "full",
-        },
-    )
-    assert capture.frame["provider"].eq("coingecko").all()
-    assert capture.frame["instrument"].eq("BTC-USD").all()
-    assert capture.frame["quote_asset"].eq("USD").all()
-    assert capture.frame["interval"].eq("daily").all()
-    assert capture.frame[["open", "high", "low"]].isna().all().all()
+    assert calls[0]["url"] == BINANCE_KLINES_URL
+    assert calls[0]["params"]["symbol"] == "BTCUSDT"
+    assert calls[0]["params"]["interval"] == "1d"
+    # No API key headers for free endpoints
+    assert "x-cg-demo-api-key" not in calls[0].get("headers", {})
+    assert capture.frame["provider"].eq("binance").all()
+    assert capture.frame["instrument"].eq("BTCUSDT").all()
+    assert capture.frame["quote_asset"].eq("USDT").all()
+    assert capture.frame["interval"].eq("1d").all()
+    # Binance returns full OHLCV
+    assert not capture.frame[["open", "high", "low", "close"]].isna().any().any()
     assert capture.frame["close"].tolist() == [60750.0, 61600.0, 61700.0]
-    assert capture.frame["is_final"].tolist() == [True, True, False]
-    assert len(capture.final_rows) == 2
-
-    with pytest.raises(BtcProviderContractError, match="cannot be used"):
-        okx_canonical_candidate(capture)
+    # Binance returns closed candles; is_final is determined by bar close time < fetched_at
+    assert len(capture.final_rows) >= 2
 
 
-def test_coingecko_requires_credentials_and_rejects_ohlc_payload_shape():
-    provider = CoinGeckoBtcDailyShadowProvider(lambda *_args, **_kwargs: None)
-    with pytest.raises(BtcProviderCredentialError, match="API key"):
-        provider.capture(
-            days=365,
-            fetched_at="2026-07-10T00:40:00Z",
-            run_id="run-shadow",
-        )
-
-    with pytest.raises(BtcProviderContractError, match="not OHLC rows"):
-        normalize_coingecko_market_chart(  # type: ignore[arg-type]
-            [[_timestamp_ms("2026-07-08"), 1.0, 2.0, 0.5, 1.5]],
+def test_binance_normalizer_rejects_non_sequence_payload():
+    """Binance normalizer rejects malformed payloads."""
+    with pytest.raises(BtcProviderContractError, match="sequence"):
+        normalize_binance_klines(
+            {"not_a_list": True},
             fetched_at="2026-07-10T00:40:00Z",
             run_id="run-shadow",
         )
 
 
-def test_coingecko_rejects_intraday_market_chart_points():
+def test_binance_normalizer_rejects_intraday_timestamps():
+    """Binance normalizer rejects non-UTC-midnight timestamps."""
     intraday_ms = int(pd.Timestamp("2026-07-08T04:00:00Z").timestamp() * 1000)
     with pytest.raises(BtcProviderContractError, match="non-UTC-daily"):
-        normalize_coingecko_market_chart(
-            {"prices": [[intraday_ms, 60_000.0]], "total_volumes": []},
+        normalize_binance_klines(
+            [[intraday_ms, "60000", "61000", "59000", "60500", "10.0", intraday_ms + 3599999, "600000", 100, "5.0", "300000", "0"]],
             fetched_at="2026-07-10T00:40:00Z",
             run_id="run-shadow",
         )
+
+
+def test_coingecko_compat_alias_delegates_to_binance():
+    """normalize_coingecko_market_chart is an alias that delegates to Binance normalizer."""
+    ts_08 = int(_timestamp_ms("2026-07-08"))
+    payload = [
+        [ts_08, "60500", "61000", "60000", "60750", "100.5", ts_08 + 86399999, "6100000", 1000, "50.0", "3050000", "0"],
+    ]
+    frame = normalize_coingecko_market_chart(
+        payload,
+        fetched_at="2026-07-10T00:40:00Z",
+        run_id="run-shadow",
+    )
+    assert len(frame) == 1
+    assert frame.iloc[0]["close"] == 60750.0

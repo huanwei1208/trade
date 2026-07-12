@@ -4,6 +4,19 @@ from __future__ import annotations
 import argparse
 
 
+def global_flag_parent() -> argparse.ArgumentParser:
+    """Parent parser that accepts -v/--verbose and -q/--quiet without error.
+
+    Logging is configured once at the top-level `trade` entrypoint. These flags
+    are defined on every sub-parser so that `trade data sync -v` works in
+    addition to `trade -v data sync` (argparse won't reject the flag as unknown).
+    """
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("-v", "--verbose", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("-q", "--quiet", action="store_true", help=argparse.SUPPRESS)
+    return p
+
+
 def epilog_from_subparsers(parser: argparse.ArgumentParser) -> str:
     """Build a help epilog by collecting description + epilog from every subparser."""
     subparsers_action = next(
@@ -37,3 +50,4 @@ def epilog_from_subparsers(parser: argparse.ArgumentParser) -> str:
     if example_lines:
         result += "\n\n示例:\n" + "\n".join(example_lines)
     return result
+

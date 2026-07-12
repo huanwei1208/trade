@@ -30,6 +30,7 @@ _RUNNING_JOB_STALE_HOURS = {
     "northbound": 1.0,
     "crypto_btc_fetch": 1.0,
     "crypto_research_validation": 1.0,
+    "asset_batch_ingest": 1.0,
     "evaluate_gate": 0.5,
     "evaluate_source": 2.0,
     "evaluate_daily": 2.0,
@@ -203,7 +204,7 @@ def _read_records_file(path: str | Path) -> list[dict]:
 
 
 def make_parser() -> argparse.ArgumentParser:
-    from trade_py.cli import epilog_from_subparsers
+    from trade_py.cli import epilog_from_subparsers, global_flag_parent
 
     defaults = _kline_defaults()
 
@@ -214,6 +215,7 @@ def make_parser() -> argparse.ArgumentParser:
         prog="trade data",
         description="数据采集 — K线/情绪/跨资产",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -249,17 +251,28 @@ def make_parser() -> argparse.ArgumentParser:
 
     p_backfill = sub.add_parser(
         "backfill",
-        description="查看后台回补与同步进度",
+        description="查看后台回补与同步进度 (别名: jobs)",
         epilog=(
             "trade data backfill status\n"
+            "trade data jobs status\n"
             "trade data backfill status --limit 20"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    backfill_sub = p_backfill.add_subparsers(dest="backfill_cmd", required=True)
-    p_backfill_status = backfill_sub.add_parser("status", description="查看回补任务、sync_state 和覆盖快照")
-    p_backfill_status.add_argument("--data-root", default=str(default_data_root()))
-    p_backfill_status.add_argument("--limit", type=int, default=12)
+    p_jobs = sub.add_parser(
+        "jobs",
+        description="查看任务运行状态与 sync_state watermark (原 backfill)",
+        epilog=(
+            "trade data jobs status\n"
+            "trade data jobs status --limit 20"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    for _p in (p_backfill, p_jobs):
+        _bsub = _p.add_subparsers(dest="backfill_cmd", required=True)
+        _bstat = _bsub.add_parser("status", description="查看任务/sync_state/覆盖快照")
+        _bstat.add_argument("--data-root", default=str(default_data_root()))
+        _bstat.add_argument("--limit", type=int, default=12)
 
     p_kline = sub.add_parser(
         "kline",
@@ -309,9 +322,90 @@ def make_parser() -> argparse.ArgumentParser:
     p_reconcile.add_argument("--dry-run", action="store_true")
     p_reconcile.add_argument("--json", action="store_true", dest="as_json")
 
+    # Unified meta-driven sync command (new)
+    p_sync_unified = sub.add_parser(
+        "sync",
+        description="统一资产数据同步 (meta驱动, 批量ingest, QPS控制, watermark增量)",
+        epilog=(
+            "trade data sync                     # Sync all enabled assets\n"
+            "trade data sync --crypto            # Sync only crypto\n"
+            "trade data sync --symbols BTC,ETH   # Sync specific crypto assets\n"
+            "trade data sync --full-refresh      # Ignore watermark, full history backfill\n"
+            "trade data sync --class commodity,fx # Sync gold/FX\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_sync_unified.add_argument("--data-root", default=str(default_data_root()))
+    p_sync_unified.add_argument("--crypto", action="store_true", help="Only sync crypto assets (shorthand)")
+    p_sync_unified.add_argument("--class", dest="asset_class", default=None,
+                                help="Comma-separated asset classes: crypto,fx,commodity,stock")
+    p_sync_unified.add_argument("--symbols", default=None, help="Comma-separated symbols to sync")
+    p_sync_unified.add_argument("--full-refresh", action="store_true", help="Ignore watermark, full refresh")
+    p_sync_unified.add_argument("--json", action="store_true", dest="as_json")
+
+    # ── Source management ───────────────────────────────────────────────────
+    p_src = sub.add_parser(
+        "source",
+        aliases=["sources"],
+        description="数据源管理 (asset_registry) — 查看/启停/增删 meta 驱动的数据源",
+        epilog=(
+            "trade data source list                 # 列出所有已注册数据源\n"
+            "trade data source list --class crypto  # 按类别过滤\n"
+            "trade data source show BTC             # 查看单个数据源详情\n"
+            "trade data source enable BTC           # 启用数据源\n"
+            "trade data source disable USDCNH       # 停用数据源\n"
+            "trade data source add --asset-id stock.AAPL --class stock --symbol AAPL \\\n"
+            "                       --venue yfinance --quote USD --interval 1d\n"
+            "trade data source remove stock.AAPL    # 删除数据源"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    src_sub = p_src.add_subparsers(dest="src_cmd", required=True)
+
+    p_src_list = src_sub.add_parser("list", description="列出所有已注册数据源")
+    p_src_list.add_argument("--data-root", default=str(default_data_root()))
+    p_src_list.add_argument("--class", dest="asset_class", default=None,
+                            help="按资产类别过滤: crypto,fx,commodity,stock")
+    p_src_list.add_argument("--venue", default=None, help="按 venue 过滤: okx,binance,eastmoney,sge")
+    p_src_list.add_argument("--disabled", action="store_true", help="只显示已停用的")
+    p_src_list.add_argument("--json", action="store_true", dest="as_json")
+
+    p_src_show = src_sub.add_parser("show", description="查看单个数据源详情")
+    p_src_show.add_argument("asset_id", help="数据源 ID, 如 BTC/ETH/fx.USDCNH/commodity.gold")
+    p_src_show.add_argument("--data-root", default=str(default_data_root()))
+    p_src_show.add_argument("--json", action="store_true", dest="as_json")
+
+    p_src_enable = src_sub.add_parser("enable", description="启用数据源")
+    p_src_enable.add_argument("asset_id")
+    p_src_enable.add_argument("--data-root", default=str(default_data_root()))
+
+    p_src_disable = src_sub.add_parser("disable", description="停用数据源")
+    p_src_disable.add_argument("asset_id")
+    p_src_disable.add_argument("--data-root", default=str(default_data_root()))
+
+    p_src_add = src_sub.add_parser("add", description="新增数据源到 asset_registry")
+    p_src_add.add_argument("--asset-id", required=True, help="唯一 ID, 如 crypto.DOGE, stock.AAPL")
+    p_src_add.add_argument("--class", dest="asset_class", required=True,
+                           help="资产类别: crypto,fx,commodity,stock")
+    p_src_add.add_argument("--symbol", required=True, help="交易对/代码, 如 DOGE, AAPL")
+    p_src_add.add_argument("--venue", required=True, help="数据提供方: okx,binance,eastmoney,sge,yfinance 等")
+    p_src_add.add_argument("--quote", default="USD", help="计价货币, 默认 USD")
+    p_src_add.add_argument("--interval", default="1d", help="K线周期, 默认 1d")
+    p_src_add.add_argument("--priority", type=int, default=5, help="调度优先级, 小=先执行")
+    p_src_add.add_argument("--batch-size", type=int, default=100, help="批量抓取大小")
+    p_src_add.add_argument("--min-interval-ms", type=int, default=300, help="最小请求间隔(ms), 控制QPS")
+    p_src_add.add_argument("--backfill-days", type=int, default=730, help="首次回填天数")
+    p_src_add.add_argument("--data-root", default=str(default_data_root()))
+
+    p_src_remove = src_sub.add_parser("remove", description="从 asset_registry 删除数据源 (不删除已落盘的 parquet)")
+    p_src_remove.add_argument("asset_id")
+    p_src_remove.add_argument("--data-root", default=str(default_data_root()))
+    p_src_remove.add_argument("--yes", action="store_true", help="跳过确认")
+
+    # cross-asset: deprecated, redirect warning for non-BTC assets
     p_cross = sub.add_parser(
         "cross-asset",
-        description="跨资产行情抓取 (gold/btc/fx/cnh)",
+        description="跨资产行情抓取 (gold/btc/fx/cnh) - 保留兼容，推荐使用 `trade data sync`",
         epilog=(
             "trade data cross-asset all\n"
             "trade data cross-asset gold"
@@ -503,8 +597,152 @@ def make_parser() -> argparse.ArgumentParser:
     p_wh_crypto.add_argument("--strict", action="store_true")
     p_wh_crypto.add_argument("--json", action="store_true", dest="as_json")
 
+    # ── news subcommand ────────────────────────────────────────────────────────
+    p_news = sub.add_parser(
+        "news",
+        description="Crypto news fetch & sentiment analysis (free RSS/Reddit/Fear&Greed, no API key needed)",
+        epilog=(
+            "trade data news fetch          # fetch crypto news + F&G + run analysis\n"
+            "trade data news fng            # show Fear & Greed Index\n"
+            "trade data news urgent         # show recent urgent events\n"
+            "trade data news status         # show news data status\n"
+        ),
+    )
+    p_news.add_argument("news_cmd", nargs="?", default="fetch", choices=["fetch", "fng", "urgent", "status"])
+    p_news.add_argument("--data-root", default=str(default_data_root()))
+    p_news.add_argument("--json", action="store_true", dest="as_json")
+    p_news.add_argument("--limit", type=int, default=20)
+
+    # ── Crypto market data ──────────────────────────────────────────────────────
+    p_crypto = sub.add_parser(
+        "crypto",
+        description="Crypto market data viewer (24/7 market)",
+        epilog=(
+            "trade data crypto show [SYMBOL]  # show latest crypto kline\n"
+            "trade data crypto list            # list available crypto assets\n"
+            "trade data crypto fng             # show Fear & Greed Index\n"
+        ),
+    )
+    p_crypto.add_argument("crypto_cmd", nargs="?", default="show", choices=["show", "list", "fng"])
+    p_crypto.add_argument("symbol", nargs="?", default="BTC", help="Crypto symbol: BTC, ETH, SOL, BNB, XRP")
+    p_crypto.add_argument("--data-root", default=str(default_data_root()))
+    p_crypto.add_argument("--limit", type=int, default=10, help="Number of recent rows to show")
+    p_crypto.add_argument("--json", action="store_true", dest="as_json")
+
     parser.epilog = epilog_from_subparsers(parser)
     return parser
+
+
+def _dispatch_sync(args) -> int:
+    from trade_py.data.ingest.batch import BatchIngestEngine, BatchIngestConfig
+    from trade_py.db.trade_db import TradeDB
+
+    data_root = Path(args.data_root)
+
+    asset_classes = None
+    if getattr(args, "crypto", False):
+        asset_classes = ["crypto"]
+    elif getattr(args, "asset_class", None):
+        asset_classes = [c.strip() for c in args.asset_class.split(",") if c.strip()]
+
+    symbols = None
+    if getattr(args, "symbols", None):
+        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+
+    full_refresh = getattr(args, "full_refresh", False)
+
+    def _run_unified_sync() -> DataRunResult:
+        db = TradeDB(data_root)
+        config = BatchIngestConfig()
+        engine = BatchIngestEngine(data_root, db=db, config=config)
+
+        all_results = []
+        try:
+            engine.start()
+            if asset_classes and len(asset_classes) > 1:
+                for cls in asset_classes:
+                    results = engine.ingest_by_class(
+                        asset_class=cls,
+                        symbols=symbols,
+                        full_refresh=full_refresh,
+                    )
+                    all_results.extend(results)
+            else:
+                single_class = asset_classes[0] if asset_classes else None
+                all_results = engine.ingest_by_class(
+                    asset_class=single_class,
+                    symbols=symbols,
+                    full_refresh=full_refresh,
+                )
+        finally:
+            engine.stop()
+
+        results = all_results
+        ok_count = sum(1 for r in results if r.success)
+        fail_count = len(results) - ok_count
+        total_new_rows = sum(r.new_rows for r in results)
+        total_rows = sum(r.rows for r in results)
+        errors = [f"{r.asset_id}: {r.error}" for r in results if r.error]
+
+        asset_map = {}
+        if results:
+            for a in db.asset_registry_list():
+                asset_map[a["asset_id"]] = a
+
+        summary_lines = [
+            f"Unified sync completed: {ok_count}/{len(results)} assets succeeded, {total_new_rows} new rows, {total_rows} total rows",
+        ]
+        if errors:
+            summary_lines.append(f"Errors: {'; '.join(errors[:5])}")
+
+        if getattr(args, "as_json", False):
+            payload = {
+                "total": len(results),
+                "succeeded": ok_count,
+                "failed": fail_count,
+                "new_rows": total_new_rows,
+                "total_rows": total_rows,
+                "results": [
+                    {
+                        "asset_id": r.asset_id,
+                        "symbol": asset_map.get(r.asset_id, {}).get("symbol", r.asset_id),
+                        "asset_class": asset_map.get(r.asset_id, {}).get("asset_class", ""),
+                        "success": r.success,
+                        "new_rows": r.new_rows,
+                        "total_rows": r.rows,
+                        "watermark_date": r.watermark_date,
+                        "error": r.error,
+                    }
+                    for r in results
+                ],
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        else:
+            for line in summary_lines:
+                print(line)
+            print()
+            print(f"{'Asset':<20} {'Class':<12} {'Status':<8} {'New':>6} {'Total':>8} {'Watermark':<12}")
+            print("-" * 72)
+            sorted_results = sorted(results, key=lambda r: (
+                asset_map.get(r.asset_id, {}).get("asset_class", ""),
+                asset_map.get(r.asset_id, {}).get("symbol", r.asset_id),
+            ))
+            for r in sorted_results:
+                a = asset_map.get(r.asset_id, {})
+                status = "OK" if r.success else "FAIL"
+                cls = a.get("asset_class", "-")
+                sym = a.get("symbol", r.asset_id)
+                wm = r.watermark_date or "-"
+                print(f"{sym:<20} {cls:<12} {status:<8} {r.new_rows:>6} {r.rows:>8} {wm:<12}")
+
+        exit_code = 0 if fail_count == 0 else 1
+        return DataRunResult(
+            summary=summary_lines[0],
+            exit_code=exit_code,
+            symbols_processed=len(results),
+        )
+
+    return _track_data_run(str(data_root), "asset_batch_ingest", _run_unified_sync, stage="fetch")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -572,6 +810,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             print()
         return _data_status_exit_code(status, strict=args.strict)
+
+    if args.command == "sync":
+        return _dispatch_sync(args)
+
 
     if args.command == "warehouse" and args.warehouse_cmd == "materialize-rss":
         from trade_py.data.warehouse import materialize_rss_research_loop
@@ -703,7 +945,318 @@ def main(argv: list[str] | None = None) -> int:
             print("materialized=true")
         return 0
 
-    if args.command == "backfill" and args.backfill_cmd == "status":
+    if args.command == "news":
+        from pathlib import Path as _Path
+        if args.news_cmd == "fetch":
+            from trade_py.jobs import run_job
+            def _run_news() -> DataRunResult:
+                summary = run_job("crypto_news_sentiment", args.data_root)
+                return DataRunResult(summary=summary, exit_code=0)
+            return _track_data_run(args.data_root, "crypto_news_sentiment", _run_news, stage="fetch")
+
+        if args.news_cmd == "fng":
+            import pandas as pd
+            fng_path = _Path(args.data_root) / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
+            if not fng_path.exists():
+                print("Fear & Greed data not found. Run 'trade data news fetch' first.")
+                return 1
+            df = pd.read_parquet(fng_path).tail(args.limit)
+            if args.as_json:
+                print(df.to_json(orient="records", date_format="iso"))
+            else:
+                print(f"{'Date':<12} {'Value':>5}  {'Classification':<20}")
+                print("-" * 42)
+                for _, row in df.iterrows():
+                    print(f"{str(row['date'])[:10]:<12} {int(row['value']):>5}  {row['classification']:<20}")
+            return 0
+
+        if args.news_cmd == "urgent":
+            import pandas as pd
+            from datetime import date as _date
+            today = _date.today().isoformat()
+            silver_path = _Path(args.data_root) / "news" / "silver" / f"{today}.parquet"
+            if not silver_path.exists():
+                print(f"No news data for {today}. Run 'trade data news fetch' first.")
+                return 1
+            df = pd.read_parquet(silver_path)
+            urgent = df[df.get("is_urgent", False) == True].tail(args.limit) if "is_urgent" in df.columns else pd.DataFrame()
+            if args.as_json:
+                print(urgent.to_json(orient="records", date_format="iso"))
+            else:
+                if urgent.empty:
+                    print(f"No urgent crypto news for {today}")
+                else:
+                    print(f"Urgent crypto news ({len(urgent)} items):")
+                    for _, row in urgent.iterrows():
+                        print(f"  [{row.get('event_type', '?'):<22}] sent={row.get('sentiment_score', 0):+.2f} {row.get('title', '')[:80]}")
+                        if row.get('affected_symbols'):
+                            print(f"         symbols={row.get('affected_symbols')}")
+            return 0
+
+        if args.news_cmd == "status":
+            from datetime import date as _date
+            root = _Path(args.data_root)
+            today = _date.today().isoformat()
+            fng_path = root / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
+            silver_dir = root / "news" / "silver"
+            bronze_dir = root / "news" / "bronze"
+            status = {
+                "fear_greed_exists": fng_path.exists(),
+                "news_silver_today": (silver_dir / f"{today}.parquet").exists(),
+                "news_sources": [],
+            }
+            if bronze_dir.exists():
+                for src_dir in sorted(bronze_dir.iterdir()):
+                    if src_dir.is_dir():
+                        files = list(src_dir.glob("*.parquet"))
+                        latest = max((f.name for f in files), default=None)
+                        status["news_sources"].append({"source": src_dir.name, "articles": len(files), "latest": latest})
+            import pandas as pd
+            if fng_path.exists():
+                fng_df = pd.read_parquet(fng_path)
+                if not fng_df.empty:
+                    latest = fng_df.iloc[-1]
+                    status["fear_greed_latest"] = {"value": int(latest["value"]), "classification": latest["classification"], "date": str(latest["date"])}
+            if (silver_dir / f"{today}.parquet").exists():
+                silver_df = pd.read_parquet(silver_dir / f"{today}.parquet")
+                status["today_articles"] = len(silver_df)
+                if "is_urgent" in silver_df.columns:
+                    status["today_urgent"] = int(silver_df["is_urgent"].sum())
+                if "event_type" in silver_df.columns:
+                    evts = silver_df[silver_df["event_type"] != "other"]["event_type"].value_counts().to_dict()
+                    status["today_event_types"] = evts
+            if args.as_json:
+                print(json.dumps(status, ensure_ascii=False, indent=2, default=str))
+            else:
+                print("Crypto News Status:")
+                if status.get("fear_greed_latest"):
+                    fg = status["fear_greed_latest"]
+                    print(f"  Fear & Greed: {fg['value']} ({fg['classification']}) as of {fg['date']}")
+                print(f"  News silver today: {'YES' if status['news_silver_today'] else 'NO'}")
+                if "today_articles" in status:
+                    print(f"  Today articles: {status['today_articles']}, urgent={status.get('today_urgent', 0)}")
+                print(f"  Sources ({len(status['news_sources'])}):")
+                for src in status["news_sources"]:
+                    print(f"    {src['source']:<20} days={src['articles']}  latest={src['latest']}")
+            return 0
+
+    if args.command == "crypto":
+        from pathlib import Path as _Path
+        import pandas as pd
+
+        root = _Path(args.data_root)
+        crypto_dir = root / "market" / "cross_asset" / "crypto"
+
+        if args.crypto_cmd == "list":
+            from trade_py.db.trade_db import TradeDB
+            db = TradeDB(args.data_root)
+            assets = db._conn.execute(
+                "SELECT symbol, asset_class, venue, interval, watermark_date, "
+                "last_sync_status, last_rows, enabled "
+                "FROM asset_registry WHERE asset_class = 'crypto' ORDER BY symbol"
+            ).fetchall()
+            if args.as_json:
+                cols = ["symbol", "asset_class", "venue", "interval", "watermark_date",
+                        "last_sync_status", "last_rows", "enabled"]
+                print(json.dumps([dict(zip(cols, a)) for a in assets], ensure_ascii=False, indent=2, default=str))
+            else:
+                print("Crypto assets (24/7 market, daily UTC bars):")
+                print(f"  {'Symbol':<8} {'Venue':<12} {'Interval':<10} {'Watermark':<12} {'Rows':>6}  {'Status'}")
+                print("  " + "-" * 72)
+                for a in assets:
+                    sym, cls, venue, interval, wm, status, rows, enabled = a
+                    wm_str = str(wm)[:10] if wm else "N/A"
+                    en = "" if enabled else " [DISABLED]"
+                    rows_n = rows or 0
+                    print(f"  {sym:<8} {(venue or ''):<12} {interval:<10} {wm_str:<12} {rows_n:>6}  {status or ''}{en}")
+                print(f"\n  Data directory: {crypto_dir}")
+            return 0
+
+        if args.crypto_cmd == "fng":
+            fng_path = crypto_dir / "fear_greed.parquet"
+            if not fng_path.exists():
+                print("Fear & Greed data not found. Run 'trade data news fetch' first.")
+                return 1
+            df = pd.read_parquet(fng_path).tail(args.limit)
+            if args.as_json:
+                print(df.to_json(orient="records", date_format="iso"))
+            else:
+                print("Crypto Fear & Greed Index (24/7 market):")
+                print(f"{'Date':<12} {'Value':>5}  {'Classification':<20}")
+                print("-" * 42)
+                for _, row in df.iterrows():
+                    print(f"{str(row['date'])[:10]:<12} {int(row['value']):>5}  {row['classification']:<20}")
+            return 0
+
+        if args.crypto_cmd == "show":
+            symbol = args.symbol.upper()
+            sym_lower = symbol.lower()
+            kline_path = crypto_dir / f"{sym_lower}.parquet"
+            if not kline_path.exists():
+                print(f"Crypto K-line data not found for {symbol}.")
+                print(f"Expected path: {kline_path}")
+                print("Run 'trade data sync' first to fetch crypto data.")
+                return 1
+            full = pd.read_parquet(kline_path)
+            total = len(full)
+            df = full.tail(args.limit + 1).copy()
+            if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+            if "close" in df.columns and len(df) >= 2:
+                df["pct_chg"] = df["close"].pct_change() * 100
+            df = df.tail(args.limit)
+            if args.as_json:
+                for col in ["open", "high", "low", "close", "pct_chg"]:
+                    if col in df.columns:
+                        df[col] = df[col].round(2)
+                if "volume" in df.columns:
+                    df["volume"] = df["volume"].round(4)
+                print(df.to_json(orient="records", date_format="iso"))
+            else:
+                pct_col = "pct_chg" if "pct_chg" in df.columns else None
+                cols = [c for c in ["date", "open", "high", "low", "close", "volume", pct_col] if c and c in df.columns]
+                print(f"Crypto K-line: {symbol} (24/7 market, daily bars UTC)")
+                print(f"Total rows: {total}  |  Showing last {len(df)} bars")
+                print()
+                header_fmt = f"{'Date':<12} {'Open':>10} {'High':>10} {'Low':>10} {'Close':>10} {'Volume':>12}"
+                if pct_col:
+                    header_fmt += f" {'Chg%':>7}"
+                print(header_fmt)
+                print("-" * (len(header_fmt) + 5))
+                for _, row in df.iterrows():
+                    line = f"{row['date']:<12} "
+                    for c in ["open", "high", "low", "close"]:
+                        line += f"{row[c]:>10.2f} "
+                    vol = row.get("volume", 0)
+                    if abs(vol) >= 1e9:
+                        line += f"{vol/1e9:>10.2f}B "
+                    elif abs(vol) >= 1e6:
+                        line += f"{vol/1e6:>10.2f}M "
+                    else:
+                        line += f"{vol:>11.2f} "
+                    if pct_col and not pd.isna(row.get(pct_col)):
+                        chg = row[pct_col]
+                        sign = "+" if chg >= 0 else ""
+                        line += f" {sign}{chg:>6.2f}%"
+                    print(line)
+                print()
+                print("Note: Crypto markets trade 24/7 including weekends. Daily bars finalized at UTC 00:00.")
+            return 0
+
+    if args.command in ("source", "sources"):
+        from trade_py.db.trade_db import TradeDB
+        db = TradeDB(args.data_root)
+
+        if args.src_cmd == "list":
+            rows = db.asset_registry_list(
+                asset_class=args.asset_class,
+                enabled_only=False,
+            )
+            if args.venue:
+                rows = [r for r in rows if r.get("venue") == args.venue]
+            if args.disabled:
+                rows = [r for r in rows if not r.get("enabled")]
+            if args.as_json:
+                print(json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2, default=str))
+                return 0
+            print(f"Data sources ({len(rows)} total):")
+            print(f"  {'ID':<22} {'Class':<10} {'Sym':<8} {'Venue':<12} {'Interval':<8} {'QPS':>5} {'Watermark':<12} {'Status'}")
+            print("  " + "-" * 105)
+            for r in rows:
+                aid = r["asset_id"]
+                cls = r["asset_class"]
+                sym = r["symbol"]
+                ven = r.get("venue") or ""
+                iv = r.get("interval") or ""
+                mim = r.get("min_interval_ms", 300)
+                qps = f"{1000/max(mim,1):.1f}" if mim else "?"
+                wm = str(r.get("watermark_date") or "")[:10]
+                st = r.get("last_sync_status") or ""
+                en = "" if r.get("enabled") else " [OFF]"
+                print(f"  {aid:<22} {cls:<10} {sym:<8} {ven:<12} {iv:<8} {qps:>5} {wm:<12} {st}{en}")
+            print(f"\n  Hint: use 'trade data source show <ID>' for details, 'trade data sync' to fetch.")
+            return 0
+
+        if args.src_cmd == "show":
+            aid = args.asset_id
+            row = db.asset_registry_get(aid)
+            if not row:
+                print(f"Source not found: {aid}")
+                return 1
+            d = dict(row)
+            if args.as_json:
+                print(json.dumps(d, ensure_ascii=False, indent=2, default=str))
+                return 0
+            print(f"Source: {d['asset_id']}")
+            print(f"  class:        {d['asset_class']}")
+            print(f"  symbol:       {d['symbol']} / {d.get('quote_asset','USD')}")
+            print(f"  venue:        {d.get('venue') or '(none)'}")
+            print(f"  interval:     {d.get('interval')}")
+            print(f"  enabled:      {'yes' if d.get('enabled') else 'NO'}")
+            print(f"  priority:     {d.get('priority')}")
+            print(f"  QPS limit:    {1000/max(d.get('min_interval_ms',300),1):.1f} req/sec (min_interval={d.get('min_interval_ms')}ms)")
+            print(f"  batch_size:   {d.get('batch_size')}")
+            print(f"  backfill:     {d.get('backfill_days')} days")
+            print(f"  watermark:    {d.get('watermark_date') or '(never synced)'}")
+            if d.get("last_sync_at"):
+                print(f"  last sync:    {d['last_sync_at']}  ({d.get('last_sync_status') or '?'})")
+            if d.get("last_rows"):
+                print(f"  last rows:    {d['last_rows']}")
+            if d.get("last_error"):
+                print(f"  last error:   {d['last_error']}")
+            return 0
+
+        if args.src_cmd == "enable":
+            db.asset_registry_set_enabled(args.asset_id, True)
+            print(f"Enabled: {args.asset_id}")
+            return 0
+
+        if args.src_cmd == "disable":
+            db.asset_registry_set_enabled(args.asset_id, False)
+            print(f"Disabled: {args.asset_id}")
+            return 0
+
+        if args.src_cmd == "add":
+            asset = {
+                "asset_id": args.asset_id,
+                "asset_class": args.asset_class,
+                "symbol": args.symbol,
+                "quote_asset": args.quote,
+                "venue": args.venue,
+                "interval": args.interval,
+                "enabled": 1,
+                "priority": args.priority,
+                "batch_size": args.batch_size,
+                "min_interval_ms": args.min_interval_ms,
+                "backfill_days": args.backfill_days,
+            }
+            existing = db.asset_registry_get(args.asset_id)
+            db.asset_registry_upsert(asset)
+            action = "Updated" if existing else "Added"
+            print(f"{action} source: {args.asset_id} ({args.asset_class}/{args.symbol} via {args.venue})")
+            return 0
+
+        if args.src_cmd == "remove":
+            existing = db.asset_registry_get(args.asset_id)
+            if not existing:
+                print(f"Source not found: {args.asset_id}")
+                return 1
+            if not args.yes:
+                print(f"Remove source '{args.asset_id}'? This does NOT delete parquet data. [y/N] ", end="", flush=True)
+                try:
+                    ans = input().strip().lower()
+                except EOFError:
+                    ans = "n"
+                if ans not in ("y", "yes"):
+                    print("Aborted.")
+                    return 1
+            if db.asset_registry_delete(args.asset_id):
+                print(f"Removed: {args.asset_id}")
+                return 0
+            print(f"Failed to remove: {args.asset_id}")
+            return 1
+
+    if args.command in ("backfill", "jobs") and args.backfill_cmd == "status":
         from trade_py.db.trade_db import TradeDB
 
         db = TradeDB(args.data_root)
@@ -1006,21 +1559,29 @@ def main(argv: list[str] | None = None) -> int:
                 return 3
             return 0
 
-        if args.mode != "sync" or args.dry_run or args.strict or args.as_json:
-            print("cross-asset modes/dry-run/strict/json currently apply only to btc")
-            return 2
-
-        def _run_cross_asset() -> DataRunResult:
-            fn_map = {
-                "gold": lambda: fetch_gold(args.data_root),
-                "fx": lambda: fetch_fx_cnh(args.data_root),
-                "btc": lambda: fetch_btc(args.data_root),
-                "all": lambda: fetch_all(args.data_root),
-            }
-            fn_map[args.asset]()
-            return DataRunResult(summary=f"跨资产同步完成: {args.asset}")
-
-        return _track_data_run(args.data_root, "cross_asset_fetch", _run_cross_asset)
+        # Non-BTC cross-asset is deprecated; redirect to `trade data sync`
+        import sys as _sys
+        print(
+            "Note: 'trade data cross-asset' is deprecated for gold/fx/all. "
+            "Use 'trade data sync' instead (meta-driven engine with QPS control and watermarks).",
+            file=_sys.stderr,
+        )
+        if args.mode == "status":
+            print(f"Redirecting to: trade data source list  (use 'trade data status' for health)\n", file=_sys.stderr)
+            from trade_py.db.trade_db import TradeDB as _TDB
+            db = _TDB(args.data_root)
+            for r in db.asset_registry_list(enabled_only=False):
+                print(f"  {r['asset_id']:<22} {r['asset_class']:<10} wm={r.get('watermark_date') or '-':<12} {r.get('last_sync_status') or ''}")
+            return 0
+        class_map = {"all": None, "gold": "commodity", "fx": "fx"}
+        target_class = class_map.get(args.asset)
+        print(f"Redirecting to: trade data sync --class {target_class or 'crypto,fx,commodity'}\n", file=_sys.stderr)
+        args.asset_class = target_class
+        args.crypto = False
+        args.symbols = None
+        args.full_refresh = args.mode != "sync" and not args.dry_run
+        # Fall through to the sync handler below (we jump there via goto-style re-entry)
+        return _dispatch_sync(args)
 
     if args.command == "realtime":
         from trade_py.analysis.intraday_runtime import compute_intraday_snapshot
