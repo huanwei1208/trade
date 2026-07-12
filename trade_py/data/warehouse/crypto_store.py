@@ -12,7 +12,10 @@ from typing import Any
 
 import pandas as pd
 
-from trade_py.data.market.cross_asset.store import BtcRunStore
+try:
+    from trade_py.data.market.crypto.store import BtcRunStore
+except ImportError:
+    from trade_py.data.market.cross_asset.store import BtcRunStore  # type: ignore[no-redef]
 from trade_py.data.warehouse.io import WarehouseLayout
 
 

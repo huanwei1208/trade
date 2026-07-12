@@ -15,7 +15,7 @@ from trade_py.data.access.policy import BackfillReport, ReadPolicy
 from trade_py.data.market.kline.akshare import KlineFetcher
 from trade_py.data.market.kline.providers import ensure_symbol
 from trade_py.data.market.fund_flow.tushare import FundFlowFetcher
-from trade_py.data.paths import CROSS_ASSET_DIR, KLINE_DIR
+from trade_py.data.paths import COMMODITY_DIR, CRYPTO_DIR, FX_DIR, KLINE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -125,29 +125,99 @@ class DataGateway:
         self._record_report(report, start_ts)
         return df, report
 
+    # Mapping of legacy get_cross_asset(name) keys to new layout locations.
+    # Legacy fallback paths are checked in order if the canonical file is missing.
+
+    def _resolve_cross_asset_path(self, name: str) -> Path:
+        """Return the best available parquet path for a legacy cross_asset name.
+
+        Checks the canonical new-layout path first (market/crypto, market/fx,
+        market/commodity), then falls back to legacy market/cross_asset/ and
+        finally <root>/cross_asset/ for backwards compatibility.
+        """
+        # Mapping of caller-facing names to (asset_dir_callable, filename, legacy_relpaths)
+        name_map: dict[str, tuple] = {
+            "btc":    (CRYPTO_DIR,    "btc.parquet",     [
+                Path("market") / "cross_asset" / "crypto" / "btc.parquet",
+                Path("market") / "cross_asset" / "btc.parquet",
+                Path("cross_asset") / "btc.parquet",
+            ]),
+            "eth":    (CRYPTO_DIR,    "eth.parquet",     [
+                Path("market") / "cross_asset" / "crypto" / "eth.parquet",
+                Path("market") / "cross_asset" / "eth.parquet",
+                Path("cross_asset") / "eth.parquet",
+            ]),
+            "sol":    (CRYPTO_DIR,    "sol.parquet",     [
+                Path("market") / "cross_asset" / "crypto" / "sol.parquet",
+                Path("market") / "cross_asset" / "sol.parquet",
+                Path("cross_asset") / "sol.parquet",
+            ]),
+            "bnb":    (CRYPTO_DIR,    "bnb.parquet",     [
+                Path("market") / "cross_asset" / "crypto" / "bnb.parquet",
+                Path("market") / "cross_asset" / "bnb.parquet",
+                Path("cross_asset") / "bnb.parquet",
+            ]),
+            "xrp":    (CRYPTO_DIR,    "xrp.parquet",     [
+                Path("market") / "cross_asset" / "crypto" / "xrp.parquet",
+                Path("market") / "cross_asset" / "xrp.parquet",
+                Path("cross_asset") / "xrp.parquet",
+            ]),
+            "fear_greed": (CRYPTO_DIR, "fear_greed.parquet", [
+                Path("market") / "cross_asset" / "crypto" / "fear_greed.parquet",
+                Path("market") / "cross_asset" / "fear_greed.parquet",
+            ]),
+            "fx":     (FX_DIR,        "usdcnh.parquet",  [
+                Path("market") / "cross_asset" / "fx_cnh.parquet",
+                Path("cross_asset") / "fx_cnh.parquet",
+                Path("market") / "cross_asset" / "fx_usdcnh.parquet",
+            ]),
+            "fx_cnh": (FX_DIR,        "usdcnh.parquet",  [
+                Path("market") / "cross_asset" / "fx_cnh.parquet",
+                Path("cross_asset") / "fx_cnh.parquet",
+            ]),
+            "gold":   (COMMODITY_DIR, "gold.parquet",    [
+                Path("market") / "cross_asset" / "gold.parquet",
+                Path("cross_asset") / "gold.parquet",
+            ]),
+        }
+        spec = name_map.get(name)
+        if spec is None:
+            # Unknown name — fall back to direct market/cross_asset path.
+            return self._root / "market" / "cross_asset" / f"{name}.parquet"
+        dir_fn, fname, legacy_rels = spec
+        canonical = dir_fn(self._root) / fname
+        if canonical.is_file():
+            return canonical
+        for rel in legacy_rels:
+            p = self._root / rel
+            if p.is_file():
+                return p
+        # Return canonical path even if missing (caller checks is_file).
+        return canonical
+
     def get_cross_asset(self, name: str) -> tuple[pd.DataFrame, BackfillReport]:
         start_ts = time.perf_counter()
         report = BackfillReport(dataset="cross_asset", key=name)
-        canonical_name = "fx_cnh" if name == "fx" else name
-        canonical_path = CROSS_ASSET_DIR(self._root) / f"{canonical_name}.parquet"
-        legacy_path = self._root / "cross_asset" / f"{canonical_name}.parquet"
-        path = (
-            canonical_path
-            if name == "btc" or canonical_path.is_file()
-            else legacy_path
-        )
+        path = self._resolve_cross_asset_path(name)
 
         if not path.is_file():
             frame = pd.DataFrame()
             report.action = "degraded"
             report.degraded = True
             report.reason_code = "no_local_data"
-            report.error = f"canonical cross-asset file not found: {path}"
+            report.error = f"cross-asset file not found for {name!r}: {path}"
         else:
             try:
                 if name == "btc":
-                    pointer_path = path.with_name("btc_current.json")
-                    if not pointer_path.is_file():
+                    # BTC pointer file (btc_current.json) lives next to btc.parquet
+                    # in the crypto directory; fall back to legacy cross_asset/crypto/.
+                    pointer_candidates = [
+                        path.parent / "btc_current.json",
+                        self._root / "market" / "cross_asset" / "btc_current.json",
+                        CRYPTO_DIR(self._root) / "btc_current.json",
+                    ]
+                    pointer_path = next((p for p in pointer_candidates if p.is_file()), None)
+                    if pointer_path is None:
                         raise ValueError("BTC canonical lineage pointer is missing")
                     pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
                     expected_hash = str(pointer.get("canonical_sha256") or "")

@@ -75,13 +75,28 @@ def _job_sentiment_pipeline(
 
 
 def _job_cross_asset(data_root: str, config: dict | None = None) -> str:
-    from trade_py.data.market.cross_asset import fetch_fx_cnh, fetch_gold
+    """Deprecated: kept for backwards compatibility.
+
+    Routes gold/FX sync to the new split asset modules. For full crypto/fx/commodity
+    coverage use ``asset_batch_ingest`` instead.
+    """
+    # Prefer new split modules; fall back to legacy cross_asset shim.
+    try:
+        from trade_py.data.market.commodity.akshare import fetch_gold_ohlc as fetch_gold
+    except ImportError:
+        from trade_py.data.market.cross_asset import fetch_gold
+    try:
+        from trade_py.data.market.fx.akshare import fetch_usdcnh_ohlc as _fetch_fx
+        def fetch_fx_cnh(data_root):  # type: ignore[no-untyped-def]
+            return _fetch_fx(data_root)
+    except ImportError:
+        from trade_py.data.market.cross_asset import fetch_fx_cnh
 
     gold = fetch_gold(data_root)
     fx = fetch_fx_cnh(data_root)
     if gold.empty or fx.empty:
-        raise RuntimeError("Gold/FX 跨资产数据同步不完整")
-    return "跨资产数据同步完成: gold,fx_cnh"
+        raise RuntimeError("Gold/FX 多资产数据同步不完整")
+    return "多资产数据同步完成 (legacy job, prefer asset_batch_ingest): gold,fx_cnh"
 
 
 def _job_crypto_btc_fetch(data_root: str, config: dict | None = None) -> str:
@@ -173,11 +188,19 @@ def _job_crypto_news_sentiment(data_root: str, config: dict | None = None) -> st
     root = Path(data_root)
     today = date.today().isoformat()
 
-    # 1. Fear & Greed Index
+    # 1. Fear & Greed Index — canonical path is market/crypto/fear_greed.parquet;
+    # also mirror to legacy cross_asset path for transition compatibility.
     fng_records = fetch_fear_greed(limit=90)
-    fng_path = root / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
+    fng_canonical = root / "market" / "crypto" / "fear_greed.parquet"
+    fng_legacy = root / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
     if fng_records:
-        save_fear_greed_parquet(fng_records, fng_path)
+        save_fear_greed_parquet(fng_records, fng_canonical)
+        try:
+            import shutil
+            fng_legacy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(fng_canonical, fng_legacy)
+        except Exception as exc:
+            logger.debug("fear_greed legacy mirror skipped: %s", exc)
     fng_latest = fng_records[-1] if fng_records else None
     fng_summary = f"fear_greed={fng_latest.value} ({fng_latest.value_classification})" if fng_latest else "fear_greed=unavailable"
 
@@ -828,8 +851,8 @@ JOB_REGISTRY: dict[str, JobDef] = {
         ["weekday intraday"], "fetch", ["market", "intraday"],
     ),
     "cross_asset_fetch": JobDef(
-        "cross_asset_fetch", _job_cross_asset, "跨资产行情抓取",
-        ["daily 07:00"], "fetch", ["market", "gold", "fx"],
+        "cross_asset_fetch", _job_cross_asset, "跨资产行情抓取 (deprecated, superseded by asset_batch_ingest)",
+        [], "fetch", ["deprecated", "market", "gold", "fx"],
     ),
     "crypto_btc_fetch": JobDef(
         "crypto_btc_fetch", _job_crypto_btc_fetch, "BTC UTC 日线采集 (legacy, uses generic ingest)",

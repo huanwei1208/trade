@@ -9,7 +9,10 @@ from typing import Any, Callable
 import pandas as pd
 
 from trade_py.analysis.crypto_validation import validate_btc_volatility
-from trade_py.data.market.cross_asset.service import BtcMarketDataService
+try:
+    from trade_py.data.market.crypto.service import BtcMarketDataService
+except ImportError:
+    from trade_py.data.market.cross_asset.service import BtcMarketDataService  # type: ignore[no-redef]
 from trade_py.data.warehouse.crypto_store import (
     CRYPTO_BTC_PROFILE,
     CRYPTO_VALIDATION_CURRENT,

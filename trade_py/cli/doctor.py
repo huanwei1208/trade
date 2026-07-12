@@ -90,13 +90,13 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         report["checks"]["jobs"] = {"status": "error", "error": str(exc)}
 
-    # 3. Crypto data health
+    # 3. Crypto / multi-asset data health
     try:
-        from trade_py.utils.data_inspector import cross_asset_stats, news_stats
-        cross = cross_asset_stats(str(data_root))
+        from trade_py.utils.data_inspector import multi_asset_stats, news_stats
+        cross = multi_asset_stats(str(data_root))
         news = news_stats(str(data_root))
         if status is not None:
-            cross = status.get("cross_asset") or cross
+            cross = status.get("multi_asset") or status.get("cross_asset") or cross
             news = status.get("news") or news
 
         required_crypto = ["btc", "eth"]

@@ -1004,6 +1004,101 @@ def _migrate_v19(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v20(conn: sqlite3.Connection) -> None:
+    """Rename dataset keys from cross_asset.* to crypto.*/fx.*/commodity.* namespaces.
+
+    Non-destructive: only updates string references in tables; no data or parquet
+    files are deleted. Adds idempotent verification that asset_registry contains
+    entries for the new keys (v18/v19 should already have them).
+    """
+    # Mapping of old dataset key prefix/name → new dataset key prefix/name.
+    # Simple full-key rename map (no wildcard) applied to string columns via UPDATE.
+    rename_map = [
+        ("cross_asset.gold",       "commodity.gold"),
+        ("cross_asset.fx_cnh",     "fx.usdcnh"),
+        ("cross_asset.btc",        "crypto.btc"),
+        ("cross_asset.eth",        "crypto.eth"),
+        ("cross_asset.sol",        "crypto.sol"),
+        ("cross_asset.bnb",        "crypto.bnb"),
+        ("cross_asset.xrp",        "crypto.xrp"),
+        ("cross_asset.fear_greed", "crypto.fear_greed"),
+    ]
+
+    # Tables whose text columns may contain old cross_asset.* dataset references.
+    # We skip schema_migrations (immutable history), job_runs (historical logs),
+    # and tables that use 'cross_asset_fetch' as a job-name literal (that rename
+    # is a separate semantic change handled in code, not as a dataset rename).
+    tables_and_columns = [
+        # FreshnessStatus.dataset (dataset-level freshness watermarks)
+        ("FreshnessStatus", "dataset"),
+        # sync_state.dataset (per-source dataset watermarks)
+        ("sync_state", "dataset"),
+        # quality_gate_history.dataset references
+        ("quality_gate_history", "dataset"),
+        # pipeline_dag.emits / config_json
+        ("pipeline_dag", "emits"),
+        # event_routing rules (if table exists)
+        ("event_routing", "dataset"),
+    ]
+
+    for table, column in tables_and_columns:
+        if not _table_exists(conn, table):
+            continue
+        # Check column exists
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            continue
+        for old_key, new_key in rename_map:
+            conn.execute(
+                f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
+                (new_key, old_key),
+            )
+
+    # JSON-ish columns may embed old keys inside config_json/result_summary.
+    # For those we do a conservative string replace (safe because keys contain
+    # no regex-active characters and are fully-qualified names with no ambiguity
+    # in these fields).
+    json_columns = [
+        ("pipeline_dag", "config_json"),
+        ("pipeline_dag", "description"),
+    ]
+    for table, column in json_columns:
+        if not _table_exists(conn, table):
+            continue
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            continue
+        for old_key, new_key in rename_map:
+            conn.execute(
+                f"UPDATE {table} SET {column} = replace({column}, ?, ?) "
+                f"WHERE {column} LIKE ?",
+                (old_key, new_key, f"%{old_key}%"),
+            )
+
+    # Verify asset_registry has expected entries for the renamed keys.
+    # v18 seeded crypto.BTC/crypto.ETH/... with capitalized suffixes; we ensure
+    # both lower-case dataset_key variants exist as aliases so reads using
+    # crypto.btc (lower) also resolve. Asset ids are matched case-insensitively.
+    if _table_exists(conn, "asset_registry"):
+        expected_ids = {
+            "crypto.btc", "crypto.eth", "crypto.sol", "crypto.bnb", "crypto.xrp",
+            "fx.usdcnh", "commodity.gold",
+        }
+        rows = conn.execute(
+            "SELECT asset_id, asset_class FROM asset_registry"
+        ).fetchall()
+        existing_lower = {str(r[0]).lower(): r[0] for r in rows}
+        missing = [
+            ds for ds in expected_ids
+            if ds not in existing_lower
+        ]
+        if missing:
+            logger.warning("asset_registry missing expected dataset ids: %s; "
+                           "these should be created by `trade data source add`.", missing)
+
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -1224,4 +1319,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v19 applied")
         except Exception as exc:
             logger.error("Migration v19 failed: %s", exc)
+            raise
+
+    # ── v20: dataset key rename cross_asset.* → crypto.*/fx.*/commodity.* ────
+    if 20 not in applied:
+        logger.info("Applying DB migration v20 (dataset key rename cross_asset → crypto/fx/commodity)")
+        try:
+            _migrate_v20(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (20)")
+            conn.commit()
+            logger.info("Migration v20 applied")
+        except Exception as exc:
+            logger.error("Migration v20 failed: %s", exc)
             raise

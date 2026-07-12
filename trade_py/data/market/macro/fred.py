@@ -147,10 +147,20 @@ def save_macro_parquet(points_by_series: dict[str, list[MacroPoint]], output_dir
 
 
 def get_fear_greed_latest(data_root: str | Path = "data") -> dict[str, Any] | None:
-    """Read latest Fear & Greed value from local parquet."""
+    """Read latest Fear & Greed value from local parquet.
+
+    Checks canonical market/crypto/ path first, then falls back to legacy
+    market/cross_asset/ layouts during transition.
+    """
     import pandas as pd
-    path = Path(data_root) / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
-    if not path.exists():
+    root = Path(data_root)
+    candidates = [
+        root / "market" / "crypto" / "fear_greed.parquet",
+        root / "market" / "cross_asset" / "crypto" / "fear_greed.parquet",
+        root / "market" / "cross_asset" / "fear_greed.parquet",
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
         return None
     try:
         df = pd.read_parquet(path)

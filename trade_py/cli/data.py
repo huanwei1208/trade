@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Callable
 
 from trade_py.infra.settings import default_data_root, load_defaults
-from trade_py.data.market.cross_asset import fetch_all, fetch_btc, fetch_fx_cnh, fetch_gold
 from trade_py.data.market.kline import KlineSyncOptions, KlineSyncService
 from trade_py.db.settings_db import SettingsDB
 
@@ -49,6 +48,37 @@ class DataRunResult:
 
 def _truncate_summary(text: str, limit: int = 500) -> str:
     return text if len(text) <= limit else text[:limit]
+
+
+# ── Multi-asset path helpers (post asset-split) ──────────────────────────────
+# Canonical paths live under market/<class>/; legacy fallback paths are checked
+# during transition so existing on-disk data keeps working.
+
+def _resolve_fear_greed_path(data_root) -> Path:
+    """Return the first existing fear_greed.parquet path, else canonical."""
+    root = Path(data_root)
+    candidates = [
+        root / "market" / "crypto" / "fear_greed.parquet",
+        root / "market" / "cross_asset" / "crypto" / "fear_greed.parquet",
+        root / "market" / "cross_asset" / "fear_greed.parquet",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return candidates[0]
+
+
+def _resolve_crypto_dir(data_root) -> Path:
+    """Return the crypto data directory, preferring the canonical market/crypto/."""
+    root = Path(data_root)
+    canonical = root / "market" / "crypto"
+    legacy_crypto = root / "market" / "cross_asset" / "crypto"
+    legacy_flat = root / "market" / "cross_asset"
+    if canonical.exists() and any(canonical.glob("*.parquet")):
+        return canonical
+    if legacy_crypto.exists() and any(legacy_crypto.glob("*.parquet")):
+        return legacy_crypto
+    return canonical
 
 
 def _parse_job_datetime(value: object) -> datetime | None:
@@ -325,20 +355,26 @@ def make_parser() -> argparse.ArgumentParser:
     # Unified meta-driven sync command (new)
     p_sync_unified = sub.add_parser(
         "sync",
-        description="统一资产数据同步 (meta驱动, 批量ingest, QPS控制, watermark增量)",
+        description=(
+            "统一资产数据同步 (meta驱动, 批量ingest, QPS控制, watermark增量).\n"
+            "Supported asset classes: crypto (BTC/ETH/SOL/BNB/XRP + Fear&Greed), "
+            "fx (USD/CNH), commodity (gold); stock coming in a future release."
+        ),
         epilog=(
             "trade data sync                     # Sync all enabled assets\n"
-            "trade data sync --crypto            # Sync only crypto\n"
-            "trade data sync --symbols BTC,ETH   # Sync specific crypto assets\n"
+            "trade data sync --crypto            # Sync only crypto (BTC, ETH, SOL, BNB, XRP, fear_greed)\n"
+            "trade data sync --symbols BTC,ETH   # Sync specific crypto symbols\n"
             "trade data sync --full-refresh      # Ignore watermark, full history backfill\n"
-            "trade data sync --class commodity,fx # Sync gold/FX\n"
+            "trade data sync --class commodity,fx # Sync gold and USD/CNH only\n"
+            "trade data btc                      # Run BTC assurance flow (primary+shadow+D3 gate)\n"
+            "trade data btc-assurance            # Alias for BTC assurance flow\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_sync_unified.add_argument("--data-root", default=str(default_data_root()))
-    p_sync_unified.add_argument("--crypto", action="store_true", help="Only sync crypto assets (shorthand)")
+    p_sync_unified.add_argument("--crypto", action="store_true", help="Only sync crypto assets (BTC/ETH/SOL/BNB/XRP + Fear&Greed) — shorthand for --class crypto")
     p_sync_unified.add_argument("--class", dest="asset_class", default=None,
-                                help="Comma-separated asset classes: crypto,fx,commodity,stock")
+                                help="Comma-separated asset classes to sync: crypto,fx,commodity (stock future)")
     p_sync_unified.add_argument("--symbols", default=None, help="Comma-separated symbols to sync")
     p_sync_unified.add_argument("--full-refresh", action="store_true", help="Ignore watermark, full refresh")
     p_sync_unified.add_argument("--json", action="store_true", dest="as_json")
@@ -401,23 +437,6 @@ def make_parser() -> argparse.ArgumentParser:
     p_src_remove.add_argument("asset_id")
     p_src_remove.add_argument("--data-root", default=str(default_data_root()))
     p_src_remove.add_argument("--yes", action="store_true", help="跳过确认")
-
-    # cross-asset: deprecated, redirect warning for non-BTC assets
-    p_cross = sub.add_parser(
-        "cross-asset",
-        description="跨资产行情抓取 (gold/btc/fx/cnh) - 保留兼容，推荐使用 `trade data sync`",
-        epilog=(
-            "trade data cross-asset all\n"
-            "trade data cross-asset gold"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p_cross.add_argument("asset", nargs="?", choices=["all", "gold", "fx", "btc"], default="all")
-    p_cross.add_argument("--data-root", default=str(default_data_root()))
-    p_cross.add_argument("--mode", choices=["sync", "validate", "status"], default="sync")
-    p_cross.add_argument("--dry-run", action="store_true")
-    p_cross.add_argument("--strict", action="store_true")
-    p_cross.add_argument("--json", action="store_true", dest="as_json")
 
     p_rt = sub.add_parser(
         "realtime",
@@ -628,6 +647,25 @@ def make_parser() -> argparse.ArgumentParser:
     p_crypto.add_argument("--data-root", default=str(default_data_root()))
     p_crypto.add_argument("--limit", type=int, default=10, help="Number of recent rows to show")
     p_crypto.add_argument("--json", action="store_true", dest="as_json")
+
+    # ── BTC assurance flow (primary OKX + shadow Binance + D3 reconciliation) ──
+    p_btc = sub.add_parser(
+        "btc",
+        aliases=["btc-assurance"],
+        description="BTC assurance-gated sync (OKX primary, Binance shadow, D3 reconciliation).",
+        epilog=(
+            "trade data btc                   # Run sync, validate, publish\n"
+            "trade data btc --mode validate   # Validate current snapshot only\n"
+            "trade data btc --mode status     # Show current assurance status\n"
+            "trade data btc --strict          # Exit non-zero on degraded\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_btc.add_argument("--data-root", default=str(default_data_root()))
+    p_btc.add_argument("--mode", choices=["sync", "validate", "status"], default="sync")
+    p_btc.add_argument("--dry-run", action="store_true")
+    p_btc.add_argument("--strict", action="store_true")
+    p_btc.add_argument("--json", action="store_true", dest="as_json")
 
     parser.epilog = epilog_from_subparsers(parser)
     return parser
@@ -956,9 +994,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.news_cmd == "fng":
             import pandas as pd
-            fng_path = _Path(args.data_root) / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
+            fng_path = _resolve_fear_greed_path(args.data_root)
             if not fng_path.exists():
-                print("Fear & Greed data not found. Run 'trade data news fetch' first.")
+                print("Fear & Greed data not found. Run 'trade data news fetch' or 'trade data sync --class crypto' first.")
                 return 1
             df = pd.read_parquet(fng_path).tail(args.limit)
             if args.as_json:
@@ -997,7 +1035,7 @@ def main(argv: list[str] | None = None) -> int:
             from datetime import date as _date
             root = _Path(args.data_root)
             today = _date.today().isoformat()
-            fng_path = root / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
+            fng_path = _resolve_fear_greed_path(args.data_root)
             silver_dir = root / "news" / "silver"
             bronze_dir = root / "news" / "bronze"
             status = {
@@ -1040,12 +1078,69 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"    {src['source']:<20} days={src['articles']}  latest={src['latest']}")
             return 0
 
+    if args.command in {"btc", "btc-assurance"}:
+        from trade_py.data.market.crypto.service import BtcMarketDataService
+
+        service = BtcMarketDataService(args.data_root)
+        try:
+            if args.mode == "sync":
+                payload = service.sync(dry_run=args.dry_run)
+            elif args.mode == "validate":
+                if args.dry_run:
+                    payload = {**service.validate_current(), "dry_run": True}
+                else:
+                    payload = service.validate_current()
+            else:
+                payload = service.status()
+        except Exception as exc:
+            payload = {
+                "mode": args.mode,
+                "data_readiness": "invalid",
+                "reason_code": "BTC_DATA_IO_ERROR",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            if args.as_json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+            else:
+                print(f"btc_mode={args.mode} readiness=invalid error={payload['error']}")
+            return 3
+
+        if args.as_json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        else:
+            print(
+                f"btc_mode={args.mode} readiness={payload.get('data_readiness', 'invalid')} "
+                f"run_id={payload.get('run_id') or '-'} published={payload.get('published', False)}"
+            )
+            gates = payload.get("gates") or (payload.get("manifest") or {}).get("gates") or []
+            for gate in gates:
+                print(
+                    f"  {gate.get('gate', '-')}: {gate.get('status', '-')} "
+                    f"{gate.get('reason_code', '-')}"
+                )
+
+        readiness = str(payload.get("data_readiness") or "invalid")
+        gates = payload.get("gates") or (payload.get("manifest") or {}).get("gates") or []
+        d3 = next((gate for gate in gates if gate.get("gate") == "D3"), {})
+        if d3.get("status") == "fail" and d3.get("reason_code") == "SOURCE_DIVERGENCE":
+            return 4
+        if readiness == "invalid":
+            return 2
+        acquisition = payload.get("acquisition") or {}
+        if args.mode == "sync" and int(acquisition.get("failed") or 0) > 0:
+            return 3
+        if args.mode == "sync" and (acquisition.get("predecessor") or {}).get("status") == "read_error":
+            return 3
+        if args.strict and readiness == "degraded":
+            return 3
+        return 0
+
     if args.command == "crypto":
         from pathlib import Path as _Path
         import pandas as pd
 
         root = _Path(args.data_root)
-        crypto_dir = root / "market" / "cross_asset" / "crypto"
+        crypto_dir = _resolve_crypto_dir(args.data_root)
 
         if args.crypto_cmd == "list":
             from trade_py.db.trade_db import TradeDB
@@ -1286,7 +1381,9 @@ def main(argv: list[str] | None = None) -> int:
             "sector_refresh",
             "macro",
             "cross_asset_fetch",
+            "asset_batch_ingest",
             "crypto_btc_fetch",
+            "crypto_news_sentiment",
             "crypto_research_validation",
         }
         latest_by_job: dict[str, dict] = {}
@@ -1500,88 +1597,6 @@ def main(argv: list[str] | None = None) -> int:
                     f"artifact={payload.get('artifact_path') or '-'}"
                 )
             return 0 if str(payload.get("status") or "") == "pass" else 2
-
-    if args.command == "cross-asset":
-        if args.asset == "btc":
-            from trade_py.data.market.cross_asset.service import BtcMarketDataService
-
-            service = BtcMarketDataService(args.data_root)
-            try:
-                if args.mode == "sync":
-                    payload = service.sync(dry_run=args.dry_run)
-                elif args.mode == "validate":
-                    if args.dry_run:
-                        payload = {**service.validate_current(), "dry_run": True}
-                    else:
-                        payload = service.validate_current()
-                else:
-                    payload = service.status()
-            except Exception as exc:
-                payload = {
-                    "mode": args.mode,
-                    "data_readiness": "invalid",
-                    "reason_code": "BTC_DATA_IO_ERROR",
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-                if args.as_json:
-                    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
-                else:
-                    print(f"btc_mode={args.mode} readiness=invalid error={payload['error']}")
-                return 3
-
-            if args.as_json:
-                print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
-            else:
-                print(
-                    f"btc_mode={args.mode} readiness={payload.get('data_readiness', 'invalid')} "
-                    f"run_id={payload.get('run_id') or '-'} published={payload.get('published', False)}"
-                )
-                gates = payload.get("gates") or (payload.get("manifest") or {}).get("gates") or []
-                for gate in gates:
-                    print(
-                        f"  {gate.get('gate', '-')}: {gate.get('status', '-')} "
-                        f"{gate.get('reason_code', '-')}"
-                    )
-
-            readiness = str(payload.get("data_readiness") or "invalid")
-            gates = payload.get("gates") or (payload.get("manifest") or {}).get("gates") or []
-            d3 = next((gate for gate in gates if gate.get("gate") == "D3"), {})
-            if d3.get("status") == "fail" and d3.get("reason_code") == "SOURCE_DIVERGENCE":
-                return 4
-            if readiness == "invalid":
-                return 2
-            acquisition = payload.get("acquisition") or {}
-            if args.mode == "sync" and int(acquisition.get("failed") or 0) > 0:
-                return 3
-            if args.mode == "sync" and (acquisition.get("predecessor") or {}).get("status") == "read_error":
-                return 3
-            if args.strict and readiness == "degraded":
-                return 3
-            return 0
-
-        # Non-BTC cross-asset is deprecated; redirect to `trade data sync`
-        import sys as _sys
-        print(
-            "Note: 'trade data cross-asset' is deprecated for gold/fx/all. "
-            "Use 'trade data sync' instead (meta-driven engine with QPS control and watermarks).",
-            file=_sys.stderr,
-        )
-        if args.mode == "status":
-            print(f"Redirecting to: trade data source list  (use 'trade data status' for health)\n", file=_sys.stderr)
-            from trade_py.db.trade_db import TradeDB as _TDB
-            db = _TDB(args.data_root)
-            for r in db.asset_registry_list(enabled_only=False):
-                print(f"  {r['asset_id']:<22} {r['asset_class']:<10} wm={r.get('watermark_date') or '-':<12} {r.get('last_sync_status') or ''}")
-            return 0
-        class_map = {"all": None, "gold": "commodity", "fx": "fx"}
-        target_class = class_map.get(args.asset)
-        print(f"Redirecting to: trade data sync --class {target_class or 'crypto,fx,commodity'}\n", file=_sys.stderr)
-        args.asset_class = target_class
-        args.crypto = False
-        args.symbols = None
-        args.full_refresh = args.mode != "sync" and not args.dry_run
-        # Fall through to the sync handler below (we jump there via goto-style re-entry)
-        return _dispatch_sync(args)
 
     if args.command == "realtime":
         from trade_py.analysis.intraday_runtime import compute_intraday_snapshot

@@ -38,13 +38,25 @@ def build_crypto_group(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> FactorGroupResult:
-    """Build cross-asset crypto factors from fear_greed and crypto OHLC data.
+    """Build crypto-asset factors from fear_greed and crypto OHLC data.
 
     Returns a FactorGroupResult with one row per date (symbol='_CRYPTO_MARKET_'),
     suitable for merging into the broader feature frame as market-wide context.
+
+    Checks canonical market/crypto/ path first, then falls back to legacy
+    market/cross_asset/crypto/ and market/cross_asset/ layouts.
     """
     root = Path(data_root)
-    crypto_dir = root / "market" / "cross_asset" / "crypto"
+    canonical_dir = root / "market" / "crypto"
+    legacy_crypto_dir = root / "market" / "cross_asset" / "crypto"
+    legacy_cross_dir = root / "market" / "cross_asset"
+    # Choose the directory that contains fear_greed.parquet; prefer canonical.
+    if (canonical_dir / "fear_greed.parquet").exists():
+        crypto_dir = canonical_dir
+    elif (legacy_crypto_dir / "fear_greed.parquet").exists():
+        crypto_dir = legacy_crypto_dir
+    else:
+        crypto_dir = canonical_dir  # will fail missing-file path below
     news_dir = root / "news" / "silver"
 
     fng_path = crypto_dir / "fear_greed.parquet"
@@ -80,7 +92,12 @@ def build_crypto_group(
 
     ohlc: dict[str, pd.DataFrame] = {}
     for sym in _CRYPTO_SYMBOLS:
-        path = crypto_dir / f"{sym}.parquet"
+        candidates = [
+            crypto_dir / f"{sym}.parquet",
+            legacy_cross_dir / f"{sym}.parquet",
+            root / "cross_asset" / f"{sym}.parquet",
+        ]
+        path = next((p for p in candidates if p.exists()), candidates[0])
         if not path.exists():
             continue
         try:

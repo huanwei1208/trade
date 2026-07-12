@@ -1205,8 +1205,10 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             ("market_index_sector", 2.0),
             ("sector_refresh", 2.0),
             ("macro", 2.0),
-            ("cross_asset_fetch", 1.0),
+            ("cross_asset_fetch", 1.0),  # deprecated, kept for old job_runs rows
+            ("asset_batch_ingest", 2.0),
             ("crypto_btc_fetch", 1.0),
+            ("crypto_news_sentiment", 1.0),
             ("crypto_research_validation", 1.0),
             ("event_pipeline", 2.0),
             ("sentiment_pipeline", 4.0),

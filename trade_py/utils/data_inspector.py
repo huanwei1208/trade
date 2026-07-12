@@ -20,7 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from trade_py.data.paths import (
+    COMMODITY_DIR,
     CROSS_ASSET_DIR,
+    CRYPTO_DIR,
+    FX_DIR,
     FUND_FLOW_DIR,
     FUNDAMENTAL_DIR,
     INDEX_DIR,
@@ -49,6 +52,17 @@ _REQUIRED_PARQUET_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     "fund_flow": ("symbol", "date", "large_order_net_ratio"),
     "fundamental": ("symbol", "report_date", "roe"),
+    # Commodity datasets (post asset-split)
+    "commodity.gold": ("date", "close"),
+    # FX datasets
+    "fx.usdcnh": ("date", "close"),
+    # Crypto datasets
+    "crypto.btc": ("date", "close"),
+    "crypto.eth": ("date", "close"),
+    "crypto.sol": ("date", "close"),
+    "crypto.bnb": ("date", "close"),
+    "crypto.xrp": ("date", "close"),
+    # Legacy cross_asset keys (kept for reading old parquet metadata during transition)
     "cross_asset.gold": ("date", "close"),
     "cross_asset.fx_cnh": ("date", "close"),
     "cross_asset.btc": ("date", "close"),
@@ -82,7 +96,7 @@ _DATA_SOURCE_JOB_POLICIES: dict[str, float] = {
     "market_index_sector": 2.0,
     "sector_refresh": 2.0,
     "macro": 2.0,
-    "cross_asset_fetch": 1.0,
+    "asset_batch_ingest": 1.0,
     "crypto_btc_fetch": 1.0,
     "crypto_news_sentiment": 1.0,
     "crypto_research_validation": 1.0,
@@ -120,10 +134,25 @@ _VALUE_QUALITY_RECOVERY: dict[str, dict[str, Any]] = {
         "mode": "refetch",
         "detail": "Re-fetch northbound flow data and verify rolling net_5d values are populated.",
     },
+    "crypto": {
+        "command": ["trade", "data", "sync", "--crypto"],
+        "mode": "refetch",
+        "detail": "Re-fetch crypto asset data via meta-driven batch sync.",
+    },
+    "fx": {
+        "command": ["trade", "data", "sync", "--class", "fx"],
+        "mode": "refetch",
+        "detail": "Re-fetch FX datasets (e.g. USD/CNH) via meta-driven batch sync.",
+    },
+    "commodity": {
+        "command": ["trade", "data", "sync", "--class", "commodity"],
+        "mode": "refetch",
+        "detail": "Re-fetch commodity datasets (e.g. gold) via meta-driven batch sync.",
+    },
     "cross_asset": {
         "command": ["trade", "data", "sync"],
         "mode": "refetch",
-        "detail": "Re-fetch cross-asset files via meta-driven batch sync and verify close/optional OHLC relationships.",
+        "detail": "Re-fetch asset data via meta-driven batch sync and verify close/optional OHLC relationships.",
     },
     "macro": {
         "command": ["trade", "data", "macro", "sync"],
@@ -165,7 +194,7 @@ _PROVIDER_RECOVERY: dict[str, dict[str, Any]] = {
 _TUSHARE_AUDIT_LOG_NAME = "tushare_requests.jsonl"
 _TUSHARE_AUDIT_FAIL_STATUSES = {"auth", "permission", "invalid_request"}
 _TUSHARE_AUDIT_WARN_STATUSES = {"rate_limit", "transient", "unknown"}
-_REQUIRED_CROSS_SOURCE_DATASETS = ("kline", "cross_asset.btc")
+_REQUIRED_CROSS_SOURCE_DATASETS = ("kline", "crypto.btc")
 _KLINE_RECONCILIATION_SCHEMA_VERSION = "kline-reconciliation-v1"
 _KLINE_RECONCILIATION_COMMAND = [
     "trade",
@@ -563,12 +592,28 @@ def schema_contract_stats(data_root: str | Path = "data", sample_limit: int = 10
     ]
     specs.extend(
         (
-            f"cross_asset.{name}",
+            f"crypto.{name}",
             [path] if path.exists() else [],
-            _REQUIRED_PARQUET_COLUMNS[f"cross_asset.{name}"],
+            _REQUIRED_PARQUET_COLUMNS[f"crypto.{name}"],
         )
-        for name in ("gold", "fx_cnh", "btc", "eth", "sol", "bnb", "xrp")
-        for path, _layout in [_cross_asset_path(root, name)]
+        for name in ("btc", "eth", "sol", "bnb", "xrp")
+        for path, _layout in [_asset_path(root, "crypto", name, legacy_subdir="crypto")]
+    )
+    specs.extend(
+        (
+            "fx.usdcnh",
+            [path] if path.exists() else [],
+            _REQUIRED_PARQUET_COLUMNS["fx.usdcnh"],
+        )
+        for path, _layout in [_asset_path(root, "fx", "usdcnh", legacy_name="fx_cnh")]
+    )
+    specs.extend(
+        (
+            "commodity.gold",
+            [path] if path.exists() else [],
+            _REQUIRED_PARQUET_COLUMNS["commodity.gold"],
+        )
+        for path, _layout in [_asset_path(root, "commodity", "gold")]
     )
     specs.extend(
         (
@@ -871,7 +916,7 @@ def _value_conditions_for(dataset: str, observed_columns: set[str]) -> tuple[lis
             ],
             ("symbol", "report_date"),
         )
-    if dataset.startswith("cross_asset."):
+    if dataset.startswith(("cross_asset.", "crypto.", "fx.", "commodity.")):
         conditions = _date_conditions("date") + [
             ("non_positive_close", "close IS NULL OR close <= 0"),
         ]
@@ -984,7 +1029,14 @@ def _value_waivers_for(dataset: str, observed_columns: set[str]) -> dict[str, st
 
 
 def _value_recovery_key(dataset: str) -> str:
+    if dataset.startswith("crypto."):
+        return "crypto"
+    if dataset.startswith("fx."):
+        return "fx"
+    if dataset.startswith("commodity."):
+        return "commodity"
     if dataset.startswith("cross_asset."):
+        # Legacy: route to generic sync
         return "cross_asset"
     if dataset.startswith("macro."):
         return "macro"
@@ -1010,9 +1062,9 @@ def _sample_symbols_dates(item: dict[str, Any], sample_limit: int) -> dict[str, 
 
 def _target_value_recovery(entry: dict[str, Any], datasets: dict[str, dict[str, Any]]) -> dict[str, Any]:
     component = str(entry.get("component") or "")
-    if component not in {"kline", "fundamental", "cross_asset"}:
+    if component not in {"kline", "fundamental", "cross_asset", "crypto", "fx", "commodity"}:
         return entry
-    if component == "cross_asset":
+    if component in {"cross_asset", "crypto", "fx", "commodity"}:
         dataset_names = [str(value) for value in entry.get("datasets") or [] if str(value).strip()]
         date_ranges: dict[str, dict[str, str | int]] = {}
         for dataset_name in dataset_names:
@@ -1035,6 +1087,15 @@ def _target_value_recovery(entry: dict[str, Any], datasets: dict[str, dict[str, 
         if not date_ranges:
             return entry
         class_by_dataset = {
+            # New keys
+            "commodity.gold": "commodity",
+            "fx.usdcnh": "fx",
+            "crypto.btc": "crypto",
+            "crypto.eth": "crypto",
+            "crypto.sol": "crypto",
+            "crypto.bnb": "crypto",
+            "crypto.xrp": "crypto",
+            # Legacy cross_asset keys
             "cross_asset.gold": "commodity",
             "cross_asset.fx_cnh": "fx",
             "cross_asset.btc": "crypto",
@@ -1043,14 +1104,18 @@ def _target_value_recovery(entry: dict[str, Any], datasets: dict[str, dict[str, 
             "cross_asset.bnb": "crypto",
             "cross_asset.xrp": "crypto",
         }
-        asset_class = class_by_dataset.get(dataset_names[0]) if len(dataset_names) == 1 else None
-        if asset_class:
+        # Determine asset class: if all datasets share same class, use targeted sync
+        resolved_classes = {class_by_dataset.get(d) for d in dataset_names if class_by_dataset.get(d)}
+        if len(resolved_classes) == 1:
+            asset_class = next(iter(resolved_classes))
             entry["command"] = ["trade", "data", "sync", "--class", asset_class]
+        elif component != "cross_asset":
+            entry["command"] = ["trade", "data", "sync", "--class", component]
         else:
             entry["command"] = ["trade", "data", "sync"]
         entry["mode"] = "targeted_refetch"
         entry["detail"] = (
-            "Re-fetch affected cross-asset data and re-check invalid OHLC/value date ranges; "
+            "Re-fetch affected asset data and re-check invalid OHLC/value date ranges; "
             "inspect source semantics if the same date ranges remain invalid."
         )
         first_range = next(iter(date_ranges.values()))
@@ -1204,11 +1269,17 @@ def value_quality_stats(
         "index": sorted(INDEX_DIR(root).glob("*.parquet")),
         "northbound": [NORTHBOUND_DIR(root) / "daily.parquet"] if (NORTHBOUND_DIR(root) / "daily.parquet").exists() else [],
     }
-    files_by_dataset.update({
-        f"cross_asset.{name}": [path] if path.exists() else []
-        for name in ("gold", "fx_cnh", "btc")
-        for path, _layout in [_cross_asset_path(root, name)]
-    })
+    for ds_key, asset_class, sym, legacy_subdir, legacy_name in [
+        ("crypto.btc", "crypto", "btc", "crypto", None),
+        ("crypto.eth", "crypto", "eth", "crypto", None),
+        ("crypto.sol", "crypto", "sol", "crypto", None),
+        ("crypto.bnb", "crypto", "bnb", "crypto", None),
+        ("crypto.xrp", "crypto", "xrp", "crypto", None),
+        ("fx.usdcnh", "fx", "usdcnh", None, "fx_cnh"),
+        ("commodity.gold", "commodity", "gold", None, None),
+    ]:
+        path, _layout = _asset_path(root, asset_class, sym, legacy_subdir=legacy_subdir, legacy_name=legacy_name)
+        files_by_dataset[ds_key] = [path] if path.exists() else []
     files_by_dataset.update({
         f"macro.{name}": [MACRO_DIR(root) / f"{name}.parquet"] if (MACRO_DIR(root) / f"{name}.parquet").exists() else []
         for name in ("gdp", "cpi", "ppi", "pmi")
@@ -1404,27 +1475,162 @@ def fundamental_stats(data_root: str | Path = "data", sample_limit: int = 10) ->
     )
 
 
-def _cross_asset_path(data_root: str | Path, name: str) -> tuple[Path, str]:
+# Asset dataset key -> (canonical_rel_dir, filename, legacy_rel_paths)
+# canonical_rel_dir is relative to <data_root>/market/
+_ASSET_DATASET_MAP: dict[str, tuple[str, str, list[str]]] = {}
+
+
+def _build_asset_dataset_map() -> None:
+    """Populate _ASSET_DATASET_MAP on first use."""
+    if _ASSET_DATASET_MAP:
+        return
+    for sym in ("btc", "eth", "sol", "bnb", "xrp"):
+        _ASSET_DATASET_MAP[f"crypto.{sym}"] = (
+            "crypto",
+            f"{sym}.parquet",
+            [
+                f"market/cross_asset/crypto/{sym}.parquet",
+                f"market/cross_asset/{sym}.parquet",
+                f"cross_asset/{sym}.parquet",
+            ],
+        )
+    _ASSET_DATASET_MAP["fx.usdcnh"] = (
+        "fx",
+        "usdcnh.parquet",
+        [
+            "market/cross_asset/fx_cnh.parquet",
+            "cross_asset/fx_cnh.parquet",
+            "market/cross_asset/fx_usdcnh.parquet",
+        ],
+    )
+    _ASSET_DATASET_MAP["commodity.gold"] = (
+        "commodity",
+        "gold.parquet",
+        [
+            "market/cross_asset/gold.parquet",
+            "cross_asset/gold.parquet",
+        ],
+    )
+    _ASSET_DATASET_MAP["crypto.fear_greed"] = (
+        "crypto",
+        "fear_greed.parquet",
+        [
+            "market/cross_asset/crypto/fear_greed.parquet",
+        ],
+    )
+
+
+def _resolve_dataset_path(data_root: str | Path, dataset_key: str) -> tuple[Path, str]:
+    """Resolve a dataset key to the best-existing parquet path and a layout label.
+
+    Checks canonical new-layout paths first, then falls back to legacy cross_asset
+    paths for backwards compatibility during the transition.
+    Returns (path, layout_label). The path is returned even if it doesn't exist.
+    """
+    _build_asset_dataset_map()
     root = Path(data_root)
-    canonical = CROSS_ASSET_DIR(root) / f"{name}.parquet"
+    entry = _ASSET_DATASET_MAP.get(dataset_key)
+    if entry is None:
+        return root / "market" / dataset_key.replace(".", "/") / "data.parquet", "unknown"
+    rel_dir, filename, legacy_paths = entry
+    canonical = root / "market" / rel_dir / filename
     if canonical.exists():
-        return canonical, "market/cross_asset"
-    crypto_path = CROSS_ASSET_DIR(root) / "crypto" / f"{name}.parquet"
-    if crypto_path.exists():
-        return crypto_path, "market/cross_asset/crypto"
-    legacy = root / "cross_asset" / f"{name}.parquet"
-    return legacy, "cross_asset"
+        return canonical, f"market/{rel_dir}"
+    for rel in legacy_paths:
+        legacy = root / rel
+        if legacy.exists():
+            return legacy, rel.rsplit("/", 1)[0]
+    return canonical, f"market/{rel_dir}"
+
+
+def _asset_path(
+    data_root: str | Path,
+    asset_class: str,
+    sym: str,
+    *,
+    legacy_subdir: str | None = None,
+    legacy_name: str | None = None,
+) -> tuple[Path, str]:
+    """Resolve path for a specific (asset_class, symbol) pair with legacy fallbacks.
+
+    Canonical: <root>/market/<asset_class>/<sym>.parquet
+    Legacy checks (if applicable):
+      1. <root>/market/cross_asset/<legacy_subdir>/<legacy_name or sym>.parquet
+      2. <root>/market/cross_asset/<legacy_name or sym>.parquet
+      3. <root>/cross_asset/<legacy_name or sym>.parquet
+    """
+    root = Path(data_root)
+    canonical = root / "market" / asset_class / f"{sym}.parquet"
+    if canonical.exists():
+        return canonical, f"market/{asset_class}"
+    fname = legacy_name or f"{sym}.parquet"
+    if legacy_subdir:
+        p = root / "market" / "cross_asset" / legacy_subdir / fname
+        if p.exists():
+            return p, f"market/cross_asset/{legacy_subdir}"
+    p = root / "market" / "cross_asset" / fname
+    if p.exists():
+        return p, "market/cross_asset"
+    p = root / "cross_asset" / fname
+    if p.exists():
+        return p, "cross_asset"
+    return canonical, f"market/{asset_class}"
+
+
+def _cross_asset_path(data_root: str | Path, name: str) -> tuple[Path, str]:
+    """Legacy path resolver retained for backwards compatibility.
+
+    Maps old cross_asset names to new dataset keys and delegates to _asset_path.
+    """
+    _LEGACY_MAP = {
+        "gold": ("commodity", "gold", None, None),
+        "fx_cnh": ("fx", "usdcnh", None, "fx_cnh"),
+        "fx": ("fx", "usdcnh", None, "fx_cnh"),
+        "btc": ("crypto", "btc", "crypto", None),
+        "eth": ("crypto", "eth", "crypto", None),
+        "sol": ("crypto", "sol", "crypto", None),
+        "bnb": ("crypto", "bnb", "crypto", None),
+        "xrp": ("crypto", "xrp", "crypto", None),
+    }
+    mapped = _LEGACY_MAP.get(name)
+    if mapped is None:
+        root = Path(data_root)
+        return root / "market" / "cross_asset" / f"{name}.parquet", "market/cross_asset"
+    asset_class, sym, legacy_subdir, legacy_name = mapped
+    return _asset_path(data_root, asset_class, sym, legacy_subdir=legacy_subdir, legacy_name=legacy_name)
 
 
 def cross_asset_stats(data_root: str | Path = "data") -> dict[str, Any]:
+    """Backwards-compatible alias for multi_asset_stats()."""
+    return multi_asset_stats(data_root)
+
+
+def multi_asset_stats(data_root: str | Path = "data") -> dict[str, Any]:
+    """Collect freshness stats for all split asset class datasets (crypto/fx/commodity).
+
+    Crypto markets are 24/7 so we use calendar days (trading_day=False) for
+    freshness expectations. Checks canonical new paths first, then falls back to
+    legacy cross_asset paths.
+    """
     expected = _expected_data_date(data_root, trading_day=False)
     result: dict[str, Any] = {}
-    for name in ("gold", "fx_cnh", "btc", "eth", "sol", "bnb", "xrp"):
-        path, layout = _cross_asset_path(data_root, name)
+    # Map of stat-key -> dataset_key for resolution
+    asset_items = [
+        ("gold", "commodity.gold"),
+        ("fx_cnh", "fx.usdcnh"),
+        ("btc", "crypto.btc"),
+        ("eth", "crypto.eth"),
+        ("sol", "crypto.sol"),
+        ("bnb", "crypto.bnb"),
+        ("xrp", "crypto.xrp"),
+    ]
+    for stat_key, ds_key in asset_items:
+        path, layout = _resolve_dataset_path(data_root, ds_key)
         item: dict[str, Any] = {
             "path": str(path),
             "layout": layout,
             "exists": path.exists(),
+            "dataset_key": ds_key,
             "rows": 0,
             "min_date": None,
             "max_date": None,
@@ -1454,9 +1660,20 @@ def cross_asset_stats(data_root: str | Path = "data") -> dict[str, Any]:
                 })
             except Exception as exc:
                 item["error"] = str(exc)
-        result[name] = item
-    fng_path = Path(data_root) / "market" / "cross_asset" / "crypto" / "fear_greed.parquet"
-    fng_item: dict[str, Any] = {"path": str(fng_path), "exists": fng_path.exists(), "rows": 0, "min_date": None, "max_date": None, "expected_date": expected, "lag_days": None}
+        result[stat_key] = item
+    # Fear & Greed Index (timestamp-based, not date-based)
+    fng_path, fng_layout = _resolve_dataset_path(data_root, "crypto.fear_greed")
+    fng_item: dict[str, Any] = {
+        "path": str(fng_path),
+        "layout": fng_layout,
+        "exists": fng_path.exists(),
+        "dataset_key": "crypto.fear_greed",
+        "rows": 0,
+        "min_date": None,
+        "max_date": None,
+        "expected_date": expected,
+        "lag_days": None,
+    }
     if fng_path.exists():
         try:
             import duckdb
@@ -1767,9 +1984,9 @@ def build_data_quality_gate(status: dict[str, Any]) -> dict[str, Any]:
     cross_bad.extend(optional_stale)
     components["cross_asset"] = _component(
         "pass" if not cross_bad else "warn",
-        None if not cross_bad else "CROSS_ASSET_STALE_OR_MISSING",
+        None if not cross_bad else "MULTI_ASSET_STALE_OR_MISSING",
         cross_metrics,
-        _recovery(["trade", "data", "sync", "--crypto"], mode="refresh", detail="Refresh cross-asset crypto/gold/FX data sources")
+        _recovery(["trade", "data", "sync"], mode="refresh", detail="Refresh multi-asset (crypto/fx/commodity) data sources via `trade data sync`")
         if cross_bad
         else None,
     )
@@ -2506,7 +2723,7 @@ def provider_readiness_stats(data_root: str | Path = "data") -> dict[str, Any]:
                 module: _module_available(module)
                 for module in _PYTHON_PROVIDER_MODULES["okx"]
             },
-            "used_by": ["cross_asset.crypto.primary"],
+            "used_by": ["crypto.btc.primary", "crypto.eth", "crypto.sol", "crypto.bnb", "crypto.xrp"],
         },
         "binance": {
             "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["binance"]) else "warn",
@@ -2517,7 +2734,7 @@ def provider_readiness_stats(data_root: str | Path = "data") -> dict[str, Any]:
                 module: _module_available(module)
                 for module in _PYTHON_PROVIDER_MODULES["binance"]
             },
-            "used_by": ["cross_asset.crypto.shadow_reconciliation"],
+            "used_by": ["crypto.btc.shadow_reconciliation"],
         },
         "akshare": {
             "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["akshare"]) else "warn",
@@ -2528,7 +2745,7 @@ def provider_readiness_stats(data_root: str | Path = "data") -> dict[str, Any]:
                 module: _module_available(module)
                 for module in _PYTHON_PROVIDER_MODULES["akshare"]
             },
-            "used_by": ["kline_fallback", "cross_asset.gold", "cross_asset.fx_cnh"],
+            "used_by": ["kline_fallback", "commodity.gold", "fx.usdcnh", "crypto.fear_greed"],
         },
         "baostock": {
             "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["baostock"]) else "warn",
@@ -2551,17 +2768,6 @@ def provider_readiness_stats(data_root: str | Path = "data") -> dict[str, Any]:
                 for module in _PYTHON_PROVIDER_MODULES["tencent"]
             },
             "used_by": ["kline_fallback"],
-        },
-        "okx": {
-            "status": "pass" if all(_module_available(m) for m in _PYTHON_PROVIDER_MODULES["okx"]) else "fail",
-            "credential_required": False,
-            "credential_present": None,
-            "credential_sources": [],
-            "modules": {
-                module: _module_available(module)
-                for module in _PYTHON_PROVIDER_MODULES["okx"]
-            },
-            "used_by": ["cross_asset.btc.primary"],
         },
     }
 
@@ -2749,9 +2955,14 @@ def provider_audit_stats(
 
 
 def _btc_cross_source_item(data_root: str | Path) -> dict[str, Any]:
-    current_path = CROSS_ASSET_DIR(data_root) / "btc_current.json"
+    # BTC reconciliation manifest lives in the crypto asset directory.
+    # Fall back to legacy market/cross_asset/ root if the new path does not exist yet.
+    root = Path(data_root)
+    new_path = CRYPTO_DIR(data_root) / "btc_current.json"
+    legacy_path = root / "market" / "cross_asset" / "btc_current.json"
+    current_path = new_path if new_path.exists() else legacy_path
     item = {
-        "dataset": "cross_asset.btc",
+        "dataset": "crypto.btc",
         "required": True,
         "status": "fail",
         "evidence_level": "missing",
@@ -2919,10 +3130,10 @@ def _cross_source_recovery_item(dataset: str, item: dict[str, Any]) -> dict[str,
                 "to write data/market/kline/reconciliation/current.json."
             ),
         }
-    if dataset == "cross_asset.btc":
+    if dataset == "crypto.btc":
         return {
             **common,
-            "command": ["trade", "data", "cross-asset", "btc", "--mode", "sync", "--strict"],
+            "command": ["trade", "data", "btc", "--mode", "sync", "--strict"],
             "mode": "sync",
             "detail": (
                 "Run BTC assurance with OKX primary and Binance shadow evidence until "
@@ -2939,11 +3150,14 @@ def _cross_source_recovery_item(dataset: str, item: dict[str, Any]) -> dict[str,
 
 def cross_source_coverage_stats(data_root: str | Path = "data") -> dict[str, Any]:
     """Inventory datasets with durable independent-source validation evidence."""
+    # Resolve gold/fx paths with legacy fallback via _resolve_dataset_path.
+    gold_path, _ = _resolve_dataset_path(data_root, "commodity.gold")
+    fx_path, _ = _resolve_dataset_path(data_root, "fx.usdcnh")
     datasets: dict[str, dict[str, Any]] = {
         "kline": _kline_cross_source_item(data_root),
-        "cross_asset.btc": _btc_cross_source_item(data_root),
-        "cross_asset.gold": {
-            "dataset": "cross_asset.gold",
+        "crypto.btc": _btc_cross_source_item(data_root),
+        "commodity.gold": {
+            "dataset": "commodity.gold",
             "required": False,
             "status": "warn",
             "evidence_level": "single_source",
@@ -2951,10 +3165,10 @@ def cross_source_coverage_stats(data_root: str | Path = "data") -> dict[str, Any
             "shadow_sources": [],
             "reason_code": "GOLD_SINGLE_SOURCE",
             "metrics": {},
-            "evidence_refs": {"path": str(CROSS_ASSET_DIR(data_root) / "gold.parquet")},
+            "evidence_refs": {"path": str(gold_path)},
         },
-        "cross_asset.fx_cnh": {
-            "dataset": "cross_asset.fx_cnh",
+        "fx.usdcnh": {
+            "dataset": "fx.usdcnh",
             "required": False,
             "status": "warn",
             "evidence_level": "single_source",
@@ -2962,7 +3176,7 @@ def cross_source_coverage_stats(data_root: str | Path = "data") -> dict[str, Any
             "shadow_sources": [],
             "reason_code": "FX_SINGLE_SOURCE",
             "metrics": {},
-            "evidence_refs": {"path": str(CROSS_ASSET_DIR(data_root) / "fx_cnh.parquet")},
+            "evidence_refs": {"path": str(fx_path)},
         },
     }
     required_missing = sorted(
@@ -3010,7 +3224,8 @@ def get_data_status(
         "kline_freshness": kline_freshness_stats(data_root, sample_limit=sample_limit),
         "fund_flow":   fund_flow_stats(data_root, sample_limit=sample_limit),
         "fundamental": fundamental_stats(data_root, sample_limit=sample_limit),
-        "cross_asset": cross_asset_stats(data_root),
+        "cross_asset": cross_asset_stats(data_root),  # backwards-compat key
+        "multi_asset": cross_asset_stats(data_root),  # canonical key
         "index":       index_stats(data_root, sample_limit=sample_limit),
         "northbound":  northbound_stats(data_root),
         "macro":       macro_stats(data_root),
@@ -3136,7 +3351,7 @@ def _build_status_md(status: dict[str, Any]) -> list[str]:
 
     cross = status.get("cross_asset", {})
     if cross:
-        lines += ["### 跨资产数据"]
+        lines += ["### 多资产数据 (crypto/fx/commodity)"]
         for key, label in (("gold", "Gold"), ("fx_cnh", "USD/CNH"), ("btc", "BTC"), ("eth", "ETH"), ("sol", "SOL"), ("bnb", "BNB"), ("xrp", "XRP"), ("fear_greed", "Fear&Greed")):
             item = cross.get(key, {})
             exists = "yes" if item.get("exists") else "no"
