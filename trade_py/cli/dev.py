@@ -40,6 +40,11 @@ def make_parser() -> argparse.ArgumentParser:
     sp_q.add_argument("--data-root", default=_DATA_ROOT)
     sp_q.add_argument("-n", type=int, default=5)
 
+    sp_rev = sub.add_parser("review", help="Scaffold a multi-agent consensus review worktree")
+    sp_rev.add_argument("--slug", default="current", help="Review slug (used in worktree/branch name)")
+    sp_rev.add_argument("--scope", default=".", help="Scope path to review (relative to repo root)")
+    sp_rev.add_argument("--roles", default="1,2,3,4,5,6", help="Comma-separated judge roles to launch (1-6)")
+
     return parser
 
 
@@ -50,6 +55,57 @@ def main(argv: list[str] | None = None) -> int:
     if not args.cmd:
         parser.print_help()
         return 1
+
+    if args.cmd == "review":
+        import os
+        import subprocess
+        from datetime import datetime
+        slug = args.slug
+        date_str = datetime.now().strftime("%Y%m%d")
+        wt_name = f"trade-wt-review-{slug}"
+        branch_name = f"wt/review-{slug}-{date_str}"
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        wt_path = os.path.join(os.path.dirname(repo_root), wt_name)
+        if os.path.exists(wt_path):
+            print(f"Worktree already exists: {wt_path}")
+            print(f"Branch: {branch_name}")
+        else:
+            result = subprocess.run(
+                ["git", "worktree", "add", wt_path, "-b", branch_name],
+                cwd=repo_root, capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                print(f"Error creating worktree: {result.stderr}")
+                return 1
+            print(f"Created review worktree: {wt_path}")
+            print(f"Branch: {branch_name}")
+        print()
+        print("=== Multi-Agent Consensus Review Scaffolded ===")
+        print()
+        print("Launch 6 judge agents in parallel with these role prompts:")
+        print()
+        roles = {
+            "1": "Reliability & Resilience — error handling, retries, idempotency, data loss, crash safety, locking",
+            "2": "Performance & Scalability — throughput, QPS, memory, parquet I/O, bus congestion, pool sizing",
+            "3": "Architecture & Design — module boundaries, meta-driven extensibility, plugin patterns, CLI cohesion",
+            "4": "Data Quality & Validation — OHLCV validation, outlier detection, timestamps, cross-source reconciliation",
+            "5": "Observability & Operability — CLI usability, logging, health commands, dashboard, alerting, audit trail",
+            "6": "News/Sentiment & Future Integration — bus isolation for NLP, unstructured data, backpressure, embeddings",
+        }
+        selected = [r.strip() for r in args.roles.split(",")]
+        for rid in selected:
+            if rid in roles:
+                print(f"  Judge {rid}: {roles[rid]}")
+        print()
+        print(f"All agents should review code at: {wt_path}")
+        print(f"Scope: {args.scope}")
+        print()
+        print("After all judges complete, synthesize consensus:")
+        print("  - Unanimous (3+ judges) → P0, must fix before merge")
+        print("  - Two-judge agreement → P1, high priority")
+        print("  - Single-judge → evaluate on merit")
+        print("  - Disagreements → one reconciliation round (max)")
+        return 0
 
     data_root = getattr(args, "data_root", _DATA_ROOT)
     today = getattr(args, "date", None) or date.today().isoformat()
