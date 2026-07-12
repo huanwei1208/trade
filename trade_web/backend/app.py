@@ -187,10 +187,10 @@ def create_app():
         except Exception:
             return date.today().isoformat()
 
-    def _payload_signature(kind: str) -> str:
-        db = _db()
-        with db._conn_lock:
-            row = db._conn.execute(
+    def _payload_signature(kind: str, db=None) -> str:
+        local_db = db or _db()
+        with local_db._conn_lock:
+            row = local_db._conn.execute(
                 """
                 SELECT
                     COALESCE((SELECT MAX(updated_at) FROM daily_quality_gate), ''),
@@ -211,7 +211,7 @@ def create_app():
                 """
             ).fetchone()
         base = "|".join(str(item or "") for item in (row or ()))
-        return f"{kind}:{_PAYLOAD_SCHEMA_VERSION}:{_current_asof(db)}:{base}"
+        return f"{kind}:{_PAYLOAD_SCHEMA_VERSION}:{_current_asof(local_db)}:{base}"
 
     def _readiness_signature(*, days: int, end_date: str | None, datasets: str | None) -> str:
         db = _db()
@@ -1973,7 +1973,9 @@ def create_app():
     @app.get("/api/events/stream")
     async def stream_events(request: FastAPIRequest, after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):
         async def _gen():
+            from trade_py.db.trade_db import TradeDB
             last_id = max(0, int(after_id))
+            sse_db = TradeDB(data_root)
             try:
                 while True:
                     if shutdown_event.is_set():
@@ -1983,7 +1985,7 @@ def create_app():
                             break
                     except RuntimeError:
                         break
-                    rows = _db().event_log_since(after_id=last_id, limit=limit)
+                    rows = sse_db.event_log_since(after_id=last_id, limit=limit)
                     if rows:
                         for row in rows:
                             last_id = max(last_id, int(row.get("id") or 0))
@@ -1996,6 +1998,11 @@ def create_app():
                 return
             except RuntimeError:
                 return
+            finally:
+                try:
+                    sse_db.close()
+                except Exception:
+                    pass
 
         return StreamingResponse(
             _gen(),
@@ -2012,7 +2019,9 @@ def create_app():
         scope_name = "events-page" if str(scope).strip().lower() == "events" else "report-page"
 
         async def _gen():
+            from trade_py.db.trade_db import TradeDB
             last_signature = ""
+            sse_db = TradeDB(data_root)
             try:
                 while True:
                     if shutdown_event.is_set():
@@ -2022,7 +2031,7 @@ def create_app():
                             break
                     except RuntimeError:
                         break
-                    signature = _payload_signature(scope_name)
+                    signature = _payload_signature(scope_name, db=sse_db)
                     if signature != last_signature:
                         last_signature = signature
                         payload = {
@@ -2039,6 +2048,11 @@ def create_app():
                 return
             except RuntimeError:
                 return
+            finally:
+                try:
+                    sse_db.close()
+                except Exception:
+                    pass
 
         return StreamingResponse(
             _gen(),

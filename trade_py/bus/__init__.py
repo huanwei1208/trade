@@ -106,18 +106,44 @@ class Event:
 
 # ── EventBus ───────────────────────────────────────────────────────────────────
 
-# Channel routing: map topic prefixes to dedicated thread pools to avoid congestion
-_CHANNEL_INGEST_PREFIXES = ("gate.", "data.", "agenda.")  # Data ingest/fetch tasks
-_CHANNEL_COMPUTE_PREFIXES = ("signal.", "model.", "sentiment.", "events.", "belief.", "recommend.", "news.")  # Compute/ML/signal/news tasks
-_CHANNEL_IO_PREFIXES = ()  # All others default to IO pool (webhooks, backup, reports)
+# Channel routing: map topic prefixes to dedicated thread pools to avoid congestion.
+# Order matters: more specific patterns are checked first.
+#
+# Channel map:
+#   ingest   (4 workers): gate.*, agenda.*, data.*.fetch     — pure network I/O / fetch triggers
+#   nlp      (3 workers): sentiment.*, news.*                — slow LLM/NLP enrichment (I/O+CPU)
+#   signal   (3 workers): signal.*, model.*, events.*, data.*.ingested
+#                                                           — feature build, model train/infer, event extraction
+#   decision (2 workers): belief.*, recommend.*              — latency-sensitive recommendation/belief
+#   io       (2 workers): everything else                    — webhooks, backups, reports
+_CHANNEL_INGEST_PREFIXES = ("gate.", "agenda.")
+_CHANNEL_NLP_PREFIXES = ("sentiment.", "news.")
+_CHANNEL_SIGNAL_PREFIXES = ("signal.", "model.", "events.")
+_CHANNEL_DECISION_PREFIXES = ("belief.", "recommend.")
+
+
+def _match_data_suffix(topic: str, suffix: str) -> bool:
+    """Match data.<domain>.<suffix> pattern, e.g. data.kline.fetch, data.asset.ingested."""
+    parts = topic.split(".")
+    return len(parts) >= 3 and parts[0] == "data" and parts[-1] == suffix
 
 
 def _resolve_channel(topic: str) -> str:
     """Resolve topic to channel name for thread pool isolation."""
+    # data.*.fetch → ingest (pure network fetch)
+    if _match_data_suffix(topic, "fetch"):
+        return "ingest"
+    # data.*.ingested → signal (post-ingest feature compute)
+    if _match_data_suffix(topic, "ingested"):
+        return "signal"
     if topic.startswith(_CHANNEL_INGEST_PREFIXES):
         return "ingest"
-    if topic.startswith(_CHANNEL_COMPUTE_PREFIXES):
-        return "compute"
+    if topic.startswith(_CHANNEL_NLP_PREFIXES):
+        return "nlp"
+    if topic.startswith(_CHANNEL_SIGNAL_PREFIXES):
+        return "signal"
+    if topic.startswith(_CHANNEL_DECISION_PREFIXES):
+        return "decision"
     return "io"
 
 
@@ -125,22 +151,29 @@ class EventBus:
     """In-process pub/sub with SQLite persistence and multi-channel thread pool isolation.
 
     pub path: write event_log row (status=pending) → route to channel-specific pool → submit handlers
-    Each channel has its own thread pool to prevent ingest traffic from blocking compute tasks.
+    Each channel has its own thread pool to prevent slow tasks from starving latency-sensitive ones.
     Channels:
-      - ingest (4 workers): data fetch/ingest/sync (gate.*, data.*, agenda.*)
-      - compute (4 workers): features/signals/models/sentiment/events
-      - io (2 workers): webhooks/backups/reports and all other tasks
+      - ingest   (4 workers): gate.*, agenda.*, data.*.fetch — pure network I/O / fetch triggers
+      - nlp      (3 workers): sentiment.*, news.*            — slow LLM/NLP enrichment (I/O+CPU)
+      - signal   (3 workers): signal.*, model.*, events.*, data.*.ingested
+                                                             — feature build, model train/infer, event extraction
+      - decision (2 workers): belief.*, recommend.*          — latency-sensitive recommendation/belief
+      - io       (2 workers): everything else                — webhooks, backups, reports
     """
 
     def __init__(self, db: "TradeDB",
                  ingest_workers: int = 4,
-                 compute_workers: int = 4,
+                 nlp_workers: int = 3,
+                 signal_workers: int = 3,
+                 decision_workers: int = 2,
                  io_workers: int = 2) -> None:
         self._db = db
         # Isolated thread pools per channel
         self._pools = {
             "ingest": ThreadPoolExecutor(max_workers=ingest_workers, thread_name_prefix="bus-ingest"),
-            "compute": ThreadPoolExecutor(max_workers=compute_workers, thread_name_prefix="bus-compute"),
+            "nlp": ThreadPoolExecutor(max_workers=nlp_workers, thread_name_prefix="bus-nlp"),
+            "signal": ThreadPoolExecutor(max_workers=signal_workers, thread_name_prefix="bus-signal"),
+            "decision": ThreadPoolExecutor(max_workers=decision_workers, thread_name_prefix="bus-decision"),
             "io": ThreadPoolExecutor(max_workers=io_workers, thread_name_prefix="bus-io"),
         }
         # Backwards compat: default pool for any legacy direct ._pool access
@@ -148,6 +181,11 @@ class EventBus:
         self._subs: dict[str, list[Callable[[Event], None]]] = defaultdict(list)
         self._active_lock = threading.RLock()
         self._active_tasks_by_event: dict[int, int] = defaultdict(int)
+        # Log channel/worker configuration at construction time (startup)
+        logger.info(
+            "EventBus started with channels: %s",
+            ", ".join(f"{name}({pool._max_workers})" for name, pool in self._pools.items()),
+        )
 
     def subscribe(self, topic: str, handler: Callable[[Event], None]) -> None:
         """Register a handler for a topic. Handlers run asynchronously."""
@@ -429,7 +467,9 @@ def dispatch_dag_row(
     )
     bus._mark_handler_started(event.id)
     try:
-        bus._pool.submit(bus._run_handler, handler, event)
+        channel = _resolve_channel(event.topic)
+        pool = bus._pools.get(channel, bus._pool)
+        pool.submit(bus._run_handler, handler, event)
     except Exception:
         bus._mark_handler_finished(event.id)
         raise
