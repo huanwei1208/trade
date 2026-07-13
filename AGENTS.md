@@ -76,3 +76,10 @@ evidence-driven, auditable, and easy to review.
   validation commands and outcomes, compatibility/data risks, and follow-ups.
 - If validation fails, do not commit unless the user explicitly requests a
   failing checkpoint.
+- **Merge via rebase + squash (MANDATORY)**: When bringing a feature branch back
+  to master, use `git checkout master && git merge --squash <branch>` to collapse
+  the worktree's WIP commits into a single clean commit on master. After squash-merge,
+  delete the feature branch (`git branch -D <branch>`) and remove the worktree
+  (`git worktree remove <path>`). Do NOT use fast-forward or regular merge that
+  preserves intermediate commit noise on master. The master history should read
+  as a clean sequence of logical changes.
