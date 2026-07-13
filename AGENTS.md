@@ -26,6 +26,13 @@ evidence-driven, auditable, and easy to review.
 - Public contracts need compatibility thought before code: CLI arguments, API payloads, DB schema, parquet layout, and engine interfaces must document migration/default/fallback behavior.
 - For recommendation, causal, trust, backtest, or quality-gate work, expose input evidence, confidence/calibration state, and unknown/failure states. Do not present heuristic scaffolding as a validated model.
 
+## Review Before Implementation (MANDATORY for medium/large changes)
+
+- Before implementing medium or large changes, run the **multi-agent consensus review** using the `review-this` skill (see `.agents/skills/review-this/SKILL.md`).
+- Launch 6 specialized judge agents (reliability, performance, architecture, data-quality, observability, news-sentiment) in parallel against a review worktree.
+- Synthesize consensus; fix P0 findings before proceeding.
+- The skill is invoked automatically when the task matches the criteria; you can also trigger it with `trade dev review`.
+
 ## OpenSpec
 
 - Small local fixes may proceed directly after identifying target behavior and
