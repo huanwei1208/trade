@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-"""Batch ingest engine with QPS control, watermark tracking, buffered writes, and concurrency isolation."""
+"""Batch ingest engine with QPS control, watermark tracking, buffered writes, WAL, and concurrency isolation."""
 
+import contextlib
+import fcntl
 import logging
 import os
 import shutil
@@ -271,16 +273,19 @@ class BatchIngestEngine:
         config: BatchIngestConfig | None = None,
     ):
         self.data_root = Path(data_root)
+        self.WAL_DIR = self.data_root / ".db" / "wal" / "ingest"
         self._db = db
         self.config = config or BatchIngestConfig()
         self._executor: ThreadPoolExecutor | None = None
         self._write_buffers: dict[str, pd.DataFrame] = {}
-        self._buffer_lock = threading.Lock()
+        # RLock because _buffer_write may call _flush_asset while holding the lock
+        self._buffer_lock = threading.RLock()
         self._rate_limiters: dict[str, TokenBucket] = {}
         self._rate_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._flush_thread: threading.Thread | None = None
         self._migration_run: bool = False
+        self._wal_recovered: bool = False
 
     def _get_db(self) -> TradeDB:
         if self._db is None:
@@ -327,9 +332,100 @@ class BatchIngestEngine:
             return None
         return pd.to_datetime(df["date"]).max().strftime("%Y-%m-%d")
 
+    def _ensure_wal_dir(self) -> Path:
+        """Ensure the WAL root directory exists and return its path."""
+        self.WAL_DIR.mkdir(parents=True, exist_ok=True)
+        return self.WAL_DIR
+
+    def _wal_path(self, asset_id: str) -> Path:
+        """Return the path to the WAL parquet file for an asset."""
+        return self.WAL_DIR / asset_id / "wal.parquet"
+
+    def _lock_path(self, asset_id: str) -> Path:
+        """Return the path to the per-asset flock file."""
+        return self.WAL_DIR / f"{asset_id}.lock"
+
+    @contextlib.contextmanager
+    def _flock(self, lock_path: Path):
+        """Context manager: acquire exclusive flock on lock_path, release on exit.
+
+        Creates the lock file if it does not exist. The lock is automatically
+        released by the kernel when the fd is closed (process exit / crash), so
+        stale lock files do not block future runs.
+        """
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    def _wal_append(self, asset_id: str, df: pd.DataFrame) -> None:
+        """Atomically append rows to the per-asset WAL parquet.
+
+        Reads any existing WAL, concatenates with df, deduplicates by date
+        (keep="last"), sorts by date, and writes atomically via temp+rename.
+        Must be called while holding _buffer_lock (or otherwise serialized).
+        """
+        wal_path = self._wal_path(asset_id)
+        wal_path.parent.mkdir(parents=True, exist_ok=True)
+        # Hold the per-asset file lock so concurrent/cross-process appends
+        # do not interleave and corrupt the WAL.
+        with self._flock(self._lock_path(asset_id)):
+            if wal_path.exists():
+                try:
+                    existing_wal = pd.read_parquet(wal_path)
+                    merged = pd.concat([existing_wal, df], ignore_index=True)
+                except Exception:
+                    # If existing WAL is unreadable (partial write/corruption),
+                    # overwrite with the new data to avoid wedging ingestion.
+                    logger.warning("WAL for %s unreadable; overwriting", asset_id)
+                    merged = df.copy()
+            else:
+                merged = df.copy()
+            merged = merged.drop_duplicates(subset=["date"], keep="last")
+            merged = merged.sort_values("date").reset_index(drop=True)
+            _atomic_write_parquet(merged, wal_path)
+
+    def _read_wal(self, asset_id: str) -> pd.DataFrame | None:
+        """Read and return the WAL data for asset_id, or None if no WAL exists."""
+        wal_path = self._wal_path(asset_id)
+        if not wal_path.exists():
+            return None
+        try:
+            return pd.read_parquet(wal_path)
+        except Exception:
+            logger.warning("WAL for %s unreadable during flush; ignoring", asset_id)
+            return None
+
+    def _delete_wal(self, asset_id: str) -> None:
+        """Remove the WAL file (and its now-empty parent directory) for asset_id."""
+        wal_path = self._wal_path(asset_id)
+        try:
+            if wal_path.exists():
+                wal_path.unlink()
+            parent = wal_path.parent
+            # Remove asset dir if empty; ignore errors if other files remain
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
+        except Exception as e:
+            logger.warning("Failed to delete WAL for %s: %s", asset_id, e)
+
     def _buffer_write(self, asset_id: str, df: pd.DataFrame) -> None:
-        """Add dataframe to write buffer, flush if buffer is full."""
+        """Add dataframe to WAL then to in-memory buffer; flush if buffer is full.
+
+        WAL append happens BEFORE the data touches the in-memory buffer so that
+        a crash after this call returns will still be able to recover via WAL.
+        """
         with self._buffer_lock:
+            # Persist to WAL first (crash-safe), then update in-memory buffer.
+            self._wal_append(asset_id, df)
             if asset_id in self._write_buffers:
                 self._write_buffers[asset_id] = pd.concat(
                     [self._write_buffers[asset_id], df], ignore_index=True
@@ -340,34 +436,138 @@ class BatchIngestEngine:
             if len(buf) >= self.config.write_buffer_max_rows:
                 self._flush_asset(asset_id)
 
-    def _flush_asset(self, asset_id: str) -> None:
-        """Flush buffered data for one asset to disk (canonical new path)."""
-        with self._buffer_lock:
-            if asset_id not in self._write_buffers:
-                return
-            df = self._write_buffers.pop(asset_id)
+    def _merge_and_write(
+        self,
+        asset_id: str,
+        path: Path,
+        buffer_df: pd.DataFrame | None,
+    ) -> str | None:
+        """Merge existing parquet + WAL + buffer_df, write atomically, update watermark.
 
-        if df.empty:
-            return
-        # Need to merge with existing on disk
-        db = self._get_db()
-        asset = db.asset_registry_get(asset_id)
-        if not asset:
-            return
-        path = self._asset_output_path(asset)
+        Caller MUST hold the exclusive flock on the asset lock file before
+        calling this method. This performs the entire read-concat-merge-write-
+        watermark transaction.
+
+        Returns the new watermark date string (or None if no data).
+        """
+        # 1. Read existing main parquet
         existing = self._load_existing(path)
-        if existing is not None:
-            df = pd.concat([existing, df], ignore_index=True).drop_duplicates(subset=["date"], keep="last")
-        df = df.sort_values("date").reset_index(drop=True)
-        _atomic_write_parquet(df, path)
 
-        watermark = self._watermark_date(df)
+        # 2. Read WAL (under lock so no concurrent append can race)
+        wal_df = self._read_wal(asset_id)
+
+        # 3. Concat all sources: existing + WAL + buffer
+        frames = []
+        if existing is not None and not existing.empty:
+            frames.append(existing)
+        if wal_df is not None and not wal_df.empty:
+            frames.append(wal_df)
+        if buffer_df is not None and not buffer_df.empty:
+            frames.append(buffer_df)
+
+        if not frames:
+            return None
+
+        merged = pd.concat(frames, ignore_index=True)
+        merged = merged.drop_duplicates(subset=["date"], keep="last")
+        merged = merged.sort_values("date").reset_index(drop=True)
+
+        # 4. Atomic write to main parquet
+        _atomic_write_parquet(merged, path)
+
+        # 5. Update watermark in DB
+        watermark = self._watermark_date(merged)
+        db = self._get_db()
         db.asset_registry_update_sync_status(
             asset_id=asset_id,
             status="ok",
             watermark_date=watermark,
-            rows=len(df),
+            rows=len(merged),
         )
+
+        # 6. Truncate WAL (data is now durable in main parquet)
+        self._delete_wal(asset_id)
+
+        return watermark
+
+    def _flush_asset(self, asset_id: str) -> None:
+        """Flush buffered data for one asset to disk (canonical new path).
+
+        Holds an exclusive flock across the entire read-WAL+existing, merge,
+        write, watermark-update, WAL-truncate transaction to prevent concurrent
+        flushes (same process or cross-process) from corrupting data.
+        """
+        # Pop buffer under the in-memory lock
+        with self._buffer_lock:
+            if asset_id in self._write_buffers:
+                df = self._write_buffers.pop(asset_id)
+            else:
+                df = None
+
+        if df is None or df.empty:
+            # Nothing in buffer; still check if there is a WAL (e.g. recovery
+            # path may call _flush_asset directly with empty buffer).
+            # Only proceed to flock + merge if a WAL file actually exists.
+            if not self._wal_path(asset_id).exists():
+                return
+            # Fall through with empty buffer; _merge_and_write handles None.
+
+        # Resolve asset metadata and output path
+        db = self._get_db()
+        asset = db.asset_registry_get(asset_id)
+        if not asset:
+            logger.warning("Cannot flush %s: asset not found in registry", asset_id)
+            return
+        path = self._asset_output_path(asset)
+
+        # Exclusive flock across the whole durable transaction
+        lock_path = self._lock_path(asset_id)
+        with self._flock(lock_path):
+            self._merge_and_write(asset_id, path, df)
+
+    def _recover_wal(self) -> None:
+        """Replay any leftover WAL segments into main parquet at startup.
+
+        Scans WAL_DIR for per-asset wal.parquet files and merges each into
+        the corresponding main parquet, then truncates the WAL. Called once
+        during engine start() before any fetch work begins so a crashed
+        process does not lose data that was fetched but not yet flushed.
+        """
+        wal_root = self.WAL_DIR
+        if not wal_root.exists():
+            return
+
+        recovered = 0
+        for asset_dir in sorted(wal_root.iterdir()):
+            if not asset_dir.is_dir():
+                continue
+            wal_file = asset_dir / "wal.parquet"
+            if not wal_file.exists():
+                continue
+            asset_id = asset_dir.name
+            try:
+                db = self._get_db()
+                asset = db.asset_registry_get(asset_id)
+                if not asset:
+                    logger.warning(
+                        "WAL recovery: asset %s not in registry; skipping (WAL left in place)",
+                        asset_id,
+                    )
+                    continue
+                path = self._asset_output_path(asset)
+                lock_path = self._lock_path(asset_id)
+                with self._flock(lock_path):
+                    wm = self._merge_and_write(asset_id, path, buffer_df=None)
+                logger.info(
+                    "WAL recovery: replayed %s -> %s (watermark=%s)",
+                    asset_id, path, wm,
+                )
+                recovered += 1
+            except Exception as e:
+                logger.error("WAL recovery failed for %s: %s", asset_id, e)
+
+        if recovered:
+            logger.info("WAL recovery complete: %d asset(s) recovered", recovered)
 
     def _flush_all(self) -> None:
         """Flush all buffered writes to disk."""
@@ -486,8 +686,13 @@ class BatchIngestEngine:
                 logger.error("Periodic flush failed: %s", e)
 
     def start(self) -> None:
-        """Start the engine (allocate thread pool, start flush thread)."""
+        """Start the engine (allocate thread pool, recover WAL, start flush thread)."""
         if self._executor is None:
+            # Run WAL recovery exactly once before any fetch work begins.
+            if not self._wal_recovered:
+                self._ensure_wal_dir()
+                self._recover_wal()
+                self._wal_recovered = True
             self._executor = ThreadPoolExecutor(
                 max_workers=self.config.max_workers,
                 thread_name_prefix="ingest",
