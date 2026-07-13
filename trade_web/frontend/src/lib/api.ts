@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 export type Locale = "zh-CN" | "en-US";
-export type PageKey = "today" | "candidates" | "symbol" | "ops" | "research";
+export type PageKey = "today" | "candidates" | "symbol" | "ops" | "research" | "data";
 export type ActionType = "ADD" | "PROBE" | "WATCH" | "REDUCE" | "NO_ACTION" | string;
 
 export type TrustGate = {
@@ -1270,4 +1270,120 @@ export function getRecoveryProgress(action?: ReadinessActionDetail | null): Reco
     activeStep,
     progressRatio: totalSteps > 0 ? completedSteps / totalSteps : null,
   };
+}
+
+// ── Data observability types ────────────────────────────────────────────────
+
+export type DataAssetHealth = "ok" | "stale" | "missing" | "error";
+
+export type DataAsset = {
+  asset_id: string;
+  asset_class: string;
+  symbol: string;
+  venue: string;
+  data_types: string[];
+  total_rows: number;
+  first_date: string | null;
+  last_date: string | null;
+  lag_days: number;
+  health: DataAssetHealth;
+};
+
+export type DataAssetsPayload = {
+  assets: DataAsset[];
+  summary: {
+    total_assets: number;
+    ok: number;
+    stale: number;
+    missing: number;
+    error?: number;
+  };
+};
+
+export type KlineRow = {
+  date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+};
+
+export type DataKlinePayload = {
+  asset_id: string;
+  symbol: string;
+  interval: string;
+  rows: KlineRow[];
+};
+
+export type DataGap = {
+  start: string;
+  end: string;
+  days: number;
+};
+
+export type DataGapsPayload = {
+  asset_id: string;
+  expected_dates: number;
+  present_dates: number;
+  coverage_pct: number;
+  gaps: DataGap[];
+  longest_gap_days: number;
+};
+
+export type NewsArticle = {
+  title: string;
+  source: string;
+  published_at: string;
+  url: string;
+  sentiment_score: number | null;
+  summary: string;
+};
+
+export type DataNewsPayload = {
+  articles: NewsArticle[];
+  total: number;
+};
+
+export type CoverageCell = {
+  present: number;
+  total: number;
+  pct: number;
+};
+
+export type CoverageAssetClass = {
+  name: string;
+  total_assets: number;
+  data_types: Record<string, CoverageCell>;
+};
+
+export type DataCoveragePayload = {
+  asset_classes: CoverageAssetClass[];
+};
+
+// ── Data observability API helpers ──────────────────────────────────────────
+
+export function getDataAssets() {
+  return fetchJson<DataAssetsPayload>("/api/data/assets");
+}
+
+export function getDataKline(assetId: string, days = 30) {
+  const query = new URLSearchParams({ days: String(days) });
+  return fetchJson<DataKlinePayload>(`/api/data/kline/${encodeURIComponent(assetId)}?${query.toString()}`);
+}
+
+export function getDataGaps(assetId: string) {
+  return fetchJson<DataGapsPayload>(`/api/data/gaps/${encodeURIComponent(assetId)}`);
+}
+
+export function getDataNews(source = "", days = 3, limit = 30) {
+  const query = new URLSearchParams({ days: String(days), limit: String(limit) });
+  if (source) {
+    query.set("source", source);
+  }
+  return fetchJson<DataNewsPayload>(`/api/data/news?${query.toString()}`);
+}
+
+export function getDataCoverage() {
+  return fetchJson<DataCoveragePayload>("/api/data/coverage");
 }

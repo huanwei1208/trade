@@ -6,6 +6,7 @@ import { formatDateTime } from "./lib/format";
 import { I18nProvider } from "./lib/i18n";
 import { getPageMeta, useLocalStorageState } from "./lib/ui";
 import { CandidatesPage } from "./pages/CandidatesPage";
+import { DataPage } from "./pages/DataPage";
 import { OpsPage } from "./pages/OpsPage";
 import { ResearchPage } from "./pages/ResearchPage";
 import { SymbolPage } from "./pages/SymbolPage";
@@ -134,6 +135,7 @@ export default function App() {
         {resolvedPage === "symbol" && <SymbolPage symbol={selectedSymbol} refreshToken={refreshToken} onBack={() => navigate(symbolOrigin || "today")} onOpenOpsFocus={openOpsFocus} />}
         {resolvedPage === "research" && <ResearchPage refreshToken={refreshToken} />}
         {resolvedPage === "ops" && <OpsPage refreshToken={refreshToken} focus={opsFocus} onFocusChange={setOpsFocus} />}
+        {resolvedPage === "data" && <DataPage refreshToken={refreshToken} />}
       </AppShell>
     </I18nProvider>
   );

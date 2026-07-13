@@ -3347,4 +3347,433 @@ def create_app():
             "explanation": explanation,
         }
 
+    # ── API: data observability (business-level) ────────────────────────────
+
+    def _scan_parquet_dates(path: Path) -> tuple[int, str | None, str | None]:
+        """Return (row_count, min_date, max_date) for a parquet file using pandas/pyarrow.
+        Returns (0, None, None) on any failure or missing file.
+        """
+        if not path.exists():
+            return 0, None, None
+        try:
+            import pandas as pd
+            df = pd.read_parquet(path, columns=["date"])
+            if df.empty:
+                return 0, None, None
+            dates = df["date"].dropna().astype(str)
+            return int(len(dates)), str(dates.min()), str(dates.max())
+        except Exception:
+            # Fallback: try pyarrow directly
+            try:
+                import pyarrow.parquet as pq
+                table = pq.read_table(path, columns=["date"])
+                dates = table.column("date").to_pylist()
+                dates = [str(d) for d in dates if d is not None]
+                if not dates:
+                    return 0, None, None
+                return len(dates), min(dates)[:10], max(dates)[:10]
+            except Exception:
+                return 0, None, None
+
+    def _asset_health(lag_days: int | None, *, exists: bool = True, coverage_pct: float | None = None) -> str:
+        """Classify health for observability: ok, stale, missing, error."""
+        if not exists:
+            return "missing"
+        if lag_days is None:
+            return "error"
+        if lag_days > 7:
+            return "error"
+        if lag_days > 2:
+            return "stale"
+        if coverage_pct is not None and coverage_pct < 85.0:
+            return "stale"
+        return "ok"
+
+    def _resolve_asset_parquet_path(asset_class: str, symbol: str) -> Path:
+        """Resolve the parquet file path for a registered asset.
+        Layout: data/market/{asset_class}/{symbol}.parquet
+        """
+        safe_sym = symbol.replace("/", "_").replace(".", "_")
+        return Path(data_root) / "market" / asset_class / f"{safe_sym}.parquet"
+
+    def _resolve_kline_parquet_path(symbol: str) -> Path:
+        """Resolve kline parquet path for A-share symbols.
+        Layout: data/market/kline/{symbol}.parquet (dots replaced with underscores).
+        """
+        safe_sym = symbol.replace(".", "_")
+        return Path(data_root) / "market" / "kline" / f"{safe_sym}.parquet"
+
+    def _detect_data_types_for_asset(asset_id: str, asset_class: str, symbol: str) -> list[str]:
+        """Determine which data types are present for a given asset."""
+        types: list[str] = []
+        # Kline / price data
+        kline_path = _resolve_asset_parquet_path(asset_class, symbol)
+        a_share_kline = _resolve_kline_parquet_path(symbol)
+        if kline_path.exists() or a_share_kline.exists():
+            types.append("kline")
+        # For A-shares (asset_class not crypto/fx/commodity), check kline dir
+        if asset_class in ("stock", "equity", "a_share") and a_share_kline.exists():
+            if "kline" not in types:
+                types.append("kline")
+        # Sentiment: check sentiment/silver
+        sent_silver_dir = Path(data_root) / "sentiment" / "silver"
+        if sent_silver_dir.exists():
+            for p in sent_silver_dir.rglob("*.parquet"):
+                try:
+                    import pandas as pd
+                    df = pd.read_parquet(p, columns=["symbol"])
+                    if symbol in df["symbol"].astype(str).values:
+                        types.append("sentiment")
+                        break
+                except Exception:
+                    pass
+        # News: check news/silver and news/bronze
+        news_silver_dir = Path(data_root) / "news" / "silver"
+        news_bronze_dir = Path(data_root) / "news" / "bronze"
+        for news_dir in (news_silver_dir, news_bronze_dir):
+            if news_dir.exists() and not any(t == "news" for t in types):
+                types.append("news")
+                break
+        return types
+
+    @app.get("/api/data/assets")
+    async def get_data_assets():
+        """Asset inventory with data status for observability."""
+        db = _db()
+        assets: list[dict[str, Any]] = []
+        summary = {"total_assets": 0, "ok": 0, "stale": 0, "missing": 0, "error": 0}
+
+        # Collect assets from asset_registry
+        try:
+            registry_rows = db.asset_registry_list(enabled_only=True)
+        except Exception:
+            registry_rows = []
+
+        today = date.today()
+
+        # Process registered cross-asset entries (crypto, fx, commodity)
+        for row in registry_rows:
+            asset_id = str(row.get("asset_id") or "")
+            asset_class = str(row.get("asset_class") or "")
+            symbol = str(row.get("symbol") or "")
+            venue = str(row.get("venue") or "")
+            if not asset_id or not symbol:
+                continue
+            path = _resolve_asset_parquet_path(asset_class, symbol)
+            rows_count, first_dt, last_dt = _scan_parquet_dates(path)
+            lag = _lag_days(last_dt)
+            health = _asset_health(lag, exists=path.exists())
+            data_types = _detect_data_types_for_asset(asset_id, asset_class, symbol)
+            if "kline" not in data_types and path.exists():
+                data_types.insert(0, "kline")
+            assets.append({
+                "asset_id": asset_id,
+                "asset_class": asset_class,
+                "symbol": symbol,
+                "venue": venue,
+                "data_types": data_types,
+                "total_rows": rows_count,
+                "first_date": first_dt,
+                "last_date": last_dt,
+                "lag_days": lag if lag is not None else -1,
+                "health": health,
+            })
+
+        # Also scan A-share kline directory for stocks not in asset_registry
+        try:
+            kline_dir = Path(data_root) / "market" / "kline"
+            if kline_dir.exists():
+                manifest_path = kline_dir / "_manifest.json"
+                manifest_symbols: set[str] = set()
+                if manifest_path.exists():
+                    try:
+                        manifest = json.loads(manifest_path.read_text())
+                        if isinstance(manifest, dict):
+                            for sym_key in manifest.keys():
+                                manifest_symbols.add(str(sym_key).replace("_", "."))
+                    except Exception:
+                        pass
+                # Scan parquet files
+                registered_symbols = {str(a.get("symbol") or "") for a in assets}
+                for p in sorted(kline_dir.glob("*.parquet")):
+                    sym = p.stem.replace("_", ".")
+                    if sym.startswith("_") or sym in registered_symbols:
+                        continue
+                    if sym in manifest_symbols or True:  # include all kline files
+                        rows_count, first_dt, last_dt = _scan_parquet_dates(p)
+                        lag = _lag_days(last_dt)
+                        health = _asset_health(lag, exists=p.exists())
+                        data_types = ["kline"]
+                        # Check sentiment/news for this symbol
+                        sent_check = _detect_data_types_for_asset(f"stock.{sym}", "stock", sym)
+                        for dt in sent_check:
+                            if dt not in data_types:
+                                data_types.append(dt)
+                        assets.append({
+                            "asset_id": f"stock.{sym}",
+                            "asset_class": "stock",
+                            "symbol": sym,
+                            "venue": "akshare/tushare",
+                            "data_types": data_types,
+                            "total_rows": rows_count,
+                            "first_date": first_dt,
+                            "last_date": last_dt,
+                            "lag_days": lag if lag is not None else -1,
+                            "health": health,
+                        })
+        except Exception:
+            pass
+
+        summary["total_assets"] = len(assets)
+        for a in assets:
+            h = str(a.get("health") or "error")
+            if h in summary:
+                summary[h] += 1  # type: ignore[literal-required]
+
+        return {"assets": assets, "summary": summary}
+
+    @app.get("/api/data/kline/{asset_id:path}")
+    async def get_data_kline(asset_id: str, days: int = 30):
+        """Return OHLCV rows for an asset over the last N days."""
+        asset_id = str(asset_id or "").strip()
+        if not asset_id:
+            raise HTTPException(status_code=400, detail="asset_id is required")
+        days_n = max(1, min(int(days or 30), 3650))
+
+        # Resolve path: asset_registry first, then stock fallback
+        parts = asset_id.split(".", 1)
+        if len(parts) == 2:
+            asset_class, symbol = parts[0], parts[1]
+        else:
+            asset_class, symbol = "stock", asset_id
+
+        path: Path | None = None
+        if asset_class in ("crypto", "fx", "commodity"):
+            path = _resolve_asset_parquet_path(asset_class, symbol)
+            sym_label = symbol.upper()
+        else:
+            # A-share: try kline dir first
+            kp = _resolve_kline_parquet_path(symbol)
+            if kp.exists():
+                path = kp
+            else:
+                path = _resolve_asset_parquet_path(asset_class, symbol)
+            sym_label = symbol.upper()
+
+        rows: list[dict[str, Any]] = []
+        interval = "1d"
+
+        if path and path.exists():
+            try:
+                import pandas as pd
+                end_d = date.today()
+                start_d = end_d - timedelta(days=days_n * 2)  # extra buffer for non-trading days
+                df = pd.read_parquet(path)
+                if not df.empty and "date" in df.columns:
+                    df["date"] = df["date"].astype(str).str[:10]
+                    df = df[df["date"] >= start_d.isoformat()]
+                    df = df.sort_values("date").tail(days_n)
+                    for _, r in df.iterrows():
+                        def _f(col: str) -> float | None:
+                            v = r.get(col)
+                            if v is None or (isinstance(v, float) and pd.isna(v)):
+                                return None
+                            try:
+                                return float(v)
+                            except (TypeError, ValueError):
+                                return None
+                        rows.append({
+                            "date": str(r.get("date") or ""),
+                            "open": _f("open"),
+                            "high": _f("high"),
+                            "low": _f("low"),
+                            "close": _f("close"),
+                            "volume": _f("volume"),
+                        })
+            except Exception as exc:
+                logger.warning("data/kline read failed for %s: %s", asset_id, exc)
+
+        return {
+            "asset_id": asset_id,
+            "symbol": sym_label,
+            "interval": interval,
+            "rows": rows,
+        }
+
+    @app.get("/api/data/gaps/{asset_id:path}")
+    async def get_data_gaps(asset_id: str):
+        """Gap analysis: expected vs present dates, gap list, longest gap."""
+        asset_id = str(asset_id or "").strip()
+        if not asset_id:
+            raise HTTPException(status_code=400, detail="asset_id is required")
+
+        parts = asset_id.split(".", 1)
+        if len(parts) == 2:
+            asset_class, symbol = parts[0], parts[1]
+        else:
+            asset_class, symbol = "stock", asset_id
+
+        path: Path | None = None
+        if asset_class in ("crypto", "fx", "commodity"):
+            path = _resolve_asset_parquet_path(asset_class, symbol)
+        else:
+            kp = _resolve_kline_parquet_path(symbol)
+            path = kp if kp.exists() else _resolve_asset_parquet_path(asset_class, symbol)
+
+        expected_dates = 0
+        present_dates = 0
+        coverage_pct = 0.0
+        gaps: list[dict[str, Any]] = []
+        longest_gap_days = 0
+
+        if path and path.exists():
+            try:
+                import pandas as pd
+                df = pd.read_parquet(path, columns=["date"])
+                if not df.empty:
+                    dates = sorted(set(df["date"].astype(str).str[:10].dropna().tolist()))
+                    present_dates = len(dates)
+                    if dates:
+                        first = dtm.date.fromisoformat(dates[0])
+                        last = dtm.date.fromisoformat(dates[-1])
+                        expected_dates = (last - first).days + 1
+                        # Find gaps
+                        prev: dtm.date | None = None
+                        for d_str in dates:
+                            d = dtm.date.fromisoformat(d_str)
+                            if prev is not None:
+                                delta = (d - prev).days
+                                if delta > 1:
+                                    gap_start = (prev + timedelta(days=1)).isoformat()
+                                    gap_end = (d - timedelta(days=1)).isoformat()
+                                    gap_len = delta - 1
+                                    gaps.append({
+                                        "start": gap_start,
+                                        "end": gap_end,
+                                        "days": gap_len,
+                                    })
+                                    if gap_len > longest_gap_days:
+                                        longest_gap_days = gap_len
+                            prev = d
+                        coverage_pct = round(present_dates / expected_dates * 100.0, 2) if expected_dates > 0 else 0.0
+            except Exception as exc:
+                logger.warning("data/gaps scan failed for %s: %s", asset_id, exc)
+
+        return {
+            "asset_id": asset_id,
+            "expected_dates": expected_dates,
+            "present_dates": present_dates,
+            "coverage_pct": coverage_pct,
+            "gaps": gaps,
+            "longest_gap_days": longest_gap_days,
+        }
+
+    @app.get("/api/data/news")
+    async def get_data_news(source: str = "", days: int = 3, limit: int = 30):
+        """Return news articles from silver/bronze parquet with optional source filter."""
+        days_n = max(1, min(int(days or 3), 30))
+        limit_n = max(1, min(int(limit or 30), 200))
+        source_filter = str(source or "").strip().lower()
+        cutoff = (date.today() - timedelta(days=days_n)).isoformat()
+
+        articles: list[dict[str, Any]] = []
+        total = 0
+
+        # Collect from news/silver first (analyzed, has sentiment_score)
+        silver_dir = Path(data_root) / "news" / "silver"
+        bronze_dir = Path(data_root) / "news" / "bronze"
+
+        def _read_news_dir(base: Path, is_silver: bool) -> None:
+            nonlocal total
+            if not base.exists():
+                return
+            files = sorted(base.rglob("*.parquet"), reverse=True)
+            for p in files:
+                # Try to filter by date from filename
+                stem = p.stem
+                file_date = None
+                if len(stem) == 10 and stem[4] == "-":
+                    file_date = stem
+                    if file_date < cutoff:
+                        continue
+                try:
+                    import pandas as pd
+                    df = pd.read_parquet(p)
+                    if df.empty:
+                        continue
+                    # Normalize columns
+                    if "published_at" in df.columns:
+                        df = df[df["published_at"].astype(str).str[:10] >= cutoff]
+                    if source_filter and "source" in df.columns:
+                        df = df[df["source"].astype(str).str.lower().str.contains(source_filter, na=False)]
+                    total += len(df)
+                    for _, r in df.iterrows():
+                        if len(articles) >= limit_n:
+                            return
+                        src = str(r.get("source") or "")
+                        title = str(r.get("title") or "")
+                        url = str(r.get("url") or "")
+                        pub = str(r.get("published_at") or r.get("date") or "")
+                        summary = str(r.get("summary") or r.get("body", "") or "")
+                        if len(summary) > 300:
+                            summary = summary[:300] + "..."
+                        sent = r.get("sentiment_score")
+                        try:
+                            sent_val = float(sent) if sent is not None and not (isinstance(sent, float) and pd.isna(sent)) else None
+                        except (TypeError, ValueError):
+                            sent_val = None
+                        articles.append({
+                            "title": title,
+                            "source": src,
+                            "published_at": pub,
+                            "url": url,
+                            "sentiment_score": sent_val,
+                            "summary": summary,
+                        })
+                except Exception as exc:
+                    logger.debug("news read failed for %s: %s", p, exc)
+                if len(articles) >= limit_n:
+                    return
+
+        _read_news_dir(silver_dir, is_silver=True)
+        if len(articles) < limit_n:
+            _read_news_dir(bronze_dir, is_silver=False)
+
+        # Sort by published_at descending
+        articles.sort(key=lambda a: str(a.get("published_at") or ""), reverse=True)
+        articles = articles[:limit_n]
+
+        return {"articles": articles, "total": total}
+
+    @app.get("/api/data/coverage")
+    async def get_data_coverage():
+        """Coverage matrix: per-asset-class coverage of key data types."""
+        # Reuse asset list from /api/data/assets logic (call inline)
+        assets_resp = await get_data_assets()
+        asset_list: list[dict[str, Any]] = assets_resp.get("assets", [])  # type: ignore[union-attr]
+
+        # Group by asset_class
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for a in asset_list:
+            cls = str(a.get("asset_class") or "other")
+            groups.setdefault(cls, []).append(a)
+
+        DATA_TYPES = ["kline", "sentiment", "news"]
+        asset_classes: list[dict[str, Any]] = []
+        for cls_name in sorted(groups.keys()):
+            items = groups[cls_name]
+            total = len(items)
+            dt_stats: dict[str, dict[str, Any]] = {}
+            for dt in DATA_TYPES:
+                present = sum(1 for a in items if dt in (a.get("data_types") or []) and a.get("health") != "missing")
+                pct = round(present / total * 100.0, 1) if total > 0 else 0.0
+                dt_stats[dt] = {"present": present, "total": total, "pct": pct}
+            asset_classes.append({
+                "name": cls_name,
+                "total_assets": total,
+                "data_types": dt_stats,
+            })
+
+        return {"asset_classes": asset_classes}
+
     return app
