@@ -2328,7 +2328,12 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             return {r["handler_name"] for r in rows}
 
     def mark_handler_started(self, event_id: int, handler_name: str) -> None:
-        """Insert or update a handler run row to 'pending' status (started)."""
+        """Insert or update a handler run row to 'pending' status (started).
+
+        Also resets event_log status back to 'pending' if it was previously 'ok'
+        (e.g. a newly subscribed handler firing for a completed event, or a
+        dispatch_dag_row single-handler replay after prior completion).
+        """
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with self._conn_lock:
             self._conn.execute(
@@ -2343,6 +2348,11 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                     duration_ms=NULL
                 """,
                 (event_id, handler_name, now),
+            )
+            # If event was previously marked ok, a new pending handler resets it.
+            self._conn.execute(
+                "UPDATE event_log SET status='pending' WHERE id=? AND status='ok'",
+                (event_id,),
             )
             self._conn.commit()
 
