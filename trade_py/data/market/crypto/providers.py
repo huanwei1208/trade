@@ -8,6 +8,11 @@ All providers here are **free, keyless public exchange APIs**:
 
 No paid or API-key-required services (e.g. CoinGecko Pro, CoinMarketCap) are used.
 Supports arbitrary trading pairs, defaults to BTC-USDT and other top crypto assets.
+
+All outbound HTTP calls are routed through a ``requests.Session`` with a
+``urllib3`` ``Retry`` mounted so that transient transport failures
+(``RemoteDisconnected``, reset connections, DNS blips, 5xx/429) are retried
+at the connection layer before surfacing to callers.
 """
 
 import hashlib
@@ -16,6 +21,12 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 import pandas as pd
+
+from trade_py.utils.retry import (
+    DEFAULT_TIMEOUT,
+    DEFAULT_USER_AGENT,
+    create_retry_session,
+)
 
 CRYPTO_PROVIDER_SCHEMA_VERSION = "crypto-provider-v2"
 OKX_HISTORY_CANDLES_URL = "https://www.okx.com/api/v5/market/history-candles"
@@ -164,10 +175,43 @@ class ResponseLike(Protocol):
 HttpGet = Callable[..., ResponseLike]
 
 
+def _default_http_session():
+    """Lazily build a shared ``requests.Session`` with connection-level retries,
+    a non-default User-Agent, and sane timeouts. One session is shared across
+    provider instances so connection pooling works across calls."""
+    # Module-level cache to avoid re-mounting adapters on every provider
+    # construction and to benefit from connection pooling.
+    global _HTTP_SESSION
+    if _HTTP_SESSION is None:
+        _HTTP_SESSION = create_retry_session(
+            retries=3,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+        )
+    return _HTTP_SESSION
+
+
+_HTTP_SESSION = None
+
+
+def _default_headers() -> dict[str, str]:
+    return {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Accept": "application/json",
+    }
+
+
 def _requests_get(*args: Any, **kwargs: Any) -> ResponseLike:
     import requests
 
-    return requests.get(*args, **kwargs)
+    session = _default_http_session()
+    # Ensure every call has timeouts and a non-default User-Agent even if the
+    # caller forgot to pass them.
+    kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
+    headers = dict(_default_headers())
+    headers.update(kwargs.pop("headers", {}) or {})
+    kwargs["headers"] = headers
+    return session.get(*args, **kwargs)
 
 
 def _require_run_id(run_id: str) -> str:
@@ -422,7 +466,7 @@ class OkxDailyProvider:
         http_get: HttpGet | None = None,
         *,
         endpoint: str = OKX_HISTORY_CANDLES_URL,
-        timeout_s: float = 15.0,
+        timeout_s: float | tuple[float, float] = DEFAULT_TIMEOUT,
         page_limit: int = 100,
     ) -> None:
         if page_limit < 1 or page_limit > 100:
@@ -536,7 +580,7 @@ class BinanceDailyProvider:
         http_get: HttpGet | None = None,
         *,
         endpoint: str = BINANCE_KLINES_URL,
-        timeout_s: float = 20.0,
+        timeout_s: float | tuple[float, float] = DEFAULT_TIMEOUT,
         page_limit: int = 1000,
     ) -> None:
         if page_limit < 1 or page_limit > 1000:
