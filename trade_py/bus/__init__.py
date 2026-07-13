@@ -11,6 +11,7 @@ Topic constants are in the Topic class. Query event_log directly:
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import time as _time
@@ -19,12 +20,31 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import threading
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from trade_py.db.trade_db import TradeDB
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_event_time(value: Any) -> datetime:
+    """Best-effort parse of a created_at timestamp from event_log rows."""
+    if value is None:
+        return datetime.now(timezone.utc)
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%f"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return datetime.now(timezone.utc)
 
 
 # ── Topic constants ────────────────────────────────────────────────────────────
@@ -208,37 +228,86 @@ class EventBus:
             created_at=datetime.now(timezone.utc),
             bus=self,
         )
-        handlers = self._subs.get(topic, [])
-        if not handlers:
-            self._db.event_log_complete(eid, "ok", "<no_handler>")
-        else:
-            channel = _resolve_channel(topic)
-            pool = self._pools[channel]
-            for h in handlers:
-                self._mark_handler_started(event.id)
-                try:
-                    pool.submit(self._run_handler, h, event)
-                except Exception:
-                    self._mark_handler_finished(event.id)
-                    raise
+        self._dispatch_to_handlers(event)
         return event
 
-    def _run_handler(self, handler: Callable[[Event], None], event: Event) -> None:
-        handler_name = getattr(handler, "__qualname__", repr(handler))
+    def _dispatch_to_handlers(self, event: Event) -> None:
+        """Submit handlers that haven't yet succeeded for this event to the pool.
+
+        Skips handlers already recorded as 'ok' in event_handler_runs (idempotency).
+        For each eligible handler, marks started in DB before submitting.
+        """
+        handlers = self._subs.get(event.topic, [])
+        if not handlers:
+            self._db.event_log_complete(event.id, "ok", "<no_handler>")
+            return
+        succeeded = self._db.get_succeeded_handlers(event.id)
+        channel = _resolve_channel(event.topic)
+        pool = self._pools[channel]
+        submitted = 0
+        for h in handlers:
+            handler_name = getattr(h, "__qualname__", repr(h))
+            if handler_name in succeeded:
+                logger.debug(
+                    "Skipping already-succeeded handler %s for event_id=%s topic=%s",
+                    handler_name, event.id, event.topic,
+                )
+                continue
+            # Mark started in DB *before* submitting so a crash mid-dispatch still
+            # records an in-progress row that will be re-run on replay (it's not 'ok').
+            self._db.mark_handler_started(event.id, handler_name)
+            self._mark_handler_started(event.id)
+            try:
+                pool.submit(self._run_handler, h, event, handler_name)
+                submitted += 1
+            except Exception:
+                self._mark_handler_finished(event.id)
+                raise
+        # If every handler was skipped due to prior success, mark event ok
+        if submitted == 0 and len(handlers) > 0 and len(succeeded) >= len(handlers):
+            self._db.finalize_event_if_complete(event.id)
+
+    def _handler_accepts_kwarg(self, handler: Callable[..., Any], kwarg_name: str) -> bool:
+        """Check if handler's signature accepts the given keyword argument."""
+        try:
+            sig = inspect.signature(handler)
+        except (TypeError, ValueError):
+            return False
+        if kwarg_name in sig.parameters:
+            return True
+        # Also accept **kwargs
+        for p in sig.parameters.values():
+            if p.kind == inspect.Parameter.VAR_KEYWORD:
+                return True
+        return False
+
+    def _run_handler(self, handler: Callable[..., None], event: Event,
+                     handler_name: str | None = None) -> None:
+        if handler_name is None:
+            handler_name = getattr(handler, "__qualname__", repr(handler))
         t0 = _time.time()
         try:
-            handler(event)
+            # Optionally pass event_id kwarg if the handler accepts it
+            kwargs: dict[str, Any] = {}
+            if self._handler_accepts_kwarg(handler, "event_id"):
+                kwargs["event_id"] = event.id
+            if kwargs:
+                handler(event, **kwargs)
+            else:
+                handler(event)
             elapsed = int((_time.time() - t0) * 1000)
-            self._db.event_log_complete(event.id, "ok", handler_name, elapsed_ms=elapsed)
+            self._db.mark_handler_ok(event.id, handler_name, elapsed)
+            logger.debug(
+                "handler %s ok | event_id=%s topic=%s elapsed=%dms",
+                handler_name, event.id, event.topic, elapsed,
+            )
         except Exception as exc:
             elapsed = int((_time.time() - t0) * 1000)
             logger.error(
-                "handler %s | topic=%s failed: %s",
-                handler_name, event.topic, exc, exc_info=True,
+                "handler %s | event_id=%s topic=%s failed: %s",
+                handler_name, event.id, event.topic, exc, exc_info=True,
             )
-            self._db.event_log_complete(
-                event.id, "error", handler_name, str(exc)[:500], elapsed_ms=elapsed
-            )
+            self._db.mark_handler_error(event.id, handler_name, str(exc), elapsed)
         finally:
             self._mark_handler_finished(event.id)
 
@@ -261,12 +330,33 @@ class EventBus:
             return any(event_id >= min_event_id and count > 0 for event_id, count in self._active_tasks_by_event.items())
 
     def replay_pending(self) -> None:
-        """On daemon startup: re-dispatch events stuck in 'pending' state (crash recovery)."""
+        """On daemon startup: re-dispatch events stuck in 'pending' state (crash recovery).
+
+        For each pending event, re-dispatches to subscribed handlers; the dispatch
+        loop skips handlers already recorded as 'ok' in event_handler_runs, so
+        partially-completed events only re-run the handlers that haven't finished.
+        Does NOT insert new event_log rows — reuses the existing event id.
+        """
         pending = self._db.event_log_pending()
         if pending:
             logger.info("Replaying %d pending bus events", len(pending))
         for row in pending:
-            self.publish(row["topic"], json.loads(row["payload"] or "{}"))
+            try:
+                payload_obj = json.loads(row["payload"] or "{}")
+            except Exception:
+                payload_obj = {}
+            event = Event(
+                id=int(row["id"]),
+                topic=row["topic"],
+                payload=payload_obj,
+                parent_event_id=row.get("parent_event_id"),
+                created_at=_parse_event_time(row.get("created_at")),
+                bus=self,
+            )
+            logger.info(
+                "Replaying event id=%s topic=%s", event.id, event.topic,
+            )
+            self._dispatch_to_handlers(event)
 
     def wait_for_idle(self, *, min_event_id: int | None = None, timeout_sec: float = 30.0) -> bool:
         deadline = _time.time() + max(0.1, timeout_sec)
@@ -465,11 +555,13 @@ def dispatch_dag_row(
         stage=str(row.get("stage") or "compute"),
         data_root=data_root,
     )
+    handler_name = getattr(handler, "__qualname__", repr(handler))
+    db.mark_handler_started(event.id, handler_name)
     bus._mark_handler_started(event.id)
     try:
         channel = _resolve_channel(event.topic)
         pool = bus._pools.get(channel, bus._pool)
-        pool.submit(bus._run_handler, handler, event)
+        pool.submit(bus._run_handler, handler, event, handler_name)
     except Exception:
         bus._mark_handler_finished(event.id)
         raise

@@ -1099,6 +1099,33 @@ def _migrate_v20(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v21(conn: sqlite3.Connection) -> None:
+    """Create event_handler_runs table for per-handler idempotency tracking."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS event_handler_runs (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id       INTEGER NOT NULL,
+            handler_name   TEXT NOT NULL,
+            status         TEXT NOT NULL DEFAULT 'pending',
+            error_message  TEXT,
+            started_at     TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            finished_at    TEXT,
+            duration_ms    INTEGER,
+            FOREIGN KEY (event_id) REFERENCES event_log(id),
+            UNIQUE(event_id, handler_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_event_handler_runs_event
+            ON event_handler_runs(event_id);
+        CREATE INDEX IF NOT EXISTS idx_event_handler_runs_status
+            ON event_handler_runs(status);
+    """)
+    # Backfill: for events already in 'ok' status, record all their subscribed
+    # handlers as succeeded. We can't know the exact handler set at the time,
+    # so we leave already-completed events alone — only 'pending' or 'error'
+    # events will be re-evaluated through the new dispatch logic on replay.
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -1331,4 +1358,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v20 applied")
         except Exception as exc:
             logger.error("Migration v20 failed: %s", exc)
+            raise
+
+    # ── v21: event_handler_runs table for per-handler idempotency ───────────
+    if 21 not in applied:
+        logger.info("Applying DB migration v21 (event_handler_runs)")
+        try:
+            _migrate_v21(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (21)")
+            conn.commit()
+            logger.info("Migration v21 applied")
+        except Exception as exc:
+            logger.error("Migration v21 failed: %s", exc)
             raise

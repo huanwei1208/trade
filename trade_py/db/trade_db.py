@@ -316,6 +316,22 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             CREATE INDEX IF NOT EXISTS idx_event_created ON event_log(created_at);
             CREATE INDEX IF NOT EXISTS idx_event_parent  ON event_log(parent_event_id);
 
+            -- OBS: event_handler_runs (per-handler idempotency tracking)
+            CREATE TABLE IF NOT EXISTS event_handler_runs (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id       INTEGER NOT NULL,
+                handler_name   TEXT NOT NULL,
+                status         TEXT NOT NULL DEFAULT 'pending', -- pending, ok, error
+                error_message  TEXT,
+                started_at     TEXT NOT NULL,
+                finished_at    TEXT,
+                duration_ms    INTEGER,
+                FOREIGN KEY (event_id) REFERENCES event_log(id),
+                UNIQUE(event_id, handler_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_handler_runs_event  ON event_handler_runs(event_id);
+            CREATE INDEX IF NOT EXISTS idx_event_handler_runs_status ON event_handler_runs(status);
+
             -- OBS: job_runs (redesigned)
             CREATE TABLE IF NOT EXISTS job_runs (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2292,6 +2308,166 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                     "SELECT * FROM event_log WHERE status='pending' ORDER BY id"
                 ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Event Handler Runs (per-handler idempotency) ──────────────────────────
+
+    def get_handler_run(self, event_id: int, handler_name: str) -> dict | None:
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT * FROM event_handler_runs WHERE event_id=? AND handler_name=?",
+                (event_id, handler_name),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_succeeded_handlers(self, event_id: int) -> set[str]:
+        with self._conn_lock:
+            rows = self._conn.execute(
+                "SELECT handler_name FROM event_handler_runs WHERE event_id=? AND status='ok'",
+                (event_id,),
+            ).fetchall()
+            return {r["handler_name"] for r in rows}
+
+    def mark_handler_started(self, event_id: int, handler_name: str) -> None:
+        """Insert or update a handler run row to 'pending' status (started)."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._conn_lock:
+            self._conn.execute(
+                """
+                INSERT INTO event_handler_runs (event_id, handler_name, status, started_at)
+                VALUES (?, ?, 'pending', ?)
+                ON CONFLICT(event_id, handler_name) DO UPDATE SET
+                    status='pending',
+                    started_at=excluded.started_at,
+                    finished_at=NULL,
+                    error_message=NULL,
+                    duration_ms=NULL
+                """,
+                (event_id, handler_name, now),
+            )
+            self._conn.commit()
+
+    def mark_handler_ok(self, event_id: int, handler_name: str, duration_ms: int) -> None:
+        """Mark a handler run as 'ok' and recompute overall event_log status."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._conn_lock:
+            self._conn.execute(
+                """
+                INSERT INTO event_handler_runs
+                    (event_id, handler_name, status, started_at, finished_at, duration_ms)
+                VALUES (?, ?, 'ok',
+                        COALESCE((SELECT started_at FROM event_handler_runs
+                                   WHERE event_id=? AND handler_name=?), ?),
+                        ?, ?)
+                ON CONFLICT(event_id, handler_name) DO UPDATE SET
+                    status='ok',
+                    finished_at=excluded.finished_at,
+                    error_message=NULL,
+                    duration_ms=excluded.duration_ms
+                """,
+                (event_id, handler_name, event_id, handler_name, now, now, duration_ms),
+            )
+            self._recompute_event_status(event_id)
+            self._conn.commit()
+
+    def mark_handler_error(self, event_id: int, handler_name: str,
+                           error_message: str, duration_ms: int) -> None:
+        """Mark a handler run as 'error' and set event_log status to error."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        truncated = error_message[:500] if error_message else None
+        with self._conn_lock:
+            self._conn.execute(
+                """
+                INSERT INTO event_handler_runs
+                    (event_id, handler_name, status, error_message,
+                     started_at, finished_at, duration_ms)
+                VALUES (?, ?, 'error', ?,
+                        COALESCE((SELECT started_at FROM event_handler_runs
+                                   WHERE event_id=? AND handler_name=?), ?),
+                        ?, ?)
+                ON CONFLICT(event_id, handler_name) DO UPDATE SET
+                    status='error',
+                    error_message=excluded.error_message,
+                    finished_at=excluded.finished_at,
+                    duration_ms=excluded.duration_ms
+                """,
+                (event_id, handler_name, truncated, event_id, handler_name,
+                 now, now, duration_ms),
+            )
+            # Any handler error -> event is error
+            self._conn.execute(
+                """
+                UPDATE event_log SET status='error', handler=?, error=?,
+                    elapsed_ms=?, processed_at=?
+                WHERE id=? AND status != 'error'
+                """,
+                (handler_name, truncated, duration_ms, now, event_id),
+            )
+            self._conn.commit()
+
+    def _recompute_event_status(self, event_id: int) -> None:
+        """Recompute event_log status based on handler run states.
+
+        Sets:
+          - 'ok'      if there are NO pending/error handlers (all completed ok)
+          - 'error'   if any handler errored (already set by mark_handler_error)
+          - 'pending' if some handlers haven't finished yet
+        Must be called within self._conn_lock.
+        """
+        # Count handlers per status
+        row = self._conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok_count,
+                SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS err_count,
+                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
+                COUNT(*) AS total
+            FROM event_handler_runs WHERE event_id=?
+            """,
+            (event_id,),
+        ).fetchone()
+        ok_count = int(row["ok_count"] or 0)
+        err_count = int(row["err_count"] or 0)
+        pending_count = int(row["pending_count"] or 0)
+        total = int(row["total"] or 0)
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if err_count > 0:
+            # Already marked error by mark_handler_error; skip update
+            return
+        if pending_count == 0 and total > 0 and ok_count == total:
+            # All handlers succeeded
+            self._conn.execute(
+                """
+                UPDATE event_log SET status='ok',
+                    processed_at=?,
+                    elapsed_ms=COALESCE(
+                        (SELECT SUM(duration_ms) FROM event_handler_runs
+                         WHERE event_id=? AND duration_ms IS NOT NULL),
+                        elapsed_ms)
+                WHERE id=?
+                """,
+                (now, event_id, event_id),
+            )
+        else:
+            # Still pending — some handlers haven't finished yet
+            # Keep status as pending (do not overwrite if already set to ok/error
+            # by a direct legacy call path)
+            self._conn.execute(
+                "UPDATE event_log SET status='pending' WHERE id=? AND status NOT IN ('ok','error')",
+                (event_id,),
+            )
+
+    def finalize_event_if_complete(self, event_id: int) -> None:
+        """Public lock-safe wrapper to recompute event status from handler runs.
+
+        Used by the bus after a dispatch pass where all handlers were already
+        recorded as 'ok' (e.g. replay of a fully-succeeded event whose event_log
+        row was still 'pending').
+        """
+        with self._conn_lock:
+            self._recompute_event_status(event_id)
+            self._conn.commit()
 
     # Backward compat aliases
     def bus_event_insert(self, topic: str, payload_json: str) -> int:
