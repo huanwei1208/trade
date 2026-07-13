@@ -206,14 +206,17 @@ def _job_crypto_news_sentiment(data_root: str, config: dict | None = None) -> st
 
     # 2. Crypto news from all free sources
     news_by_source = fetch_all_crypto_news()
-    total_articles = sum(len(items) for items in news_by_source.values())
+    source_counts = {src: len(items) for src, items in news_by_source.items()}
+    total_articles = sum(source_counts.values())
+    source_counts_str = ", ".join(f"{src}={n}" for src, n in sorted(source_counts.items()))
 
     # 3. Analyze each article and collect urgent events
     analyzed = []
     urgent_events = []
     source_credibility = {
         "coindesk": 0.9, "cointelegraph": 0.7, "decrypt": 0.8,
-        "bitcoinmagazine": 0.7, "binance": 0.85,
+        "bitcoinmagazine": 0.7, "binance": 0.85, "cryptoslate": 0.75,
+        "cryptopanic": 0.5,
     }
     for source, items in news_by_source.items():
         cred = source_credibility.get(source, 0.5 if source.startswith("reddit") else 0.7)
@@ -253,6 +256,7 @@ def _job_crypto_news_sentiment(data_root: str, config: dict | None = None) -> st
         bus.publish(Topic.NEWS_FETCHED, {
             "date": today,
             "total_articles": total_articles,
+            "source_counts": source_counts,
             "sources": list(news_by_source.keys()),
         })
         bus.publish(Topic.NEWS_ANALYZED, {
@@ -261,6 +265,7 @@ def _job_crypto_news_sentiment(data_root: str, config: dict | None = None) -> st
             "urgent_count": len(urgent_events),
             "event_types": list({a["event_type"] for a in analyzed if a["event_type"] != "other"}),
             "fear_greed": fng_latest.to_dict() if fng_latest else None,
+            "source_counts": source_counts,
         })
         for evt in urgent_events[:10]:
             bus.publish(Topic.NEWS_URGENT, {
@@ -280,7 +285,11 @@ def _job_crypto_news_sentiment(data_root: str, config: dict | None = None) -> st
         logger.warning("Failed to publish news bus events: %s", exc)
 
     event_types_used = {a["event_type"] for a in analyzed if a["event_type"] != "other"}
-    return f"Crypto news: {total_articles} articles from {len(news_by_source)} sources, {len(urgent_events)} urgent, events={event_types_used}, {fng_summary}"
+    return (
+        f"Crypto news: {total_articles} articles from {len(news_by_source)} sources "
+        f"[{source_counts_str}], {len(urgent_events)} urgent, "
+        f"events={event_types_used}, {fng_summary}"
+    )
 
 
 def _job_global_macro(data_root: str, config: dict | None = None) -> str:
