@@ -374,6 +374,22 @@ def make_parser() -> argparse.ArgumentParser:
     p_reconcile.add_argument("--dry-run", action="store_true")
     p_reconcile.add_argument("--json", action="store_true", dest="as_json")
 
+    p_kview = kline_sub.add_parser(
+        "view",
+        description="K-line OHLCV viewer for any registered asset (crypto/fx/commodity/kline).",
+        epilog=(
+            "trade data kline view crypto.BTC            # last 30 days of BTC\n"
+            "trade data kline view fx.USDCNH --days 10    # last 10 days\n"
+            "trade data kline view kline.000001.SZ --days 20 --format csv\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_kview.add_argument("asset_id", help="Asset ID, e.g. crypto.BTC, fx.USDCNH, commodity.gold, kline.000001.SZ")
+    p_kview.add_argument("--data-root", default=str(default_data_root()))
+    p_kview.add_argument("--days", type=int, default=30, help="Number of days to show (default: 30)")
+    p_kview.add_argument("--format", choices=["table", "csv"], default="table", dest="out_format")
+    p_kview.add_argument("--no-color", action="store_true", help="Disable ANSI colors in table output")
+
     # Unified meta-driven sync command (new)
     p_sync_unified = sub.add_parser(
         "sync",
@@ -647,12 +663,15 @@ def make_parser() -> argparse.ArgumentParser:
             "trade data news fng            # show Fear & Greed Index\n"
             "trade data news urgent         # show recent urgent events\n"
             "trade data news status         # show news data status\n"
+            "trade data news list           # list recent news articles (--source, --days, --limit)\n"
         ),
     )
-    p_news.add_argument("news_cmd", nargs="?", default="fetch", choices=["fetch", "fng", "urgent", "status"])
+    p_news.add_argument("news_cmd", nargs="?", default="fetch", choices=["fetch", "fng", "urgent", "status", "list"])
     p_news.add_argument("--data-root", default=str(default_data_root()))
     p_news.add_argument("--json", action="store_true", dest="as_json")
     p_news.add_argument("--limit", type=int, default=20)
+    p_news.add_argument("--source", default=None, help="Filter by source (coindesk, cointelegraph, reddit, binance, fear_greed, etc.)")
+    p_news.add_argument("--days", type=int, default=3, help="Number of days to look back (default: 3)")
 
     # ── Crypto market data ──────────────────────────────────────────────────────
     p_crypto = sub.add_parser(
@@ -688,6 +707,48 @@ def make_parser() -> argparse.ArgumentParser:
     p_btc.add_argument("--dry-run", action="store_true")
     p_btc.add_argument("--strict", action="store_true")
     p_btc.add_argument("--json", action="store_true", dest="as_json")
+
+    # ── Business observability commands ───────────────────────────────────────
+
+    p_assets = sub.add_parser(
+        "assets",
+        description="Asset inventory: show all registered assets with data coverage and health.",
+        epilog=(
+            "trade data assets\n"
+            "trade data assets --class crypto\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_assets.add_argument("--data-root", default=str(default_data_root()))
+    p_assets.add_argument("--class", dest="asset_class", default=None,
+                          help="Filter by asset class: crypto, fx, commodity, kline")
+    p_assets.add_argument("--json", action="store_true", dest="as_json")
+
+    p_gaps = sub.add_parser(
+        "gaps",
+        description="Detect date gaps in an asset's OHLCV data.",
+        epilog=(
+            "trade data gaps crypto.BTC\n"
+            "trade data gaps kline.000001.SZ\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_gaps.add_argument("asset_id", help="Asset ID to check, e.g. crypto.BTC, fx.USDCNH, kline.000001.SZ")
+    p_gaps.add_argument("--data-root", default=str(default_data_root()))
+    p_gaps.add_argument("--start", default=None, help="Start date YYYY-MM-DD (default: 365 days ago or data start)")
+    p_gaps.add_argument("--end", default=None, help="End date YYYY-MM-DD (default: today)")
+    p_gaps.add_argument("--json", action="store_true", dest="as_json")
+
+    p_cov = sub.add_parser(
+        "coverage",
+        description="Data coverage matrix: which data types exist for which asset classes.",
+        epilog=(
+            "trade data coverage\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_cov.add_argument("--data-root", default=str(default_data_root()))
+    p_cov.add_argument("--json", action="store_true", dest="as_json")
 
     parser.epilog = epilog_from_subparsers(parser)
     return parser
@@ -803,6 +864,755 @@ def _dispatch_sync(args) -> int:
         )
 
     return _track_data_run(str(data_root), "asset_batch_ingest", _run_unified_sync, stage="fetch")
+
+
+# ── Business observability helpers ────────────────────────────────────────────
+
+# ANSI color codes
+_ANSI_GREEN = "\033[92m"
+_ANSI_RED = "\033[91m"
+_ANSI_YELLOW = "\033[93m"
+_ANSI_RESET = "\033[0m"
+
+
+def _safe_read_parquet(path_or_glob: str, columns: list[str] | None = None, where_clause: str = "") -> "pd.DataFrame | None":
+    """Read parquet file(s) using duckdb, returning a pandas DataFrame or None on error."""
+    try:
+        import duckdb
+        import pandas as pd
+        con = duckdb.connect()
+        try:
+            col_sql = ", ".join(columns) if columns else "*"
+            sql = f"SELECT {col_sql} FROM read_parquet('{path_or_glob}', union_by_name=true) {where_clause} ORDER BY date"
+            df = con.execute(sql).fetchdf()
+        finally:
+            con.close()
+        return df if isinstance(df, pd.DataFrame) and not df.empty else None
+    except Exception as exc:
+        logger.debug("_safe_read_parquet error for %s: %s", path_or_glob, exc)
+        return None
+
+
+def _resolve_asset_parquet_path(data_root: str, asset_id: str) -> tuple[Path, str, str]:
+    """Resolve an asset_id to (parquet_path, asset_class, display_label).
+
+    Uses the existing _resolve_dataset_path for crypto/fx/commodity keys
+    and handles kline A-share paths (flat .parquet files, dots→underscores).
+    Returns (path, asset_class, label). Path is returned even if it doesn't exist.
+    """
+    root = Path(data_root)
+    aid = asset_id.strip()
+
+    # Try the dataset map first for known multi-asset keys (lower-cased)
+    aid_lower = aid.lower()
+    from trade_py.utils.data_inspector import _resolve_dataset_path
+    # Direct known key mappings (try both cases)
+    known_map = {
+        "crypto.btc": "crypto.btc", "crypto.eth": "crypto.eth", "crypto.sol": "crypto.sol",
+        "crypto.bnb": "crypto.bnb", "crypto.xrp": "crypto.xrp",
+        "fx.usdcnh": "fx.usdcnh", "commodity.gold": "commodity.gold",
+        "crypto.fear_greed": "crypto.fear_greed",
+    }
+    if aid_lower in known_map:
+        ds_key = known_map[aid_lower]
+        path, _ = _resolve_dataset_path(data_root, ds_key)
+        cls = ds_key.split(".")[0]
+        return path, cls, aid
+
+    # Handle "kline.<symbol>" for A-share stocks (e.g. kline.000001.SZ)
+    if aid_lower.startswith("kline."):
+        sym = aid[len("kline."):]
+        # Convert 000001.SZ → 000001_SZ for filename
+        fname = sym.replace(".", "_") + ".parquet"
+        # Try flat layout first (most common)
+        flat = root / "market" / "kline" / fname
+        subdir = root / "market" / "kline" / sym.replace(".", "_")
+        if subdir.exists() and subdir.is_dir():
+            parquets = sorted(subdir.glob("*.parquet"))
+            if parquets:
+                return parquets[0], "kline", aid
+            # Try a directory of daily files
+            return subdir, "kline", aid
+        return flat, "kline", aid
+
+    # Fallback: try as a direct multi-asset key using data_inspector
+    try:
+        path, _ = _resolve_dataset_path(data_root, aid_lower)
+        cls = aid_lower.split(".")[0] if "." in aid_lower else "unknown"
+        return path, cls, aid
+    except Exception:
+        pass
+
+    # Last resort: treat as <class>.<symbol> under market/<class>/<symbol>.parquet
+    parts = aid.split(".", 1)
+    if len(parts) == 2:
+        cls, sym = parts
+        sym_lower = sym.lower()
+        p = root / "market" / cls.lower() / f"{sym_lower}.parquet"
+        return p, cls.lower(), aid
+    return root / "market" / f"{aid}.parquet", "unknown", aid
+
+
+def _parquet_date_range_and_rows(path: Path) -> tuple[int, str | None, str | None]:
+    """Return (row_count, min_date_str, max_date_str) for a parquet file, or (0, None, None)."""
+    if not path.exists():
+        return 0, None, None
+    try:
+        import duckdb
+        con = duckdb.connect()
+        try:
+            # Use union_by_name for safety with directories or multi-file globs
+            target = str(path)
+            if path.is_dir():
+                target = str(path / "*.parquet")
+            row = con.execute(
+                f"SELECT COUNT(*) AS rows, MIN(date) AS min_d, MAX(date) AS max_d "
+                f"FROM read_parquet('{target}', union_by_name=true)"
+            ).fetchone()
+        finally:
+            con.close()
+        if not row:
+            return 0, None, None
+        rows, min_d, max_d = row
+        return (
+            int(rows or 0),
+            str(min_d)[:10] if min_d is not None else None,
+            str(max_d)[:10] if max_d is not None else None,
+        )
+    except Exception as exc:
+        logger.debug("_parquet_date_range error for %s: %s", path, exc)
+        return 0, None, None
+
+
+def _health_status(max_date: str | None, lag_days: int | None, rows: int) -> tuple[str, str]:
+    """Return (emoji, label) based on data recency."""
+    if rows == 0 or max_date is None:
+        return ("\u274c", "missing")
+    if lag_days is None:
+        return ("\u26a0\ufe0f", "unknown")
+    if lag_days <= 3:
+        return ("\u2705", "ok")
+    if lag_days <= 7:
+        return ("\u26a0\ufe0f", "stale")
+    return ("\u274c", "missing")
+
+
+def _available_data_types_for_asset(data_root: str, asset_id: str, kline_path: Path | None = None) -> list[str]:
+    """Return a list of data-type labels available on disk for a given asset."""
+    root = Path(data_root)
+    types: list[str] = []
+    # kline / ohlcv
+    if kline_path is not None:
+        if kline_path.exists():
+            types.append("kline")
+    else:
+        path, _, _ = _resolve_asset_parquet_path(data_root, asset_id)
+        if path.exists():
+            types.append("kline")
+    asset_class = asset_id.split(".", 1)[0] if "." in asset_id else "unknown"
+    # sentiment: check silver/crypto or sentiment/silver/* for the symbol
+    silver_dir = root / "sentiment" / "silver" / "crypto"
+    if silver_dir.exists():
+        types.append("sentiment")
+    elif (root / "sentiment" / "silver").exists():
+        types.append("sentiment")
+    # news
+    news_bronze = root / "news" / "bronze"
+    news_silver = root / "news" / "silver"
+    if (news_silver.exists() and any(news_silver.glob("**/*.parquet"))) or \
+       (news_bronze.exists() and any(news_bronze.glob("**/*.parquet"))):
+        types.append("news")
+    # fundamental (A-shares)
+    if asset_class == "kline":
+        fund = root / "market" / "fundamental"
+        if fund.exists() and any(fund.glob("*.parquet")):
+            types.append("fundamental")
+        ff = root / "market" / "fund_flow"
+        if ff.exists() and any(ff.glob("*.parquet")):
+            types.append("fund_flow")
+    return types
+
+
+def _cmd_assets(args) -> int:
+    """`trade data assets` — asset inventory."""
+    import json as _json
+    from datetime import date as _date
+    from trade_py.db.trade_db import TradeDB
+
+    data_root = args.data_root
+    today = _date.today()
+    db = TradeDB(data_root)
+
+    # Get registered assets from asset_registry
+    reg_rows = db.asset_registry_list(
+        asset_class=args.asset_class if hasattr(args, "asset_class") and args.asset_class else None,
+        enabled_only=False,
+    )
+
+    assets: list[dict] = []
+    for r in reg_rows:
+        asset_id = r["asset_id"]
+        cls = r["asset_class"]
+        sym = r["symbol"]
+        venue = r.get("venue") or ""
+        path, _, _ = _resolve_asset_parquet_path(data_root, asset_id)
+        rows, min_d, max_d = _parquet_date_range_and_rows(path)
+        lag = None
+        if max_d:
+            try:
+                lag = (today - _date.fromisoformat(max_d[:10])).days
+            except ValueError:
+                lag = None
+        emoji, status_label = _health_status(max_d, lag, rows)
+        data_types = _available_data_types_for_asset(data_root, asset_id, kline_path=path)
+        assets.append({
+            "asset_id": asset_id,
+            "asset_class": cls,
+            "venue": venue,
+            "symbol": sym,
+            "data_types": ", ".join(data_types) if data_types else "-",
+            "rows": rows,
+            "min_date": min_d or "-",
+            "max_date": max_d or "-",
+            "lag_days": lag if lag is not None else "-",
+            "health_emoji": emoji,
+            "health": status_label,
+            "enabled": bool(r.get("enabled", 1)),
+        })
+
+    # Also include A-share kline symbols that are NOT in asset_registry
+    # (kline data exists on disk but not registered)
+    kline_dir = Path(data_root) / "market" / "kline"
+    if kline_dir.exists() and (not args.asset_class or args.asset_class in ("kline", "stock")):
+        registered_ids = {a["asset_id"].lower() for a in assets}
+        for p in sorted(kline_dir.glob("*.parquet")):
+            sym_fname = p.stem  # e.g. 000001_SZ
+            sym = sym_fname.replace("_", ".")
+            asset_id = f"kline.{sym}"
+            if asset_id.lower() in registered_ids:
+                continue
+            rows, min_d, max_d = _parquet_date_range_and_rows(p)
+            lag = None
+            if max_d:
+                try:
+                    lag = (today - _date.fromisoformat(max_d[:10])).days
+                except ValueError:
+                    lag = None
+            emoji, status_label = _health_status(max_d, lag, rows)
+            data_types = _available_data_types_for_asset(data_root, asset_id, kline_path=p)
+            assets.append({
+                "asset_id": asset_id,
+                "asset_class": "kline",
+                "venue": "tushare",
+                "symbol": sym,
+                "data_types": ", ".join(data_types) if data_types else "kline",
+                "rows": rows,
+                "min_date": min_d or "-",
+                "max_date": max_d or "-",
+                "lag_days": lag if lag is not None else "-",
+                "health_emoji": emoji,
+                "health": status_label,
+                "enabled": True,
+            })
+
+    if args.as_json:
+        print(_json.dumps(assets, ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    if not assets:
+        print("No assets found. Run 'trade data sync' to register and fetch data.")
+        return 0
+
+    # Print table
+    print(f"Assets ({len(assets)} total):")
+    header = f"  {'Asset ID':<22} {'Class':<10} {'Venue':<12} {'Symbol':<10} {'Data Types':<22} {'Rows':>10} {'Date Range':<24} {'Lag':>4}  {'Health'}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for a in assets:
+        rng = f"{a['min_date']} ~ {a['max_date']}" if a['min_date'] != '-' else '-'
+        lag_str = f"{a['lag_days']}d" if isinstance(a['lag_days'], int) else str(a['lag_days'])
+        en = "" if a["enabled"] else " [OFF]"
+        print(
+            f"  {a['asset_id']:<22} {a['asset_class']:<10} {a['venue']:<12} {a['symbol']:<10} "
+            f"{a['data_types']:<22} {a['rows']:>10} {rng:<24} {lag_str:>4}  {a['health_emoji']} {a['health']}{en}"
+        )
+    return 0
+
+
+def _cmd_kline_view(args) -> int:
+    """`trade data kline view <asset_id>` — OHLCV viewer."""
+    import csv as _csv
+    import sys as _sys
+    from datetime import date as _date, timedelta as _td
+
+    asset_id = args.asset_id
+    data_root = args.data_root
+    days = args.days
+    fmt = args.out_format
+    use_color = not args.no_color and _sys.stdout.isatty()
+
+    path, cls, label = _resolve_asset_parquet_path(data_root, asset_id)
+    if not path.exists():
+        print(f"No data found for {asset_id}. Expected path: {path}")
+        return 1
+
+    # Load last N days
+    cutoff = (_date.today() - _td(days=days)).isoformat()
+    # Build glob for directories
+    target = str(path)
+    if path.is_dir():
+        target = str(path / "*.parquet")
+
+    df = _safe_read_parquet(
+        target,
+        columns=["date", "open", "high", "low", "close", "volume"],
+        where_clause=f"WHERE date >= '{cutoff}'",
+    )
+    if df is None or df.empty:
+        print(f"No kline data found for {asset_id} in the last {days} days.")
+        return 1
+
+    # Normalize date to string YYYY-MM-DD
+    try:
+        import pandas as pd
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
+    if fmt == "csv":
+        writer = _csv.writer(_sys.stdout)
+        writer.writerow(["date", "open", "high", "low", "close", "volume"])
+        for _, row in df.iterrows():
+            writer.writerow([
+                row["date"],
+                f"{float(row['open']):.4f}" if row.get("open") is not None else "",
+                f"{float(row['high']):.4f}" if row.get("high") is not None else "",
+                f"{float(row['low']):.4f}" if row.get("low") is not None else "",
+                f"{float(row['close']):.4f}" if row.get("close") is not None else "",
+                f"{float(row['volume']):.2f}" if row.get("volume") is not None else "",
+            ])
+        return 0
+
+    # Table output with colors
+    g = _ANSI_GREEN if use_color else ""
+    r = _ANSI_RED if use_color else ""
+    reset = _ANSI_RESET if use_color else ""
+    print(f"OHLCV for {label} (last {days} days, {len(df)} bars):")
+    print(f"  {'Date':<12} {'Open':>12} {'High':>12} {'Low':>12} {'Close':>12} {'Volume':>14}")
+    print("  " + "-" * 78)
+    prev_close = None
+    for _, row in df.iterrows():
+        try:
+            o = float(row.get("open") or 0)
+            h = float(row.get("high") or 0)
+            low = float(row.get("low") or 0)
+            c = float(row.get("close") or 0)
+            vol = float(row.get("volume") or 0)
+        except (TypeError, ValueError):
+            continue
+        up = c >= o if prev_close is None else c >= prev_close
+        color = g if up else r
+        # Format volume
+        if abs(vol) >= 1e9:
+            vol_str = f"{vol/1e9:.2f}B"
+        elif abs(vol) >= 1e6:
+            vol_str = f"{vol/1e6:.2f}M"
+        elif abs(vol) >= 1e3:
+            vol_str = f"{vol/1e3:.2f}K"
+        else:
+            vol_str = f"{vol:.2f}"
+        print(
+            f"  {str(row['date'])[:10]:<12} {color}{o:>12.2f} {h:>12.2f} {low:>12.2f} {c:>12.2f}{reset} {vol_str:>14}"
+        )
+        prev_close = c
+    print()
+    if cls == "crypto":
+        print("Note: Crypto markets trade 24/7 including weekends.")
+    return 0
+
+
+def _cmd_gaps(args) -> int:
+    """`trade data gaps <asset_id>` — gap detection."""
+    import json as _json
+    from datetime import date as _date, timedelta as _td
+
+    asset_id = args.asset_id
+    data_root = args.data_root
+
+    path, cls, label = _resolve_asset_parquet_path(data_root, asset_id)
+    if not path.exists():
+        print(f"No data found for {asset_id}. Expected path: {path}")
+        return 1
+
+    target = str(path)
+    if path.is_dir():
+        target = str(path / "*.parquet")
+
+    df = _safe_read_parquet(target, columns=["date"])
+    if df is None or df.empty:
+        print(f"No date column found for {asset_id}.")
+        return 1
+
+    # Normalize dates
+    try:
+        import pandas as pd
+        dates = set(pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d"))
+    except Exception:
+        dates = set(str(d)[:10] for d in df["date"].tolist() if d is not None)
+
+    if not dates:
+        print(f"No parseable dates in {asset_id}.")
+        return 1
+
+    present = sorted(d for d in dates if d)
+    min_d = present[0]
+    max_d = present[-1]
+
+    # Determine expected calendar: crypto/fx/commodity = 7 days/week; kline (A-shares) = weekdays
+    seven_days = cls in ("crypto", "fx", "commodity")
+
+    # Allow --start/--end override
+    if args.start:
+        start = _date.fromisoformat(args.start)
+    else:
+        start = _date.fromisoformat(min_d)
+    if args.end:
+        end = _date.fromisoformat(args.end)
+    else:
+        end = _date.fromisoformat(max_d)
+
+    # Generate expected dates
+    expected_dates: list[str] = []
+    cur = start
+    while cur <= end:
+        if seven_days or cur.weekday() < 5:  # Mon-Fri for stocks
+            expected_dates.append(cur.isoformat())
+        cur += _td(days=1)
+
+    expected_set = set(expected_dates)
+    present_in_range = {d for d in present if start.isoformat() <= d <= end.isoformat()}
+    missing = sorted(expected_set - present_in_range)
+
+    # Compute longest gap (consecutive missing dates)
+    longest_gap = 0
+    current_gap = 0
+    for d in expected_dates:
+        if d not in present_in_range:
+            current_gap += 1
+            longest_gap = max(longest_gap, current_gap)
+        else:
+            current_gap = 0
+
+    total_expected = len(expected_dates)
+    total_present = len(present_in_range)
+    coverage_pct = round((total_present / total_expected) * 100, 2) if total_expected else 0.0
+
+    result = {
+        "asset_id": label,
+        "asset_class": cls,
+        "date_range": f"{start.isoformat()} ~ {end.isoformat()}",
+        "calendar": "7-day (crypto/fx/commodity)" if seven_days else "weekdays (Mon-Fri, A-shares)",
+        "total_expected": total_expected,
+        "total_present": total_present,
+        "missing_count": len(missing),
+        "coverage_pct": coverage_pct,
+        "longest_gap_days": longest_gap,
+        "missing_dates": missing,
+    }
+
+    if args.as_json:
+        print(_json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    print(f"Gap analysis for {label}:")
+    print(f"  Class:         {cls}")
+    print(f"  Calendar:      {result['calendar']}")
+    print(f"  Date range:    {result['date_range']}")
+    print(f"  Expected days: {total_expected}")
+    print(f"  Present days:  {total_present}")
+    print(f"  Missing days:  {len(missing)}")
+    print(f"  Coverage:      {coverage_pct:.2f}%")
+    print(f"  Longest gap:   {longest_gap} day(s)")
+    if missing:
+        show = missing[:30]
+        print(f"\n  Missing dates (showing first {len(show)} of {len(missing)}):")
+        for d in show:
+            print(f"    {d}")
+        if len(missing) > 30:
+            print(f"    ... and {len(missing) - 30} more")
+    else:
+        print("\n  No gaps detected!")
+    return 0
+
+
+def _cmd_news_list(args) -> int:
+    """`trade data news list` — news article viewer."""
+    import json as _json
+    from datetime import date as _date, timedelta as _td
+    from pathlib import Path as _PPath
+
+    data_root = args.data_root
+    days = getattr(args, "days", 3)
+    limit = args.limit
+    source_filter = getattr(args, "source", None)
+    root = _PPath(data_root)
+
+    cutoff = (_date.today() - _td(days=days)).isoformat()
+
+    # Prefer silver (has sentiment_score), fall back to bronze
+    dfs: list = []
+    try:
+        import pandas as pd
+    except ImportError:
+        print("pandas is required for news list")
+        return 1
+
+    silver_dir = root / "news" / "silver"
+    bronze_dir = root / "news" / "bronze"
+
+    # Load silver files (daily parquet: YYYY-MM-DD.parquet)
+    if silver_dir.exists():
+        for p in sorted(silver_dir.glob("*.parquet")):
+            if p.stem >= cutoff:
+                try:
+                    sub = pd.read_parquet(p)
+                    sub["_tier"] = "silver"
+                    dfs.append(sub)
+                except Exception as exc:
+                    logger.debug("news silver read error %s: %s", p, exc)
+
+    # If no silver, load bronze (per-source subdirectories with daily parquet)
+    if not dfs and bronze_dir.exists():
+        for src_dir in sorted(bronze_dir.iterdir()):
+            if not src_dir.is_dir():
+                continue
+            if source_filter and src_dir.name.lower() != source_filter.lower():
+                continue
+            for p in sorted(src_dir.glob("*.parquet")):
+                if p.stem >= cutoff:
+                    try:
+                        sub = pd.read_parquet(p)
+                        if "source" not in sub.columns:
+                            sub["source"] = src_dir.name
+                        sub["_tier"] = "bronze"
+                        dfs.append(sub)
+                    except Exception as exc:
+                        logger.debug("news bronze read error %s: %s", p, exc)
+
+    if not dfs:
+        print(f"No news data found in the last {days} days. Run 'trade data news fetch' first.")
+        return 1
+
+    df = pd.concat(dfs, ignore_index=True, sort=False)
+
+    # Source filter
+    if source_filter and "source" in df.columns:
+        df = df[df["source"].str.lower() == source_filter.lower()]
+
+    if df.empty:
+        print(f"No news articles found for source='{source_filter}' in the last {days} days.")
+        return 1
+
+    # Parse published_at to date for filtering/sorting
+    if "published_at" in df.columns:
+        df["_pub_date"] = pd.to_datetime(df["published_at"], errors="coerce", utc=True)
+        cutoff_ts = pd.Timestamp(cutoff, tz="UTC")
+        df = df[df["_pub_date"] >= cutoff_ts]
+        df = df.sort_values("_pub_date", ascending=False)
+    elif "date" in df.columns:
+        df["_pub_date"] = pd.to_datetime(df["date"], errors="coerce")
+        cutoff_ts = pd.Timestamp(cutoff)
+        df = df[df["_pub_date"] >= cutoff_ts]
+        df = df.sort_values("_pub_date", ascending=False)
+
+    df = df.head(limit)
+
+    if args.as_json:
+        out = df.drop(columns=[c for c in ["_pub_date", "_tier"] if c in df.columns], errors="ignore")
+        print(out.to_json(orient="records", date_format="iso", indent=2))
+        return 0
+
+    print(f"Recent crypto news (last {days} days, {len(df)} articles):")
+    print(f"  {'Date':<12} {'Source':<16} {'Sent':>6}  {'Title'}")
+    print("  " + "-" * 100)
+    for _, row in df.iterrows():
+        pub = str(row.get("_pub_date", ""))[:10] if "_pub_date" in df.columns else ""
+        src = str(row.get("source", ""))[:16]
+        title = str(row.get("title", ""))[:70]
+        url = str(row.get("url", ""))
+        sent = row.get("sentiment_score")
+        sent_str = f"{sent:+.2f}" if sent is not None and not pd.isna(sent) else "  -  "
+        print(f"  {pub:<12} {src:<16} {sent_str:>6}  {title}")
+        if url and url != "None":
+            if len(url) > 90:
+                url = url[:87] + "..."
+            print(f"  {'':<12} {'':<16} {'':>6}  {url}")
+    return 0
+
+
+def _cmd_coverage(args) -> int:
+    """`trade data coverage` — data coverage matrix."""
+    import json as _json
+    from datetime import date as _date
+    from pathlib import Path as _PPath
+    from trade_py.db.trade_db import TradeDB
+
+    data_root = args.data_root
+    root = _PPath(data_root)
+    today = _date.today()
+    db = TradeDB(data_root)
+
+    # Define asset classes and data types to check
+    asset_classes = ["crypto", "fx", "commodity", "kline"]
+    data_types = ["kline", "sentiment", "news", "fundamental", "fund_flow"]
+
+    # Count registered assets per class
+    reg = db.asset_registry_list(enabled_only=False)
+    reg_by_class: dict[str, list[dict]] = {}
+    for r in reg:
+        cls = r["asset_class"]
+        reg_by_class.setdefault(cls, []).append(r)
+
+    # Also count kline files on disk
+    kline_dir = root / "market" / "kline"
+    kline_disk_count = 0
+    if kline_dir.exists():
+        kline_disk_count = len(list(kline_dir.glob("*.parquet")))
+
+    # Count assets per class: use registry count, or on-disk count for kline if larger
+    assets_per_class: dict[str, int] = {}
+    for cls in asset_classes:
+        reg_count = len(reg_by_class.get(cls, []))
+        if cls == "kline":
+            assets_per_class[cls] = max(reg_count, kline_disk_count)
+        else:
+            assets_per_class[cls] = reg_count
+
+    # Helper: count how many assets have a given data type
+    def _count_with(asset_class: str, dtype: str) -> int:
+        if asset_class == "crypto":
+            if dtype == "kline":
+                # btc, eth, sol, bnb, xrp
+                count = 0
+                for sym in ("btc", "eth", "sol", "bnb", "xrp"):
+                    p = root / "market" / "crypto" / f"{sym}.parquet"
+                    if p.exists():
+                        count += 1
+                    else:
+                        from trade_py.utils.data_inspector import _resolve_dataset_path
+                        pp, _ = _resolve_dataset_path(data_root, f"crypto.{sym}")
+                        if pp.exists():
+                            count += 1
+                return count
+            if dtype == "sentiment":
+                silver_crypto = root / "sentiment" / "silver" / "crypto"
+                return 1 if silver_crypto.exists() and any(silver_crypto.glob("*.parquet")) else 0
+            if dtype == "news":
+                return 1 if (root / "news" / "silver").exists() and any((root / "news" / "silver").glob("*.parquet")) else 0
+            return 0
+        if asset_class == "fx":
+            if dtype == "kline":
+                p = root / "market" / "fx" / "usdcnh.parquet"
+                if p.exists():
+                    return 1
+                from trade_py.utils.data_inspector import _resolve_dataset_path
+                pp, _ = _resolve_dataset_path(data_root, "fx.usdcnh")
+                return 1 if pp.exists() else 0
+            return 0
+        if asset_class == "commodity":
+            if dtype == "kline":
+                p = root / "market" / "commodity" / "gold.parquet"
+                if p.exists():
+                    return 1
+                from trade_py.utils.data_inspector import _resolve_dataset_path
+                pp, _ = _resolve_dataset_path(data_root, "commodity.gold")
+                return 1 if pp.exists() else 0
+            return 0
+        if asset_class == "kline":
+            if dtype == "kline":
+                return kline_disk_count
+            if dtype == "fundamental":
+                fd = root / "market" / "fundamental"
+                return 1 if fd.exists() and any(fd.glob("*.parquet")) else 0
+            if dtype == "fund_flow":
+                ff = root / "market" / "fund_flow"
+                return 1 if ff.exists() and any(ff.glob("*.parquet")) else 0
+            if dtype == "sentiment":
+                return 0
+            if dtype == "news":
+                return 0
+        return 0
+
+    # Build matrix
+    matrix: dict[str, dict[str, dict]] = {}
+    total_cells = 0
+    filled_cells = 0
+    for cls in asset_classes:
+        matrix[cls] = {}
+        total = assets_per_class.get(cls, 0)
+        for dtype in data_types:
+            with_count = _count_with(cls, dtype)
+            total_cells += 1
+            if with_count > 0:
+                filled_cells += 1
+            # Determine status icon
+            if total == 0:
+                icon = "-"
+            elif with_count == 0:
+                icon = "\u274c"
+            elif with_count >= total:
+                icon = "\u2705"
+            elif with_count >= total * 0.8:
+                icon = "\u2705"
+            elif with_count > 0:
+                icon = "\u26a0\ufe0f"
+            else:
+                icon = "\u274c"
+            matrix[cls][dtype] = {
+                "with": with_count,
+                "total": total,
+                "icon": icon,
+            }
+
+    overall_pct = round((filled_cells / total_cells) * 100, 1) if total_cells else 0.0
+
+    if args.as_json:
+        print(_json.dumps({
+            "matrix": matrix,
+            "assets_per_class": assets_per_class,
+            "overall_coverage_pct": overall_pct,
+        }, ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    print("Data Coverage Matrix:")
+    print()
+    # Header row
+    col_w = 14
+    header = f"  {'Asset Class':<12}"
+    for dtype in data_types:
+        header += f" {dtype:>{col_w}}"
+    print(header)
+    print("  " + "-" * (12 + col_w * len(data_types) + len(data_types)))
+    for cls in asset_classes:
+        total = assets_per_class.get(cls, 0)
+        if total == 0 and cls != "kline":
+            continue
+        line = f"  {cls:<12}"
+        for dtype in data_types:
+            cell = matrix[cls][dtype]
+            w = cell["with"]
+            t = cell["total"]
+            icon = cell["icon"]
+            if t == 0:
+                line += f" {'-':>{col_w}}"
+            else:
+                line += f" {icon} {w}/{t}".rjust(col_w)
+        print(line)
+    print()
+    print(f"Overall coverage: {overall_pct}% ({filled_cells}/{total_cells} class-type cells with data)")
+    print()
+    print("Legend: \u2705 full/near-full  \u26a0\ufe0f partial  \u274c missing  - not applicable")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1100,6 +1910,9 @@ def main(argv: list[str] | None = None) -> int:
                 for src in status["news_sources"]:
                     print(f"    {src['source']:<20} days={src['articles']}  latest={src['latest']}")
             return 0
+
+        if args.news_cmd == "list":
+            return _cmd_news_list(args)
 
     if args.command in {"btc", "btc-assurance"}:
         from trade_py.data.market.crypto.service import BtcMarketDataService
@@ -1623,6 +2436,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 0 if str(payload.get("status") or "") == "pass" else 2
 
+        if args.kline_cmd == "view":
+            return _cmd_kline_view(args)
+
     if args.command == "realtime":
         from trade_py.analysis.intraday_runtime import compute_intraday_snapshot
         from trade_py.data.market.intraday import TushareIntradayFetcher
@@ -1835,5 +2651,16 @@ def main(argv: list[str] | None = None) -> int:
                 return DataRunResult(summary=summary)
 
             return _track_data_run(args.data_root, "macro", _run_macro)
+
+    # ── Business observability handlers ──────────────────────────────────────
+
+    if args.command == "assets":
+        return _cmd_assets(args)
+
+    if args.command == "gaps":
+        return _cmd_gaps(args)
+
+    if args.command == "coverage":
+        return _cmd_coverage(args)
 
     return 1
