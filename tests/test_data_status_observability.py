@@ -231,7 +231,7 @@ def test_cross_asset_status_reports_canonical_files_and_lag(tmp_path) -> None:
     assert stats["fx_cnh"]["exists"] is True
     assert stats["fx_cnh"]["layout"] == "cross_asset"
     assert stats["btc"]["exists"] is False
-    assert any("跨资产数据" in line for line in lines)
+    assert any("多资产数据" in line for line in lines)
 
 
 def test_index_northbound_and_macro_status_use_local_files(tmp_path) -> None:
@@ -335,8 +335,8 @@ def test_schema_contract_status_reports_missing_required_columns(tmp_path) -> No
     assert stats["datasets"]["kline"]["status"] == "pass"
     assert "fund_flow" in stats["failed_contracts"]
     assert stats["datasets"]["fund_flow"]["missing_columns"] == ["large_order_net_ratio"]
-    assert "cross_asset.gold" in stats["failed_contracts"]
-    assert stats["datasets"]["cross_asset.gold"]["missing_columns"] == ["close"]
+    assert "commodity.gold" in stats["failed_contracts"]
+    assert stats["datasets"]["commodity.gold"]["missing_columns"] == ["close"]
     assert stats["datasets"]["macro.gdp"]["status"] == "pass"
     assert stats["datasets"]["macro.gdp"]["column_aliases"] == {"q_gdp": ["gdp"]}
     assert stats["datasets"]["macro.pmi"]["status"] == "pass"
@@ -482,15 +482,15 @@ def test_value_quality_recovery_plan_groups_prefixed_datasets(tmp_path) -> None:
     stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
 
     plan_by_component = {item["component"]: item for item in stats["recovery_plan"]}
-    assert plan_by_component["cross_asset"]["command"] == ["trade", "data", "cross-asset", "gold"]
-    assert plan_by_component["cross_asset"]["mode"] == "targeted_refetch"
-    assert plan_by_component["cross_asset"]["datasets"] == ["cross_asset.gold"]
-    assert plan_by_component["cross_asset"]["target"] == {
-        "datasets": ["cross_asset.gold"],
+    assert plan_by_component["commodity"]["command"] == ["trade", "data", "sync", "--class", "commodity"]
+    assert plan_by_component["commodity"]["mode"] == "targeted_refetch"
+    assert plan_by_component["commodity"]["datasets"] == ["commodity.gold"]
+    assert plan_by_component["commodity"]["target"] == {
+        "datasets": ["commodity.gold"],
         "start": "2026-03-20",
         "end": "2026-03-20",
     }
-    assert stats["datasets"]["cross_asset.gold"]["invalid_extents"]["date_range"] == {
+    assert stats["datasets"]["commodity.gold"]["invalid_extents"]["date_range"] == {
         "start": "2026-03-20",
         "end": "2026-03-20",
         "rows": 1,
@@ -599,12 +599,12 @@ def test_value_quality_does_not_waive_cross_asset_ohlc_breaks(tmp_path) -> None:
 
     schema = schema_contract_stats(tmp_path, sample_limit=5)
     stats = value_quality_stats(tmp_path, sample_limit=5, schema_contracts=schema)
-    gold = stats["datasets"]["cross_asset.gold"]
+    gold = stats["datasets"]["commodity.gold"]
 
     assert gold["status"] == "fail"
     assert gold["metrics"]["invalid_ohlc_relationship"] == 1
     assert "waived_invalid_ohlc_relationship" not in gold["metrics"]
-    assert "cross_asset.gold.invalid_ohlc_relationship" in stats["failed_checks"]
+    assert "commodity.gold.invalid_ohlc_relationship" in stats["failed_checks"]
 
 
 def test_value_quality_waives_known_historical_ppi_yoy_gap(tmp_path) -> None:
@@ -801,39 +801,23 @@ def test_data_status_parser_accepts_strict_flag() -> None:
     assert parsed.as_json is True
 
 
-def test_data_status_cli_opts_into_value_quality(monkeypatch, tmp_path, capsys) -> None:
-    seen: dict[str, object] = {}
-
-    def fake_get_data_status(data_root, sample_limit=10, include_value_quality=False):
-        seen["data_root"] = data_root
-        seen["sample_limit"] = sample_limit
-        seen["include_value_quality"] = include_value_quality
-        return {
-            "as_of": "2026-03-20",
-            "quality_gate": {"status": "pass", "reason_codes": []},
-            "schema_contracts": {"status": "pass", "checked_files": 0, "failed_contracts": []},
-            "value_quality": {"status": "pass", "checked_rows": 0, "failed_checks": []},
-        }
-
-    monkeypatch.setattr("trade_py.utils.data_inspector.get_data_status", fake_get_data_status)
-
+def test_data_status_cli_is_metadata_only_by_default(tmp_path, capsys) -> None:
+    root = tmp_path / "absent"
     rc = data_cli.main([
         "status",
         "--data-root",
-        str(tmp_path),
+        str(root),
         "--limit",
         "3",
         "--json",
         "--strict",
     ])
 
-    assert rc == 0
-    assert seen == {
-        "data_root": str(tmp_path),
-        "sample_limit": 3,
-        "include_value_quality": True,
-    }
-    assert '"value_quality"' in capsys.readouterr().out
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["operation"] == "status"
+    assert payload["observed"] is False
+    assert not root.exists()
 
 
 def test_kline_reconcile_cli_wires_arguments(monkeypatch, tmp_path, capsys) -> None:
@@ -1368,8 +1352,8 @@ def test_cross_source_coverage_reports_required_missing_and_single_source_option
     lines = build_status_lines({"as_of": "2026-03-20", "cross_source_coverage": stats})
 
     assert stats["status"] == "fail"
-    assert stats["required_missing"] == ["cross_asset.btc", "kline"]
-    assert stats["optional_single_source"] == ["cross_asset.fx_cnh", "cross_asset.gold"]
+    assert stats["required_missing"] == ["crypto.btc", "kline"]
+    assert stats["optional_single_source"] == ["commodity.gold", "fx.usdcnh"]
     assert "REQUIRED_CROSS_SOURCE_EVIDENCE_MISSING" in stats["reason_codes"]
     assert stats["datasets"]["kline"]["evidence_level"] == "provider_fallback_only"
     assert stats["datasets"]["kline"]["required_artifact"] == {
@@ -1380,7 +1364,7 @@ def test_cross_source_coverage_reports_required_missing_and_single_source_option
         "maximum_block_rows": 0,
         "shadow_sources": "non_empty",
     }
-    assert stats["datasets"]["cross_asset.btc"]["reason_code"] == "BTC_RECONCILIATION_MISSING"
+    assert stats["datasets"]["crypto.btc"]["reason_code"] == "BTC_RECONCILIATION_MISSING"
     plan_by_dataset = {item["dataset"]: item for item in stats["recovery_plan"]}
     assert plan_by_dataset["kline"]["mode"] == "generate"
     assert plan_by_dataset["kline"]["command"] == [
@@ -1400,15 +1384,15 @@ def test_cross_source_coverage_reports_required_missing_and_single_source_option
     ]
     assert plan_by_dataset["kline"]["preflight_command"][-1] == "--dry-run"
     assert plan_by_dataset["kline"]["required_artifact"]["schema_version"] == "kline-reconciliation-v1"
-    assert plan_by_dataset["cross_asset.btc"]["mode"] == "sync"
-    assert plan_by_dataset["cross_asset.btc"]["required_artifact"]["manifest_gate"] == "D3"
+    assert plan_by_dataset["crypto.btc"]["mode"] == "sync"
+    assert plan_by_dataset["crypto.btc"]["required_artifact"]["manifest_gate"] == "D3"
     assert any("多源交叉验证覆盖" in line for line in lines)
     assert any("recovery actions: 2" in line for line in lines)
     assert any("trade data kline reconcile" in line and "--dry-run" in line for line in lines)
 
 
 def test_cross_source_coverage_accepts_ready_btc_reconciliation_manifest(tmp_path) -> None:
-    btc_root = tmp_path / "market" / "cross_asset"
+    btc_root = tmp_path / "market" / "crypto"
     run_dir = btc_root / "runs" / "btc" / "run-ready"
     run_dir.mkdir(parents=True)
     manifest_path = run_dir / "manifest.json"
@@ -1448,9 +1432,9 @@ def test_cross_source_coverage_accepts_ready_btc_reconciliation_manifest(tmp_pat
 
     stats = cross_source_coverage_stats(tmp_path)
 
-    assert stats["datasets"]["cross_asset.btc"]["status"] == "pass"
-    assert stats["datasets"]["cross_asset.btc"]["evidence_level"] == "provider_reconciliation"
-    assert stats["datasets"]["cross_asset.btc"]["metrics"]["aligned_rows"] == 3
+    assert stats["datasets"]["crypto.btc"]["status"] == "pass"
+    assert stats["datasets"]["crypto.btc"]["evidence_level"] == "provider_reconciliation"
+    assert stats["datasets"]["crypto.btc"]["metrics"]["aligned_rows"] == 3
     assert stats["required_missing"] == ["kline"]
 
 
@@ -1487,7 +1471,7 @@ def test_cross_source_coverage_accepts_ready_kline_reconciliation_artifact(tmp_p
     assert item["evidence_level"] == "provider_reconciliation"
     assert item["metrics"]["checked_rows"] == 42
     assert item["shadow_sources"] == ["akshare", "tencent"]
-    assert stats["required_missing"] == ["cross_asset.btc"]
+    assert stats["required_missing"] == ["crypto.btc"]
 
 
 def test_cross_source_coverage_rejects_invalid_kline_reconciliation_artifact(tmp_path) -> None:

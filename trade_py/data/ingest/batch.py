@@ -28,6 +28,22 @@ logger = logging.getLogger(__name__)
 # so we don't repeatedly re-scan.
 _MIGRATION_SENTINEL = ".cross_asset_migrated"
 
+# Assets with assurance/audit requirements must never be written by the generic
+# batch engine. Their dedicated service owns the canonical parquet and pointer.
+_SPECIALIZED_ASSET_WRITERS = {"crypto.btc": "btc_assurance"}
+
+
+class ExistingDataReadError(RuntimeError):
+    """Existing canonical data cannot be read safely."""
+
+
+class WalReadError(RuntimeError):
+    """An existing write-ahead log cannot be read safely."""
+
+
+class UnexpectedEmptyProviderResponse(RuntimeError):
+    """A provider returned no rows without evidence that the asset is current."""
+
 
 # ── Legacy path mappings ──────────────────────────────────────────────────────
 # Maps from (asset_class, symbol_lower) -> relative legacy path under market/cross_asset/.
@@ -286,6 +302,8 @@ class BatchIngestEngine:
         self._flush_thread: threading.Thread | None = None
         self._migration_run: bool = False
         self._wal_recovered: bool = False
+        self._wal_recovery_errors: dict[str, str] = {}
+        self._flush_errors: dict[str, str] = {}
 
     def _get_db(self) -> TradeDB:
         if self._db is None:
@@ -323,14 +341,29 @@ class BatchIngestEngine:
         if path.exists():
             try:
                 return pd.read_parquet(path)
-            except Exception:
-                return None
+            except Exception as exc:
+                raise ExistingDataReadError(
+                    f"existing parquet is unreadable; refusing overwrite: {path}: {exc}"
+                ) from exc
         return None
 
     def _watermark_date(self, df: pd.DataFrame | None) -> str | None:
         if df is None or df.empty:
             return None
         return pd.to_datetime(df["date"]).max().strftime("%Y-%m-%d")
+
+    def _watermark_proves_current(self, asset: dict, watermark: str | None) -> bool:
+        if not watermark:
+            return False
+        expected = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=1)
+        if str(asset.get("asset_class") or "") != "crypto":
+            while expected.weekday() >= 5:
+                expected -= pd.Timedelta(days=1)
+        try:
+            observed = pd.Timestamp(watermark, tz="UTC").normalize()
+        except (TypeError, ValueError):
+            return False
+        return bool(observed >= expected)
 
     def _ensure_wal_dir(self) -> Path:
         """Ensure the WAL root directory exists and return its path."""
@@ -380,11 +413,10 @@ class BatchIngestEngine:
                 try:
                     existing_wal = pd.read_parquet(wal_path)
                     merged = pd.concat([existing_wal, df], ignore_index=True)
-                except Exception:
-                    # If existing WAL is unreadable (partial write/corruption),
-                    # overwrite with the new data to avoid wedging ingestion.
-                    logger.warning("WAL for %s unreadable; overwriting", asset_id)
-                    merged = df.copy()
+                except Exception as exc:
+                    raise WalReadError(
+                        f"WAL is unreadable; refusing overwrite: {wal_path}: {exc}"
+                    ) from exc
             else:
                 merged = df.copy()
             merged = merged.drop_duplicates(subset=["date"], keep="last")
@@ -398,9 +430,10 @@ class BatchIngestEngine:
             return None
         try:
             return pd.read_parquet(wal_path)
-        except Exception:
-            logger.warning("WAL for %s unreadable during flush; ignoring", asset_id)
-            return None
+        except Exception as exc:
+            raise WalReadError(
+                f"WAL is unreadable; refusing flush: {wal_path}: {exc}"
+            ) from exc
 
     def _delete_wal(self, asset_id: str) -> None:
         """Remove the WAL file (and its now-empty parent directory) for asset_id."""
@@ -516,14 +549,27 @@ class BatchIngestEngine:
         db = self._get_db()
         asset = db.asset_registry_get(asset_id)
         if not asset:
-            logger.warning("Cannot flush %s: asset not found in registry", asset_id)
-            return
+            raise RuntimeError(f"Cannot flush {asset_id}: asset not found in registry")
         path = self._asset_output_path(asset)
 
         # Exclusive flock across the whole durable transaction
         lock_path = self._lock_path(asset_id)
-        with self._flock(lock_path):
-            self._merge_and_write(asset_id, path, df)
+        try:
+            with self._flock(lock_path):
+                self._merge_and_write(asset_id, path, df)
+        except Exception:
+            # The WAL remains durable. Restore the in-memory buffer as well so
+            # a later flush can retry without reporting a false success.
+            if df is not None and not df.empty:
+                with self._buffer_lock:
+                    current = self._write_buffers.get(asset_id)
+                    frames = [frame for frame in (current, df) if frame is not None and not frame.empty]
+                    if frames:
+                        self._write_buffers[asset_id] = (
+                            pd.concat(frames, ignore_index=True)
+                            .drop_duplicates(subset=["date"], keep="last")
+                        )
+            raise
 
     def _recover_wal(self) -> None:
         """Replay any leftover WAL segments into main parquet at startup.
@@ -564,20 +610,25 @@ class BatchIngestEngine:
                 )
                 recovered += 1
             except Exception as e:
+                message = f"{type(e).__name__}: {e}"
+                self._wal_recovery_errors[asset_id] = message
                 logger.error("WAL recovery failed for %s: %s", asset_id, e)
 
         if recovered:
             logger.info("WAL recovery complete: %d asset(s) recovered", recovered)
 
-    def _flush_all(self) -> None:
-        """Flush all buffered writes to disk."""
+    def _flush_all(self) -> dict[str, str]:
+        """Flush all buffered writes and return current per-asset failures."""
         with self._buffer_lock:
             asset_ids = list(self._write_buffers.keys())
         for asset_id in asset_ids:
             try:
                 self._flush_asset(asset_id)
+                self._flush_errors.pop(asset_id, None)
             except Exception as e:
+                self._flush_errors[asset_id] = f"{type(e).__name__}: {e}"
                 logger.error("Failed to flush %s: %s", asset_id, e)
+        return dict(self._flush_errors)
 
     def _ingest_single_asset(
         self,
@@ -629,12 +680,18 @@ class BatchIngestEngine:
                 ingestor.validate_frame(df, asset_id)
 
                 if df.empty:
-                    return IngestResult(
-                        asset_id=asset_id,
-                        success=True,
-                        rows=len(existing) if existing is not None else 0,
-                        new_rows=0,
-                        watermark_date=watermark,
+                    if self._watermark_proves_current(asset, watermark):
+                        return IngestResult(
+                            asset_id=asset_id,
+                            success=True,
+                            rows=len(existing) if existing is not None else 0,
+                            new_rows=0,
+                            watermark_date=watermark,
+                            metadata={"outcome": "already_current"},
+                        )
+                    raise UnexpectedEmptyProviderResponse(
+                        f"{asset_id} provider returned zero rows while watermark={watermark or 'missing'} "
+                        "does not prove the requested interval is complete"
                     )
 
                 new_rows = len(df)
@@ -739,6 +796,14 @@ class BatchIngestEngine:
         for asset in sorted(assets, key=lambda a: -int(a.get("priority", 5))):
             if not int(asset.get("enabled", 1)):
                 continue
+            asset_id = str(asset.get("asset_id") or "")
+            if asset_id in self._wal_recovery_errors:
+                results.append(IngestResult(
+                    asset_id=asset_id,
+                    success=False,
+                    error=f"WAL recovery failed: {self._wal_recovery_errors[asset_id]}",
+                ))
+                continue
             fut = self._executor.submit(self._ingest_single_asset, asset, full_refresh=full_refresh)
             futures[fut] = asset
 
@@ -769,7 +834,11 @@ class BatchIngestEngine:
                 logger.error("Failed %s: %s", result.asset_id, result.error)
 
         # Final flush
-        self._flush_all()
+        flush_errors = self._flush_all()
+        for result in results:
+            if result.asset_id in flush_errors:
+                result.success = False
+                result.error = f"durable flush failed: {flush_errors[result.asset_id]}"
 
         ok_count = sum(1 for r in results if r.success)
         self._publish_event("data.batch.completed", {
@@ -805,6 +874,19 @@ class BatchIngestEngine:
         else:
             assets = all_assets
 
+        owned_assets = []
+        generic_assets = []
+        for asset in assets:
+            asset_id = str(asset.get("asset_id") or "").lower()
+            owner = _SPECIALIZED_ASSET_WRITERS.get(asset_id)
+            if owner:
+                owned_assets.append((asset.get("asset_id"), owner))
+            else:
+                generic_assets.append(asset)
+        assets = generic_assets
+        for asset_id, owner in owned_assets:
+            logger.info("Skipping %s in generic ingest; canonical writer=%s", asset_id, owner)
+
         if not assets:
             logger.warning("No matching assets found for class=%s symbols=%s", asset_class, symbols)
             return []
@@ -817,5 +899,8 @@ __all__ = [
     "BatchIngestEngine",
     "BatchIngestConfig",
     "IngestResult",
+    "ExistingDataReadError",
+    "UnexpectedEmptyProviderResponse",
+    "WalReadError",
     "migrate_cross_asset_paths",
 ]

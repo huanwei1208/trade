@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from trade_py.data.market.cross_asset import store as store_module
+from trade_py.data.market.crypto import store as store_module
 from trade_py.data.market.cross_asset.assurance import (
     BtcAssuranceConfig,
     BtcAssuranceResult,

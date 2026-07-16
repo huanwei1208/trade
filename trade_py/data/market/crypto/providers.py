@@ -376,7 +376,9 @@ def normalize_binance_klines(
         # Binance kline open time is milliseconds UTC, aligned to 00:00 for 1d interval
         bar_open_at = _ms_to_utc_daily(row[0], provider="Binance")
         bar_close_at = pd.to_datetime(int(row[6]), unit="ms", utc=True)
-        is_final = bool(row[8])  # kline closed flag
+        # Binance field 8 is the number of trades, not a close flag. A candle
+        # is final only after its declared close timestamp has passed.
+        is_final = bool(bar_close_at <= fetched_timestamp)
         records.append(
             {
                 "provider": contract.provider,

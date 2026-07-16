@@ -39,21 +39,12 @@ print_help() {
   echo "  ./trade config watch ...        自选股管理"
   echo ""
   echo "数据 (data):"
-  echo "  ./trade data sync              统一同步 (crypto/fx/commodity)"
-  echo "  ./trade data assets            资产清单 (覆盖/时效/健康)"
-  echo "  ./trade data kline view <id>   K线查看器 (如 crypto.BTC)"
-  echo "  ./trade data gaps <id>         缺口检测"
-  echo "  ./trade data news list         新闻浏览"
-  echo "  ./trade data coverage          覆盖矩阵"
-  echo "  ./trade data kline             A 股 K线"
-  echo "  ./trade data fund-flow         资金流向"
-  echo "  ./trade data fundamental       财务数据"
-  echo "  ./trade data northbound        北向资金"
-  echo "  ./trade data index             指数数据"
-  echo "  ./trade data macro             宏观数据"
-  echo "  ./trade data warehouse         数据仓库 / RSS"
-  echo "  ./trade data realtime          实时行情"
-  echo "  ./trade data btc               BTC assurance"
+  echo "  ./trade data                   快速只读状态"
+  echo "  ./trade data update core       核心数据增量更新"
+  echo "  ./trade data update crypto     BTC assurance + 非 BTC crypto"
+  echo "  ./trade data update all        全部结构化数据 (不含新闻/模型/决策)"
+  echo "  ./trade data check [--full]    只读检查"
+  echo "  ./trade data --help-all        高级兼容命令"
   echo ""
   echo "运维/事件:"
   echo "  ./trade event trigger/run/sync/add/rebuild/backfill"
@@ -247,7 +238,7 @@ main() {
     status) cmd_domain_allow_empty status "${global_flags[@]}" "${sub_args[@]}" ;;
     show) cmd_domain show "${global_flags[@]}" "${sub_args[@]}" ;;
     research) cmd_domain research "${global_flags[@]}" "${sub_args[@]}" ;;
-    data) cmd_domain data "${global_flags[@]}" "${sub_args[@]}" ;;
+    data) cmd_domain_allow_empty data "${global_flags[@]}" "${sub_args[@]}" ;;
     kg) cmd_domain kg "${global_flags[@]}" "${sub_args[@]}" ;;
     config) cmd_domain config "${global_flags[@]}" "${sub_args[@]}" ;;
     event) cmd_domain event "${global_flags[@]}" "${sub_args[@]}" ;;

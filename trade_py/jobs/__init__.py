@@ -18,6 +18,10 @@ from typing import Callable
 logger = logging.getLogger(__name__)
 
 
+class JobQualityWarning(RuntimeError):
+    """A job produced auditable evidence but is not yet quality-gate complete."""
+
+
 @dataclass
 class JobDef:
     name: str
@@ -106,6 +110,29 @@ def _job_crypto_btc_fetch(data_root: str, config: dict | None = None) -> str:
     payload = service.sync()
     if not payload.get("published", False):
         readiness = payload.get("data_readiness", "unknown")
+        gates = {
+            str(gate.get("gate")): gate
+            for gate in (payload.get("gates") or [])
+            if isinstance(gate, dict)
+        }
+        pilot_pending = (
+            readiness == "degraded"
+            and bool(payload.get("staged"))
+            and (gates.get("D1") or {}).get("reason_code")
+            == "ACQUISITION_STABILITY_INSUFFICIENT"
+            and all(
+                (gates.get(name) or {}).get("status") == "pass"
+                for name in ("D0", "D2", "D3", "D4")
+            )
+        )
+        if pilot_pending:
+            metrics = (gates["D1"].get("metrics") or {})
+            observed = int(metrics.get("successful_acquisition_days") or 0)
+            required = int(metrics.get("required_successful_acquisition_days") or 0)
+            raise JobQualityWarning(
+                "BTC 候选已暂存，等待采集稳定性门禁: "
+                f"run_id={payload.get('run_id')} qualified_days={observed}/{required}"
+            )
         raise RuntimeError(f"BTC 数据未发布完成: readiness={readiness}")
     return f"BTC 同步完成: run_id={payload.get('run_id')}"
 
@@ -339,9 +366,15 @@ def _job_asset_batch_ingest(
     new_rows = sum(r.new_rows for r in results if r.success)
     assets = ", ".join(r.asset_id for r in results if r.success)
 
-    if failed > 0 and success == 0:
+    if not results:
+        requested = f"class={target_class or 'all'} symbols={symbols or 'all'}"
+        raise RuntimeError(f"No eligible assets selected: {requested}")
+
+    if failed > 0:
         failed_assets = ", ".join(r.asset_id for r in results if not r.success)
-        raise RuntimeError(f"All asset ingest failed: {failed_assets}")
+        raise RuntimeError(
+            f"Asset ingest incomplete: succeeded={success}/{len(results)} failed=[{failed_assets}]"
+        )
 
     msg = f"Assets synced: {success}/{len(results)}, new rows={new_rows}, assets=[{assets}]"
     if failed > 0:
@@ -536,11 +569,15 @@ def _job_macro(data_root: str, config: dict | None = None) -> str:
     from trade_py.data.market.macro import MacroFetcher
     fetcher = MacroFetcher(data_root)
     datasets = ["gdp", "cpi", "ppi", "pmi"]
+    failures: list[str] = []
     for name in datasets:
         try:
             fetcher.fetch_and_save(name)
         except Exception as exc:
+            failures.append(f"{name}={type(exc).__name__}: {exc}")
             logger.error("macro job: %s failed: %s", name, exc)
+    if failures:
+        raise RuntimeError(f"宏观数据同步不完整: {'; '.join(failures)}")
     return f"宏观数据同步完成: {', '.join(datasets)}"
 
 
@@ -864,7 +901,7 @@ JOB_REGISTRY: dict[str, JobDef] = {
         [], "fetch", ["deprecated", "market", "gold", "fx"],
     ),
     "crypto_btc_fetch": JobDef(
-        "crypto_btc_fetch", _job_crypto_btc_fetch, "BTC UTC 日线采集 (legacy, uses generic ingest)",
+        "crypto_btc_fetch", _job_crypto_btc_fetch, "BTC assurance-gated UTC 日线同步",
         ["daily 09:00"], "fetch", ["market", "crypto"],
     ),
     "asset_batch_ingest": JobDef(

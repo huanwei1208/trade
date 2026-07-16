@@ -377,10 +377,12 @@ class EventBus:
 
 def _make_dag_handler(
     db: "TradeDB",
+    dag_id: int,
     job_name: str,
     emits: str | None,
     stage: str,
     data_root: str,
+    config: dict[str, Any],
 ) -> Callable[[Event], None]:
     """Create a handler closure that runs a job, writes job_runs, and optionally emits."""
     from trade_py.jobs import run_job
@@ -390,10 +392,19 @@ def _make_dag_handler(
         t0 = _time.time()
         run_id = db.job_run_start(job_name, stage=stage, trigger_event_id=event.id)
         try:
+            config_error = str(config.get("__dag_config_error__") or "").strip()
+            if config_error:
+                raise RuntimeError(f"DAG row {dag_id} has invalid config_json: {config_error}")
             payload_dict = dict(event.payload or {})
             df = str(payload_dict.get("date_from") or "").strip() or None
             dt = str(payload_dict.get("date_to") or "").strip() or None
-            result = run_job(job_name, data_root, date_from=df, date_to=dt)
+            result = run_job(
+                job_name,
+                data_root,
+                config=dict(config),
+                date_from=df,
+                date_to=dt,
+            )
             elapsed = int((_time.time() - t0) * 1000)
             db.job_run_finish(run_id, "ok", result_summary=result, elapsed_ms=elapsed)
             logger.info("dag done: job=%s result=%s", job_name, result)
@@ -406,8 +417,22 @@ def _make_dag_handler(
             raise
 
     handler.__name__ = job_name
-    handler.__qualname__ = f"dag.{stage}.{job_name}"
+    handler.__qualname__ = f"dag.{stage}.{job_name}.row_{dag_id}"
     return handler
+
+
+def _dag_row_config(row: dict[str, Any]) -> dict[str, Any]:
+    """Parse one DAG row's config without falling back to another row."""
+    raw = row.get("config_json")
+    if raw in (None, ""):
+        return {}
+    try:
+        parsed = json.loads(str(raw))
+    except (TypeError, ValueError) as exc:
+        return {"__dag_config_error__": str(exc)}
+    if not isinstance(parsed, dict):
+        return {"__dag_config_error__": "expected a JSON object"}
+    return parsed
 
 
 def _make_agenda_handler(db: "TradeDB", data_root: str) -> Callable[[Event], None]:
@@ -507,10 +532,12 @@ def bootstrap_from_dag(db: "TradeDB", data_root: str) -> "EventBus":
     for row in rows:
         handler = _make_dag_handler(
             db,
+            dag_id=int(row["id"]),
             job_name=row["job_name"],
             emits=row["emits"],
             stage=row["stage"],
             data_root=data_root,
+            config=_dag_row_config(row),
         )
         bus.subscribe(row["source"], handler)
     bus.subscribe(Topic.AGENDA_DUE, _make_agenda_handler(db, data_root))
@@ -550,10 +577,12 @@ def dispatch_dag_row(
     )
     handler = _make_dag_handler(
         db,
+        dag_id=int(row["id"]),
         job_name=str(row.get("job_name") or ""),
         emits=str(row.get("emits") or "") or None,
         stage=str(row.get("stage") or "compute"),
         data_root=data_root,
+        config=_dag_row_config(row),
     )
     handler_name = getattr(handler, "__qualname__", repr(handler))
     db.mark_handler_started(event.id, handler_name)

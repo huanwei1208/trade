@@ -15,7 +15,7 @@ from trade_py.data.access.policy import BackfillReport, ReadPolicy
 from trade_py.data.market.kline.akshare import KlineFetcher
 from trade_py.data.market.kline.providers import ensure_symbol
 from trade_py.data.market.fund_flow.tushare import FundFlowFetcher
-from trade_py.data.paths import COMMODITY_DIR, CRYPTO_DIR, FX_DIR, KLINE_DIR
+from trade_py.data.paths import KLINE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -135,47 +135,48 @@ class DataGateway:
         market/commodity), then falls back to legacy market/cross_asset/ and
         finally <root>/cross_asset/ for backwards compatibility.
         """
-        # Mapping of caller-facing names to (asset_dir_callable, filename, legacy_relpaths)
+        # Use pure path construction here: this is a read path and must not call
+        # directory helpers that create canonical folders on a cache miss.
         name_map: dict[str, tuple] = {
-            "btc":    (CRYPTO_DIR,    "btc.parquet",     [
+            "btc":    ("crypto",    "btc.parquet",     [
                 Path("market") / "cross_asset" / "crypto" / "btc.parquet",
                 Path("market") / "cross_asset" / "btc.parquet",
                 Path("cross_asset") / "btc.parquet",
             ]),
-            "eth":    (CRYPTO_DIR,    "eth.parquet",     [
+            "eth":    ("crypto",    "eth.parquet",     [
                 Path("market") / "cross_asset" / "crypto" / "eth.parquet",
                 Path("market") / "cross_asset" / "eth.parquet",
                 Path("cross_asset") / "eth.parquet",
             ]),
-            "sol":    (CRYPTO_DIR,    "sol.parquet",     [
+            "sol":    ("crypto",    "sol.parquet",     [
                 Path("market") / "cross_asset" / "crypto" / "sol.parquet",
                 Path("market") / "cross_asset" / "sol.parquet",
                 Path("cross_asset") / "sol.parquet",
             ]),
-            "bnb":    (CRYPTO_DIR,    "bnb.parquet",     [
+            "bnb":    ("crypto",    "bnb.parquet",     [
                 Path("market") / "cross_asset" / "crypto" / "bnb.parquet",
                 Path("market") / "cross_asset" / "bnb.parquet",
                 Path("cross_asset") / "bnb.parquet",
             ]),
-            "xrp":    (CRYPTO_DIR,    "xrp.parquet",     [
+            "xrp":    ("crypto",    "xrp.parquet",     [
                 Path("market") / "cross_asset" / "crypto" / "xrp.parquet",
                 Path("market") / "cross_asset" / "xrp.parquet",
                 Path("cross_asset") / "xrp.parquet",
             ]),
-            "fear_greed": (CRYPTO_DIR, "fear_greed.parquet", [
+            "fear_greed": ("crypto", "fear_greed.parquet", [
                 Path("market") / "cross_asset" / "crypto" / "fear_greed.parquet",
                 Path("market") / "cross_asset" / "fear_greed.parquet",
             ]),
-            "fx":     (FX_DIR,        "usdcnh.parquet",  [
+            "fx":     ("fx",        "usdcnh.parquet",  [
                 Path("market") / "cross_asset" / "fx_cnh.parquet",
                 Path("cross_asset") / "fx_cnh.parquet",
                 Path("market") / "cross_asset" / "fx_usdcnh.parquet",
             ]),
-            "fx_cnh": (FX_DIR,        "usdcnh.parquet",  [
+            "fx_cnh": ("fx",        "usdcnh.parquet",  [
                 Path("market") / "cross_asset" / "fx_cnh.parquet",
                 Path("cross_asset") / "fx_cnh.parquet",
             ]),
-            "gold":   (COMMODITY_DIR, "gold.parquet",    [
+            "gold":   ("commodity", "gold.parquet",    [
                 Path("market") / "cross_asset" / "gold.parquet",
                 Path("cross_asset") / "gold.parquet",
             ]),
@@ -184,8 +185,8 @@ class DataGateway:
         if spec is None:
             # Unknown name — fall back to direct market/cross_asset path.
             return self._root / "market" / "cross_asset" / f"{name}.parquet"
-        dir_fn, fname, legacy_rels = spec
-        canonical = dir_fn(self._root) / fname
+        dataset_dir, fname, legacy_rels = spec
+        canonical = self._root / "market" / dataset_dir / fname
         if canonical.is_file():
             return canonical
         for rel in legacy_rels:
@@ -214,7 +215,7 @@ class DataGateway:
                     pointer_candidates = [
                         path.parent / "btc_current.json",
                         self._root / "market" / "cross_asset" / "btc_current.json",
-                        CRYPTO_DIR(self._root) / "btc_current.json",
+                        self._root / "market" / "crypto" / "btc_current.json",
                     ]
                     pointer_path = next((p for p in pointer_candidates if p.is_file()), None)
                     if pointer_path is None:

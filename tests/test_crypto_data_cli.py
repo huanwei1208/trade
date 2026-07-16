@@ -309,7 +309,7 @@ def test_ready_sync_atomically_publishes_canonical_pointer_raw_and_manifest(
     assert canonical["date"].tolist() == list(
         pd.date_range("2026-01-07", periods=3, freq="D")
     )
-    assert not list(service.store.cross_asset_root.glob(".*.tmp"))
+    assert not list(service.store.crypto_root.glob(".*.tmp"))
 
 
 def test_current_replay_uses_verified_predecessor_for_revision_quarantine(
@@ -327,7 +327,7 @@ def test_current_replay_uses_verified_predecessor_for_revision_quarantine(
         minimum_successful_acquisition_days=1,
         minimum_revision_overlap_days=0,
     )
-    canonical_root = service.store.cross_asset_root
+    canonical_root = service.store.crypto_root
     canonical_root.mkdir(parents=True)
     predecessor = pd.DataFrame(
         {
@@ -537,7 +537,7 @@ def test_cross_asset_btc_legacy_alias_modes_and_json(
     monkeypatch,
     capsys,
 ) -> None:
-    from trade_py.data.market.cross_asset import service as service_module
+    from trade_py.data.market.crypto import service as service_module
 
     _CliService.calls = []
     _CliService.sync_payload = {
@@ -613,7 +613,7 @@ def test_cross_asset_btc_strict_degraded_and_d3_block_exit_codes(
     monkeypatch,
     capsys,
 ) -> None:
-    from trade_py.data.market.cross_asset import service as service_module
+    from trade_py.data.market.crypto import service as service_module
 
     monkeypatch.setattr(service_module, "BtcMarketDataService", _CliService)
     root = str(tmp_path)
@@ -679,6 +679,36 @@ def test_compatibility_fetch_and_scheduled_job_fail_on_unpublished_btc(
         cross_asset_module.fetch_btc(str(tmp_path))
 
     with pytest.raises(RuntimeError, match="未发布"):
+        _job_crypto_btc_fetch(str(tmp_path))
+
+    from trade_py.jobs import JobQualityWarning
+
+    _CliService.sync_payload = {
+        "mode": "sync",
+        "data_readiness": "degraded",
+        "run_id": "pilot-pending",
+        "published": False,
+        "staged": {"run_id": "pilot-pending"},
+        "gates": [
+            {
+                "gate": gate,
+                "status": "fail" if gate == "D1" else "pass",
+                "reason_code": (
+                    "ACQUISITION_STABILITY_INSUFFICIENT" if gate == "D1" else "PASS"
+                ),
+                "metrics": (
+                    {
+                        "successful_acquisition_days": 2,
+                        "required_successful_acquisition_days": 29,
+                    }
+                    if gate == "D1"
+                    else {}
+                ),
+            }
+            for gate in ("D0", "D1", "D2", "D3", "D4")
+        ],
+    }
+    with pytest.raises(JobQualityWarning, match="qualified_days=2/29"):
         _job_crypto_btc_fetch(str(tmp_path))
     assert JOB_REGISTRY["crypto_btc_fetch"].schedule == ["daily 09:00"]
 

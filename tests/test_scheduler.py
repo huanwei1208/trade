@@ -26,10 +26,10 @@ def test_describe_schedule_exposes_morning_evening_and_agenda_jobs(tmp_path) -> 
     assert by_topic["gate.crypto_daily"]["time"] == "09:00"
     assert by_topic["gate.crypto_daily"]["timezone"] == "Asia/Shanghai"
     assert by_topic["gate.crypto_daily"]["trading_day_only"] is False
-    dag_source = db._conn.execute(
-        "SELECT source FROM pipeline_dag WHERE job_name='cross_asset_fetch' AND enabled=1"
+    legacy_enabled = db._conn.execute(
+        "SELECT enabled FROM pipeline_dag WHERE job_name='cross_asset_fetch'"
     ).fetchone()
-    assert dag_source[0] == "gate.morning"
+    assert legacy_enabled[0] == 0
     crypto_source = db._conn.execute(
         "SELECT source FROM pipeline_dag WHERE job_name='crypto_btc_fetch' AND enabled=1"
     ).fetchone()

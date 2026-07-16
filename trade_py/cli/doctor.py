@@ -137,8 +137,14 @@ def run_doctor(argv: list[str] | None = None) -> int:
         if crypto_missing:
             if report["status"] != "fail":
                 report["status"] = "warn"
-            report["issues"].append(f"Crypto data missing: {', '.join(crypto_missing)} (run `trade data sync --crypto`)")
-            report["recovery_actions"].append("trade data sync --crypto")
+            report["issues"].append(
+                f"Crypto data missing: {', '.join(crypto_missing)} "
+                "(BTC uses `trade data btc`; other assets use `trade data sync --crypto`)"
+            )
+            if any("btc" in str(item).lower() for item in crypto_missing):
+                report["recovery_actions"].append("trade data btc --strict")
+            if any("btc" not in str(item).lower() for item in crypto_missing):
+                report["recovery_actions"].append("trade data sync --crypto")
         if crypto_stale:
             if report["status"] != "fail":
                 report["status"] = "warn"

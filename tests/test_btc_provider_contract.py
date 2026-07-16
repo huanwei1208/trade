@@ -172,7 +172,7 @@ def test_binance_shadow_provider_returns_full_ohlcv():
     assert not capture.frame[["open", "high", "low", "close"]].isna().any().any()
     assert capture.frame["close"].tolist() == [60750.0, 61600.0, 61700.0]
     # Binance returns closed candles; is_final is determined by bar close time < fetched_at
-    assert len(capture.final_rows) >= 2
+    assert capture.frame["is_final"].tolist() == [True, True, False]
 
 
 def test_binance_normalizer_rejects_non_sequence_payload():

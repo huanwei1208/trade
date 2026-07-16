@@ -256,7 +256,7 @@ def _read_records_file(path: str | Path) -> list[dict]:
 
 
 def make_parser() -> argparse.ArgumentParser:
-    from trade_py.cli import epilog_from_subparsers, global_flag_parent
+    from trade_py.cli import global_flag_parent
 
     defaults = _kline_defaults()
 
@@ -265,11 +265,26 @@ def make_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="trade data",
-        description="数据采集 — K线/情绪/跨资产/资金流/财务/北向/指数/宏观/新闻/仓库/实时/BTC",
+        description="数据操作 — 快速状态、显式更新 profile、分层只读检查",
+        epilog=(
+            "常用:\n"
+            "  trade data                         # 快速只读状态\n"
+            "  trade data update core            # 核心结构化数据增量更新\n"
+            "  trade data update crypto --dry-run # 预览 BTC + 非 BTC 更新\n"
+            "  trade data check                   # 标准只读检查\n"
+            "  trade data check --full            # 显式全量值检查\n\n"
+            "高级兼容命令仍可执行；运行 `trade data --help-all` 查看列表。"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[global_flag_parent()],
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--help-all", action="store_true", help="列出高级兼容命令")
+    sub = parser.add_subparsers(
+        dest="command",
+        required=False,
+        metavar="{status,update,check}",
+        title="主要命令",
+    )
 
     sub.add_parser(
         "sentiment",
@@ -288,7 +303,8 @@ def make_parser() -> argparse.ArgumentParser:
 
     p_data_status = sub.add_parser(
         "status",
-        description="显示数据层完整性/时效性/覆盖率状态",
+        help="快速、只读、元数据级状态",
+        description="快速读取现有 DB/manifest/文件元数据；不建目录、不迁移、不扫数据行",
         epilog=(
             "trade data status\n"
             "trade data status --json\n"
@@ -298,8 +314,31 @@ def make_parser() -> argparse.ArgumentParser:
     )
     p_data_status.add_argument("--data-root", default=str(default_data_root()))
     p_data_status.add_argument("--json", action="store_true", dest="as_json")
-    p_data_status.add_argument("--limit", type=int, default=10, help="Missing/stale samples to show")
-    p_data_status.add_argument("--strict", action="store_true", help="Exit non-zero when the aggregate quality gate is not pass")
+    p_data_status.add_argument("--detail", action="store_true", help="显示 profile step 元数据")
+    p_data_status.add_argument("--limit", type=int, default=10, help=argparse.SUPPRESS)
+    p_data_status.add_argument("--strict", action="store_true", help=argparse.SUPPRESS)
+
+    p_update = sub.add_parser(
+        "update",
+        help="按显式 profile 顺序增量更新",
+        description="更新结构化数据；失败默认停止，不触发模型、推荐或交易决策",
+    )
+    p_update.add_argument("profile", nargs="?", choices=["core", "crypto", "all"], default="core")
+    p_update.add_argument("--data-root", default=str(default_data_root()))
+    p_update.add_argument("--dry-run", action="store_true", help="只打印精确步骤，零写入")
+    p_update.add_argument("--keep-going", action="store_true", help="诊断模式：失败后继续，最终仍失败")
+    p_update.add_argument("--json", action="store_true", dest="as_json")
+
+    p_check = sub.add_parser(
+        "check",
+        help="只读结构/质量检查",
+        description="标准检查只读 footer/schema；--full 额外扫描数据值",
+    )
+    p_check.add_argument("--profile", choices=["core", "crypto", "all"], default="all")
+    p_check.add_argument("--data-root", default=str(default_data_root()))
+    p_check.add_argument("--full", action="store_true", help="增加值质量扫描（显式慢路径）")
+    p_check.add_argument("--detail", action="store_true", help="显示全部检查项")
+    p_check.add_argument("--json", action="store_true", dest="as_json")
 
     p_backfill = sub.add_parser(
         "backfill",
@@ -395,13 +434,13 @@ def make_parser() -> argparse.ArgumentParser:
         "sync",
         description=(
             "统一资产数据同步 (meta驱动, 批量ingest, QPS控制, watermark增量).\n"
-            "Supported asset classes: crypto (BTC/ETH/SOL/BNB/XRP + Fear&Greed), "
+            "Supported asset classes: crypto (ETH/SOL/BNB/XRP; BTC uses its assurance flow), "
             "fx (USD/CNH), commodity (gold); stock coming in a future release."
         ),
         epilog=(
             "trade data sync                     # Sync all enabled assets\n"
-            "trade data sync --crypto            # Sync only crypto (BTC, ETH, SOL, BNB, XRP, fear_greed)\n"
-            "trade data sync --symbols BTC,ETH   # Sync specific crypto symbols\n"
+            "trade data sync --crypto            # Sync generic crypto (ETH, SOL, BNB, XRP)\n"
+            "trade data sync --symbols ETH,SOL   # Sync specific generic crypto symbols\n"
             "trade data sync --full-refresh      # Ignore watermark, full history backfill\n"
             "trade data sync --class commodity,fx # Sync gold and USD/CNH only\n"
             "trade data btc                      # Run BTC assurance flow (primary+shadow+D3 gate)\n"
@@ -410,7 +449,7 @@ def make_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_sync_unified.add_argument("--data-root", default=str(default_data_root()))
-    p_sync_unified.add_argument("--crypto", action="store_true", help="Only sync crypto assets (BTC/ETH/SOL/BNB/XRP + Fear&Greed) — shorthand for --class crypto")
+    p_sync_unified.add_argument("--crypto", action="store_true", help="Sync generic crypto assets (ETH/SOL/BNB/XRP); BTC uses `trade data btc`")
     p_sync_unified.add_argument("--class", dest="asset_class", default=None,
                                 help="Comma-separated asset classes to sync: crypto,fx,commodity (stock future)")
     p_sync_unified.add_argument("--symbols", default=None, help="Comma-separated symbols to sync")
@@ -750,8 +789,21 @@ def make_parser() -> argparse.ArgumentParser:
     p_cov.add_argument("--data-root", default=str(default_data_root()))
     p_cov.add_argument("--json", action="store_true", dest="as_json")
 
-    parser.epilog = epilog_from_subparsers(parser)
     return parser
+
+
+def _print_advanced_help(parser: argparse.ArgumentParser) -> None:
+    subparsers = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    primary = {"status", "update", "check"}
+    names = sorted({
+        *(name for name in subparsers.choices if name not in primary),
+        "cross-asset btc",
+    })
+    print("高级兼容命令（接口与原参数保持可执行）:")
+    print("  " + "  ".join(names))
+    print("使用 `trade data <命令> --help` 查看详细参数。")
 
 
 def _dispatch_sync(args) -> int:
@@ -1617,6 +1669,10 @@ def _cmd_coverage(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv or []
+    # Preserve the removed two-level compatibility spelling without exposing it
+    # in primary argparse help. Its behavior is exactly the canonical BTC flow.
+    if len(argv) >= 2 and argv[0] == "cross-asset" and argv[1] == "btc":
+        argv = ["btc", *argv[2:]]
     if argv and argv[0] == "sentiment":
         from trade_py.cli._sentiment import main as sentiment_main
         sentiment_argv = argv[1:]
@@ -1639,48 +1695,47 @@ def main(argv: list[str] | None = None) -> int:
 
         return _track_data_run(data_root, job_name, _run_sentiment, stage=stage)
 
-    args = make_parser().parse_args(argv)
+    parser = make_parser()
+    args = parser.parse_args(argv)
 
-    if args.command == "status":
-        _depr_warn("status", "trade status data")
-        from trade_py.utils.data_inspector import build_status_lines, get_data_status
+    if args.help_all:
+        _print_advanced_help(parser)
+        return 0
 
-        status = get_data_status(args.data_root, sample_limit=args.limit, include_value_quality=True)
-        if args.as_json:
-            print(json.dumps(status, ensure_ascii=False, indent=2))
-            return _data_status_exit_code(status, strict=args.strict)
+    if args.command in {None, "status"}:
+        from trade_py.data.operations import read_status
+        from trade_py.data.operations.cli import print_status
 
-        for line in build_status_lines(status):
-            print(line)
+        data_root = getattr(args, "data_root", str(default_data_root()))
+        return print_status(
+            read_status(data_root),
+            as_json=bool(getattr(args, "as_json", False)),
+            detail=bool(getattr(args, "detail", False)),
+        )
 
-        coverage = status.get("kline_coverage", {})
-        if coverage.get("missing_sample"):
-            print("### 缺失 K线样例")
-            for symbol in coverage["missing_sample"]:
-                print(f"- {symbol}")
-            print()
-        if coverage.get("suspicious_sample"):
-            print("### 可疑 suffix 样例")
-            for symbol in coverage["suspicious_sample"]:
-                print(f"- {symbol}")
-            print()
+    if args.command == "update":
+        from trade_py.data.operations import run_update
+        from trade_py.data.operations.cli import print_update
 
-        freshness = status.get("kline_freshness", {})
-        stale_sample = [
-            row for row in freshness.get("stale_sample", [])
-            if int(str(row.get("stale_days", "0"))) >= 1
-        ]
-        if stale_sample:
-            print("### 滞后样例")
-            print(f"{'symbol':<12} {'watermark':<12} {'last_download':<12} {'stale_days':>10}")
-            print("-" * 56)
-            for row in stale_sample:
-                print(
-                    f"{row['symbol']:<12} {row['watermark']:<12} {row['last_download']:<12} "
-                    f"{row['stale_days']:>10}"
-                )
-            print()
-        return _data_status_exit_code(status, strict=args.strict)
+        return print_update(
+            run_update(
+                args.data_root,
+                args.profile,
+                dry_run=args.dry_run,
+                keep_going=args.keep_going,
+            ),
+            as_json=args.as_json,
+        )
+
+    if args.command == "check":
+        from trade_py.data.operations import run_check
+        from trade_py.data.operations.cli import print_check
+
+        return print_check(
+            run_check(args.data_root, profile_name=args.profile, full=args.full),
+            as_json=args.as_json,
+            detail=args.detail,
+        )
 
     if args.command == "sync":
         return _dispatch_sync(args)

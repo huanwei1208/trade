@@ -8,6 +8,7 @@ Invariant: versions are applied in ascending order, at most once.
 from __future__ import annotations
 
 import logging
+import json
 import sqlite3
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ def _col_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
 # Version 10: UI snapshot cache + remove legacy brief DAG/settings
 # Version 12: disable legacy sentiment_pipeline + event_pipeline DAG rows
 # Version 17: add dedicated post-UTC-close BTC acquisition and validation DAG rows
+# Version 22: enforce one canonical BTC writer and non-BTC generic crypto ingest
 
 MIGRATIONS: list[tuple[int, str]] = [
     (2, "DROP TABLE IF EXISTS macro_events;"),
@@ -936,9 +938,9 @@ def _migrate_v19(conn: sqlite3.Connection) -> None:
     """Update DAG to use meta-driven asset_batch_ingest instead of hardcoded BTC job."""
     if not _table_exists(conn, "pipeline_dag"):
         return
-    # Update existing crypto_btc_fetch row to route to generic ingest
+    # Keep BTC on its dedicated assurance-gated writer.
     conn.execute(
-        "UPDATE pipeline_dag SET description='通用资产批量采集 (BTC legacy)' WHERE job_name='crypto_btc_fetch'"
+        "UPDATE pipeline_dag SET description='BTC assurance-gated UTC 日线同步' WHERE job_name='crypto_btc_fetch'"
     )
     # Disable legacy cross_asset_fetch, use meta-driven instead
     conn.execute(
@@ -997,8 +999,8 @@ def _migrate_v19(conn: sqlite3.Connection) -> None:
                 "asset_batch_ingest",
                 "data.batch.completed",
                 1,
-                "Crypto 资产批量采集 (BTC/ETH/SOL/BNB/XRP)",
-                '{"asset_class": "crypto"}',
+                "Crypto 非 BTC 资产批量采集 (ETH/SOL/BNB/XRP)",
+                '{"asset_class": "crypto", "exclude_symbols": ["BTC"]}',
             ),
         )
     conn.commit()
@@ -1123,6 +1125,54 @@ def _migrate_v21(conn: sqlite3.Connection) -> None:
     # handlers as succeeded. We can't know the exact handler set at the time,
     # so we leave already-completed events alone — only 'pending' or 'error'
     # events will be re-evaluated through the new dispatch logic on replay.
+    conn.commit()
+
+
+def _migrate_v22(conn: sqlite3.Connection) -> None:
+    """Make BTC ownership explicit and exclude it from generic crypto ingest."""
+    if _table_exists(conn, "pipeline_dag"):
+        rows = conn.execute(
+            "SELECT id, config_json FROM pipeline_dag WHERE job_name='asset_batch_ingest'"
+        ).fetchall()
+        for dag_id, raw_config in rows:
+            try:
+                config = json.loads(raw_config or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(config, dict) or config.get("asset_class") != "crypto":
+                continue
+            excluded = {
+                str(symbol).strip().upper()
+                for symbol in config.get("exclude_symbols", [])
+                if str(symbol).strip()
+            }
+            excluded.add("BTC")
+            config["exclude_symbols"] = sorted(excluded)
+            conn.execute(
+                "UPDATE pipeline_dag SET config_json=?, description=? WHERE id=?",
+                (
+                    json.dumps(config, ensure_ascii=False, sort_keys=True),
+                    "Crypto 非 BTC 资产批量采集 (ETH/SOL/BNB/XRP)",
+                    int(dag_id),
+                ),
+            )
+
+    if _table_exists(conn, "asset_registry"):
+        rows = conn.execute(
+            "SELECT asset_id, config_json FROM asset_registry WHERE lower(asset_id)='crypto.btc'"
+        ).fetchall()
+        for asset_id, raw_config in rows:
+            try:
+                config = json.loads(raw_config or "{}")
+            except (TypeError, ValueError):
+                config = {}
+            if not isinstance(config, dict):
+                config = {}
+            config["canonical_writer"] = "btc_assurance"
+            conn.execute(
+                "UPDATE asset_registry SET config_json=?, updated_at=CURRENT_TIMESTAMP WHERE asset_id=?",
+                (json.dumps(config, ensure_ascii=False, sort_keys=True), asset_id),
+            )
     conn.commit()
 
 
@@ -1370,4 +1420,16 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v21 applied")
         except Exception as exc:
             logger.error("Migration v21 failed: %s", exc)
+            raise
+
+    # ── v22: single canonical BTC writer ────────────────────────────────────
+    if 22 not in applied:
+        logger.info("Applying DB migration v22 (single canonical BTC writer)")
+        try:
+            _migrate_v22(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (22)")
+            conn.commit()
+            logger.info("Migration v22 applied")
+        except Exception as exc:
+            logger.error("Migration v22 failed: %s", exc)
             raise

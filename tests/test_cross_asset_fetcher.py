@@ -53,4 +53,4 @@ def test_fetch_fx_cnh_validates_and_writes_ohlc(tmp_path, monkeypatch) -> None:
     frame = cross_asset.fetch_fx_cnh(str(tmp_path))
 
     assert frame["close"].tolist() == [7.22]
-    assert (tmp_path / "market" / "cross_asset" / "fx_cnh.parquet").exists()
+    assert (tmp_path / "market" / "fx" / "usdcnh.parquet").exists()
