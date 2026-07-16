@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from trade_py.infra.settings import default_data_root
-from trade_py.data.account.repository import AccountRepository
-from trade_py.data.account.service import AccountService
-from trade_py.db.trade_db import TradeDB
+from trade_py.infra.settings.context import default_data_root
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -126,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "suggest":
         from trade_py.db.settings_db import SettingsDB
+        from trade_py.db.trade_db import TradeDB
         from trade_py.data.market.index.tushare import SW_SECTOR_INDICES
         db = SettingsDB(args.data_root)
         gate_db = TradeDB(args.data_root)

@@ -11,17 +11,14 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
-from trade_py.infra.settings import default_data_root
-from trade_py.db.trade_db import TradeDB
-from trade_py.evaluation.service import (
-    EvalOutcome,
-    evaluate_daily,
-    evaluate_events,
-    evaluate_gate,
-    evaluate_models,
-    evaluate_sources,
-)
+from trade_py.infra.settings.context import default_data_root
+
+if TYPE_CHECKING:
+    from trade_py.evaluation.service import EvalOutcome
+else:
+    EvalOutcome = Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +33,7 @@ class EvalRunResult:
 
 
 def _track_eval_run(data_root: str, job_name: str, runner, *, stage: str = "compute") -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(data_root)
     run_id = db.job_run_start(job_name, stage=stage)
     started = time.time()
@@ -195,12 +193,20 @@ def _render_gate(outcome: EvalOutcome, *, as_json: bool = False) -> None:
                 print(f"  {key}: {value}")
 
 
-def make_parser() -> argparse.ArgumentParser:
+def make_parser(
+    *,
+    prog: str = "trade evaluate",
+    deprecated: bool = True,
+) -> argparse.ArgumentParser:
     from trade_py.cli import epilog_from_subparsers, global_flag_parent
 
     parser = argparse.ArgumentParser(
-        prog="trade evaluate",
-        description="[DEPRECATED] 评估层与质量门禁 — 请使用 `trade research evaluate`",
+        prog=prog,
+        description=(
+            "[DEPRECATED] 评估层与质量门禁 — 请使用 `trade research evaluate`"
+            if deprecated
+            else "评估层与质量门禁"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[global_flag_parent()],
     )
@@ -269,16 +275,27 @@ def make_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    msg = (
-        "DeprecationWarning: 'trade evaluate' is deprecated; "
-        "use 'trade research evaluate' instead."
-    )
-    print(msg, file=sys.stderr)
+def main(
+    argv: list[str] | None = None,
+    *,
+    deprecated: bool = True,
+    prog: str | None = None,
+) -> int:
+    if deprecated:
+        msg = (
+            "DeprecationWarning: 'trade evaluate' is deprecated; "
+            "use 'trade research evaluate' instead."
+        )
+        print(msg, file=sys.stderr)
 
-    args = make_parser().parse_args(argv)
+    args = make_parser(
+        prog=prog or "trade evaluate",
+        deprecated=deprecated,
+    ).parse_args(argv)
 
     if args.command == "daily":
+        from trade_py.evaluation.service import evaluate_daily
+
         def _runner() -> EvalRunResult:
             outcome = evaluate_daily(
                 args.data_root,
@@ -295,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
         return _track_eval_run(args.data_root, "evaluate_daily", _runner)
 
     if args.command == "source":
+        from trade_py.evaluation.service import evaluate_sources
+
         def _runner() -> EvalRunResult:
             outcome = evaluate_sources(
                 args.data_root,
@@ -308,6 +327,8 @@ def main(argv: list[str] | None = None) -> int:
         return _track_eval_run(args.data_root, "evaluate_source", _runner)
 
     if args.command == "event":
+        from trade_py.evaluation.service import evaluate_events
+
         def _runner() -> EvalRunResult:
             outcome = evaluate_events(
                 args.data_root,
@@ -321,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
         return _track_eval_run(args.data_root, "evaluate_event", _runner)
 
     if args.command == "model":
+        from trade_py.evaluation.service import evaluate_models
+
         def _runner() -> EvalRunResult:
             outcome = evaluate_models(
                 args.data_root,
@@ -334,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
         return _track_eval_run(args.data_root, "evaluate_model", _runner, stage="train")
 
     if args.command == "gate":
+        from trade_py.evaluation.service import evaluate_gate
+
         def _runner() -> EvalRunResult:
             outcome = evaluate_gate(
                 args.data_root,

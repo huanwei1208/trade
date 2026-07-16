@@ -18,9 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from trade_py.infra.settings import default_data_root, load_defaults
-from trade_py.data.market.kline import KlineSyncOptions, KlineSyncService
-from trade_py.db.settings_db import SettingsDB
+from trade_py.infra.settings.context import default_data_root
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +153,7 @@ def _track_data_run(
     *,
     stage: str = "fetch",
 ) -> int:
+    from trade_py.db.settings_db import SettingsDB
     db = SettingsDB(data_root)
     run_id = db.job_run_start(job_name, stage=stage)
     started = time.time()
@@ -193,6 +192,8 @@ def _track_data_run(
 
 
 def _kline_defaults() -> dict:
+    from trade_py.infra.settings.defaults import load_defaults
+
     all_defaults = load_defaults()
     defaults = all_defaults.get("kline", {}) if isinstance(all_defaults, dict) else {}
     return defaults if isinstance(defaults, dict) else {}
@@ -202,6 +203,8 @@ def _resolve_kline_start(data_root: str, explicit_start: str | None, fallback: s
     if explicit_start:
         return explicit_start
     resolved_fallback = str(fallback or "2024-01-01")
+    from trade_py.db.settings_db import SettingsDB
+
     try:
         value = SettingsDB(data_root).get("kline.start", resolved_fallback)
         return str(value or resolved_fallback)
@@ -2390,6 +2393,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "kline":
+        from trade_py.data.market.kline import KlineSyncOptions, KlineSyncService
         service = KlineSyncService(args.data_root)
         if args.kline_cmd == "sync":
             def _run_kline_sync() -> DataRunResult:

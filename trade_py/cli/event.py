@@ -15,8 +15,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from trade_py.cli import global_flag_parent
-from trade_py.infra.settings import default_data_root
-from trade_py.jobs import JOB_REGISTRY, run_job
+from trade_py.infra.settings.context import default_data_root
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +89,7 @@ def _track_event_run(
 
 
 def make_parser() -> argparse.ArgumentParser:
+    from trade_py.jobs import JOB_REGISTRY
     parser = argparse.ArgumentParser(
         prog="trade event",
         description="事件控制平面 — 触发/运行/同步/新建/重建/回填 (list/runs/dag 已移至 show; enable/disable 已移至 config dag)",
@@ -222,6 +222,7 @@ def _cmd_trigger(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    from trade_py.jobs import run_job
     print(f"Running job: {args.job} ...")
     try:
         result = run_job(args.job, args.data_root)

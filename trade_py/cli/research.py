@@ -83,14 +83,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.group == "model":
         from trade_py.cli import model as model_cli
-        return model_cli.main(rest)
+        return model_cli.main(
+            rest,
+            deprecated=False,
+            prog="trade research model",
+        )
 
     if args.group == "factor":
         from trade_py.cli import factor as factor_cli
-        return factor_cli.main(rest)
+        return factor_cli.main(
+            rest,
+            deprecated=False,
+            prog="trade research factor",
+        )
 
     if args.group == "evaluate":
         from trade_py.cli import evaluate as eval_cli
-        return eval_cli.main(rest)
+        return eval_cli.main(
+            rest,
+            deprecated=False,
+            prog="trade research evaluate",
+        )
 
     return 1

@@ -8,8 +8,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from trade_py.analysis.factor_evaluation import factor_metrics, factor_status
-from trade_py.infra.settings import default_data_root
+from trade_py.infra.settings.context import default_data_root
 
 
 def _print_factor_rows(rows: list[dict], *, limit: int) -> None:
@@ -33,6 +32,7 @@ def _print_factor_rows(rows: list[dict], *, limit: int) -> None:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
+    from trade_py.analysis.factor_evaluation import factor_status
     payload = factor_status(args.data_root)
     print(f"latest_date:     {payload.get('latest_date') or '—'}")
     print(f"total_rows:      {payload.get('total_rows', 0)}")
@@ -58,6 +58,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_evaluate(args: argparse.Namespace) -> int:
+    from trade_py.analysis.factor_evaluation import factor_metrics
     rows = factor_metrics(
         args.data_root,
         target=args.target,
@@ -70,12 +71,20 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
-def make_parser() -> argparse.ArgumentParser:
+def make_parser(
+    *,
+    prog: str = "trade factor",
+    deprecated: bool = True,
+) -> argparse.ArgumentParser:
     from trade_py.cli import epilog_from_subparsers, global_flag_parent
 
     parser = argparse.ArgumentParser(
-        prog="trade factor",
-        description="[DEPRECATED] 因子仓与因子评估 — 请使用 `trade research factor`",
+        prog=prog,
+        description=(
+            "[DEPRECATED] 因子仓与因子评估 — 请使用 `trade research factor`"
+            if deprecated
+            else "因子仓与因子评估"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[global_flag_parent()],
     )
@@ -125,14 +134,23 @@ def make_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    msg = (
-        "DeprecationWarning: 'trade factor' is deprecated; "
-        "use 'trade research factor' instead."
-    )
-    print(msg, file=sys.stderr)
+def main(
+    argv: list[str] | None = None,
+    *,
+    deprecated: bool = True,
+    prog: str | None = None,
+) -> int:
+    if deprecated:
+        msg = (
+            "DeprecationWarning: 'trade factor' is deprecated; "
+            "use 'trade research factor' instead."
+        )
+        print(msg, file=sys.stderr)
 
-    args = make_parser().parse_args(argv or [])
+    args = make_parser(
+        prog=prog or "trade factor",
+        deprecated=deprecated,
+    ).parse_args(argv or [])
     if args.command == "status":
         return _cmd_status(args)
     if args.command in {"evaluate", "ic"}:

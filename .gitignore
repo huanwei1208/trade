@@ -9,6 +9,7 @@ vcpkg_installed/
 # IDE
 .vscode/
 .idea/
+.nvim/
 *.swp
 *.swo
 *~
@@ -27,6 +28,11 @@ catboost_info/
 # Data (generated, too large for git) — root-level only, not python/trade_py/data/
 /data/
 /data_archive/
+/trade_py/data/.db/
+/trade_py/data/market/cross_asset/*.parquet
+
+# Local type-checker experiments (not a project validation gate)
+/pyrightconfig.json
 
 # Notebooks checkpoints
 .ipynb_checkpoints/

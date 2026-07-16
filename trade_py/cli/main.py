@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-import argparse
-import logging
 import sys
+
+# Direct ``python trade_py/cli/main.py`` execution otherwise puts this directory
+# first on sys.path, where cli/inspect.py shadows the standard-library module.
+if __package__ in {None, ""}:
+    _script_dir = sys.path.pop(0)
+    sys.path.insert(0, _script_dir.rsplit("/trade_py/cli", 1)[0])
+
+import argparse
+import importlib
+import logging
 
 
 def _setup_logging(verbose: bool = False, quiet: bool = False) -> None:
@@ -62,42 +70,44 @@ _HIDDEN_ALIASES: dict[str, tuple[str, str | None]] = {
 _LEGACY_DOMAINS = {"daily", "ops", "account", "model", "factor", "evaluate"}
 
 
-def main(argv: list[str] | None = None) -> int:
-    from trade_py.cli import data, start, web, kg, run, status, backup, config, event, dev, show, research
-    from trade_py.cli import daily, ops, account, model, factor, evaluate, inspect, doctor
+def _import_domain(name: str):
+    """Import only the CLI domain selected by the user."""
+    return importlib.import_module(f"trade_py.cli.{name}")
 
+
+def main(argv: list[str] | None = None) -> int:
     # The 10 canonical (visible) domains
     canonical_domains = [
         # Trigger / run
-        ("run",     run,     "统一触发入口 (DAG / daily 流水线 / agenda / job / belief / recommend / picks)"),
-        ("status",  status,  "统一健康/新鲜度仪表盘 (综合体检 / data / jobs / freshness)"),
+        ("run",     "run",     "统一触发入口 (DAG / daily 流水线 / agenda / job / belief / recommend / picks)"),
+        ("status",  "status",  "统一健康/新鲜度仪表盘 (综合体检 / data / jobs / freshness)"),
         # Data plane
-        ("data",    data,    "数据采集 — K线/资金流/财务/北向/指数/宏观/新闻/仓库/实时/BTC"),
+        ("data",    "data",    "数据采集 — K线/资金流/财务/北向/指数/宏观/新闻/仓库/实时/BTC"),
         # Show (read-only views)
-        ("show",    show,    "只读视图 — dag/calendar/agenda/events/runs/backups/内部调试转储"),
+        ("show",    "show",    "只读视图 — dag/calendar/agenda/events/runs/backups/内部调试转储"),
         # Research
-        ("research",research,"研究/建模/评估 — model + factor + evaluate 统一入口"),
-        ("kg",      kg,      "Learned KG 候选边学习/审核/上线"),
+        ("research", "research", "研究/建模/评估 — model + factor + evaluate 统一入口"),
+        ("kg",      "kg",      "Learned KG 候选边学习/审核/上线"),
         # System config / control
-        ("config",  config,  "统一配置管理 — 数据源/密钥/路径/DAG开关/自选股/备份"),
-        ("event",   event,   "事件控制平面 — 触发/运行/同步/新建/重建/回填"),
-        ("backup",  backup,  "TradeDB 备份与恢复"),
+        ("config",  "config",  "统一配置管理 — 数据源/密钥/路径/DAG开关/自选股/备份"),
+        ("event",   "event",   "事件控制平面 — 触发/运行/同步/新建/重建/回填"),
+        ("backup",  "backup",  "TradeDB 备份与恢复"),
         # Daemon / web / dev
-        ("start",   start,   "启动 EventBus daemon"),
-        ("web",     web,     "启动 Web Console (FastAPI + React)"),
-        ("dev",     dev,     "[内部] 开发调试工具"),
+        ("start",   "start",   "启动 EventBus daemon"),
+        ("web",     "web",     "启动 Web Console (FastAPI + React)"),
+        ("dev",     "dev",     "[内部] 开发调试工具"),
     ]
 
     # Legacy shim domains (hidden from help, still dispatchable)
     legacy_domains = [
-        ("doctor",   doctor,   "[hidden] alias for status"),
-        ("inspect",  inspect,  "[hidden] alias for show"),
-        ("daily",    daily,    "[hidden] deprecated; use run/status"),
-        ("ops",      ops,      "[hidden] deprecated; use status/run/show"),
-        ("account",  account,  "[hidden] deprecated; use config watch / show picks"),
-        ("model",    model,    "[hidden] deprecated; use research model"),
-        ("factor",   factor,   "[hidden] deprecated; use research factor"),
-        ("evaluate", evaluate, "[hidden] deprecated; use research evaluate"),
+        ("doctor",   "doctor",   "[hidden] alias for status"),
+        ("inspect",  "inspect",  "[hidden] alias for show"),
+        ("daily",    "daily",    "[hidden] deprecated; use run/status"),
+        ("ops",      "ops",      "[hidden] deprecated; use status/run/show"),
+        ("account",  "account",  "[hidden] deprecated; use config watch / show picks"),
+        ("model",    "model",    "[hidden] deprecated; use research model"),
+        ("factor",   "factor",   "[hidden] deprecated; use research factor"),
+        ("evaluate", "evaluate", "[hidden] deprecated; use research evaluate"),
     ]
 
     domains = canonical_domains + legacy_domains
@@ -137,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(verbose=verbose, quiet=quiet)
 
     # Build dispatch map from all domains
-    dispatch = {name: mod for name, mod, _desc in domains}
+    dispatch = {name: module_name for name, module_name, _desc in domains}
 
     # Handle hidden alias remapping (for doctor/inspect → status/show)
     if args.domain in _HIDDEN_ALIASES:
@@ -146,12 +156,12 @@ def main(argv: list[str] | None = None) -> int:
             print(msg, file=sys.stderr)
         if target.startswith("__") and target.endswith("_shim__"):
             # Dispatch to the legacy module (it prints its own deprecation)
-            return dispatch[args.domain].main(args.args)
+            return _import_domain(dispatch[args.domain]).main(args.args)
         else:
             # Forward to the new canonical module directly (avoid double-warning)
-            return dispatch[target].main(args.args)
+            return _import_domain(dispatch[target]).main(args.args)
 
-    return dispatch[args.domain].main(args.args)
+    return _import_domain(dispatch[args.domain]).main(args.args)
 
 
 if __name__ == "__main__":

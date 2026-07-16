@@ -6,7 +6,13 @@ from trade_py.infra.settings.context import (
     get_config_context,
     resolve_repo_path,
 )
-from trade_py.infra.settings.defaults import load_defaults
+
+
+def load_defaults(path=None):
+    """Load persisted defaults without importing the database on package import."""
+    from trade_py.infra.settings.defaults import load_defaults as _load_defaults
+
+    return _load_defaults(path)
 
 __all__ = [
     "ConfigContext",

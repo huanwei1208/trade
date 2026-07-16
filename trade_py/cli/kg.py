@@ -6,9 +6,14 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from trade_py.infra.settings import default_data_root
-from trade_py.db.trade_db import TradeDB
+from trade_py.infra.settings.context import default_data_root
+
+if TYPE_CHECKING:
+    from trade_py.db.trade_db import TradeDB
+else:
+    TradeDB = Any
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +34,7 @@ def _track_kg_run(
     *,
     stage: str = "train",
 ) -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(data_root)
     run_id = db.job_run_start(job_name, stage=stage)
     started = time.time()
@@ -266,6 +272,7 @@ def _print_candidate_table(rows: list[dict]) -> None:
 
 
 def _cmd_candidates(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     status = None if args.status == "all" else args.status
     rows = db.kg_candidates(
@@ -284,6 +291,7 @@ def _cmd_candidates(args: argparse.Namespace) -> int:
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     from trade_py.analysis.knowledge_graph import SectorGraph
 
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     active_summary = db._conn.execute(
         """
@@ -368,6 +376,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
 
 
 def _cmd_review(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     rows = _candidate_rows_for_review(
         db,
@@ -388,6 +397,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
 
 def _cmd_approve(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     changed = db.kg_candidate_review(
         args.ids,
@@ -401,6 +411,7 @@ def _cmd_approve(args: argparse.Namespace) -> int:
 
 
 def _cmd_reject(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     changed = db.kg_candidate_review(
         args.ids,
@@ -413,6 +424,7 @@ def _cmd_reject(args: argparse.Namespace) -> int:
 
 
 def _cmd_promote(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     candidate_ids = list(args.ids or [])
     if not candidate_ids and (args.batch or args.rel_type or args.source_prefix):
@@ -444,6 +456,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
 
 
 def _cmd_relations(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     rows = db.kg_relations_list(
         limit=args.limit,
@@ -467,6 +480,7 @@ def _cmd_relations(args: argparse.Namespace) -> int:
 
 
 def _cmd_disable(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     changed = db.kg_relation_disable(args.from_entity, args.to_entity, args.rel_type)
     if changed:
@@ -479,6 +493,7 @@ def _cmd_disable(args: argparse.Namespace) -> int:
 
 
 def _cmd_nodes(args: argparse.Namespace) -> int:
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     rows = db.kg_nodes_list(
         limit=args.limit,
@@ -503,6 +518,7 @@ def _cmd_nodes(args: argparse.Namespace) -> int:
 def _cmd_snapshot(args: argparse.Namespace) -> int:
     from trade_py.analysis.knowledge_graph import SectorGraph
 
+    from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)
     if args.build:
         db.kg_rebuild_nodes()
