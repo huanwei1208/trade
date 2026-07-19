@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 export type Locale = "zh-CN" | "en-US";
-export type PageKey = "today" | "candidates" | "symbol" | "ops" | "research" | "data";
+export type PageKey = "today" | "candidates" | "symbol" | "ops" | "research" | "data" | "observatory";
 export type ActionType = "ADD" | "PROBE" | "WATCH" | "REDUCE" | "NO_ACTION" | string;
 
 export type TrustGate = {
@@ -1386,4 +1386,353 @@ export function getDataNews(source = "", days = 3, limit = 30) {
 
 export function getDataCoverage() {
   return fetchJson<DataCoveragePayload>("/api/data/coverage");
+}
+
+// ── BTC Observatory (WP4/WP5/WP8) ────────────────────────────────────────────
+// Read-only surfaces over /api/v1/observatory/*. These types mirror the frozen
+// backend contracts (openspec/changes/btc-observatory-research-lab-v1/
+// frozen_contracts.md). Prices/volumes/ratios arrive as decimal-preserving
+// STRINGS (never floats) and nullable fields are `null` — never 0/"".
+
+export const OBS_ASSET_PATH = "crypto.BTC";
+const OBS_BASE = `/api/v1/observatory/assets/${OBS_ASSET_PATH}`;
+
+export type ObsChannel = "formal" | "evaluated_candidate" | "observed";
+export type ObsLens = "overview" | "trust" | "runs" | "research";
+export type ObsAvailabilityState = "present" | "missing" | "unobserved" | "unknown";
+export type ObsRevisionState = "unchanged" | "added" | "removed" | "changed" | "unknown";
+export type ObsRenderRole =
+  | "formal_baseline"
+  | "candidate_overlap"
+  | "candidate_only"
+  | "observed_overlap"
+  | "observed_only"
+  | null;
+
+export type ObsContract = {
+  asset_id?: string;
+  display_symbol?: string;
+  contract_version?: string;
+  primary_provider?: string;
+  primary_instrument?: string;
+  shadow_provider?: string;
+  shadow_instrument?: string;
+  quote?: string;
+  primary_interval?: string;
+  shadow_interval?: string;
+};
+
+export type ObsPurposeFitness = {
+  purpose: string;
+  allowed: boolean;
+  status?: string;
+  reason_codes?: string[];
+  evidence_refs?: string[];
+};
+
+export type ObsArtifactRef = {
+  name?: string;
+  sha256?: string;
+  relative_path?: string;
+};
+
+export type ObsExcludedDate = {
+  date?: string;
+  exclusion_reason?: string;
+  quality_flags?: string[];
+  evidence_refs?: string[];
+  marker_position?: number | null;
+};
+
+export type ObsSemanticChannelRef = {
+  run_id?: string;
+  watermark?: string | null;
+  release_id?: string | null;
+  reason_codes?: string[];
+};
+
+export type ObsContext = {
+  snapshot_id?: string;
+  resolved_channel?: string;
+  run_id?: string | null;
+  release_id?: string | null;
+  contract?: ObsContract;
+  market_watermark?: string | null;
+  input_watermarks?: Record<string, string | null>;
+  output_watermark?: string | null;
+  requested_knowledge_as_of?: string | null;
+  effective_knowledge_cut?: string | null;
+  relevant_fact_sequence?: number | null;
+  knowledge_mode?: string;
+  revision_policy?: string;
+  pit_coverage_status?: string;
+  created_at?: string | null;
+  certified_at?: string | null;
+  published_at?: string | null;
+  rendered_at?: string | null;
+  lifecycle_state?: string;
+  quality_state?: string;
+  freshness_state?: string;
+  compatibility_state?: string;
+  acquisition_state?: string;
+  purpose_fitness?: ObsPurposeFitness[];
+  artifact_refs?: ObsArtifactRef[];
+  findings_summary?: Record<string, unknown>;
+  excluded_dates?: ObsExcludedDate[];
+  reason_codes?: string[];
+  view_fingerprint?: string;
+  etag?: string;
+  evidence_coverage?: Record<string, unknown>;
+  semantic_channels?: {
+    formal?: ObsSemanticChannelRef;
+    evaluated_candidate?: ObsSemanticChannelRef;
+    observed?: ObsSemanticChannelRef;
+  };
+};
+
+export type ObsSeriesRow = {
+  date?: string;
+  open?: string | null;
+  high?: string | null;
+  low?: string | null;
+  close?: string | null;
+  volume?: string | null;
+  provider?: string | null;
+  instrument?: string | null;
+  quote?: string | null;
+  available_at?: string | null;
+  fetched_at?: string | null;
+  source_run_id?: string | null;
+  membership?: string[];
+  availability_state?: ObsAvailabilityState;
+  quality_flags?: string[];
+  revision_state?: ObsRevisionState;
+  render_role?: ObsRenderRole;
+  metrics?: Record<string, unknown>;
+};
+
+export type ObsLayer = {
+  channel?: string;
+  context?: ObsContext;
+  rows?: ObsSeriesRow[];
+} | null;
+
+export type ObsCompositeSeries = {
+  view: "composite";
+  asset_id?: string;
+  etag?: string;
+  fingerprint_basis?: string;
+  layers?: {
+    formal?: ObsLayer;
+    evaluated_candidate?: ObsLayer;
+    latest_observed?: ObsLayer;
+  };
+  reason_codes?: string[];
+  view_fingerprint?: string;
+};
+
+export type ObsSingleSeries = {
+  view: string;
+  context?: ObsContext;
+  rows?: ObsSeriesRow[];
+  pit_valid?: boolean;
+  reason_codes?: string[];
+  view_fingerprint?: string;
+  etag?: string;
+};
+
+export type ObsDateEvidence = {
+  date?: string;
+  snapshot_id?: string;
+  run_id?: string | null;
+  ohlcv?: ObsSeriesRow | null;
+  reconciliation?: Record<string, string | null> | null;
+  revision?: Record<string, string | null> | null;
+  run_lineage?: string[];
+  research_visibility?: "not_visible" | "pending" | "matured";
+  reason_codes?: string[];
+};
+
+export type ObsGate = {
+  gate?: string;
+  status?: string;
+  reason_code?: string | null;
+  detail?: string | null;
+  metrics?: Record<string, unknown> | null;
+};
+
+export type ObsFinding = {
+  finding_id?: string;
+  gate?: string;
+  severity?: string;
+  reason_code?: string | null;
+  affected_dates?: string[];
+  evidence_refs?: string[];
+};
+
+export type ObsTrust = {
+  snapshot_id?: string;
+  run_id?: string | null;
+  gates?: ObsGate[];
+  findings?: ObsFinding[];
+  acquisition_state?: string;
+  quality_state?: string;
+};
+
+export type ObsRunSummary = {
+  run_id?: string;
+  created_at?: string | null;
+  market_watermark?: string | null;
+  data_readiness?: string | null;
+  quality_state?: string;
+  lifecycle_state?: string;
+  canonical_rows?: number | null;
+};
+
+export type ObsRunsPayload = {
+  runs?: ObsRunSummary[];
+  next_cursor?: string | null;
+  catalog_fingerprint?: string;
+};
+
+export type ObsRunDetail = ObsRunSummary & {
+  acquisition_state?: string;
+  code_revision?: string | null;
+  artifact_refs?: Array<{ name?: string; sha256?: string }>;
+  gates?: ObsGate[];
+};
+
+export type ObsRunDiffSide = {
+  run_id?: string;
+  watermark?: string | null;
+  canonical_rows?: number | null;
+  canonical_hash?: string | null;
+  code_revision?: string | null;
+  config_hash?: string | null;
+  schema_hash?: string | null;
+};
+
+export type ObsRunDiff = {
+  base?: ObsRunDiffSide;
+  compare?: ObsRunDiffSide;
+  added_dates?: string[];
+  removed_dates?: string[];
+  changed_dates?: Array<{ date?: string; base_close?: string; compare_close?: string }>;
+  gate_changes?: Record<string, { base?: unknown; compare?: unknown }>;
+  code_changed?: boolean;
+  config_changed?: boolean;
+  schema_changed?: boolean;
+};
+
+export type ObsHypothesis = {
+  hypothesis_id?: string;
+  hypothesis_version?: string;
+  statement?: string;
+  directional?: boolean;
+  research_state?: string;
+  current_research_run_id?: string | null;
+};
+
+export type ObsHypothesesPayload = {
+  hypotheses?: ObsHypothesis[];
+};
+
+export type ObsResearchRun = {
+  research_run_id?: string;
+  hypothesis_id?: string;
+  hypothesis_version?: string;
+  validation_run_id?: string | null;
+  generation_id?: string | null;
+  dataset_snapshot_id?: string | null;
+  knowledge_as_of?: string | null;
+  research_state?: string;
+  is_current?: boolean;
+  metrics?: Record<string, string | null>;
+  evidence_refs?: string[];
+};
+
+export type ObsErrorPayload = {
+  reason_codes?: string[];
+  message?: string;
+  evidence_refs?: string[];
+  retryable?: boolean;
+};
+
+function obsQuery(params: Record<string, string | undefined | null>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      query.set(key, value);
+    }
+  }
+  const suffix = query.toString();
+  return suffix ? `?${suffix}` : "";
+}
+
+export function observatoryContextPath(opts: {
+  channel?: ObsChannel;
+  knowledgeAsOf?: string;
+  snapshotId?: string;
+  runId?: string;
+}): string {
+  return `${OBS_BASE}/context${obsQuery({
+    channel: opts.channel,
+    knowledge_as_of: opts.knowledgeAsOf,
+    snapshot_id: opts.snapshotId,
+    run_id: opts.runId,
+  })}`;
+}
+
+export function observatorySeriesPath(opts: {
+  view?: "composite" | ObsChannel;
+  knowledgeAsOf?: string;
+  includeQuarantined?: boolean;
+  from?: string;
+  to?: string;
+  snapshotId?: string;
+  runId?: string;
+}): string {
+  return `${OBS_BASE}/series${obsQuery({
+    view: opts.view,
+    knowledge_as_of: opts.knowledgeAsOf,
+    include_quarantined: opts.includeQuarantined ? "true" : undefined,
+    from: opts.from,
+    to: opts.to,
+    snapshot_id: opts.snapshotId,
+    run_id: opts.runId,
+  })}`;
+}
+
+export function observatoryDatePath(marketDate: string, opts: { channel?: ObsChannel; snapshotId?: string } = {}): string {
+  return `${OBS_BASE}/dates/${encodeURIComponent(marketDate)}${obsQuery({
+    channel: opts.channel,
+    snapshot_id: opts.snapshotId,
+  })}`;
+}
+
+export function observatoryTrustPath(opts: { channel?: ObsChannel; snapshotId?: string } = {}): string {
+  return `${OBS_BASE}/trust${obsQuery({ channel: opts.channel, snapshot_id: opts.snapshotId })}`;
+}
+
+export function observatoryRunsPath(opts: { cursor?: string; limit?: number } = {}): string {
+  return `${OBS_BASE}/runs${obsQuery({
+    cursor: opts.cursor,
+    limit: opts.limit ? String(opts.limit) : undefined,
+  })}`;
+}
+
+export function observatoryRunDetailPath(runId: string): string {
+  return `/api/v1/observatory/runs/${encodeURIComponent(runId)}`;
+}
+
+export function observatoryRunDiffPath(base: string, compare: string): string {
+  return `/api/v1/observatory/runs/diff${obsQuery({ base, compare })}`;
+}
+
+export function observatoryHypothesesPath(): string {
+  return `${OBS_BASE}/hypotheses`;
+}
+
+export function observatoryResearchRunPath(researchRunId: string): string {
+  return `/api/v1/observatory/research-runs/${encodeURIComponent(researchRunId)}`;
 }

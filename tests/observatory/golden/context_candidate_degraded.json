@@ -1,0 +1,160 @@
+{
+  "acquisition_state": "succeeded",
+  "artifact_refs": [
+    {
+      "name": "canonical",
+      "relative_path": "canonical.parquet",
+      "sha256": "18c598b2450ce152f494e84aa95e3423c58836954285edaec95544c1533de572"
+    },
+    {
+      "name": "primary",
+      "relative_path": "primary.parquet",
+      "sha256": "18c598b2450ce152f494e84aa95e3423c58836954285edaec95544c1533de572"
+    },
+    {
+      "name": "reconciliation",
+      "relative_path": "reconciliation.parquet",
+      "sha256": "ad94a850d11ce0c32b66896fbfa6631bf66805379a11ab91ce9ffb5ef95e1e00"
+    },
+    {
+      "name": "revisions",
+      "relative_path": "revisions.parquet",
+      "sha256": "a1d921ca078a09d5f9d407e21a16bca37c59402565a79dfb72d049923630ce72"
+    },
+    {
+      "name": "shadow",
+      "relative_path": "shadow.parquet",
+      "sha256": "98aee494abeb9a52137705fda0b8fd8b75e4b65bca0db86152d3ac70a82cf0de"
+    }
+  ],
+  "certified_at": "2026-07-19T09:05:00.000000+00:00",
+  "compatibility_state": "unknown",
+  "contract": {
+    "asset_id": "crypto.BTC",
+    "contract_version": "btc-data-v1",
+    "display_symbol": "BTC",
+    "primary_instrument": "BTC-USDT",
+    "primary_interval": "1Dutc",
+    "primary_provider": "okx",
+    "quote": "USDT",
+    "shadow_instrument": "BTCUSDT",
+    "shadow_interval": "1d",
+    "shadow_provider": "binance"
+  },
+  "created_at": "2026-07-19T09:05:00.000000+00:00",
+  "effective_knowledge_cut": "<VOLATILE>",
+  "etag": "<VOLATILE>",
+  "evidence_coverage": {
+    "asset_id": "crypto.BTC",
+    "earliest_proven_knowledge_time": "2026-07-12T16:48:44.000000+00:00",
+    "gap_reason_codes": [
+      "LEGACY_TIME_UNPROVEN",
+      "PIT_NOT_PROVEN_BEFORE_EARLIEST_RECEIPT"
+    ],
+    "has_precise_stage_times": false,
+    "proven_interval": ">= 2026-07-12T16:48:44.000000+00:00",
+    "supportable_modes": [
+      "market_available",
+      "installation_observed_from_earliest_proven"
+    ],
+    "unproven_interval": "< 2026-07-12T16:48:44.000000+00:00 for installation_observed"
+  },
+  "excluded_dates": [],
+  "findings_summary": {
+    "blocking_gate": "D0",
+    "blocking_reason_code": "CONTRACT_VALID",
+    "count": 1,
+    "gates": [
+      "D0"
+    ]
+  },
+  "freshness_state": "fresh",
+  "input_watermarks": {
+    "binance": "2026-07-18",
+    "okx": "2026-07-18"
+  },
+  "knowledge_mode": "installation_observed",
+  "lifecycle_state": "staged",
+  "market_watermark": "2026-07-18",
+  "output_watermark": "2026-07-18",
+  "pit_coverage_status": "proven",
+  "published_at": null,
+  "purpose_fitness": [
+    {
+      "allowed": false,
+      "evidence_refs": "<VOLATILE>",
+      "purpose": "manual_observation",
+      "reason_codes": [
+        "QUALITY_BLOCKED"
+      ],
+      "status": "blocked"
+    },
+    {
+      "allowed": false,
+      "evidence_refs": "<VOLATILE>",
+      "purpose": "exploratory_research",
+      "reason_codes": [
+        "QUALITY_BLOCKED"
+      ],
+      "status": "blocked"
+    },
+    {
+      "allowed": false,
+      "evidence_refs": "<VOLATILE>",
+      "purpose": "formal_system_consumption",
+      "reason_codes": [
+        "CHANNEL_UNAVAILABLE"
+      ],
+      "status": "blocked"
+    },
+    {
+      "allowed": false,
+      "evidence_refs": "<VOLATILE>",
+      "purpose": "strict_research",
+      "reason_codes": [
+        "CHANNEL_UNAVAILABLE",
+        "RESEARCH_NOT_ELIGIBLE"
+      ],
+      "status": "blocked"
+    },
+    {
+      "allowed": false,
+      "evidence_refs": "<VOLATILE>",
+      "purpose": "automated_decision",
+      "reason_codes": [
+        "RESEARCH_NOT_ELIGIBLE"
+      ],
+      "status": "blocked"
+    }
+  ],
+  "quality_state": "invalid",
+  "reason_codes": [
+    "QUALITY_BLOCKED"
+  ],
+  "release_id": null,
+  "relevant_fact_sequence": 5,
+  "rendered_at": "<VOLATILE>",
+  "requested_knowledge_as_of": null,
+  "resolved_channel": "evaluated_candidate",
+  "revision_policy": "as_known",
+  "run_id": "invalid_run_0000000000000001",
+  "semantic_channels": {
+    "evaluated_candidate": {
+      "release_id": null,
+      "run_id": "invalid_run_0000000000000001",
+      "watermark": "2026-07-18"
+    },
+    "formal": {
+      "release_id": "dfaf0bed2c860c023928fcfa",
+      "run_id": "formal_run_0000000000000001",
+      "watermark": "2026-07-11"
+    },
+    "observed": {
+      "release_id": null,
+      "run_id": "observed_run_000000000000001",
+      "watermark": "2026-07-19"
+    }
+  },
+  "snapshot_id": "<VOLATILE>",
+  "view_fingerprint": "<VOLATILE>"
+}

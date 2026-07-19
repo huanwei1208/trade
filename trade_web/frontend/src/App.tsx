@@ -4,9 +4,17 @@ import { AppShell } from "./components/AppShell";
 import { useApiResource, type Locale, type PageKey, type TrustOverview } from "./lib/api";
 import { formatDateTime } from "./lib/format";
 import { I18nProvider } from "./lib/i18n";
+import {
+  DEFAULT_OBS_URL_STATE,
+  deserializeObservatoryState,
+  serializeObservatoryState,
+  urlHasObservatory,
+  type ObservatoryUrlState,
+} from "./lib/observatory";
 import { getPageMeta, useLocalStorageState } from "./lib/ui";
 import { CandidatesPage } from "./pages/CandidatesPage";
 import { DataPage } from "./pages/DataPage";
+import { ObservatoryPage } from "./pages/observatory/ObservatoryPage";
 import { OpsPage } from "./pages/OpsPage";
 import { ResearchPage } from "./pages/ResearchPage";
 import { SymbolPage } from "./pages/SymbolPage";
@@ -20,12 +28,27 @@ type OpsFocus = {
 
 function readInitialQuery() {
   if (typeof window === "undefined") {
-    return { page: undefined as PageKey | undefined, opsFocus: {} as OpsFocus };
+    return {
+      page: undefined as PageKey | undefined,
+      opsFocus: {} as OpsFocus,
+      obsState: undefined as ObservatoryUrlState | undefined,
+    };
   }
   const params = new URLSearchParams(window.location.search);
+  // Observatory URL state wins when its params are present (fixed-URL restore).
+  if (urlHasObservatory(params)) {
+    const obsState = deserializeObservatoryState(params);
+    try {
+      window.localStorage.setItem("trade-web:page", JSON.stringify("observatory"));
+      window.localStorage.setItem("trade-web:obs-state", JSON.stringify(obsState));
+    } catch {
+      // ignore — storage quota or private mode
+    }
+    return { page: "observatory" as PageKey, opsFocus: {} as OpsFocus, obsState };
+  }
   const opsTab = params.get("opsTab");
   if (!opsTab) {
-    return { page: undefined as PageKey | undefined, opsFocus: {} as OpsFocus };
+    return { page: undefined as PageKey | undefined, opsFocus: {} as OpsFocus, obsState: undefined };
   }
   const date = params.get("date") || undefined;
   const dataset = params.get("dataset") || undefined;
@@ -43,7 +66,7 @@ function readInitialQuery() {
   } catch {
     // ignore — storage quota or private mode
   }
-  return { page: "ops" as PageKey, opsFocus };
+  return { page: "ops" as PageKey, opsFocus, obsState: undefined };
 }
 
 export default function App() {
@@ -54,6 +77,10 @@ export default function App() {
   const [symbolOrigin, setSymbolOrigin] = useLocalStorageState<PageKey>("trade-web:symbol-origin", "today");
   const [refreshToken, setRefreshToken] = useLocalStorageState<number>("trade-web:refresh-seq", 0);
   const [opsFocus, setOpsFocus] = useLocalStorageState<OpsFocus>("trade-web:ops-focus", initialQuery.opsFocus);
+  const [obsState, setObsState] = useLocalStorageState<ObservatoryUrlState>(
+    "trade-web:obs-state",
+    initialQuery.obsState || DEFAULT_OBS_URL_STATE,
+  );
 
   const trustOverview = useApiResource<TrustOverview>("/api/trust/overview", {
     deps: [refreshToken],
@@ -69,26 +96,25 @@ export default function App() {
       return;
     }
     const params = new URLSearchParams(window.location.search);
-    if (resolvedPage === "ops" && opsFocus.tab) {
+    // Reset scoped params first so lenses don't leak across pages.
+    for (const key of ["opsTab", "date", "dataset", "obsLens", "obsChannel", "knowledgeAsOf", "obsRange", "obsRun", "obsCompare", "obsDate"]) {
+      params.delete(key);
+    }
+    if (resolvedPage === "observatory") {
+      const obsParams = serializeObservatoryState(obsState);
+      obsParams.forEach((value, key) => params.set(key, value));
+    } else if (resolvedPage === "ops" && opsFocus.tab) {
       params.set("opsTab", opsFocus.tab);
       if (opsFocus.date) {
         params.set("date", opsFocus.date);
-      } else {
-        params.delete("date");
       }
       if (opsFocus.dataset) {
         params.set("dataset", opsFocus.dataset);
-      } else {
-        params.delete("dataset");
       }
-    } else {
-      params.delete("opsTab");
-      params.delete("date");
-      params.delete("dataset");
     }
     const query = params.toString();
     window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
-  }, [resolvedPage, opsFocus]);
+  }, [resolvedPage, opsFocus, obsState]);
 
   function navigate(nextPage: PageKey) {
     if (nextPage === "symbol" && !selectedSymbol) {
@@ -116,6 +142,10 @@ export default function App() {
     setPage("symbol");
   }
 
+  function updateObsState(next: Partial<ObservatoryUrlState>) {
+    setObsState((current) => ({ ...current, ...next }));
+  }
+
   return (
     <I18nProvider locale={locale}>
       <AppShell
@@ -133,6 +163,7 @@ export default function App() {
         {resolvedPage === "today" && <TodayPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOpsFocus={openOpsFocus} onOpenCandidates={() => navigate("candidates")} />}
         {resolvedPage === "candidates" && <CandidatesPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOps={() => navigate("ops")} onOpenOpsFocus={openOpsFocus} />}
         {resolvedPage === "symbol" && <SymbolPage symbol={selectedSymbol} refreshToken={refreshToken} onBack={() => navigate(symbolOrigin || "today")} onOpenOpsFocus={openOpsFocus} />}
+        {resolvedPage === "observatory" && <ObservatoryPage refreshToken={refreshToken} urlState={obsState} onUrlStateChange={updateObsState} />}
         {resolvedPage === "research" && <ResearchPage refreshToken={refreshToken} />}
         {resolvedPage === "ops" && <OpsPage refreshToken={refreshToken} focus={opsFocus} onFocusChange={setOpsFocus} />}
         {resolvedPage === "data" && <DataPage refreshToken={refreshToken} />}

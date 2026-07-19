@@ -142,6 +142,16 @@ def create_app():
 
     app = FastAPI(title="TradeDB Console", version="1.0", lifespan=lifespan)
 
+    # BTC Observatory read-only routes (registered as a self-contained router so
+    # this factory stays minimal; all logic lives in trade_web/backend/observatory).
+    if os.environ.get("TRADE_OBSERVATORY_ENABLED", "1") != "0":
+        try:
+            from trade_web.backend.observatory import register_observatory_routes
+
+            register_observatory_routes(app, data_root)
+        except ImportError:
+            pass
+
     # Lazy-init inference service
     from trade_web.backend.inference import InferenceService
     _inference = InferenceService(data_root)

@@ -1,0 +1,11 @@
+{
+  "body": {
+    "evidence_refs": "<VOLATILE>",
+    "message": "composite cannot combine with an exact snapshot/run/release",
+    "reason_codes": [
+      "INVALID_SNAPSHOT_SELECTOR"
+    ],
+    "retryable": false
+  },
+  "status": 400
+}
