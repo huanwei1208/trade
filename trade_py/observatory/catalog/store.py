@@ -30,6 +30,17 @@ from trade_py.observatory.domain.vocab import (
 )
 
 
+# The generation-identity fields that the pointer file (generation.json) and the
+# materialized SQLite `catalog_meta` MUST both carry and agree on. Any missing,
+# wrong-type, or mismatched value makes the projection corrupt (fail closed).
+_GENERATION_KEYS = (
+    "catalog_schema_version",
+    "source_fingerprint",
+    "generation_id",
+    "content_hash",
+)
+
+
 def _observatory_dir(data_root: str | Path) -> Path:
     return Path(data_root) / "market" / "crypto" / "observatory"
 
@@ -199,13 +210,68 @@ def _cas_generation(gen_path: Path, catalog: Catalog) -> None:
 
 
 def load_generation(data_root: str | Path) -> dict[str, Any] | None:
+    """Best-effort read of the generation pointer as a mapping.
+
+    Returns the parsed dict, or ``None`` when the pointer is absent, unreadable,
+    not valid JSON, or valid JSON that is not an object. Returning ``None`` for a
+    non-dict pointer keeps every downstream ``.get()`` caller (update/verify/status
+    /load_catalog_checked) traceback-free; the richer corrupt/incomplete
+    classification lives in :func:`read_generation` / :func:`capability`.
+    """
+
     _, gen_path = _catalog_paths(data_root)
     if not gen_path.exists():
         return None
     try:
-        return json.loads(gen_path.read_text(encoding="utf-8"))
+        parsed = json.loads(gen_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def read_generation(data_root: str | Path) -> tuple[str, dict[str, Any] | None]:
+    """Classify the generation pointer file as a total, fail-closed parser.
+
+    Returns ``(status, payload)`` where ``status`` is one of:
+      - ``"absent"``: the pointer file does not exist.
+      - ``"malformed"``: the file exists but is not readable JSON, is not a JSON
+        object, or carries a required identity field of the wrong type.
+      - ``"incomplete"``: a well-formed JSON object that is missing one or more of
+        the required identity fields (``catalog_schema_version``,
+        ``source_fingerprint``, ``generation_id``, ``content_hash``).
+      - ``"ok"``: a well-formed object with all required identity fields present as
+        non-empty strings.
+
+    ``payload`` is the parsed object for ``incomplete``/``ok`` (and for
+    ``malformed`` when the file parsed to a dict but a field had the wrong type),
+    otherwise ``None``. This never raises for corrupt/partial pointers — callers
+    downstream treat every non-``ok`` status as ``catalog_corrupt`` rather than
+    tracebacking.
+    """
+
+    _, gen_path = _catalog_paths(data_root)
+    if not gen_path.exists():
+        return "absent", None
+    try:
+        raw = gen_path.read_text(encoding="utf-8")
+    except OSError:
+        return "malformed", None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return "malformed", None
+    if not isinstance(parsed, dict):
+        # A JSON scalar/array is a structurally wrong pointer, not a partial one.
+        return "malformed", None
+    missing = [key for key in _GENERATION_KEYS if key not in parsed]
+    # Any present identity field must be a non-empty string; a wrong-type value
+    # (int/list/None) is a corrupt pointer, not merely an incomplete one.
+    for key in _GENERATION_KEYS:
+        if key in parsed and not (isinstance(parsed[key], str) and parsed[key]):
+            return "malformed", parsed
+    if missing:
+        return "incomplete", parsed
+    return "ok", parsed
 
 
 def verify(data_root: str | Path) -> dict[str, Any]:
@@ -234,6 +300,125 @@ def status(data_root: str | Path) -> dict[str, Any]:
         "db_exists": db_path.exists(),
         "generation": stored,
         "verify": verify(data_root),
+    }
+
+
+def _read_sqlite_meta(db_path: Path) -> dict[str, str] | None:
+    """Read-only structural probe of the materialized SQLite projection.
+
+    Opens the file in ``mode=ro`` (never creating or writing it), runs
+    ``PRAGMA integrity_check``, requires the ``catalog_meta``/``runs``/``releases``
+    tables to exist, and returns the ``catalog_meta`` key/value map. Returns
+    ``None`` when the file does not exist, is not a valid SQLite database, fails
+    the integrity check, or is missing a required table — i.e. every structural
+    failure maps to ``None`` (the caller treats that as ``catalog_corrupt``).
+    """
+
+    if not db_path.exists():
+        return None
+    try:
+        # uri=True + mode=ro guarantees SQLite never creates or mutates the file.
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or integrity[0] != "ok":
+            return None
+        names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if not {"catalog_meta", "runs", "releases"} <= names:
+            return None
+        meta = {
+            str(key): str(value)
+            for key, value in conn.execute(
+                "SELECT key, value FROM catalog_meta"
+            ).fetchall()
+        }
+    except sqlite3.DatabaseError:
+        # Corrupt/truncated file that sqlite could open the header of but not read.
+        return None
+    finally:
+        conn.close()
+    return meta
+
+
+def capability(data_root: str | Path) -> dict[str, Any]:
+    """Read-only Catalog readiness classification for rollout gating (RA.1).
+
+    A total, fail-closed classifier that inspects the generation pointer and the
+    materialized SQLite projection and returns exactly one of ``catalog_missing``,
+    ``catalog_stale``, ``catalog_corrupt``, or ``ready``. It NEVER builds, migrates,
+    or writes the projection (safe to call from startup and GET paths) and NEVER
+    raises for a partial/corrupt install — every defect is classified, not
+    tracebacked. ``disabled`` is owned by the Web layer feature flag, not here.
+
+    Classification order (all fail closed):
+      1. No pointer AND no DB           -> ``catalog_missing``
+      2. Pointer present but not ``ok`` -> ``catalog_corrupt`` (malformed/wrong-type
+         /incomplete pointer, even if a DB exists)
+      3. Pointer ``ok`` but DB missing  -> ``catalog_corrupt`` (a committed pointer
+         with no projection is inconsistent, never "missing")
+      4. SQLite fails integrity/tables  -> ``catalog_corrupt``
+      5. SQLite ``catalog_meta`` differs from the pointer on any identity field
+         (``catalog_schema_version``/``source_fingerprint``/``generation_id``/
+         ``content_hash``) -> ``catalog_corrupt``
+      6. Projection is behind the live immutable facts -> ``catalog_stale``
+      7. Otherwise -> ``ready``
+    """
+
+    db_path, _ = _catalog_paths(data_root)
+    gen_status, stored = read_generation(data_root)
+    db_exists = db_path.exists()
+
+    if gen_status == "absent" and not db_exists:
+        return {"state": "catalog_missing", "db_exists": False, "generation_id": None}
+
+    def _gen_id() -> str | None:
+        if isinstance(stored, dict):
+            value = stored.get("generation_id")
+            return value if isinstance(value, str) and value else None
+        return None
+
+    if gen_status == "absent":
+        # DB present but no pointer: a projection with no committed generation is
+        # inconsistent, not merely missing. Fail closed as corrupt.
+        return {"state": "catalog_corrupt", "db_exists": True, "generation_id": None}
+    if gen_status != "ok":
+        # Malformed / wrong-type / incomplete pointer -> corrupt (never traceback).
+        return {"state": "catalog_corrupt", "db_exists": db_exists, "generation_id": _gen_id()}
+    if not db_exists:
+        # A complete pointer that references a projection which is not on disk.
+        return {"state": "catalog_corrupt", "db_exists": False, "generation_id": _gen_id()}
+
+    meta = _read_sqlite_meta(db_path)
+    if meta is None:
+        return {"state": "catalog_corrupt", "db_exists": True, "generation_id": _gen_id()}
+
+    # The SQLite projection must describe the SAME generation the pointer commits
+    # to. Any identity-field disagreement means the two artifacts drifted (e.g. a
+    # half-finished CAS or a hand-edited pointer) and the read side must fail closed
+    # rather than trust a DB whose generation_id/content_hash the pointer disowns.
+    for key in _GENERATION_KEYS:
+        if meta.get(key) != stored.get(key):
+            return {
+                "state": "catalog_corrupt",
+                "db_exists": True,
+                "generation_id": _gen_id(),
+                "meta_mismatch": key,
+            }
+
+    verification = verify(data_root)
+    state = "ready" if verification["status"] == "current" else "catalog_stale"
+    return {
+        "state": state,
+        "db_exists": True,
+        "generation_id": _gen_id(),
+        "verify_status": verification["status"],
     }
 
 

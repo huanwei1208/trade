@@ -97,3 +97,21 @@ test("Switching lenses updates the URL and restores after reload", async ({ page
   await page.reload();
   await expect(page.getByTestId("trust-lens")).toBeVisible();
 });
+
+test("Unready backend: a direct ?obsLens URL does NOT open Observatory (fail closed)", async ({ page }) => {
+  // Override only the capability route to report an unready state; the rest of the
+  // observatory fixtures stay mocked. A direct-open URL must fail closed: the
+  // Observatory page must not mount and the nav entry must stay hidden.
+  await page.route("**/api/v1/observatory/capability", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ enabled: true, state: "catalog_missing", show_nav: false }),
+    }),
+  );
+  await page.goto("/?obsLens=overview");
+  // The shell renders and lands on Today (default) rather than Observatory.
+  await expect(page.getByTestId("nav-today")).toBeVisible();
+  await expect(page.getByTestId("observatory-page")).toHaveCount(0);
+  await expect(page.getByTestId("nav-observatory")).toHaveCount(0);
+});

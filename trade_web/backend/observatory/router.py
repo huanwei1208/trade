@@ -3,14 +3,18 @@
 Thin HTTP adapter over the read-only ObservatoryQuery facade. It maps frozen reason
 codes to the frozen HTTP status contract, applies ETag/304, and never embeds
 business logic. `app.py` only calls `register_observatory_routes(app, data_root)`.
+
+Import decoupling (RA.1): the heavy `ObservatoryQuery` facade is imported lazily
+inside `register_observatory_routes` (not at module top) so that importing this
+module — and registering the always-on read-only `/capability` probe — never pulls
+in the facade or its dependencies. A defect in the facade therefore cannot silently
+remove the capability route from the app.
 """
 
 import os
-from pathlib import Path
 from typing import Any, Optional
 
 from trade_py.observatory.domain.vocab import ObservatoryError, ReasonCode
-from trade_py.observatory.query.facade import ObservatoryQuery
 
 # Frozen reason-code -> HTTP status mapping (frozen_contracts.md §HTTP).
 _REASON_STATUS: dict[str, int] = {
@@ -37,11 +41,72 @@ def status_for(reason_code: str) -> int:
     return _REASON_STATUS.get(reason_code, 400)
 
 
+def register_observatory_capability(app, data_root: str | None = None, *, enabled: bool | None = None) -> None:
+    """Register only the always-on read-only capability probe.
+
+    This route is reachable regardless of the rollout flag so the frontend and the
+    routes stay consistent: a disabled deploy still answers `/capability` with
+    `state=disabled` (plan §G) without exposing any data route.
+    """
+
+    from fastapi import APIRouter
+    from fastapi.responses import JSONResponse
+
+    from trade_web.backend.observatory.capability import capability_payload
+
+    root = data_root or os.environ.get("TRADE_DATA_ROOT", "data")
+    router = APIRouter(prefix="/api/v1/observatory", tags=["observatory"])
+
+    @router.get("/capability")
+    def capability():
+        # Read-only probe; never builds the Catalog. `enabled` is fixed at
+        # registration time to reflect how the app was constructed.
+        return JSONResponse(capability_payload(root, enabled=enabled))
+
+    app.include_router(router)
+
+
+def register_observatory_capability_error(app) -> None:
+    """Register a capability probe that reports the enabled-but-broken state.
+
+    Used only when data-route/facade registration failed while the feature is
+    enabled: the frontend must still get an answer from `/capability` (never a
+    silently missing route), and that answer must keep navigation hidden
+    (`state=error`, `show_nav=False`, `reason_code=route_registration_failed`) so a
+    broken deploy does not advertise a non-functional Observatory. The response is
+    fixed and safe — it never carries `str(exc)` or paths; the full exception is
+    logged server-side by the caller.
+    """
+
+    from fastapi import APIRouter
+    from fastapi.responses import JSONResponse
+
+    from trade_web.backend.observatory.capability import capability_error_payload
+
+    payload = capability_error_payload()
+    router = APIRouter(prefix="/api/v1/observatory", tags=["observatory"])
+
+    @router.get("/capability")
+    def capability_error():
+        return JSONResponse(payload)
+
+    app.include_router(router)
+
+
 def register_observatory_routes(app, data_root: str | None = None) -> None:
-    """Register the observatory router on an existing FastAPI app (minimal glue)."""
+    """Register the observatory router on an existing FastAPI app (minimal glue).
+
+    Registers the always-on read-only capability probe plus the read-only data
+    routes. When only the capability probe is wanted (feature disabled), call
+    ``register_observatory_capability`` instead.
+    """
 
     from fastapi import APIRouter, Query, Request
     from fastapi.responses import JSONResponse
+
+    # Lazy facade import: kept out of module scope so importing this module (for the
+    # always-on capability probe) never depends on the facade or its heavy deps.
+    from trade_py.observatory.query.facade import ObservatoryQuery
 
     root = data_root or os.environ.get("TRADE_DATA_ROOT", "data")
     router = APIRouter(prefix="/api/v1/observatory", tags=["observatory"])
@@ -173,3 +238,9 @@ def register_observatory_routes(app, data_root: str | None = None) -> None:
             return _error_response(exc)
 
     app.include_router(router)
+    # Register the always-on capability probe LAST so it only reports enabled=True
+    # once every data route above has been successfully constructed. If any data
+    # route above raised, this line is never reached and the caller (app factory)
+    # registers the `error` capability instead — the probe never lies about a
+    # half-registered app.
+    register_observatory_capability(app, root, enabled=True)

@@ -52,7 +52,28 @@ _GROUPS = {
             "trade research evaluate gate"
         ),
     },
+    "btc": {
+        "desc": "BTC 研究工作流 (H1 波动持续性) — run/import/promote (默认 dry-run; --commit 写入)",
+        "examples": (
+            "trade research btc run --dry-run\n"
+            "trade research btc run --commit\n"
+            "trade research btc import --bundle <path>\n"
+            "trade research btc promote --research-run-id <id>"
+        ),
+    },
 }
+
+
+def _btc_research_entrypoint():
+    """Return the shared BTC research entrypoint (defined once in cli.observatory).
+
+    `trade research btc` and `trade observatory research` both route through
+    this single parser so workflow wiring is never duplicated (plan §5.3).
+    """
+
+    from trade_py.cli import observatory as observatory_cli
+
+    return observatory_cli.research_btc_main
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -104,5 +125,8 @@ def main(argv: list[str] | None = None) -> int:
             deprecated=False,
             prog="trade research evaluate",
         )
+
+    if args.group == "btc":
+        return _btc_research_entrypoint()(rest)
 
     return 1

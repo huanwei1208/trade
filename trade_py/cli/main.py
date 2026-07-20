@@ -88,8 +88,9 @@ def main(argv: list[str] | None = None) -> int:
         # Research
         ("research", "research", "研究/建模/评估 — model + factor + evaluate 统一入口"),
         ("kg",      "kg",      "Learned KG 候选边学习/审核/上线"),
-        # Observatory (read-only BTC snapshot resolution + research)
-        ("observatory", "observatory", "只读 BTC Observatory — 目录/快照/研究运维"),
+        # Observatory (BTC snapshot resolution + research; catalog projection is a
+        # read-only GET/SDK surface, but research --commit and catalog rebuild write)
+        ("observatory", "observatory", "BTC Observatory — 目录/快照/研究运维 (research --commit 写入)"),
         # System config / control
         ("config",  "config",  "统一配置管理 — 数据源/密钥/路径/DAG开关/自选股/备份"),
         ("event",   "event",   "事件控制平面 — 触发/运行/同步/新建/重建/回填"),

@@ -1,7 +1,8 @@
 import { useEffect } from "react";
 
 import { AppShell } from "./components/AppShell";
-import { useApiResource, type Locale, type PageKey, type TrustOverview } from "./lib/api";
+import { useApiResource, type Locale, type ObsCapability, type PageKey, type TrustOverview } from "./lib/api";
+import { observatoryCapabilityPath } from "./lib/api";
 import { formatDateTime } from "./lib/format";
 import { I18nProvider } from "./lib/i18n";
 import {
@@ -87,7 +88,32 @@ export default function App() {
     cacheKey: "trade-web:trust-overview",
   });
 
-  const resolvedPage: PageKey = page === "symbol" && !selectedSymbol ? "today" : page;
+  // RA.1 (F14): read-only Observatory rollout capability. Nav visibility and the
+  // Observatory page render are gated on a FRESH, successful capability response so
+  // an unprepared/disabled installation never advertises or opens a broken page.
+  //
+  // Fail closed on freshness (docs/27 Phase A): the capability is deliberately NOT
+  // given a localStorage cacheKey — it must never be persisted as an authorization
+  // cache. Only a fresh success (not loading, not revalidating, not stale, not
+  // served from cache, no error) with show_nav===true authorizes. Every other state
+  // — cached/previous ready, loading, stale, revalidating, error, unknown, disabled,
+  // missing, catalog_stale, catalog_corrupt — denies nav and never mounts Observatory.
+  const observatoryCapability = useApiResource<ObsCapability>(observatoryCapabilityPath(), {
+    deps: [refreshToken],
+  });
+  const observatoryAuthorized =
+    observatoryCapability.data?.show_nav === true &&
+    observatoryCapability.loading === false &&
+    observatoryCapability.revalidating === false &&
+    observatoryCapability.stale === false &&
+    observatoryCapability.fromCache === false &&
+    observatoryCapability.error === null;
+
+  const requestedPage: PageKey = page === "symbol" && !selectedSymbol ? "today" : page;
+  // If Observatory is not freshly authorized, fall back to Today even when
+  // localStorage or the URL (e.g. a direct ?obsLens link) requested it. This also
+  // covers a rollback or an unbuilt/corrupt catalog.
+  const resolvedPage: PageKey = requestedPage === "observatory" && !observatoryAuthorized ? "today" : requestedPage;
   const meta = getPageMeta(resolvedPage, locale, selectedSymbol);
   const asOf = formatDateTime(new Date().toISOString(), locale === "zh-CN" ? "zh-CN" : "en-US");
 
@@ -156,6 +182,7 @@ export default function App() {
         asOf={asOf}
         selectedSymbol={selectedSymbol}
         trustOverview={trustOverview.data}
+        observatoryAuthorized={observatoryAuthorized}
         onNavigate={navigate}
         onLocaleChange={setLocale}
         onRefresh={() => setRefreshToken((current) => current + 1)}

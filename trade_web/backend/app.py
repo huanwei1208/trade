@@ -144,13 +144,35 @@ def create_app():
 
     # BTC Observatory read-only routes (registered as a self-contained router so
     # this factory stays minimal; all logic lives in trade_web/backend/observatory).
-    if os.environ.get("TRADE_OBSERVATORY_ENABLED", "1") != "0":
-        try:
-            from trade_web.backend.observatory import register_observatory_routes
+    # Rollout is explicitly opt-in (default OFF): an unprepared installation must
+    # not advertise a broken Observatory page (docs/27 Phase A, F14). The read-only
+    # capability probe stays reachable either way so the frontend/routes agree.
+    #
+    # RA.1 (F14): the capability probe MUST NOT silently disappear. There is no
+    # broad `except ImportError: pass` around registration — an import defect is a
+    # real bug and must fail fast. Only enabled data-route registration is allowed
+    # to degrade: a defect there is logged loudly and surfaced as capability
+    # state=error (nav stays hidden), never swallowed into an app without a probe.
+    from trade_web.backend.observatory import (
+        observatory_enabled,
+        register_observatory_capability,
+        register_observatory_capability_error,
+        register_observatory_routes,
+    )
 
+    if observatory_enabled():
+        try:
+            # Registers the data routes plus (last) the enabled capability probe,
+            # so the probe reports enabled=True only after every route is built.
             register_observatory_routes(app, data_root)
-        except ImportError:
-            pass
+        except Exception as exc:  # noqa: BLE001 - surface, don't silently drop routes
+            # Log the full exception (with traceback) server-side only. The public
+            # /capability probe must not leak str(exc)/paths, so it carries just a
+            # stable reason_code (see capability_error_payload).
+            logger.error("observatory data-route registration failed: %s", exc, exc_info=True)
+            register_observatory_capability_error(app)
+    else:
+        register_observatory_capability(app, data_root, enabled=False)
 
     # Lazy-init inference service
     from trade_web.backend.inference import InferenceService

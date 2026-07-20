@@ -80,3 +80,32 @@
 - [ ] DF.1 Additive attempt receipts + Latest Attempt promise + crash/abandoned reconcile tests (V1 uses Latest Completed Staged Run)
 - [ ] DF.2 Two-dimensional Revision Surface (V1 ships timeline + diff table on a surface-capable contract)
 - [ ] DF.3 Content-addressed raw storage migration
+
+## Audit Remediation — 2026-07-20
+
+The 2026-07-20 correctness audit (docs/27) found that the earlier WP0-WP9 "complete"
+claim above was invalidated by confirmed defects F1-F17: the read side resolved
+unknown snapshots and historical cuts to moving channels, `research run/promote`
+returned delegation strings instead of executing/persisting H1, the Catalog was a
+per-read `build_catalog()` rebuild without immutable generations or asset scope,
+integrity errors were swallowed into partial 200/null responses, per-date quality
+was hard-coded, and the advertised `./trade observatory` / `./trade research btc`
+commands plus the safe Web rollout boundary were unreachable. The checked WP boxes
+above are retained as history; these RA tasks are the real acceptance gate and are
+each marked complete only when the corresponding docs/27 phase is accepted by Codex.
+
+- [x] RA.1 Public CLI and rollout readiness (Phase A) — wire `./trade observatory`
+  and `./trade research btc {run,import,promote}`, make rollout explicitly enabled
+  (default off), add a read-only capability/readiness response
+  (`disabled`/`catalog_missing`/`catalog_stale`/`catalog_corrupt`/`ready`) that
+  never auto-builds the Catalog, and add a strict Catalog status/verify deployment
+  gate — tests: `tests/observatory/test_catalog_cli.py`,
+  `tests/test_btc_observatory_research.py`, `tests/test_btc_observatory_api.py`,
+  `tests/test_cli_contracts.py`, `tests/test_cli_lazy_loading.py`, frontend nav unit
+- [ ] RA.2 Immutable Catalog generations, CAS, asset scope and rollback (Phase B)
+- [ ] RA.3 Fail-closed consistent read transaction (Phase B)
+- [ ] RA.4 Immutable snapshot replay and one shared PIT kernel (Phase C)
+- [ ] RA.5 Real revision/evidence coverage and per-date row semantics (Phase D)
+- [ ] RA.6 Real H1 run/import/promote workflow (Phase E)
+- [ ] RA.7 ETag/range/performance/telemetry (Phase F)
+- [ ] RA.8 Real-stack integration, real-data read-only probe and final consensus review (Phase G)

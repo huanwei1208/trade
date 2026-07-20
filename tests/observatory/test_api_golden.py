@@ -93,6 +93,7 @@ def test_route_inventory_is_stable(client):
         "/api/v1/observatory/assets/crypto.BTC/runs",
         "/api/v1/observatory/assets/crypto.BTC/series",
         "/api/v1/observatory/assets/crypto.BTC/trust",
+        "/api/v1/observatory/capability",
         "/api/v1/observatory/research-runs/{research_run_id}",
         "/api/v1/observatory/runs/diff",
         "/api/v1/observatory/runs/{run_id}",

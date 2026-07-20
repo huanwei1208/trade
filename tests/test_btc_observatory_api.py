@@ -181,3 +181,146 @@ def test_invalid_channel_pit_not_proven(client):
     )
     assert resp.status_code == 422
     assert "PIT_NOT_PROVEN" in resp.json()["reason_codes"]
+
+
+# ── RA.1: rollout gate + capability route (docs/27 Phase A, F14) ──────────────
+
+
+def test_capability_route_reports_ready_when_catalog_built(client):
+    c, fx = client
+    resp = c.get("/api/v1/observatory/capability")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["state"] == "ready"
+    # The frontend uses show_nav to decide visibility.
+    assert body["show_nav"] is True
+
+
+def test_capability_route_reports_catalog_missing_without_build(tmp_path):
+    # An unprepared installation: routes may be registered but the Catalog is absent.
+    fx = build_observatory_fixture(tmp_path / "data")
+    app = FastAPI()
+    register_observatory_routes(app, str(fx["data_root"]))
+    c = TestClient(app)
+    resp = c.get("/api/v1/observatory/capability")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "catalog_missing"
+    # F14: an unready installation must not advertise Observatory navigation.
+    assert body["show_nav"] is False
+
+
+def test_capability_route_does_not_build_catalog(tmp_path):
+    from trade_py.observatory.catalog import store
+
+    fx = build_observatory_fixture(tmp_path / "data")
+    app = FastAPI()
+    register_observatory_routes(app, str(fx["data_root"]))
+    c = TestClient(app)
+    c.get("/api/v1/observatory/capability")
+    # Startup/GET capability probe never auto-builds the projection.
+    assert store.load_generation(fx["data_root"]) is None
+
+
+def test_rollout_default_off_hides_data_routes_but_reports_disabled(tmp_path, monkeypatch):
+    """F14: backend must default Observatory OFF (explicitly enabled). When disabled,
+    the data routes are absent but the capability probe stays reachable and reports
+    `disabled` so the frontend and routes remain consistent (plan §G)."""
+
+    from trade_web.backend import observatory as observatory_pkg
+
+    monkeypatch.delenv("TRADE_OBSERVATORY_ENABLED", raising=False)
+    assert observatory_pkg.observatory_enabled() is False
+
+    fx = build_observatory_fixture(tmp_path / "data")
+    catalog_store.rebuild(fx["data_root"])
+    monkeypatch.setenv("TRADE_DATA_ROOT", str(fx["data_root"]))
+    monkeypatch.setenv("TRADE_OBSERVATORY_ENABLED", "0")
+    from trade_web import create_app
+
+    app = create_app()
+    obs_paths = sorted({r.path for r in app.routes if "observatory" in getattr(r, "path", "")})
+    # Only the always-on capability probe; no data routes.
+    assert obs_paths == ["/api/v1/observatory/capability"]
+
+    c = TestClient(app)
+    cap = c.get("/api/v1/observatory/capability")
+    assert cap.status_code == 200
+    body = cap.json()
+    assert body["enabled"] is False
+    assert body["state"] == "disabled"
+    assert body["show_nav"] is False
+    # Data routes are truly absent even though the catalog is ready.
+    assert c.get("/api/v1/observatory/assets/crypto.BTC/context?channel=formal").status_code == 404
+
+
+def test_rollout_enabled_registers_routes(tmp_path, monkeypatch):
+    fx = build_observatory_fixture(tmp_path / "data")
+    catalog_store.rebuild(fx["data_root"])
+    monkeypatch.setenv("TRADE_DATA_ROOT", str(fx["data_root"]))
+    monkeypatch.setenv("TRADE_OBSERVATORY_ENABLED", "1")
+    from trade_web import create_app
+
+    app = create_app()
+    obs_paths = sorted({r.path for r in app.routes if "observatory" in getattr(r, "path", "")})
+    assert "/api/v1/observatory/capability" in obs_paths
+    assert "/api/v1/observatory/assets/crypto.BTC/context" in obs_paths
+
+
+# ── RA.1 (C): route-registration defects must NOT silently drop /capability ───
+
+
+def test_data_route_defect_does_not_drop_capability_probe(tmp_path, monkeypatch):
+    """F14/C: if enabled data-route registration raises, the app must still expose
+    `/capability` reporting `state=error` (nav hidden) — never an app silently
+    missing the capability route. The broad `except ImportError: pass` is gone."""
+
+    fx = build_observatory_fixture(tmp_path / "data")
+    catalog_store.rebuild(fx["data_root"])
+    monkeypatch.setenv("TRADE_DATA_ROOT", str(fx["data_root"]))
+    monkeypatch.setenv("TRADE_OBSERVATORY_ENABLED", "1")
+
+    # Inject a defect into data-route registration (the heavy path), leaving the
+    # light capability path intact. create_app resolves these names from the
+    # observatory package namespace at call time, so patching the package suffices.
+    from trade_web.backend import observatory as observatory_pkg
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("simulated facade/registration defect")
+
+    monkeypatch.setattr(observatory_pkg, "register_observatory_routes", _boom)
+    from trade_web import create_app
+
+    app = create_app()
+    obs_paths = sorted({r.path for r in app.routes if "observatory" in getattr(r, "path", "")})
+    # The capability probe survives; data routes are absent.
+    assert "/api/v1/observatory/capability" in obs_paths
+    assert "/api/v1/observatory/assets/crypto.BTC/context" not in obs_paths
+
+    c = TestClient(app)
+    body = c.get("/api/v1/observatory/capability").json()
+    assert body["state"] == "error"
+    assert body["show_nav"] is False
+    # The public probe carries a stable, safe reason_code and never leaks the
+    # internal exception text/paths (the full exception is logged server-side).
+    assert body["reason_code"] == "route_registration_failed"
+    assert "detail" not in body
+
+
+def test_capability_route_import_is_facade_independent():
+    """The always-on capability path must not depend on the heavy facade import, so
+    a facade defect cannot remove the probe. Registering the capability probe on a
+    bare app must succeed without importing ObservatoryQuery."""
+
+    import sys
+
+    from trade_web.backend.observatory import register_observatory_capability
+
+    # Registering the capability probe alone must not require the facade module.
+    sys.modules.pop("trade_py.observatory.query.facade", None)
+    app = FastAPI()
+    register_observatory_capability(app, "data", enabled=False)
+    assert "trade_py.observatory.query.facade" not in sys.modules
+    obs_paths = {r.path for r in app.routes if "observatory" in getattr(r, "path", "")}
+    assert "/api/v1/observatory/capability" in obs_paths

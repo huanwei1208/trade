@@ -161,3 +161,107 @@ under the existing shared lock.
 #### Scenario: Integrity mismatch fails closed
 - **WHEN** the current pointer, manifest, and artifact hash are inconsistent
 - **THEN** the read fails closed with an integrity error and does not fall back to another file to keep drawing
+
+### Requirement: Catalog generations are immutable, scoped, and content-addressed
+The system SHALL persist each Catalog generation as install-once immutable
+artifacts — a `generations/catalog-<generation_id>.sqlite` database and a
+`generations/catalog-<generation_id>.manifest.json` generation manifest — under a
+mutable typed `catalog-current.json` pointer, and SHALL NOT overwrite or unlink a
+live generation in place. Every generation SHALL be bound to a `CatalogScope`
+`(asset_id, data_family, source_contract_version, scope_policy_version)`, and
+`generation_id` SHALL be a deterministic derivation over that scope, the catalog
+schema version, the projection policy version, the source fingerprint, and the full
+logical content hash. The generation manifest SHALL carry at least the asset/scope,
+pointer/manifest/schema/projection versions, `generation_id`, `source_fingerprint`,
+`logical_content_hash`, the SQLite file SHA-256, the DB filename, the fact count,
+and the fact-set hash. The `logical_content_hash` SHALL cover every field the
+resolver consumes (runs, contracts, four clocks and provenance, gates, findings,
+artifact refs, releases, release-event ledger and active head, revision index,
+current pointer, and relevant fact set), not a subset.
+
+#### Scenario: Identical inputs yield an idempotent generation
+- **WHEN** two rebuilds run over the same scoped immutable facts
+- **THEN** they derive the same `generation_id` and the second install is an idempotent no-op that does not overwrite the existing immutable artifacts
+
+#### Scenario: Ordinary business-row tamper is detected
+- **WHEN** a single ordinary business value (for example one OHLCV cell or gate result) inside a committed generation SQLite file is altered
+- **THEN** the SQLite file SHA-256 and the deserialized `logical_content_hash` no longer reconcile and the read fails closed with `CATALOG_CORRUPT`
+
+#### Scenario: Only-legacy pair requires an out-of-band rebuild
+- **WHEN** only the legacy `catalog.sqlite` + `generation.json` pair exists and no `catalog-current.json` pointer is present
+- **THEN** the read returns `CATALOG_STALE` with a `legacy_catalog_requires_rebuild` marker and does not migrate, overwrite, or delete the legacy pair in the read path
+
+### Requirement: Catalog publish and rollback use durable CAS under the assurance lock
+The system SHALL publish a new generation by freezing a scoped source snapshot and
+the expected pointer under a shared BTC assurance lock, projecting and verifying a
+same-filesystem candidate (integrity check, logical content hash, file SHA-256,
+fsync) outside the lock, then under the exclusive BTC assurance lock re-confirming
+the live source fingerprint and expected-previous pointer, installing the immutable
+artifacts install-once, and compare-and-swapping the `catalog-current.json` pointer
+as the last step with file and directory fsync. The system SHALL NOT upgrade a
+shared lock to exclusive in place. A pointer-only `catalog rollback` SHALL be
+allowed only when the target generation shares the current `CatalogScope`, is
+reader-supported, and has a `source_fingerprint` equal to the current authoritative
+BTC fact set; otherwise it SHALL be rejected. Phase B SHALL retain all committed
+generations with no destructive garbage collection.
+
+#### Scenario: Concurrent CAS yields one committed switch
+- **WHEN** two writers attempt to publish and one observes an expected-previous pointer different from the one it froze
+- **THEN** exactly one pointer switch commits and the other returns `CATALOG_CAS_CONFLICT` without overwriting any generation
+
+#### Scenario: Stale-fingerprint rollback target is rejected
+- **WHEN** a `catalog rollback --to-generation <id>` targets a historical generation built from a different `source_fingerprint` than the current authoritative BTC fact set
+- **THEN** the operation returns `CATALOG_ROLLBACK_REJECTED` / `CATALOG_STALE` and does not switch the pointer, and the caller is directed to `BtcRunStore` authoritative rollback for a Formal/source truth change
+
+#### Scenario: Supported projection rollback of the same fact set
+- **WHEN** a rollback target shares the current scope and `source_fingerprint` and differs only in projection/policy version
+- **THEN** the pointer-only CAS rollback succeeds, retaining every generation on disk for forensics
+
+### Requirement: Reads bind one immutable generation with zero rebuild and zero writes
+The system SHALL service every context/series/date/trust/runs/diff/research GET and
+SDK read by taking the shared BTC assurance lock only for the freeze/open/verify
+critical section, freezing one typed pointer, opening exactly one immutable
+generation, verifying the whole chain
+(`pointer -> manifest -> file SHA-256 -> catalog_meta -> deserialized logical hash`),
+deserializing one `CatalogReadSnapshot`, and reusing that snapshot across resolver,
+query, diff, and SDK. Reads SHALL NOT call `build_catalog()`, SHALL NOT write, and
+SHALL produce parquet/JSON response bytes outside the lock on the already-verified
+immutable references. A ready Catalog whose assurance lockfile is absent SHALL fail
+closed, and a GET SHALL NOT create the lockfile.
+
+#### Scenario: Read performs no build and no write
+- **WHEN** any GET/SDK read resolves a snapshot from a ready Catalog
+- **THEN** it performs zero `build_catalog()` calls and zero filesystem writes and observes one complete generation
+
+#### Scenario: Lock cannot be acquired within the read deadline
+- **WHEN** the shared assurance lock cannot be acquired within the read deadline
+- **THEN** the read returns `CATALOG_LOCK_TIMEOUT` with `retry_after` (HTTP 503) rather than reading an unlocked or partial generation
+
+### Requirement: Catalog facts are asset-scoped and legacy events are fail-closed
+The system SHALL scope every generation manifest, `catalog-current.json` pointer,
+publish audit, and rollback audit by `asset_id = crypto.BTC`, and SHALL write new
+audits into a scope-decidable-before-parse namespace at
+`audit/by-asset/crypto.BTC/{publish,rollback}/`. The system SHALL adapt a legacy
+global authoritative audit into the BTC scope only when it is parseable, its
+`event_type` is in the whitelist `{btc_canonical_publish, btc_canonical_rollback,
+btc_legacy_predecessor_rollback}`, and it references a BTC-scoped run; a legacy
+global authoritative file that is unparseable or unattributable SHALL be a
+fail-closed migration blocker rather than a skipped record, and SHALL NOT be
+silently ignored. Facts belonging to any other asset or `data_family`
+(`news`/`sentiment`/`research`) SHALL NOT affect the BTC `source_fingerprint`,
+active release, snapshot, or `ETag`. The release-event ledger SHALL be modelled
+separately from the active Formal head, and a rollback event SHALL activate its
+`to_run_id` rather than blanking the head, except for an explicit legacy-to-none
+rollback.
+
+#### Scenario: ETH event does not perturb BTC identity
+- **WHEN** an ETH (non-BTC) manifest or audit is added or malformed
+- **THEN** the BTC `source_fingerprint`, active release, snapshot, and `ETag` are unchanged and only the ETH scope is affected
+
+#### Scenario: Unattributable legacy global audit blocks the generation
+- **WHEN** a legacy global `audit/publish` or `audit/rollback` file is unparseable or cannot be attributed to a BTC-scoped run
+- **THEN** the generation build fails closed as a migration blocker (`MANIFEST_INVALID` / `CATALOG_CORRUPT`) and does not silently `continue` past it
+
+#### Scenario: Rollback event activates a prior run, not an empty head
+- **WHEN** a rollback event references `to_run_id`
+- **THEN** the active Formal head becomes `to_run_id` and is not blanked, except for an explicit legacy-to-none rollback

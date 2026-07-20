@@ -30,7 +30,12 @@ print_help() {
   echo "  ./trade research model <cmd>    模型训练/推理/对比/上线"
   echo "  ./trade research factor <cmd>   因子评估"
   echo "  ./trade research evaluate <cmd> 质量门禁评估"
+  echo "  ./trade research btc <cmd>      BTC 研究工作流 (run/import/promote; --commit 写入)"
   echo "  ./trade kg ...                  Learned KG 流程"
+  echo ""
+  echo "BTC 观测站 (observatory):"
+  echo "  ./trade observatory catalog <cmd>  目录 rebuild/update/verify/status (只读投影)"
+  echo "  ./trade observatory research <cmd> BTC 研究 run/import/promote (--commit 写入)"
   echo ""
   echo "配置 (config):"
   echo "  ./trade config init/show/get/set/doctor"
@@ -238,6 +243,7 @@ main() {
     status) cmd_domain_allow_empty status "${global_flags[@]}" "${sub_args[@]}" ;;
     show) cmd_domain show "${global_flags[@]}" "${sub_args[@]}" ;;
     research) cmd_domain research "${global_flags[@]}" "${sub_args[@]}" ;;
+    observatory) cmd_domain observatory "${global_flags[@]}" "${sub_args[@]}" ;;
     data) cmd_domain_allow_empty data "${global_flags[@]}" "${sub_args[@]}" ;;
     kg) cmd_domain kg "${global_flags[@]}" "${sub_args[@]}" ;;
     config) cmd_domain config "${global_flags[@]}" "${sub_args[@]}" ;;

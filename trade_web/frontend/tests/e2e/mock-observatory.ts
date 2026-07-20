@@ -233,6 +233,12 @@ export async function mockObservatoryApi(page: Page): Promise<void> {
     const url = new URL(route.request().url());
     const path = url.pathname;
 
+    // RA.1 (F14): the frontend gates Observatory nav/page on a FRESH ready
+    // capability response. The E2E suite exercises a prepared, enabled backend, so
+    // this fixture returns `ready` to keep the existing Observatory flows valid.
+    if (path.endsWith("/capability")) {
+      return json(route, { enabled: true, state: "ready", show_nav: true, generation_id: "gen_0007" });
+    }
     if (path.endsWith("/context")) {
       return json(route, CONTEXT);
     }

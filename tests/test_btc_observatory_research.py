@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +13,9 @@ from trade_py.observatory.catalog import store as catalog_store
 from trade_py.observatory.domain.vocab import ObservatoryError, ReasonCode
 from trade_py.observatory.research import adapter, workflow
 from tests.observatory.fixtures import build_observatory_fixture
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TRADE_WRAPPER = REPO_ROOT / "trade"
 
 
 @pytest.fixture()
@@ -121,3 +127,68 @@ def test_run_non_dry_run_delegates_to_existing_authority(data_root):
     result = workflow.run(data_root, dry_run=False)
     assert result["pointer_moved_by"] == "existing lifecycle activate_run only"
     assert "delegated_to" in result
+
+
+# ── RA.1: real ./trade research btc wrapper dispatch (docs/27 Phase A, F10) ────
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv required for ./trade wrapper")
+def test_real_trade_research_btc_run_reaches_workflow(data_root):
+    """`./trade research btc run --dry-run --json` reaches the BTC workflow.
+
+    Baseline (F10): `trade research` only accepted model/factor/evaluate, so `btc`
+    raised "invalid choice: 'btc'". It must now route into the shared BTC research
+    parser and produce a dry-run plan (writes nothing).
+    """
+
+    proc = subprocess.run(
+        [str(TRADE_WRAPPER), "research", "btc", "run", "--dry-run", "--data-root", str(data_root), "--json"],
+        cwd=str(REPO_ROOT),
+        text=True,
+        capture_output=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["dry_run"] is True
+    assert payload["dataset_snapshot_id"]
+    # Dry-run must not create the research dir.
+    research_dir = data_root / "market" / "crypto" / "observatory" / "research"
+    assert not research_dir.exists()
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv required for ./trade wrapper")
+def test_real_trade_research_still_accepts_legacy_groups():
+    """Existing research groups (model/factor/evaluate) still parse (no regression)."""
+
+    proc = subprocess.run(
+        [str(TRADE_WRAPPER), "research", "factor", "--help"],
+        cwd=str(REPO_ROOT),
+        text=True,
+        capture_output=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "trade research factor" in proc.stdout
+
+
+def test_research_btc_and_observatory_share_one_parser():
+    """RA.1: `trade research btc` must reuse the observatory research parser rather
+    than duplicating workflow logic between CLI modules (plan §5.3)."""
+
+    from trade_py.cli import research as research_cli
+
+    # The research CLI delegates btc to the observatory research entrypoint.
+    assert hasattr(observatory_cli, "research_btc_main")
+    assert research_cli._btc_research_entrypoint() is observatory_cli.research_btc_main
+
+
+def test_research_btc_run_dry_run_via_research_group(data_root, capsys):
+    """`trade research btc run` (in-process) reaches the same dry-run workflow."""
+
+    from trade_py.cli import research as research_cli
+
+    rc = research_cli.main(["btc", "run", "--data-root", str(data_root), "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["dry_run"] is True

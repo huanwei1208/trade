@@ -90,14 +90,24 @@ display.
 
 - **New read-only Python API**: `trade_py/observatory/*` domain, catalog, service,
   query SDK.
-- **New CLI**: `trade observatory catalog {rebuild,update,verify,status}` and
-  `trade research btc {run,import,promote}` (all with `--dry-run`, JSON, atomic
-  receipts). No existing CLI removed.
+- **New CLI**: `trade observatory catalog {rebuild,update,verify,status,rollback}`
+  and `trade research btc {run,import,promote}` (all with `--dry-run`, JSON, atomic
+  receipts). `catalog rollback` (Phase B) is a pointer-only CAS with
+  `--to-generation`/`--expected-current`; there is no HTTP write endpoint. No
+  existing CLI removed.
 - **New Web API**: `/api/v1/observatory/*` (additive). Existing
   `/api/data/kline/crypto.BTC` retained and marked deprecated.
 - **DB/schema**: no migration. The Catalog is an additive rebuildable SQLite
   projection outside `trade.db`; research receipts reuse the existing warehouse
-  ADS pointer authority.
+  ADS pointer authority. Phase B (2026-07-20) freezes this projection as immutable,
+  install-once, scope-bound generations
+  (`observatory/generations/catalog-<generation_id>.{sqlite,manifest.json}`) under a
+  typed CAS pointer `observatory/catalog-current.json`, adds the frozen integrity
+  reason codes (`CATALOG_CORRUPT`/`CATALOG_CAS_CONFLICT`/`CATALOG_ROLLBACK_REJECTED`/
+  `CATALOG_LOCK_TIMEOUT`), and a pointer-only `catalog rollback` CLI; the legacy
+  `catalog.sqlite` + `generation.json` pair is retained read-only. See
+  `frozen_contracts.md` §"Phase B generation contracts" and `design.md` §"Phase B
+  immutable-generation layout".
 - **Data layout**: no change to immutable runs/manifests/audits; `btc.parquet`
   and `btc_current.json` become a Formal materialized compatibility view and an
   acceleration pointer respectively.

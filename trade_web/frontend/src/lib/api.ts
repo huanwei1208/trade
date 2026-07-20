@@ -1397,6 +1397,29 @@ export function getDataCoverage() {
 export const OBS_ASSET_PATH = "crypto.BTC";
 const OBS_BASE = `/api/v1/observatory/assets/${OBS_ASSET_PATH}`;
 
+// Rollout capability/readiness (RA.1, docs/27 Phase A). The frontend uses this
+// read-only probe to decide whether to advertise Observatory navigation. It is
+// reachable even when the feature is disabled so nav and routes stay consistent.
+export type ObsCapabilityState =
+  | "disabled"
+  | "catalog_missing"
+  | "catalog_stale"
+  | "catalog_corrupt"
+  | "ready"
+  | "error";
+
+export type ObsCapability = {
+  enabled: boolean;
+  state: ObsCapabilityState;
+  show_nav: boolean;
+  generation_id?: string | null;
+  reason_code?: string;
+};
+
+export function observatoryCapabilityPath(): string {
+  return `/api/v1/observatory/capability`;
+}
+
 export type ObsChannel = "formal" | "evaluated_candidate" | "observed";
 export type ObsLens = "overview" | "trust" | "runs" | "research";
 export type ObsAvailabilityState = "present" | "missing" | "unobserved" | "unknown";

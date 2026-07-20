@@ -15,6 +15,7 @@ type AppShellProps = {
   asOf: string;
   selectedSymbol?: string;
   trustOverview?: TrustOverview | null;
+  observatoryAuthorized?: boolean;
   onNavigate: (page: PageKey) => void;
   onLocaleChange: (locale: Locale) => void;
   onRefresh: () => void;
@@ -29,17 +30,24 @@ export function AppShell({
   asOf,
   selectedSymbol,
   trustOverview,
+  observatoryAuthorized,
   onNavigate,
   onLocaleChange,
   onRefresh,
   children,
 }: AppShellProps) {
   const { t } = useI18n();
+  // RA.1 (F14): the Observatory nav entry is shown only when the App has computed a
+  // FRESH, successful capability authorization (see App.tsx `observatoryAuthorized`).
+  // Cached/previous ready, loading, stale, revalidating, error, unknown, disabled,
+  // missing, catalog_stale and catalog_corrupt all leave it hidden so an unprepared
+  // or in-flight installation never advertises a broken page.
+  const observatoryReady = observatoryAuthorized === true;
   const navItems: Array<{ key: PageKey; label: string; symbolOnly?: boolean }> = [
     { key: "today", label: t("nav.today") },
     { key: "candidates", label: t("nav.candidates") },
     { key: "symbol", label: selectedSymbol ? t("nav.symbolWithCode", { symbol: selectedSymbol }) : t("nav.symbol"), symbolOnly: true },
-    { key: "observatory", label: t("nav.observatory") },
+    ...(observatoryReady ? [{ key: "observatory" as PageKey, label: t("nav.observatory") }] : []),
     { key: "research", label: t("nav.research") },
     { key: "data", label: t("nav.data") },
     { key: "ops", label: t("nav.ops") },
@@ -63,6 +71,7 @@ export function AppShell({
               <button
                 key={item.key}
                 type="button"
+                data-testid={`nav-${item.key}`}
                 className={classNames("app-sidebar__link", activePage === item.key && "is-active")}
                 onClick={() => !disabled && onNavigate(item.key)}
                 disabled={disabled}
