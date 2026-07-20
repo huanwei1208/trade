@@ -55,6 +55,23 @@ evidence-driven, auditable, and easy to review.
 - Do not commit generated local data unless the task explicitly requires a small
   fixture and the fixture is reviewed as part of the change.
 
+## Code Quality Skill (MANDATORY)
+
+- Use `.codex/skills/code-quality/SKILL.md` for every implementation, refactor,
+  bug fix, optimization, review fix, or generated-code task that touches Python,
+  Shell, C/C++, Java/Maven, TypeScript/JavaScript, tests, configuration, or public
+  contracts.
+- Load the shared reference and only the relevant language references before
+  editing. For mixed-language changes, load every applicable reference.
+- Before completion run `./trade dev check --show-plan`, `./trade dev check`, focused
+  behavior tests, required language build/type checks, and `git diff --check`.
+- `./trade dev fix` is explicit source mutation. Inspect its diff; it never authorizes
+  staging or committing formatter output blindly.
+- A failing `./trade dev check --all` is a hard debt/readiness result, not a pass.
+  Do not weaken rules or add blanket suppressions merely to make it green.
+- The quality gate supplements rather than replaces the six-role review, focused
+  tests, data-safety rules, and language-specific validation below.
+
 ## Testing
 
 - Python changes: run focused `uv run pytest tests/<target>.py -q`; for shared

@@ -3,16 +3,22 @@ from __future__ import annotations
 import builtins
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
-from typing import get_type_hints
+from typing import TypedDict, cast, get_type_hints
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class CliProbePayload(TypedDict):
+    code: int
+    loaded: list[str]
+    stdout: str
+    stderr: str
 
 
 _CLI_PROBE = r"""
@@ -40,7 +46,7 @@ print(json.dumps({
 """
 
 
-def _probe_cli(*argv: str) -> dict:
+def _probe_cli(*argv: str) -> CliProbePayload:
     env = os.environ.copy()
     pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(REPO_ROOT) if not pythonpath else f"{REPO_ROOT}{os.pathsep}{pythonpath}"
@@ -52,7 +58,7 @@ def _probe_cli(*argv: str) -> dict:
         capture_output=True,
         check=True,
     )
-    return json.loads(result.stdout)
+    return cast(CliProbePayload, json.loads(result.stdout))
 
 
 def test_root_help_does_not_import_command_domains() -> None:
@@ -73,6 +79,16 @@ def test_data_help_imports_only_selected_domain() -> None:
     assert "trade_py.cli.run" not in payload["loaded"]
     assert "trade_py.evaluation.service" not in payload["loaded"]
     assert "trade_py.jobs" not in payload["loaded"]
+    assert "pandas" not in payload["loaded"]
+
+
+def test_quality_plan_does_not_import_settings_or_db() -> None:
+    payload = _probe_cli("dev", "check", "--show-plan", "--path", "does-not-exist")
+
+    assert payload["code"] == 0
+    assert "trade_py.cli.dev" in payload["loaded"]
+    assert "trade_py.infra.settings" not in payload["loaded"]
+    assert "trade_py.db.trade_db" not in payload["loaded"]
     assert "pandas" not in payload["loaded"]
 
 
@@ -123,8 +139,7 @@ def test_research_route_is_canonical_but_legacy_route_warns(
     group: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from trade_py.cli import research
-    from trade_py.cli import evaluate, factor, model
+    from trade_py.cli import evaluate, factor, model, research
 
     modules = {"model": model, "factor": factor, "evaluate": evaluate}
 

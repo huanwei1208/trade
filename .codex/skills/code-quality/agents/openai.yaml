@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Quality Guard"
+  short_description: "Guard cross-language changes with focused quality gates"
+  default_prompt: "Use $code-quality to implement this change with language-specific quality gates."

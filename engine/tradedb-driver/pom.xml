@@ -16,6 +16,9 @@
         <maven.compiler.target>1.8</maven.compiler.target>
         <junit.jupiter.version>5.10.2</junit.jupiter.version>
         <sqlite.jdbc.version>3.45.3.0</sqlite.jdbc.version>
+        <!-- Last Spotless/GJF line compatible with the module's pinned Java 8 runtime. -->
+        <spotless.maven.version>2.30.0</spotless.maven.version>
+        <google.java.format.version>1.7</google.java.format.version>
     </properties>
 
     <dependencies>
@@ -35,6 +38,32 @@
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <version>${spotless.maven.version}</version>
+                <configuration>
+                    <java>
+                        <googleJavaFormat>
+                            <version>${google.java.format.version}</version>
+                        </googleJavaFormat>
+                        <formatAnnotations />
+                        <removeUnusedImports />
+                        <trimTrailingWhitespace />
+                        <endWithNewline />
+                    </java>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>spotless-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>

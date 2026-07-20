@@ -25,11 +25,15 @@ dependencies = [
     "joblib>=1.3",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "tomli>=2.2,<3; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
+    "basedpyright>=1.29,<2",
+    "pytest>=8,<9",
+    "ruff>=0.12,<1",
+    "tomli>=2.2,<3",
 ]
 ml = [
     "lightgbm>=4.0",
@@ -57,6 +61,36 @@ include = ["trade_py*", "scripts*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["engine", ".venv", "build", "dist", "deployment"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+    "build",
+    "data",
+    "engine/vendor",
+    "trade_web/frontend/node_modules",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["trade_py", "trade_web"]
+
+[tool.basedpyright]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+include = ["trade_py", "trade_web/backend", "tests"]
+exclude = [
+    "build",
+    "data",
+    "engine/vendor",
+    "trade_web/frontend",
+]
+reportUnnecessaryTypeIgnoreComment = "warning"
 
 [tool.uv]
 package = true

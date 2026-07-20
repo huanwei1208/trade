@@ -70,7 +70,9 @@ print_help() {
   echo "  ./trade account watch-* → trade config watch"
   echo ""
   echo "开发命令:"
-  echo "  ./trade setup-python       uv sync"
+  echo "  ./trade dev check          检查当前分支改动（只读、离线）"
+  echo "  ./trade dev fix            显式修复选中的自有源码"
+  echo "  ./trade setup-python       安装 Python 与开发质量依赖"
   echo "  ./trade configure [preset] CMake configure (default: linux-clang)"
   echo "  ./trade build [preset]     CMake build"
   echo "  ./trade test [preset]      ctest"
@@ -100,7 +102,7 @@ compiler_major() {
 cmd_setup_python() {
   require_cmd uv
   cd "$ROOT_DIR"
-  uv sync
+  uv sync --extra dev
 }
 
 cmd_configure() {
@@ -196,6 +198,25 @@ cmd_domain_allow_empty() {
   uv run python -m trade_py.cli.main "$domain" "$@"
 }
 
+cmd_dev() {
+  require_cmd uv
+  cd "$ROOT_DIR"
+  local quality_mode=""
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -v|--verbose|-q|--quiet) ;;
+      check|fix) quality_mode="$arg"; break ;;
+      *) break ;;
+    esac
+  done
+  if [ -n "$quality_mode" ]; then
+    uv run --frozen --no-sync python -m trade_py.cli.main dev "$@"
+  else
+    uv run python -m trade_py.cli.main dev "$@"
+  fi
+}
+
 cmd_test() {
   local preset
   preset="$(default_preset "${1:-}")"
@@ -251,7 +272,7 @@ main() {
     backup) cmd_domain backup "${global_flags[@]}" "${sub_args[@]}" ;;
     start) cmd_domain_allow_empty start "${global_flags[@]}" "${sub_args[@]}" ;;
     web) cmd_domain_allow_empty web "${global_flags[@]}" "${sub_args[@]}" ;;
-    dev) cmd_domain dev "${global_flags[@]}" "${sub_args[@]}" ;;
+    dev) cmd_dev "${global_flags[@]}" "${sub_args[@]}" ;;
     # Legacy/deprecated domains (still work, dispatch to Python which prints deprecation warning)
     doctor) cmd_domain_allow_empty "$sub" "${global_flags[@]}" "${sub_args[@]}" ;;
     inspect|daily|ops|account|model|factor|evaluate)
