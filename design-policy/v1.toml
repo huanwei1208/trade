@@ -1,0 +1,385 @@
+schema_version = 1
+policy_version = "v1"
+
+[limits]
+max_files_per_change = 128
+max_file_bytes = 262144
+max_total_bytes_per_change = 2097152
+max_findings = 200
+max_changes_per_batch = 100
+max_total_bytes_per_batch = 16777216
+
+[artifacts]
+root_files = [
+    ".openspec.yaml",
+    "design-quality.toml",
+    "design-review.toml",
+    "proposal.md",
+    "design.md",
+    "tasks.md",
+]
+required_root_files = [
+    ".openspec.yaml",
+    "design-quality.toml",
+    "proposal.md",
+    "design.md",
+    "tasks.md",
+]
+minimum_spec_files = 1
+spec_pattern = "specs/*/spec.md"
+digest_excludes = ["design-review.toml"]
+
+[brief]
+required_sections = [
+    "Requirements and acceptance",
+    "Ownership and boundaries",
+    "Data and state invariants",
+    "Contracts and compatibility",
+    "Failure and recovery",
+    "Performance and capacity",
+    "Observability and operations",
+    "Validation strategy",
+    "Alternatives and trade-offs",
+    "Rollout and rollback",
+]
+placeholders = ["TBD", "TODO", "FIXME", "to be determined", "fill this in"]
+minimum_section_characters = 40
+
+[impacts]
+required = [
+    "public_contract",
+    "persistent_write",
+    "schema_migration",
+    "point_in_time",
+    "predictive_model",
+    "external_event_data",
+    "runtime_concurrency",
+]
+
+[impact_signals]
+public_contract = ["(?i)\\b(?:add|introduc|chang|deprecat|remov)\\w*[^.\\n]{0,48}\\b(?:CLI|API|command|payload|public contract|engine interface)\\b"]
+persistent_write = ["(?i)\\b(?:write|persist|publish|store)\\w*[^.\\n]{0,48}\\b(?:database|DB|parquet|manifest|durable|repository)\\b"]
+schema_migration = ["(?i)\\b(?:migrat|alter|evolv|chang)\\w*[^.\\n]{0,48}\\b(?:schema|table|parquet layout|payload)\\b"]
+point_in_time = ["(?i)\\b(?:add|introduc|comput|train|backtest)\\w*[^.\\n]{0,48}\\b(?:point-in-time|forecast|prediction|label|ranking)\\b", "(?i)\\b(?:produce|emit|estimat|calculat)\\w*[^.\\n]{0,64}\\b(?:forecast|prediction|probabilit\\w*|expected\\s+(?:next[- ](?:day|session)|future|forward)\\s+returns?)\\b", "(?i)\\bpredict\\w*[^.\\n]{0,64}\\b(?:return|direction|price|market|asset|symbol|instrument)\\w*\\b", "(?i)\\brank\\w*\\s+(?:asset|symbol|instrument|trade)\\w*\\b"]
+predictive_model = ["(?i)\\b(?:add|introduc|comput|train|serve|generat)\\w*[^.\\n]{0,48}\\b(?:forecast|prediction|recommendation|ranking|model output)\\b", "(?i)\\b(?:produce|emit|estimat|calculat)\\w*[^.\\n]{0,64}\\b(?:forecast|prediction|probabilit\\w*|expected\\s+(?:next[- ](?:day|session)|future|forward)\\s+returns?)\\b", "(?i)\\bpredict\\w*[^.\\n]{0,64}\\b(?:return|direction|price|market|asset|symbol|instrument)\\w*\\b", "(?i)\\b(?:rank|score|recommend)\\w*\\s+(?:asset|symbol|instrument|trade)\\w*\\b"]
+external_event_data = ["(?i)\\b(?:ingest|fetch|collect|consume|subscribe)\\w*[^.\\n]{0,48}\\b(?:news|social|macro|on-chain|event feed|third-party feed)\\b"]
+runtime_concurrency = ["(?i)\\b(?:add|introduc|parallel|concurrent|worker|queue|batch orchestration)\\w*[^.\\n]{0,48}\\b(?:runtime|execution|write|task|job|state)\\b"]
+
+[profiles.core]
+impacts = []
+required_sections = []
+required_evidence = []
+
+[profiles.contract]
+impacts = ["public_contract"]
+required_sections = ["Contracts and compatibility"]
+finding_rule = "contract.compatibility.missing"
+required_evidence = ["contract", "consumers", "compatibility", "migration", "rollback"]
+
+[profiles.storage]
+impacts = ["persistent_write", "schema_migration"]
+required_sections = ["Persistent-write safety"]
+finding_rule = "storage.write_safety.missing"
+required_evidence = [
+    "authoritative_writer",
+    "idempotency_key",
+    "concurrency_control",
+    "staging_validation",
+    "atomic_visibility",
+    "crash_windows",
+    "corrupt_predecessor",
+    "partial_results",
+    "reader_consistency",
+    "backup_hash_verification",
+    "small_sample_verification",
+    "rollback",
+    "audit_trail",
+]
+
+[profiles.migration]
+impacts = ["schema_migration"]
+required_sections = ["Schema migration compatibility"]
+finding_rule = "migration.compatibility.missing"
+required_evidence = [
+    "versioning",
+    "compatibility_modes",
+    "dual_read_write",
+    "backfill",
+    "cutover",
+    "rollback",
+    "legacy_retirement",
+]
+
+[profiles.migration.evidence_schema]
+versioning = { kind = "table", fields = { strategy = { kind = "enum", values = ["additive_version", "new_version"] }, old_version_preserved = { kind = "boolean", equals = true } } }
+compatibility_modes = { kind = "string_set", values = ["backward", "forward"], required_values = ["backward", "forward"] }
+dual_read_write = { kind = "boolean", equals = true }
+backfill = { kind = "table", fields = { mode = { kind = "enum", values = ["idempotent_replay", "shadow_copy"] }, destructive = { kind = "boolean", equals = false }, checkpointed = { kind = "boolean", equals = true } } }
+cutover = { kind = "table", fields = { strategy = { kind = "enum", values = ["dual_read_compare", "pointer_switch"] }, readiness_gate = { kind = "boolean", equals = true } } }
+rollback = { kind = "table", fields = { supported = { kind = "boolean", equals = true }, restore_source = { kind = "enum", values = ["previous_generation", "backup_snapshot"] } } }
+legacy_retirement = { kind = "table", fields = { after_compatibility_window = { kind = "boolean", equals = true }, minimum_window_days = { kind = "integer", minimum = 1, maximum = 3650 } } }
+
+[profiles.forecast]
+impacts = ["point_in_time", "predictive_model"]
+required_sections = ["Point-in-time and predictive evidence"]
+finding_rule = "forecast.evidence.missing"
+required_evidence = [
+    "decision_time",
+    "event_time",
+    "publication_time",
+    "first_seen_time",
+    "available_time",
+    "revision_time",
+    "timezone",
+    "knowledge_mode",
+    "revision_policy",
+    "universe_policy",
+    "coverage_state",
+    "label_maturity",
+    "leakage_tests",
+    "evidence_identity",
+    "oos_population",
+    "oos_window",
+    "horizon",
+    "method",
+    "metrics",
+    "sample_count",
+    "uncertainty",
+    "regime_slices",
+    "baseline",
+    "calibration_lifecycle",
+    "promotion_criteria",
+    "unavailable_state",
+    "no_numeric_fallback",
+]
+
+[profiles.forecast.evidence_schema]
+decision_time = { kind = "table", fields = { source = { kind = "enum", values = ["decision_clock"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance", "not_applicable"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+event_time = { kind = "table", fields = { source = { kind = "enum", values = ["source_event_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance", "not_applicable"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+publication_time = { kind = "table", fields = { source = { kind = "enum", values = ["source_publication_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance", "not_applicable"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+first_seen_time = { kind = "table", fields = { source = { kind = "enum", values = ["collector_first_seen_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance", "not_applicable"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+available_time = { kind = "table", fields = { source = { kind = "enum", values = ["policy_available_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance", "not_applicable"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+revision_time = { kind = "table", fields = { source = { kind = "enum", values = ["source_revision_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance", "not_applicable"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+coverage_state = { kind = "enum", values = ["complete", "partial", "unavailable"] }
+label_maturity = { kind = "enum", values = ["mature", "pending", "unavailable"] }
+sample_count = { kind = "integer", minimum = 1 }
+calibration_lifecycle = { kind = "enum", values = ["uncalibrated", "calibrating", "validated", "expired", "unavailable"] }
+unavailable_state = { kind = "enum", values = ["explicit_unknown", "abstain", "blocked"] }
+no_numeric_fallback = { kind = "boolean", equals = true }
+
+[profiles.external_event]
+impacts = ["external_event_data"]
+required_sections = ["External-event data safety"]
+finding_rule = "external_event.evidence.missing"
+required_evidence = [
+    "event_time",
+    "publication_time",
+    "first_seen_time",
+    "available_time",
+    "revision_time",
+    "timestamp_confidence",
+    "source_identity",
+    "provenance",
+    "licensing",
+    "availability_states",
+    "quota",
+    "cost",
+    "concurrency",
+    "retry_classification",
+    "circuit_breaker",
+    "bounded_queue_backpressure",
+    "idempotency",
+    "poison_handling",
+    "dlq",
+    "replay",
+    "correction",
+    "tombstone",
+    "finality",
+    "degraded_mode",
+    "unavailable_fallback",
+]
+
+[profiles.external_event.evidence_schema]
+event_time = { kind = "table", fields = { source = { kind = "enum", values = ["source_event_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+publication_time = { kind = "table", fields = { source = { kind = "enum", values = ["source_publication_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+first_seen_time = { kind = "table", fields = { source = { kind = "enum", values = ["collector_first_seen_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+available_time = { kind = "table", fields = { source = { kind = "enum", values = ["policy_available_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+revision_time = { kind = "table", fields = { source = { kind = "enum", values = ["source_revision_time"] }, fallback = { kind = "enum", values = ["explicit_unavailable", "estimated_with_provenance"] }, timezone = { kind = "text", min_length = 3 }, confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] } } }
+timestamp_confidence = { kind = "enum", values = ["exact", "estimated", "unknown"] }
+source_identity = { kind = "table", fields = { known = { kind = "boolean", equals = true }, source_id = { kind = "identifier" }, source_kind = { kind = "enum", values = ["publisher", "exchange", "government", "licensed_vendor", "internal_collector"] } } }
+provenance = { kind = "table", fields = { status = { kind = "enum", values = ["verified", "contracted", "public_record"] }, source_id = { kind = "identifier" }, reference = { kind = "identifier" } } }
+licensing = { kind = "enum", values = ["approved", "public_domain", "internal_approved"] }
+availability_states = { kind = "string_set", values = ["nonempty", "empty", "partial", "unavailable", "rate_limited", "invalid", "stale"], required_values = ["nonempty", "empty", "partial", "unavailable", "rate_limited", "invalid", "stale"] }
+quota = { kind = "table", fields = { amount = { kind = "integer", minimum = 1, maximum = 1000000000 }, unit = { kind = "text", min_length = 2 }, window_seconds = { kind = "integer", minimum = 1, maximum = 31536000 } } }
+cost = { kind = "table", fields = { max_amount = { kind = "number", minimum = 0, maximum = 1000000000 }, currency = { kind = "enum", values = ["USD", "CNY", "credits"] }, window_seconds = { kind = "integer", minimum = 1, maximum = 31536000 } } }
+concurrency = { kind = "integer", minimum = 1, maximum = 1024 }
+retry_classification = { kind = "table", fields = { max_attempts = { kind = "integer", minimum = 1, maximum = 100 }, backoff = { kind = "enum", values = ["exponential", "bounded_linear"] }, retryable_classes = { kind = "string_set", values = ["timeout", "rate_limit", "transient_5xx"], required_values = ["timeout", "rate_limit"] } } }
+circuit_breaker = { kind = "table", fields = { failure_threshold = { kind = "integer", minimum = 1, maximum = 1000000 }, cooldown_seconds = { kind = "integer", minimum = 1, maximum = 31536000 } } }
+bounded_queue_backpressure = { kind = "table", fields = { capacity = { kind = "integer", minimum = 1, maximum = 10000000 }, overflow = { kind = "enum", values = ["reject", "drop_with_audit", "bounded_spill"] }, backpressure = { kind = "boolean", equals = true } } }
+idempotency = { kind = "table", fields = { enabled = { kind = "boolean", equals = true }, key_fields = { kind = "string_set", values = ["source_id", "event_id", "publication_time", "revision_id", "payload_hash"], required_values = ["source_id", "event_id"] }, dedup_window_seconds = { kind = "integer", minimum = 1, maximum = 31536000 }, persistence = { kind = "enum", values = ["durable", "transactional"] }, conflict_policy = { kind = "enum", values = ["ignore_exact_duplicate", "upsert_newer_revision", "quarantine_conflict"] } } }
+poison_handling = { kind = "enum", values = ["quarantine", "dead_letter"] }
+dlq = { kind = "boolean", equals = true }
+replay = { kind = "boolean", equals = true }
+correction = { kind = "enum", values = ["versioned", "retract_and_replace"] }
+tombstone = { kind = "boolean", equals = true }
+finality = { kind = "enum", values = ["provisional_until_source_final", "source_finality"] }
+degraded_mode = { kind = "enum", values = ["explicit_degraded", "unavailable"] }
+unavailable_fallback = { kind = "enum", values = ["explicit_unavailable", "abstain"] }
+
+[profiles.concurrency]
+impacts = ["runtime_concurrency"]
+required_sections = ["Performance and capacity", "Failure and recovery"]
+finding_rule = "concurrency.evidence.missing"
+required_evidence = [
+    "ownership",
+    "bound",
+    "ordering",
+    "atomicity",
+    "timeout_cancellation",
+    "backpressure",
+    "partial_failure",
+    "capacity_validation",
+]
+
+[review]
+required_roles = [
+    "reliability",
+    "performance",
+    "architecture",
+    "data_quality",
+    "observability",
+    "news_future",
+]
+bootstrap_changes = ["add-design-quality-gates"]
+
+[[rules]]
+id = "core.governance.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Add a valid design-quality.toml marker or keep the historical change ungoverned."
+
+[[rules]]
+id = "core.governance.invalid"
+severity = "blocker"
+suppressible = false
+remediation = "Fix the marker schema, policy version, impact declarations, and unique IDs."
+
+[[rules]]
+id = "core.artifact.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Restore every required governed artifact and at least one capability spec with a scenario."
+
+[[rules]]
+id = "core.policy.immutable"
+severity = "blocker"
+suppressible = false
+remediation = "Do not edit or delete an existing policy version; add and review a new immutable version."
+
+[[rules]]
+id = "core.impact.incomplete"
+severity = "blocker"
+suppressible = false
+remediation = "Declare every supported impact with applies=true|false and a substantive reason."
+
+[[rules]]
+id = "core.impact.contradiction"
+severity = "warning"
+suppressible = true
+remediation = "Reconcile the false impact declaration with the change behavior or record an owned expiring exception."
+
+[[rules]]
+id = "core.brief.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Add a Design Quality Brief to design.md."
+
+[[rules]]
+id = "core.brief.section"
+severity = "blocker"
+suppressible = false
+remediation = "Provide substantive, non-placeholder evidence in the required Brief section."
+
+[[rules]]
+id = "core.obligation.invalid"
+severity = "blocker"
+suppressible = false
+remediation = "Map each obligation to an owner, paths, contracts, failures, specs, and validation tasks."
+
+[[rules]]
+id = "core.obligation.reference"
+severity = "blocker"
+suppressible = false
+remediation = "Reference an existing spec requirement and tracked validation task."
+
+[[rules]]
+id = "core.review.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Run the six-role review and add design-review.toml before strict approval."
+
+[[rules]]
+id = "core.review.stale"
+severity = "blocker"
+suppressible = false
+remediation = "Re-review the current artifact digest and update design-review.toml."
+
+[[rules]]
+id = "core.review.incomplete"
+severity = "blocker"
+suppressible = false
+remediation = "Record all required judge approvals and resolve every P0 finding."
+
+[[rules]]
+id = "core.exception.invalid"
+severity = "blocker"
+suppressible = false
+remediation = "Use a known warning rule with owner, reason, and a future expiry date."
+
+[[rules]]
+id = "contract.compatibility.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Describe the public contract and compatibility, migration, default, or rollback behavior."
+
+[[rules]]
+id = "storage.write_safety.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Complete the persistent-write safety evidence required by policy v1."
+
+[[rules]]
+id = "migration.compatibility.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Define versioning, reader/writer compatibility, transition, cutover, rollback, and retirement evidence."
+
+[[rules]]
+id = "forecast.evidence.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Complete point-in-time, provenance, calibration, and unavailable-state evidence."
+
+[[rules]]
+id = "external_event.evidence.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Complete temporal, availability, provenance, quota, DLQ, and correction evidence."
+
+[[rules]]
+id = "concurrency.evidence.missing"
+severity = "blocker"
+suppressible = false
+remediation = "Document bounded concurrency, failure behavior, and capacity limits."
+
+[[rules]]
+id = "structure.catch_all"
+severity = "warning"
+suppressible = true
+remediation = "Assign the responsibility to a domain/service/adapter/repository module or document a narrow exception."
+
+[[rules]]
+id = "structure.abstraction_evidence"
+severity = "warning"
+suppressible = true
+remediation = "Name at least two consumers or the explicit near-term requirement for the abstraction."

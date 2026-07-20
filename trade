@@ -70,6 +70,7 @@ print_help() {
   echo "  ./trade account watch-* → trade config watch"
   echo ""
   echo "开发命令:"
+  echo "  ./trade dev design-check <change>  设计证据预检/严格批准（先预检→六角色评审→strict）"
   echo "  ./trade dev check          检查当前分支改动（只读、离线）"
   echo "  ./trade dev fix            显式修复选中的自有源码"
   echo "  ./trade setup-python       安装 Python 与开发质量依赖"
@@ -206,7 +207,7 @@ cmd_dev() {
   for arg in "$@"; do
     case "$arg" in
       -v|--verbose|-q|--quiet) ;;
-      check|fix) quality_mode="$arg"; break ;;
+      check|fix|design-check) quality_mode="$arg"; break ;;
       *) break ;;
     esac
   done

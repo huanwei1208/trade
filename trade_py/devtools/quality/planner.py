@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from trade_py.devtools.quality.config import QualityConfig, exclusion_reason, is_source_like
@@ -63,6 +63,8 @@ def build_plan(
         files = tuple(sorted(groups.get(provider.name, ())))
         if files:
             steps.extend(provider.plan(files, context))
+    for contributor in providers.contributors:
+        steps.extend(contributor.plan(selection, context))
 
     mutation_ids = tuple(step.check_id for step in steps if step.mutates_source)
     eligible_tuple = tuple(sorted(eligible))
@@ -186,7 +188,7 @@ def build_plan(
             )
 
     step_ids = [step.check_id for step in steps]
-    duplicates = sorted({item for item in step_ids if step_ids.count(item) > 1})
+    duplicates = sorted(item for item, count in Counter(step_ids).items() if count > 1)
     if duplicates:
         issues.append(
             PlanIssue(

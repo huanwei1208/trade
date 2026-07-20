@@ -8,6 +8,11 @@ description: Enforce repository-specific design, implementation, formatting, lin
 Prevent a syntactically valid patch from being treated as a finished change when its
 ownership, failure behavior, tests, or language checks are weak.
 
+For a medium/large change, use `$design-quality` first and begin this workflow only
+after its digest-bound strict approval passes. If implementation changes approved
+design artifacts or architecture assumptions, return to `$design-quality`; do not
+silently absorb design drift here.
+
 ## Load the relevant rules
 
 Read [references/shared.md](references/shared.md) for every task. Then read only the
@@ -27,7 +32,8 @@ declaring completion.
 
 1. Run `git status -sb`; preserve unrelated changes, local data, caches, and generated
    artifacts.
-2. For non-trivial work, state a short quality brief before editing:
+2. For small non-trivial work not governed by `$design-quality`, state a short quality
+   brief before editing:
    - behavior and non-goals;
    - owner module and public compatibility;
    - failure/unknown semantics;

@@ -110,12 +110,95 @@ def _validate_selected_path(repo_root: Path, path: str) -> None:
         raise ScopeError(f"Selected path resolves outside repository: {path!r}") from exc
 
 
-def _scope_fingerprint(paths: tuple[str, ...]) -> str:
+def _scope_fingerprint(
+    paths: tuple[str, ...],
+    added_files: tuple[str, ...],
+    deleted_files: tuple[str, ...],
+    delta_files: tuple[str, ...],
+    new_change_names: tuple[str, ...],
+) -> str:
     digest = hashlib.sha256()
-    for path in paths:
-        digest.update(path.encode("utf-8", "surrogateescape"))
+    for label, items in (
+        (b"files", paths),
+        (b"added", added_files),
+        (b"deleted", deleted_files),
+        (b"delta", delta_files),
+        (b"new-changes", new_change_names),
+    ):
+        digest.update(label)
         digest.update(b"\0")
+        for path in items:
+            digest.update(path.encode("utf-8", "surrogateescape"))
+            digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _openspec_change_names(paths: set[str]) -> set[str]:
+    names: set[str] = set()
+    for path in paths:
+        parts = path.split("/")
+        if len(parts) >= 4 and parts[:2] == ["openspec", "changes"]:
+            names.add(parts[2])
+    return names
+
+
+def _base_openspec_changes(repo_root: Path, base_sha: str) -> set[str]:
+    result = subprocess.run(
+        ["git", "ls-tree", "-d", "-z", "--name-only", f"{base_sha}:openspec/changes"],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return _nul_paths(result.stdout)
+    stderr = result.stderr.decode("utf-8", "replace")
+    if "Not a valid object name" in stderr or "does not exist" in stderr:
+        return set()
+    raise ScopeError(stderr.strip() or "Cannot inspect base OpenSpec changes")
+
+
+def _diff_status(repo_root: Path, *args: str) -> tuple[set[str], set[str], set[str]]:
+    raw = _git(
+        repo_root,
+        "diff",
+        "--name-status",
+        "-z",
+        "--diff-filter=ACMRD",
+        *args,
+        "--",
+        text=False,
+    )
+    fields = [item for item in raw.split(b"\0") if item]
+    selected: set[str] = set()
+    added: set[str] = set()
+    deleted: set[str] = set()
+    index = 0
+    while index < len(fields):
+        status = fields[index].decode("ascii", "strict")
+        index += 1
+        code = status[:1]
+        if code in {"R", "C"}:
+            if index + 1 >= len(fields):
+                raise ScopeError("git diff returned a truncated rename/copy record")
+            source = fields[index].decode("utf-8", "surrogateescape")
+            target = fields[index + 1].decode("utf-8", "surrogateescape")
+            index += 2
+            selected.add(target)
+            added.add(target)
+            if code == "R":
+                deleted.add(source)
+            continue
+        if code not in {"A", "M", "D"} or index >= len(fields):
+            raise ScopeError(f"git diff returned an unsupported status record: {status!r}")
+        path = fields[index].decode("utf-8", "surrogateescape")
+        index += 1
+        if code == "D":
+            deleted.add(path)
+        else:
+            selected.add(path)
+            if code == "A":
+                added.add(path)
+    return selected, added, deleted
 
 
 def select_scope(
@@ -129,47 +212,32 @@ def select_scope(
     base = _resolve_base(root, base_ref)
     head_sha = str(_git(root, "rev-parse", "HEAD")).strip()
 
-    if all_mode:
-        selected = _nul_paths(_git(root, "ls-files", "-z", text=False))
-    else:
-        selected = _nul_paths(
-            _git(
-                root,
-                "diff",
-                "--name-only",
-                "-z",
-                "--diff-filter=ACMR",
-                base.merge_base,
-                "HEAD",
-                "--",
-                text=False,
-            )
-        )
-        selected.update(
-            _nul_paths(
-                _git(root, "diff", "--name-only", "-z", "--diff-filter=ACMR", "--", text=False)
-            )
-        )
-        selected.update(
-            _nul_paths(
-                _git(
-                    root,
-                    "diff",
-                    "--cached",
-                    "--name-only",
-                    "-z",
-                    "--diff-filter=ACMR",
-                    "--",
-                    text=False,
-                )
-            )
-        )
-    selected.update(
-        _nul_paths(_git(root, "ls-files", "-z", "--others", "--exclude-standard", "--", text=False))
+    delta, added, deleted = _diff_status(root, base.merge_base, "HEAD")
+    for diff_args in ((), ("--cached",)):
+        live_delta, added_delta, deleted_delta = _diff_status(root, *diff_args)
+        delta.update(live_delta)
+        added.update(added_delta)
+        deleted.update(deleted_delta)
+    untracked = _nul_paths(
+        _git(root, "ls-files", "-z", "--others", "--exclude-standard", "--", text=False)
+    )
+    delta.update(untracked)
+    added.update(untracked)
+    selected = (
+        _nul_paths(_git(root, "ls-files", "-z", text=False)) | untracked if all_mode else set(delta)
     )
 
     filters = tuple(_validate_filter(path) for path in paths)
     ordered = tuple(sorted(path for path in selected if _within_filter(path, filters)))
+    ordered_added = tuple(sorted(path for path in added if _within_filter(path, filters)))
+    ordered_deleted = tuple(sorted(path for path in deleted if _within_filter(path, filters)))
+    ordered_delta = tuple(sorted(path for path in delta | deleted if _within_filter(path, filters)))
+    candidate_changes = _openspec_change_names(set(ordered_delta))
+    new_change_names = (
+        tuple(sorted(candidate_changes - _base_openspec_changes(root, base.merge_base)))
+        if candidate_changes
+        else ()
+    )
     for path in ordered:
         _validate_selected_path(root, path)
     return ScopeSelection(
@@ -178,6 +246,16 @@ def select_scope(
         base_sha=base.merge_base,
         head_sha=head_sha,
         files=ordered,
-        fingerprint=_scope_fingerprint(ordered),
+        fingerprint=_scope_fingerprint(
+            ordered,
+            ordered_added,
+            ordered_deleted,
+            ordered_delta,
+            new_change_names,
+        ),
         all_mode=all_mode,
+        added_files=ordered_added,
+        deleted_files=ordered_deleted,
+        delta_files=ordered_delta,
+        new_change_names=new_change_names,
     )

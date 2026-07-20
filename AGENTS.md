@@ -28,10 +28,20 @@ evidence-driven, auditable, and easy to review.
 
 ## Review Before Implementation (MANDATORY for medium/large changes)
 
+- Use `.codex/skills/design-quality/SKILL.md` before implementation. Create a
+  governed OpenSpec change with explicit impact applicability, obligation mappings,
+  a substantive Design Quality Brief, and digest-bound review evidence.
+- Run `./trade dev design-check <change>` before review and
+  `./trade dev design-check <change> --strict` after review. Do not begin code until
+  strict approval passes. A historical `--as-of` result is diagnostic only.
 - Before implementing medium or large changes, run the **multi-agent consensus review** using the `review-this` skill (see `.agents/skills/review-this/SKILL.md`).
 - Launch 6 specialized judge agents (reliability, performance, architecture, data-quality, observability, news-sentiment) in parallel against a review worktree.
 - Synthesize consensus; fix P0 findings before proceeding.
 - The skill is invoked automatically when the task matches the criteria; you can also trigger it with `trade dev review`.
+- If approved design artifacts or architecture assumptions change during
+  implementation, stop, refresh consensus evidence, and regain strict approval.
+- Run the six-role review again against the implemented diff before merge and resolve
+  every P0 finding.
 
 ## OpenSpec
 
@@ -57,6 +67,8 @@ evidence-driven, auditable, and easy to review.
 
 ## Code Quality Skill (MANDATORY)
 
+- For medium/large work, the design-quality gate precedes this implementation gate;
+  code-quality does not replace architecture review or authorize design drift.
 - Use `.codex/skills/code-quality/SKILL.md` for every implementation, refactor,
   bug fix, optimization, review fix, or generated-code task that touches Python,
   Shell, C/C++, Java/Maven, TypeScript/JavaScript, tests, configuration, or public

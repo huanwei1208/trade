@@ -3,6 +3,7 @@
 Usage:
     trade dev check                 # run changed-file code quality gates
     trade dev fix                   # explicitly fix selected owned source
+    trade dev design-check <change> # inspect design evidence before implementation
     trade dev belief <symbol>       # print latest BeliefState for symbol
     trade dev attention <symbol>    # print top AttentionScores for symbol
     trade dev evidence <symbol>     # print Evidence rows for symbol
@@ -47,6 +48,16 @@ def make_parser() -> argparse.ArgumentParser:
     _add_quality_arguments(sub.add_parser("check", help="只读跨语言代码质量门禁"))
     _add_quality_arguments(sub.add_parser("fix", help="显式修复选中的自有源码"))
 
+    sp_design = sub.add_parser("design-check", help="只读设计质量门禁")
+    sp_design.add_argument("change", help="OpenSpec change name")
+    sp_design.add_argument("--strict", action="store_true", help="Require implementation approval")
+    sp_design.add_argument(
+        "--format", choices=("text", "json"), default="text", help="Output format"
+    )
+    sp_design.add_argument(
+        "--as-of", default=None, help="Historical diagnostic date (YYYY-MM-DD; non-strict only)"
+    )
+
     for cmd in ["belief", "attention", "evidence", "rec"]:
         p = sub.add_parser(cmd, help=f"查看 {cmd}")
         p.add_argument("symbol", help="股票代码")
@@ -82,6 +93,12 @@ def _run_review(args: argparse.Namespace) -> int:
     return run_review(args)
 
 
+def _run_design_check(args: argparse.Namespace) -> int:
+    from trade_py.devtools.design_quality.cli import run_design_cli
+
+    return run_design_cli(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = make_parser()
     args = parser.parse_args(argv)
@@ -95,6 +112,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "review":
         return _run_review(args)
+
+    if args.cmd == "design-check":
+        return _run_design_check(args)
 
     data_root = getattr(args, "data_root", None)
     if data_root is None:

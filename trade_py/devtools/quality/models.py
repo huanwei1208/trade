@@ -50,12 +50,17 @@ class CheckStep:
     remediation_code: str = "quality.fix"
     remediation: str = "Inspect the diagnostic and fix the owning source."
     nonzero_kind: FailureKind = FailureKind.QUALITY
+    exit_code_kinds: tuple[tuple[int, FailureKind], ...] = ()
+    structured_output_schema: str | None = None
     version_argv: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["resource_class"] = self.resource_class.value
         payload["nonzero_kind"] = self.nonzero_kind.value
+        payload["exit_code_kinds"] = [
+            {"exit_code": code, "failure_kind": kind.value} for code, kind in self.exit_code_kinds
+        ]
         payload["argv"] = list(self.argv)
         payload["files"] = list(self.files)
         payload["prerequisites"] = list(self.prerequisites)
@@ -80,6 +85,7 @@ class StepResult:
     tool_path: str | None = None
     tool_version: str | None = None
     caused_by: str | None = None
+    details: dict[str, Any] | None = None
 
     @property
     def aggregate_exit_code(self) -> int:
@@ -106,6 +112,10 @@ class ScopeSelection:
     files: tuple[str, ...]
     fingerprint: str
     all_mode: bool = False
+    added_files: tuple[str, ...] = ()
+    deleted_files: tuple[str, ...] = ()
+    delta_files: tuple[str, ...] = ()
+    new_change_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
