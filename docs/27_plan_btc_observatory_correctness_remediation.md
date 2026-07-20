@@ -354,7 +354,8 @@ Reason codes and their HTTP/CLI mappings are frozen in `frozen_contracts.md`
 
 - missing/stale projection, or only-legacy pair: `CATALOG_STALE` / HTTP 503
 - lock unavailable within read deadline: `CATALOG_LOCK_TIMEOUT` / HTTP 503
-- generation chain corrupt (pointer/manifest/SQLite/`catalog_meta`/logical hash):
+- generation chain corrupt
+  (pointer/switch-receipt/manifest/SQLite/`catalog_meta`/logical hash):
   `CATALOG_CORRUPT` / HTTP 409
 - malformed manifest or ledger: `MANIFEST_INVALID` / HTTP 409
 - pointer disagreement: `CURRENT_POINTER_INVALID` / HTTP 409
@@ -375,17 +376,23 @@ The frozen acceptance surface is `frozen_contracts.md` §B.8. Phase B implementa
 must cover at least:
 
 - full SQLite roundtrip (rebuild → install → read equals source facts)
-- ordinary business-row tamper detected via the logical content hash
+- ordinary Catalog-row tamper (gate/finding/clock/artifact-ref/release target)
+  detected via the logical content hash
 - corrupt SQLite fails verify and read (`CATALOG_CORRUPT`)
+- broken/orphaned switch receipt and pointer↔head-receipt disagreement fail closed;
+  a crash-after-install-before-CAS orphan is diagnosed but never served
 - multi-process concurrent CAS: cannot overwrite/mix generations; one committed
-  switch, the loser gets `CATALOG_CAS_CONFLICT`
+  switch, the loser gets `CATALOG_CAS_CONFLICT`; the same-candidate publisher gets a
+  success no-op with no second receipt
 - publish/rebuild/read barrier (lock order; reader sees one complete generation)
 - crash failpoints across the fsync window leave no half-installed generation
 - real supported-projection rollback of the SAME authoritative fact set via a real
-  pointer switch, plus stale-target rejection (`CATALOG_ROLLBACK_REJECTED`)
-- pointer/ledger/manifest/hash disagreement fails closed
-- five classes of artifact tamper (canonical, primary, shadow, reconciliation,
-  revisions) each fail closed
+  pointer switch (second projection registered through the reader registry), plus
+  stale/uncommitted-target rejection (`CATALOG_ROLLBACK_REJECTED`)
+- pointer/receipt/ledger/manifest/hash disagreement fails closed
+- five classes of external-artifact tamper (canonical, primary, shadow,
+  reconciliation, revisions — including an OHLCV tamper) each fail closed with
+  `ARTIFACT_HASH_MISMATCH`
 - malformed newest manifest/audit does not disappear and expose an older run as
   latest; unattributable legacy global audit is a fail-closed migration blocker
 - ETH isolation: an unrelated ETH audit leaves the BTC fingerprint, active release,

@@ -102,15 +102,24 @@ display.
   ADS pointer authority. Phase B (2026-07-20) freezes this projection as immutable,
   install-once, scope-bound generations
   (`observatory/generations/catalog-<generation_id>.{sqlite,manifest.json}`) under a
-  typed CAS pointer `observatory/catalog-current.json`, adds the frozen integrity
-  reason codes (`CATALOG_CORRUPT`/`CATALOG_CAS_CONFLICT`/`CATALOG_ROLLBACK_REJECTED`/
+  typed CAS pointer `observatory/catalog-current.json`, adds install-once immutable
+  switch receipts (`observatory/commits/catalog-switch-<operation_id>.json`) that
+  form a hash-linked committed history the pointer head pins, bumps the market codec
+  to `obs-catalog-v2` (the old mutable pair used `obs-catalog-v1`), adds the frozen
+  integrity reason codes
+  (`CATALOG_CORRUPT`/`CATALOG_CAS_CONFLICT`/`CATALOG_ROLLBACK_REJECTED`/
   `CATALOG_LOCK_TIMEOUT`), and a pointer-only `catalog rollback` CLI; the legacy
   `catalog.sqlite` + `generation.json` pair is retained read-only. See
   `frozen_contracts.md` §"Phase B generation contracts" and `design.md` §"Phase B
   immutable-generation layout".
-- **Data layout**: no change to immutable runs/manifests/audits; `btc.parquet`
-  and `btc_current.json` become a Formal materialized compatibility view and an
-  acceleration pointer respectively.
+- **Data layout**: existing immutable runs/manifests/audits are NOT migrated or
+  modified; `btc.parquet` and `btc_current.json` become a Formal materialized
+  compatibility view and an acceleration pointer respectively. Post-cutover NEW
+  publish/rollback audits additionally carry `asset_id = crypto.BTC` and are written
+  under the scope-decidable-before-parse namespace
+  `audit/by-asset/crypto.BTC/{publish,rollback}/`; the legacy unscoped
+  `audit/{publish,rollback}/` records stay read-only and are only adapted (never
+  rewritten) per the frozen legacy-fact policy.
 
 ## Compatibility, data safety, and rollout
 
