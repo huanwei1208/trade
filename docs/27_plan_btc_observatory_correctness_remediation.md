@@ -238,7 +238,8 @@ corruption detection, asset isolation, concurrency safety and reversible switchi
 ### Required design
 
 All clause numbers below are frozen in `frozen_contracts.md` §"Phase B generation
-contracts" (B.1–B.8); this list is the execution view, not a second source of truth.
+contracts" (B.1–B.8, including the B.7a primary reason-code precedence); this list
+is the execution view, not a second source of truth.
 
 1. **Scope (B.1)**: bind every generation to
    `CatalogScope = (asset_id, data_family, source_contract_version,
@@ -248,46 +249,77 @@ contracts" (B.1–B.8); this list is the execution view, not a second source of 
    `research` are different `data_family` values and never enter the BTC market
    ledger/head, quality, ETag, or fingerprint; their business is out of Phase B.
 2. **Layout (B.2)**: use a mutable typed pointer `observatory/catalog-current.json`
-   plus install-once immutable
-   `observatory/generations/catalog-<generation_id>.{sqlite,manifest.json}`.
-   Materialize the candidate in a hidden same-filesystem temp. Never overwrite or
-   unlink a live generation. Retain the legacy `catalog.sqlite` + `generation.json`
-   pair read-only; when only the legacy pair exists, diagnose `CATALOG_STALE` +
-   `legacy_catalog_requires_rebuild` and never migrate inside a GET/SDK read.
-3. **Identity/integrity (B.3)**: derive `generation_id` from scope, catalog schema
-   version, projection policy version, source fingerprint, and the full
-   `logical_content_hash`. The manifest carries scope, pointer/manifest/schema/
-   projection versions, `generation_id`, `source_fingerprint`,
-   `logical_content_hash`, SQLite SHA-256, DB filename, fact count, and fact-set
-   hash. The verification chain is
-   `pointer -> manifest -> file SHA-256 -> catalog_meta -> deserialized logical hash`.
-   The logical hash covers all resolver fields (runs, contracts, four clocks +
-   provenance, gates, findings, artifact refs, releases, release events + active
-   head, revision index, current pointer, relevant fact set) — never a subset.
+   (the only mutable file), install-once immutable
+   `observatory/generations/catalog-<generation_id>.{sqlite,manifest.json}`, and
+   install-once immutable `observatory/commits/catalog-switch-<operation_id>.json`
+   switch receipts forming a hash-linked committed history that the pointer head
+   pins. Materialize the candidate in a hidden same-filesystem temp. Never overwrite
+   or unlink a live generation or receipt. Retain the legacy `catalog.sqlite` +
+   `generation.json` pair read-only; when only the legacy pair exists, diagnose
+   `CATALOG_STALE` + `legacy_catalog_requires_rebuild` and never migrate inside a
+   GET/SDK read.
+3. **Identity/integrity (B.3)**: derive `generation_id` from the full scope, catalog
+   schema version (`obs-catalog-v2`), manifest schema version, projection policy
+   version, source fingerprint, and the full `logical_content_hash`
+   (`pointer_schema_version` and `switch_receipt_schema_version` do NOT by themselves
+   change it). The typed pointer carries scope, schema versions, current/previous
+   generation ids, and `head_commit_ref`/`head_commit_sha256`; each canonical-JSON
+   switch receipt carries its schema version, `operation_id`, `operation`, scope,
+   `sequence`, previous commit ref+sha, from/to generation ids, to-manifest ref+sha,
+   source fingerprint, `expected_pointer_sha256` (null sentinel when absent), and
+   `occurred_at`. The manifest carries scope, pointer/manifest/schema/projection
+   versions, `generation_id`, `source_fingerprint`, `logical_content_hash`, SQLite
+   SHA-256, DB filename, fact count, and fact-set hash. The verification chain,
+   applied on every read (B.4), is
+   `pointer -> head switch receipt -> manifest -> file SHA-256 -> catalog_meta -> deserialized logical hash`
+   (a normal GET verifies only the head receipt; diagnostics traverse the chain). The
+   logical hash covers all Catalog resolver fields (runs, contracts, four clocks +
+   provenance, gates, findings, artifact refs, `release_events` + `active_release_head`
+   separately, revisions index, the authoritative source `btc_current` snapshot, and
+   the relevant fact set) — never a subset and never `catalog-current.json`; no OHLCV
+   payload is stored inside the Catalog SQLite.
 4. **Durable publish/CAS/locks (B.4)**: reuse and publicly expose the BTC assurance
    lock owner (`BtcRunStore`, `.btc-assurance.lock`). Freeze a scoped
-   `SourceSnapshot` + expected pointer under a shared lock from one byte batch;
-   project/materialize/verify (integrity + logical + file hash) and fsync outside
-   the lock; under an exclusive lock re-confirm the live fingerprint and
-   expected-previous (no shared→exclusive upgrade); install immutable DB + manifest
-   install-once; CAS `catalog-current.json` last, fsync file and directory. A ready
-   Catalog with no lockfile fails closed; GET never creates the lockfile. Retain all
-   committed generations (no destructive GC); orphans are diagnosed, never served or
-   deleted.
-5. **Read barrier (B.4)**: readers take a strict shared lock, freeze one typed
-   pointer, open and verify one immutable generation, deserialize one
-   `CatalogReadSnapshot`, and reconcile BTC `current`/ledger/manifest identity;
-   resolver/query/diff/SDK reuse it. Reads do zero `build_catalog()` and zero writes;
-   the lock covers only freeze/open/verify, and response bytes are built outside the
-   lock on immutable refs. `load_catalog_checked()` deserializes the selected SQLite
-   projection instead of calling `build_catalog()`.
+   `SourceSnapshot` + the exact expected pointer SHA (or absent sentinel) under a
+   shared lock from one byte batch; outside the lock project/commit/close/fsync the
+   candidate DB, write+fsync the manifest, and fsync the candidate dir (no
+   shared→exclusive upgrade); under an exclusive lock recheck the exact live
+   fingerprint and exact expected pointer SHA; install immutable DB + manifest
+   install-once (no-overwrite renames, fsync `generations/`); write the immutable
+   switch receipt into `commits/` (fsync); replace `catalog-current.json` last, fsync
+   file and `observatory/` parent. A recheck that finds the current generation
+   already equals the verified candidate (matching source/scope) is a success no-op
+   (`changed=false`/`committed=false`) with no second receipt; a different observed
+   target/pointer SHA or changed source is `CATALOG_CAS_CONFLICT`. A crash before the
+   pointer replacement leaves the old pointer valid and new artifacts orphaned; after
+   it the complete new chain is valid. A ready Catalog with no lockfile fails closed;
+   GET never creates the lockfile. Retain all committed generations/receipts (no
+   destructive GC); orphans are diagnosed, never served or deleted.
+5. **Read barrier (B.4)**: market readers take a strict shared lock, freeze one typed
+   pointer, verify pointer ↔ head switch receipt link consistency, open and verify
+   one immutable generation, deserialize one `CatalogReadSnapshot`, and reconcile BTC
+   `current`/ledger/manifest identity; resolver/query/diff/SDK reuse it. A normal GET
+   verifies only the head receipt, not the full history. Reads do zero
+   `build_catalog()` and zero writes; the lock covers only freeze/open/verify, and
+   response bytes are built outside the lock on immutable refs.
+   `load_catalog_checked()` deserializes the selected SQLite projection instead of
+   calling `build_catalog()`. The existing research GET/H1 adapter is read-only under
+   its own receipt/pointer contract, outside `CatalogReadSnapshot` and outside this
+   market read barrier, and does not affect the market Catalog source/logical hash,
+   snapshot/ETag, or active head.
 6. **Rollback vs stale (B.5)**: `catalog rollback` is pointer-only and allowed only
-   when the target shares scope, is reader-supported, and has
-   `source_fingerprint == current authoritative BTC fact set` — a projection/policy
-   rollback, not a Formal truth rollback. A different-fingerprint target is
-   `CATALOG_ROLLBACK_REJECTED` / `CATALOG_STALE`; no pinned mode silently serves a
-   stale head. Formal/source rollback goes only through `BtcRunStore` authoritative
-   rollback, producing a new ledger fact before a new generation is built. CLI:
+   when the target shares scope, is reader-supported, has
+   `source_fingerprint == current authoritative BTC fact set`, and is a committed
+   generation reachable from the pointer head — a projection/policy rollback, not a
+   Formal truth rollback. A stale/different-scope/unsupported/uncommitted target is
+   the single primary code `CATALOG_ROLLBACK_REJECTED` (it does not also return
+   `CATALOG_STALE`); no pinned mode silently serves a stale head. The reader
+   compatibility registry is explicit; the acceptance fixture may register a second
+   supported projection policy through the same registry (no bypass) to exercise a
+   real same-fact-set rollback, while the normal writer emits only the current
+   projection policy. Formal/source rollback goes only through `BtcRunStore`
+   authoritative rollback, producing a new ledger fact before a new generation is
+   built. CLI:
    `./trade observatory catalog rollback --to-generation <id> [--expected-current <id>] [--dry-run] --json`; no HTTP write endpoint.
 7. **Asset/legacy fact policy (B.6)**: new manifest/pointer/publish/rollback audits
    carry `asset_id=crypto.BTC` and land under
@@ -299,14 +331,20 @@ contracts" (B.1–B.8); this list is the execution view, not a second source of 
    that reference a BTC-scoped run; other assets are excluded from the BTC
    fingerprint. Unparseable/unattributable legacy global authoritative files fail
    closed as migration blockers; unscoped authoritative writes are prohibited after
-   cutover. A scoped malformed fact blocks only its own scope. The release-event
-   ledger is modelled separately from the active Formal head; a rollback event
+   cutover. A scoped malformed fact blocks only its own scope. The `release_events`
+   ledger is modelled separately from the `active_release_head`; a rollback event
    activates `to_run_id` (legacy-to-none excepted).
 8. **Fail-closed reconciliation (B.3/B.7)**: reconcile `btc_current.json`, active
    release receipt, manifest run/hash, and required artifacts within the same read
-   transaction, and require file hashes for canonical, primary, shadow,
-   reconciliation, and revisions whenever those artifacts participate in a response.
-   Malformed authoritative manifests/audits are explicit invalid facts or block
+   transaction. After the snapshot freezes its refs, every participating external
+   artifact (canonical, primary, shadow, reconciliation, revisions) MUST be opened
+   and read once and the exact bytes used to build the response SHA-256 checked
+   against the frozen ref outside the lock; any mismatch/missing participating
+   artifact is `ARTIFACT_HASH_MISMATCH` and aborts the entire GET/SDK/diff/composite
+   response (no partial 200/`null`/old fallback). An OHLCV tamper is caught by this
+   external-artifact rule (OHLCV is not inside the Catalog SQLite); a tampered Catalog
+   row (gate/finding/clock/artifact-ref/release target) is caught by the logical
+   hash. Malformed authoritative manifests/audits are explicit invalid facts or block
    generation publication — never a silent `continue` that exposes an older run.
 
 ### Failure behavior
