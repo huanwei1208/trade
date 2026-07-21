@@ -103,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         print("前端构建完成。")
 
     os.environ["TRADE_DATA_ROOT"] = args.data_root
+    os.environ.setdefault("TRADE_OBSERVATORY_ENABLED", "1")
     if args.web_dist:
         os.environ["TRADE_WEB_DIST"] = args.web_dist
     else:
