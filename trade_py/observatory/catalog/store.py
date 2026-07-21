@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,9 @@ from trade_py.observatory.domain.vocab import (
     ObservatoryError,
     ReasonCode,
 )
+
+_FINGERPRINT_CACHE_TTL_SEC = 5.0
+_fingerprint_cache: dict[str, tuple[float, str]] = {}
 
 
 # The generation-identity fields that the pointer file (generation.json) and the
@@ -61,7 +65,14 @@ def _crypto_paths(data_root: str | Path) -> tuple[Path, Path, Path]:
 
 def current_source_fingerprint(data_root: str | Path) -> str:
     runs_dir, audit_dir, current_path = _crypto_paths(data_root)
-    return compute_source_fingerprint(runs_dir, audit_dir, current_path)
+    cache_key = str(runs_dir)
+    now = time.monotonic()
+    cached = _fingerprint_cache.get(cache_key)
+    if cached and (now - cached[0]) < _FINGERPRINT_CACHE_TTL_SEC:
+        return cached[1]
+    fp = compute_source_fingerprint(runs_dir, audit_dir, current_path)
+    _fingerprint_cache[cache_key] = (now, fp)
+    return fp
 
 
 def _write_sqlite(catalog: Catalog, db_path: Path) -> None:

@@ -134,8 +134,9 @@ class KlineFetcher:
         # akshare expects dates without hyphens for some APIs; use YYYYMMDD.
         start_ymd = start.replace("-", "")
         end_ymd = end_str.replace("-", "")
+        ak_adjust = "" if adjust == "none" else adjust
         try:
-            raw = self._fetch_raw_hist(ak, code, start_ymd, end_ymd, adjust)
+            raw = self._fetch_raw_hist(ak, code, start_ymd, end_ymd, ak_adjust)
         except Exception as exc:
             error_kind = _classify_fetch_error(exc)
             logger.warning(

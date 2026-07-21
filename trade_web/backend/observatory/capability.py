@@ -19,14 +19,14 @@ authorizes navigation (`show_nav`); every other state hides Observatory.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 from trade_py.observatory.catalog import store
 
-# The single environment flag that gates the Observatory Web rollout. It is
-# explicitly opt-in: an unconfigured/unprepared installation stays disabled so it
-# never advertises a broken Observatory page (F14).
 ENABLED_ENV = "TRADE_OBSERVATORY_ENABLED"
+_CAPABILITY_CACHE_TTL_SEC = 2.0
+_capability_cache: dict[tuple[str, bool], tuple[float, dict[str, Any]]] = {}
 
 
 def observatory_enabled() -> bool:
@@ -54,6 +54,11 @@ def capability_payload(data_root: str, *, enabled: bool | None = None) -> dict[s
         enabled = observatory_enabled()
     if not enabled:
         return {"enabled": False, "state": "disabled", "show_nav": False}
+    cache_key = (str(data_root), enabled)
+    now = time.monotonic()
+    cached = _capability_cache.get(cache_key)
+    if cached and (now - cached[0]) < _CAPABILITY_CACHE_TTL_SEC:
+        return cached[1]
     cap = store.capability(data_root)
     state = cap["state"]
     payload: dict[str, Any] = {
@@ -63,6 +68,7 @@ def capability_payload(data_root: str, *, enabled: bool | None = None) -> dict[s
     }
     if cap.get("generation_id"):
         payload["generation_id"] = cap["generation_id"]
+    _capability_cache[cache_key] = (now, payload)
     return payload
 
 
