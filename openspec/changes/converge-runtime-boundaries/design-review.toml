@@ -3,7 +3,7 @@ policy_version = "v1"
 policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
 artifact_digest_algorithm = "sha256-path-content-v1"
 artifact_digest = "sha256:f16118dcb7b11f861ba23b8ca6e48037f7ca3472872830087366c4e1bd637248"
-reviewed_commit = "7b149595c97096ea3c2303437403d1b72479d4ad"
+reviewed_commit = "6057bda69710026719e84dcd0d0087c26d02e618"
 reviewed_at = "2026-07-21"
 status = "approved"
 
@@ -30,12 +30,12 @@ score_after = 9
 [[judges]]
 role = "observability"
 status = "approved"
-score_after = 8
+score_after = 9
 
 [[judges]]
 role = "news_future"
 status = "approved"
-score_after = 9
+score_after = 8
 
 [[findings]]
 id = "FINAL-001"
@@ -52,8 +52,8 @@ priority = "P1"
 severity = "HIGH"
 consensus_count = 1
 status = "resolved"
-resolution = "Calendar, agenda, and backup reads now execute through asyncio worker threads with deterministic concurrency coverage."
-evidence = ["review.md:Final implementation review", "trade_web/backend/runtime/service.py", "tests/test_runtime_router.py"]
+resolution = "Calendar, agenda, backup, and SSE reads all execute through asyncio worker threads; EventBus capacity_snapshot reads channels atomically under _lifecycle_lock."
+evidence = ["review.md:Final implementation review", "review.md:Final completion audit", "trade_web/backend/runtime/service.py", "trade_py/bus/__init__.py", "tests/test_runtime_router.py"]
 
 [[findings]]
 id = "FINAL-003"
@@ -81,3 +81,75 @@ consensus_count = 1
 status = "accepted"
 resolution = "Broader news fan-out permutations remain follow-up coverage while current continuation, channel isolation, payload validation, and durable replay preserve behavior."
 evidence = ["review.md:Final implementation review", "tests/test_news_job.py", "tests/test_event_bus.py"]
+
+[[findings]]
+id = "COMPL-001"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "SSE event_stream and runtime_stream now route SQLite reads through asyncio.to_thread so per-client 2s polling does not block the FastAPI event loop."
+evidence = ["review.md:Final completion audit", "trade_web/backend/runtime/service.py:255,281", "tests/test_runtime_router.py"]
+
+[[findings]]
+id = "COMPL-002"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "EventBus.capacity_snapshot now reads the channels tuple under _lifecycle_lock so lifecycle and channel state are atomically consistent during shutdown."
+evidence = ["review.md:Final completion audit", "trade_py/bus/__init__.py:1217-1219"]
+
+[[findings]]
+id = "COMPL-003"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "resolved"
+resolution = "SSE egress and /api/run payload serialization set allow_nan=False so non-finite floats cannot produce invalid JSON on the wire."
+evidence = ["review.md:Final completion audit", "trade_web/backend/runtime/service.py:259,289", "trade_web/backend/app.py:1548"]
+
+[[findings]]
+id = "COMPL-004"
+priority = "P2"
+severity = "LOW"
+consensus_count = 1
+status = "accepted"
+resolution = "CommandStartResult.detail is not propagated into HTTP 503 response bodies; reason_code + Retry-After remain sufficient and detail is in server logs."
+evidence = ["review.md:Final completion audit", "trade_web/backend/app.py:1598-1611"]
+
+[[findings]]
+id = "COMPL-005"
+priority = "P2"
+severity = "LOW"
+consensus_count = 1
+status = "accepted"
+resolution = "Top-level status snapshot reports 'ok' even when health.status is 'degraded'; naive clients see a healthy node while aware clients read health.status."
+evidence = ["review.md:Final completion audit", "trade_web/backend/runtime/service.py:144-148"]
+
+[[findings]]
+id = "COMPL-006"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "accepted"
+resolution = "signals.events_updated, data.crypto.sentiment, and data.crypto.fear_greed route to the io channel; channel-routing cleanup deferred to a follow-up outside this proposal."
+evidence = ["review.md:Final completion audit"]
+
+[[findings]]
+id = "COMPL-007"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "accepted"
+resolution = "/api/trigger and DAG run endpoints publish+dispatch synchronously on the event loop; admission bounds concurrency and these are one-shot request paths."
+evidence = ["review.md:Final completion audit", "trade_web/backend/app.py:1488-1524"]
+
+[[findings]]
+id = "COMPL-008"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "accepted"
+resolution = "Broader HTTP egress/ingress JSON strictness (non-SSE GET responses, PATCH endpoints, CLI config/data, outbound HTTP, DB persistence) remains defense-in-depth follow-up work."
+evidence = ["review.md:Final completion audit"]

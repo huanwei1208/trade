@@ -20,7 +20,12 @@ from trade_py.bus import (
     bootstrap_from_dag,
     dispatch_dag_row,
 )
-from trade_py.bus.models import AdmissionOutcome, BusLifecycle, RuntimeCapacityStatus
+from trade_py.bus.models import (
+    AdmissionOutcome,
+    BusLifecycle,
+    PublishResult,
+    RuntimeCapacityStatus,
+)
 from trade_py.db.trade_db import TradeDB
 
 _CHANNEL_CAPACITIES = {
@@ -167,7 +172,7 @@ def test_publish_rejects_non_dict_payload_before_persistence(
     db.close()
 
 
-def test_omitted_payload_is_empty_immutable_snapshot(tmp_path) -> None:
+def test_omitted_payload_is_empty_json_native_snapshot(tmp_path) -> None:
     db = TradeDB(tmp_path)
     bus = _bus(db)
     received: list[Event] = []
@@ -180,10 +185,31 @@ def test_omitted_payload_is_empty_immutable_snapshot(tmp_path) -> None:
 
     assert bus.wait_for_idle(min_event_id=event.id, timeout_sec=2)
     assert event.payload == {}
+    assert isinstance(event.payload, dict)
     assert received == [event]
-    with pytest.raises(TypeError):
-        cast(dict, event.payload)["late"] = True
+    cast(dict, event.payload)["late"] = True
     assert _event_row(db, event.id)["payload"] == "{}"
+    bus.shutdown()
+    db.close()
+
+
+def test_publish_rejects_nested_non_string_mapping_keys_before_persistence(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    bus = _bus(db)
+
+    with pytest.raises(
+        TypeError,
+        match=r"event payload mapping keys must be strings: path=\$\.nested",
+    ):
+        bus.publish(
+            "ops.invalid_mapping_key",
+            {"nested": {1: "number", "1": "string"}},
+        )
+
+    count = db._conn.execute(
+        "SELECT COUNT(*) FROM event_log WHERE topic='ops.invalid_mapping_key'"
+    ).fetchone()[0]
+    assert count == 0
     bus.shutdown()
     db.close()
 
@@ -227,7 +253,10 @@ def test_publish_dispatches_canonical_snapshot_before_caller_mutation(tmp_path) 
     assert bus.wait_for_idle(min_event_id=event.id, timeout_sec=2)
     assert len(received) == 1
     snapshot = received[0].payload
-    assert snapshot["nested"]["items"] == (1, 2)
+    assert isinstance(snapshot, dict)
+    assert isinstance(snapshot["nested"], dict)
+    assert isinstance(snapshot["nested"]["items"], list)
+    assert snapshot["nested"]["items"] == [1, 2]
     assert "other" not in snapshot["nested"]
     persisted = json.loads(str(_event_row(db, event.id)["payload"]))
     assert persisted == {"nested": {"items": [1, 2]}}
@@ -1210,6 +1239,216 @@ def test_handler_error_text_never_becomes_runtime_replayable(
     assert row is not None
     assert row["error_message"] == error_message
     bus.shutdown()
+    db.close()
+
+
+def test_shutdown_waits_for_admission_submission_registration(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = TradeDB(tmp_path)
+    capacities = dict(_CHANNEL_CAPACITIES)
+    capacities["io"] = 2
+    bus = EventBus(
+        db,
+        ingest_workers=1,
+        nlp_workers=1,
+        signal_workers=1,
+        decision_workers=1,
+        io_workers=1,
+        channel_capacities=capacities,
+    )
+    blocker_started = threading.Event()
+    blocker_release = threading.Event()
+    submitted = threading.Event()
+    allow_submit_return = threading.Event()
+    cancellation_write_failed = threading.Event()
+    allow_cancellation_persistence = threading.Event()
+    shutdown_returned = threading.Event()
+    handled: list[int] = []
+    cancellation_attempts = 0
+
+    def block(_event: Event) -> None:
+        blocker_started.set()
+        assert blocker_release.wait(timeout=5)
+
+    bus.subscribe(
+        "ops.admission_shutdown_blocker",
+        _named_handler("tests.admission_shutdown_blocker", block),
+    )
+    bus.publish("ops.admission_shutdown_blocker")
+    assert blocker_started.wait(timeout=2)
+
+    original_submit = bus._pools["io"].submit
+
+    def submit_then_block_return(*args, **kwargs):
+        future = original_submit(*args, **kwargs)
+        submitted.set()
+        assert allow_submit_return.wait(timeout=3)
+        return future
+
+    monkeypatch.setattr(bus._pools["io"], "submit", submit_then_block_return)
+    original_mark_admission_failed = db.mark_handler_admission_failed
+
+    def fail_cancel_once_then_recover(*args, **kwargs):
+        nonlocal cancellation_attempts
+        reason = str(args[2] if len(args) > 2 else kwargs.get("reason") or "")
+        if reason.startswith("runtime_admission:shutdown_cancelled:"):
+            cancellation_attempts += 1
+            if cancellation_attempts == 1:
+                cancellation_write_failed.set()
+                raise sqlite3.OperationalError("cancellation persistence unavailable")
+            assert allow_cancellation_persistence.wait(timeout=3)
+        return original_mark_admission_failed(*args, **kwargs)
+
+    monkeypatch.setattr(db, "mark_handler_admission_failed", fail_cancel_once_then_recover)
+    bus.subscribe(
+        "ops.admission_shutdown_race",
+        _named_handler(
+            "tests.admission_shutdown_race",
+            lambda event: handled.append(event.id),
+        ),
+    )
+    publish_result: list[PublishResult[Event]] = []
+    publish_error: list[BaseException] = []
+
+    def publish() -> None:
+        try:
+            publish_result.append(bus.publish_with_outcome("ops.admission_shutdown_race"))
+        except BaseException as exc:
+            publish_error.append(exc)
+
+    publisher = threading.Thread(target=publish)
+    publisher.start()
+    assert submitted.wait(timeout=2)
+
+    def shutdown() -> None:
+        bus.shutdown(timeout_sec=3)
+        shutdown_returned.set()
+
+    stopper = threading.Thread(target=shutdown)
+    stopper.start()
+    assert shutdown_returned.wait(timeout=0.05) is False
+    allow_submit_return.set()
+    publisher.join(timeout=2)
+    assert publisher.is_alive() is False
+
+    assert publish_error == []
+    assert len(publish_result) == 1
+    result = publish_result[0]
+    assert result.accepted is True
+    assert cancellation_write_failed.wait(timeout=2)
+    run = db.get_handler_run(result.event.id, "tests.admission_shutdown_race")
+    assert run is not None
+    assert run["status"] == "running"
+    io_capacity = next(
+        channel for channel in bus.capacity_snapshot().channels if channel.name == "io"
+    )
+    assert io_capacity.admitted == 2
+    assert bus.capacity_snapshot().lifecycle is BusLifecycle.STOPPING
+    assert shutdown_returned.is_set() is False
+
+    allow_cancellation_persistence.set()
+    deadline = time.monotonic() + 2
+    while (
+        run is not None
+        and not str(run["error_message"] or "").startswith("runtime_admission:shutdown_cancelled:")
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+        run = db.get_handler_run(result.event.id, "tests.admission_shutdown_race")
+    assert run is not None
+    assert run["status"] == "error"
+    assert str(run["error_message"]).startswith("runtime_admission:shutdown_cancelled:")
+    assert handled == []
+
+    blocker_release.set()
+    stopper.join(timeout=2)
+    assert stopper.is_alive() is False
+    assert bus.capacity_snapshot().lifecycle is BusLifecycle.STOPPED
+
+    restarted = _bus(db)
+    restarted.subscribe(
+        "ops.admission_shutdown_race",
+        _named_handler(
+            "tests.admission_shutdown_race",
+            lambda event: handled.append(event.id),
+        ),
+    )
+    restarted.replay_pending()
+    assert restarted.wait_for_idle(min_event_id=result.event.id, timeout_sec=2)
+    assert handled == [result.event.id]
+    restarted.shutdown()
+    db.close()
+
+
+@pytest.mark.parametrize(
+    ("terminal_method", "handler_error", "expected_status", "expected_error"),
+    [
+        ("mark_handler_ok", None, "ok", None),
+        ("mark_handler_error", "business failure", "error", "business failure"),
+    ],
+)
+def test_terminal_persistence_retries_exact_outcome_without_early_stop(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_method: str,
+    handler_error: str | None,
+    expected_status: str,
+    expected_error: str | None,
+) -> None:
+    db = TradeDB(tmp_path)
+    bus = _bus(db)
+    attempts = 0
+    two_failures = threading.Event()
+    allow_recovery = threading.Event()
+    original_terminal_write = getattr(db, terminal_method)
+
+    def fail_twice_then_recover(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            if attempts == 2:
+                two_failures.set()
+            raise sqlite3.OperationalError("terminal write unavailable")
+        assert allow_recovery.wait(timeout=3)
+        return original_terminal_write(*args, **kwargs)
+
+    monkeypatch.setattr("trade_py.bus._TERMINAL_PERSIST_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(db, terminal_method, fail_twice_then_recover)
+
+    def handle(_event: Event) -> None:
+        if handler_error is not None:
+            raise RuntimeError(handler_error)
+
+    handler_name = f"tests.terminal_retry.{terminal_method}"
+    bus.subscribe(
+        "ops.terminal_retry",
+        _named_handler(handler_name, handle),
+    )
+    event = bus.publish("ops.terminal_retry")
+    assert two_failures.wait(timeout=2)
+
+    run = db.get_handler_run(event.id, handler_name)
+    assert run is not None
+    assert run["status"] == "running"
+    assert bus.capacity_snapshot().channels[-1].admitted == 1
+    with pytest.raises(RuntimeError, match="EventBus shutdown incomplete"):
+        bus.shutdown(timeout_sec=0.05)
+    assert bus.capacity_snapshot().lifecycle is BusLifecycle.STOPPING
+    run = db.get_handler_run(event.id, handler_name)
+    assert run is not None
+    assert run["status"] == "running"
+
+    allow_recovery.set()
+    bus.shutdown(timeout_sec=2)
+
+    run = db.get_handler_run(event.id, handler_name)
+    assert run is not None
+    assert run["status"] == expected_status
+    assert run["error_message"] == expected_error
+    assert attempts >= 3
+    assert bus.capacity_snapshot().lifecycle is BusLifecycle.STOPPED
     db.close()
 
 

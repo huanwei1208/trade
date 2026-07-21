@@ -172,18 +172,15 @@ class RuntimeService:
                 "started_at": None,
                 "channels": None,
             }
+        stopping = lifecycle is ResourceLifecycle.STOPPING
         return {
-            "status": (
-                "stopping" if lifecycle is ResourceLifecycle.STOPPING else snapshot.status.value
-            ),
-            "lifecycle": (
-                "stopping" if lifecycle is ResourceLifecycle.STOPPING else snapshot.lifecycle.value
-            ),
+            "status": "stopping" if stopping else snapshot.status.value,
+            "lifecycle": "stopping" if stopping else snapshot.lifecycle.value,
             "generation": snapshot.generation,
             "started_at": snapshot.started_at.isoformat(),
             "channels": {
                 channel.name: {
-                    "lifecycle": channel.lifecycle.value,
+                    "lifecycle": "stopping" if stopping else channel.lifecycle.value,
                     "workers": channel.workers,
                     "capacity": channel.capacity,
                     "admitted": channel.admitted,
@@ -255,11 +252,11 @@ class RuntimeService:
                     return
             except RuntimeError:
                 return
-            rows = db.event_log_since(after_id=last_id, limit=limit)
+            rows = await asyncio.to_thread(db.event_log_since, after_id=last_id, limit=limit)
             if rows:
                 for row in rows:
                     last_id = max(last_id, int(row.get("id") or 0))
-                    yield f"data: {json.dumps(row, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(row, ensure_ascii=False, allow_nan=False)}\n\n"
             else:
                 yield ": ping\n\n"
             if await self.wait_for_shutdown(poll_seconds):
@@ -281,7 +278,7 @@ class RuntimeService:
                     return
             except RuntimeError:
                 return
-            signature = self.payload_signature(scope_name, db=db)
+            signature = await asyncio.to_thread(self.payload_signature, scope_name, db=db)
             if signature != last_signature:
                 last_signature = signature
                 payload = {
@@ -289,7 +286,7 @@ class RuntimeService:
                     "signature": signature,
                     "ts": datetime.now().isoformat(timespec="seconds"),
                 }
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(payload, ensure_ascii=False, allow_nan=False)}\n\n"
             else:
                 yield ": ping\n\n"
             if await self.wait_for_shutdown(poll_seconds):

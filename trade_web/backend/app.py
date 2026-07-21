@@ -45,6 +45,7 @@ import asyncio
 import datetime as dtm
 import json
 import logging
+import math
 import os
 import time
 from contextlib import asynccontextmanager
@@ -218,7 +219,21 @@ def create_app():
             return {}
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="payload must be a JSON object")
+        if not _is_finite_json(payload):
+            raise HTTPException(
+                status_code=400,
+                detail="payload must contain only finite JSON numbers",
+            )
         return payload
+
+    def _is_finite_json(value: Any) -> bool:
+        if isinstance(value, float):
+            return math.isfinite(value)
+        if isinstance(value, dict):
+            return all(_is_finite_json(item) for item in value.values())
+        if isinstance(value, list):
+            return all(_is_finite_json(item) for item in value)
+        return True
 
     # BTC Observatory read-only routes (registered as a self-contained router so
     # this factory stays minimal; all logic lives in trade_web/backend/observatory).
@@ -1528,9 +1543,11 @@ def create_app():
                 detail="limit must be between 1 and 500",
             )
 
-        result = resources.commands.start(
+        result = await resources.commands.start_async(
             target,
-            payload_json=json.dumps(payload, ensure_ascii=False) if payload else None,
+            payload_json=json.dumps(payload, ensure_ascii=False, allow_nan=False)
+            if payload
+            else None,
             limit=limit,
         )
         if result.accepted:

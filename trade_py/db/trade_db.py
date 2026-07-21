@@ -428,6 +428,82 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
     def __exit__(self, *_) -> None:
         self.close()
 
+    def get_events(
+        self,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        event_type: str | None = None,
+        failed_only: bool = False,
+        limit: int = 1000,
+    ) -> list[dict]:
+        with self._conn_lock:
+            return super().get_events(
+                from_date,
+                to_date,
+                event_type,
+                failed_only,
+                limit,
+            )
+
+    def kg_nodes_list(
+        self,
+        limit: int = 50,
+        entity_type: str | None = None,
+        status: str | None = "active",
+        entity: str | None = None,
+    ) -> list[dict]:
+        with self._conn_lock:
+            return super().kg_nodes_list(limit, entity_type, status, entity)
+
+    def kg_relations_list(
+        self,
+        limit: int = 50,
+        rel_type: str | None = None,
+        entity: str | None = None,
+        active_only: bool = True,
+    ) -> list[dict]:
+        with self._conn_lock:
+            return super().kg_relations_list(limit, rel_type, entity, active_only)
+
+    def kg_candidates(
+        self,
+        limit: int = 50,
+        status: str | None = "pending",
+        rel_type: str | None = None,
+        entity: str | None = None,
+    ) -> list[dict]:
+        with self._conn_lock:
+            return super().kg_candidates(limit, status, rel_type, entity)
+
+    def signal_suggest(
+        self,
+        limit: int = 20,
+        by: str = "model_score",
+        sector_limit: int = 3,
+    ) -> list[dict]:
+        with self._conn_lock:
+            return super().signal_suggest(limit, by, sector_limit)
+
+    def signal_recommend(self, limit: int = 20) -> dict:
+        with self._conn_lock:
+            return super().signal_recommend(limit)
+
+    def factor_get_latest(
+        self,
+        symbol: str,
+        factor_names: list[str] | None = None,
+    ) -> dict:
+        with self._conn_lock:
+            return super().factor_get_latest(symbol, factor_names)
+
+    def model_registry_list(self) -> list[dict]:
+        with self._conn_lock:
+            return super().model_registry_list()
+
+    def quality_gate_get(self, eval_date: str | None = None) -> dict | None:
+        with self._conn_lock:
+            return super().quality_gate_get(eval_date)
+
     # ── Schema ─────────────────────────────────────────────────────────────────
 
     def _init_schema(self) -> None:
@@ -1279,9 +1355,10 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
     # ── Instrument lookup ──────────────────────────────────────────────────────
 
     def instrument_lookup(self, symbol: str) -> dict | None:
-        row = self._conn.execute(
-            "SELECT name, market_name FROM instruments WHERE symbol = ?", (symbol,)
-        ).fetchone()
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT name, market_name FROM instruments WHERE symbol = ?", (symbol,)
+            ).fetchone()
         if row is None:
             return None
         return {"name": row["name"] or "", "market_name": row["market_name"] or ""}
@@ -1525,6 +1602,7 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                         finished_at = datetime('now', 'localtime')
                     WHERE status = 'running'
                       AND job_name = ?
+                      AND COALESCE(stage, '') != 'web_command'
                       AND started_at < datetime('now', 'localtime', ?)
                     """,
                     (
@@ -1650,40 +1728,41 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         return _normalize_date_text(value)
 
     def get_latest_market_asof(self, *, on_or_before: str | None = None) -> str | None:
-        boundary = _normalize_date_text(on_or_before) or date.today().isoformat()
-        candidates = [
-            self.get_latest_open_trade_date(on_or_before=boundary),
-            _normalize_date_text(
-                self._conn.execute(
-                    "SELECT MAX(date) FROM signals WHERE date <= ?",
-                    (boundary,),
-                ).fetchone()[0]
-            ),
-            _normalize_date_text(
-                self._conn.execute(
-                    "SELECT MAX(eval_date) FROM daily_quality_gate WHERE eval_date <= ?",
-                    (boundary,),
-                ).fetchone()[0]
-            ),
-            _normalize_date_text(
-                self._conn.execute(
-                    "SELECT MAX(eval_date) FROM QualityReport WHERE eval_date <= ?",
-                    (boundary,),
-                ).fetchone()[0]
-            ),
-            _normalize_date_text(
-                self._conn.execute(
-                    "SELECT MAX(as_of_date) FROM Recommendation WHERE as_of_date <= ?",
-                    (boundary,),
-                ).fetchone()[0]
-            ),
-            _normalize_date_text(
-                self._conn.execute(
-                    "SELECT MAX(as_of_date) FROM BeliefState WHERE as_of_date <= ?",
-                    (boundary,),
-                ).fetchone()[0]
-            ),
-        ]
+        with self._conn_lock:
+            boundary = _normalize_date_text(on_or_before) or date.today().isoformat()
+            candidates = [
+                self.get_latest_open_trade_date(on_or_before=boundary),
+                _normalize_date_text(
+                    self._conn.execute(
+                        "SELECT MAX(date) FROM signals WHERE date <= ?",
+                        (boundary,),
+                    ).fetchone()[0]
+                ),
+                _normalize_date_text(
+                    self._conn.execute(
+                        "SELECT MAX(eval_date) FROM daily_quality_gate WHERE eval_date <= ?",
+                        (boundary,),
+                    ).fetchone()[0]
+                ),
+                _normalize_date_text(
+                    self._conn.execute(
+                        "SELECT MAX(eval_date) FROM QualityReport WHERE eval_date <= ?",
+                        (boundary,),
+                    ).fetchone()[0]
+                ),
+                _normalize_date_text(
+                    self._conn.execute(
+                        "SELECT MAX(as_of_date) FROM Recommendation WHERE as_of_date <= ?",
+                        (boundary,),
+                    ).fetchone()[0]
+                ),
+                _normalize_date_text(
+                    self._conn.execute(
+                        "SELECT MAX(as_of_date) FROM BeliefState WHERE as_of_date <= ?",
+                        (boundary,),
+                    ).fetchone()[0]
+                ),
+            ]
         for value in candidates:
             if value:
                 return value
@@ -2337,19 +2416,20 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         enabled_only: bool = False,
     ) -> list[dict]:
         """List assets, optionally filtered by class and enabled status."""
-        clauses: list[str] = []
-        params: list[Any] = []
-        if asset_class:
-            clauses.append("asset_class = ?")
-            params.append(asset_class)
-        if enabled_only:
-            clauses.append("enabled = 1")
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        order = "ORDER BY priority DESC, asset_class, asset_id"
-        rows = self._conn.execute(
-            f"SELECT * FROM asset_registry {where} {order}",
-            params,
-        ).fetchall()
+        with self._conn_lock:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if asset_class:
+                clauses.append("asset_class = ?")
+                params.append(asset_class)
+            if enabled_only:
+                clauses.append("enabled = 1")
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            order = "ORDER BY priority DESC, asset_class, asset_id"
+            rows = self._conn.execute(
+                f"SELECT * FROM asset_registry {where} {order}",
+                params,
+            ).fetchall()
         results = []
         for row in rows:
             d = dict(row)
@@ -3977,6 +4057,10 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         return expected
 
     def event_workflow_detail(self, root_event_id: int) -> dict | None:
+        with self._conn_lock:
+            return self._event_workflow_detail(root_event_id)
+
+    def _event_workflow_detail(self, root_event_id: int) -> dict | None:
         event_rows = self._event_tree_rows(root_event_id)
         if not event_rows:
             return None
@@ -4175,6 +4259,10 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
 
     def event_workflow_recent(self, limit: int = 20) -> list[dict]:
         with self._conn_lock:
+            return self._event_workflow_recent(limit)
+
+    def _event_workflow_recent(self, limit: int) -> list[dict]:
+        with self._conn_lock:
             roots = self._conn.execute(
                 """
                 SELECT id, topic, payload, parent_event_id, status, handler, error,
@@ -4213,8 +4301,8 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         return result
 
     def pipeline_dag_runtime(self, recent_limit: int = 200) -> dict[str, Any]:
-        nodes = self.pipeline_dag_all(enabled_only=True)
         with self._conn_lock:
+            nodes = self.pipeline_dag_all(enabled_only=True)
             run_rows = self._conn.execute(
                 """
                 SELECT id, job_name, stage, trigger_event_id, status,
@@ -4305,12 +4393,15 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
     # ── Pipeline DAG ───────────────────────────────────────────────────────────
 
     def pipeline_dag_all(self, enabled_only: bool = False) -> list[dict]:
-        if enabled_only:
-            rows = self._conn.execute(
-                "SELECT * FROM pipeline_dag WHERE enabled=1 ORDER BY stage, id"
-            ).fetchall()
-        else:
-            rows = self._conn.execute("SELECT * FROM pipeline_dag ORDER BY stage, id").fetchall()
+        with self._conn_lock:
+            if enabled_only:
+                rows = self._conn.execute(
+                    "SELECT * FROM pipeline_dag WHERE enabled=1 ORDER BY stage, id"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM pipeline_dag ORDER BY stage, id"
+                ).fetchall()
         return [dict(r) for r in rows]
 
     def pipeline_dag_get(self, dag_id: int) -> dict[str, Any] | None:
@@ -4322,19 +4413,21 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         return dict(row) if row else None
 
     def pipeline_dag_set_enabled(self, dag_id: int, enabled: bool) -> None:
-        self._conn.execute(
-            "UPDATE pipeline_dag SET enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (1 if enabled else 0, dag_id),
-        )
-        self._conn.commit()
+        with self._conn_lock:
+            self._conn.execute(
+                "UPDATE pipeline_dag SET enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (1 if enabled else 0, dag_id),
+            )
+            self._conn.commit()
 
     def pipeline_dag_set_enabled_by_job(self, job_name: str, enabled: bool) -> int:
-        cur = self._conn.execute(
-            "UPDATE pipeline_dag SET enabled=?, updated_at=CURRENT_TIMESTAMP WHERE job_name=?",
-            (1 if enabled else 0, job_name),
-        )
-        self._conn.commit()
-        return cur.rowcount
+        with self._conn_lock:
+            cur = self._conn.execute(
+                "UPDATE pipeline_dag SET enabled=?, updated_at=CURRENT_TIMESTAMP WHERE job_name=?",
+                (1 if enabled else 0, job_name),
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     # ── UI snapshot cache ─────────────────────────────────────────────────────
 

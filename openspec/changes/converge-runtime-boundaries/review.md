@@ -228,3 +228,58 @@ Final validation at the R6-equivalent feature HEAD:
 
 No schema, index, DB version, parquet, model, source-provider, PIT, trading, or
 C++ engine behavior changed.
+
+## Final completion audit (R7 + R8): approved for squash merge
+
+Final implementation: `6057bda69710026719e84dcd0d0087c26d02e618`
+
+Final review worktree:
+`/data00/home/guohuanwei.cztj/git_files/trade-wt-review-runtime-final-r7-20260721`
+
+R7 (`bf68e6d`) propagated the container-level STOPPING lifecycle into per-channel
+capacity snapshot entries so that the capacity endpoint no longer reported a
+drain-window channel as `ready` while admission was closing. R8 (`6057bda`)
+closed the performance judge's HIGH finding by routing both SSE streams' SQLite
+reads through `asyncio.to_thread`, fixed an indentation/atomicity bug in
+`EventBus.capacity_snapshot` (channel snapshots now read under `_lifecycle_lock`),
+and set `allow_nan=False` on SSE egress and `/api/run` payload serialization.
+
+Six-role completion audit (R8):
+
+| Role | Score | Verdict |
+|---|---:|---|
+| Reliability | 9.5 | APPROVE |
+| Performance | 9.0 | APPROVE |
+| Architecture | 9.0 | APPROVE |
+| Data quality | 9.0 | APPROVE |
+| Observability | 9.0 | APPROVE |
+| News/future | 8.5 | APPROVE |
+
+Mean score: **9.0/10**. Status: approved with no P0 or P1 findings remaining.
+
+| ID | Role | Priority | Finding | Resolution |
+|---|---|---:|---|---|
+| COMPL-001 | performance | P1 | SSE `event_stream` and `runtime_stream` executed blocking SQLite reads on the FastAPI event loop. | Routed `db.event_log_since` and `payload_signature` through `await asyncio.to_thread(...)` in `service.py:255,281`. |
+| COMPL-002 | reliability / performance | P1 | `EventBus.capacity_snapshot` read `lifecycle` under `_lifecycle_lock` but built the channels tuple outside the lock, permitting a TOCTOU race vs `begin_shutdown`. | Moved the channels tuple construction inside the `with self._lifecycle_lock:` block at `bus/__init__.py:1217-1219`. |
+| COMPL-003 | data quality | P2 | SSE egress and `/api/run` JSON serialization used default `allow_nan=True`, allowing bare `NaN`/`Infinity` tokens to reach clients. | Set `allow_nan=False` on SSE `json.dumps` (`service.py:259,289`) and on `/api/run` payload serialization (`app.py:1548`). |
+| COMPL-004 | observability | P2 | `CommandStartResult.detail` is not propagated into HTTP 503 response bodies. | Accepted follow-up; `reason_code` + Retry-After contract remains sufficient and detail is in server logs. |
+| COMPL-005 | observability | P2 | Top-level `status: "ok"` in the status snapshot ignores degraded component health. | Accepted follow-up; `health.status` carries the correct value for aware clients. |
+| COMPL-006 | news/future | P2 | `signals.events_updated`, `data.crypto.sentiment`, `data.crypto.fear_greed` topics route to the `io` channel rather than `signal`/`nlp`. | Accepted follow-up (event-routing cleanup; no runtime-boundary regression). |
+| COMPL-007 | performance | P2 | `/api/trigger` and `/api/dag/{id}/run` publish+dispatch paths execute synchronously on the event loop. | Accepted follow-up; admission already bounds concurrency, and these are one-shot request paths (not long-poll SSE). |
+| COMPL-008 | data quality | P3 | Broader HTTP egress/ingress JSON strictness (non-SSE GET responses, PATCH endpoints, CLI, outbound HTTP, DB persistence) still uses default `allow_nan=True` outside the paths addressed in COMPL-003. | Accepted follow-up; tracked as defense-in-depth for a later incremental change. |
+
+Final validation at R8 HEAD (`6057bda`):
+
+- changed-scope runtime/event-bus/CLI/web regression (11 test files): `194 passed`;
+- runtime router focused tests: `18 passed`;
+- repository-wide pytest: `1071 passed, 3 failed`; all three failures are the
+  unchanged `add-design-quality-gates` current-date approval debt, confirmed by
+  `core.review.stale` (2026-07-20 evidence date vs 2026-07-21 effective date);
+- `./trade dev check`: 6/6 PASS (basedpyright 0 errors, ruff format/lint, syntax,
+  suppression audit, text hygiene) across 17 changed files;
+- `python -m compileall -q trade_py trade_web tests`: passed;
+- `git diff --check`: passed;
+- `./trade dev design-check converge-runtime-boundaries`: 0 blockers, 0 warnings.
+
+No schema, index, DB version, parquet, model, source-provider, PIT, trading, or
+C++ engine behavior changed.

@@ -204,6 +204,56 @@ def test_container_deadline_keeps_bus_and_database_owned_while_commands_hang() -
     assert container.lifecycle is ResourceLifecycle.STOPPED
 
 
+def test_container_deadline_bounds_blocked_command_begin_shutdown() -> None:
+    events: list[str] = []
+    db = _Resource("db", events)
+    bus = _Bus("bus", events)
+    begin_started = threading.Event()
+    release_begin = threading.Event()
+
+    class BlockingBeginCommands(_Commands):
+        def begin_shutdown(self) -> None:
+            self.events.append(f"begin_shutdown:{self.name}")
+            begin_started.set()
+            assert release_begin.wait(timeout=3)
+
+    commands = BlockingBeginCommands("commands", events)
+    container = WebResourceContainer(
+        "tmp",
+        db_factory=cast("Callable[[str], TradeDB]", lambda _root: db),
+        bus_factory=cast("Callable[[TradeDB], EventBus]", lambda _db: bus),
+        inference_factory=cast(
+            "Callable[[str, TradeDB], InferenceService]",
+            lambda _root, _db: object(),
+        ),
+        command_factory=cast(
+            "Callable[[str, TradeDB], RuntimeCommandRunner]",
+            lambda _root, _db: commands,
+        ),
+        service_factory=_services,
+        shutdown_timeout_sec=0.05,
+    ).start()
+
+    with pytest.raises(RuntimeError, match="deadline exceeded during commands-admission"):
+        container.stop()
+
+    assert begin_started.is_set()
+    assert container.lifecycle is ResourceLifecycle.STOPPING
+    assert events == ["begin_shutdown:commands"]
+    assert container._db is db
+    assert container._bus is bus
+
+    release_begin.set()
+    container.stop()
+    assert events == [
+        "begin_shutdown:commands",
+        "begin_shutdown:bus",
+        "shutdown:commands:True",
+        "shutdown:bus:True",
+        "close:db",
+    ]
+
+
 def test_container_deadline_keeps_database_open_while_bus_hangs() -> None:
     events: list[str] = []
     db = _Resource("db", events)

@@ -234,15 +234,23 @@ class WebResourceContainer:
             and not self._commands_stopped
             and not self._commands_shutdown_begun
         ):
-            commands.begin_shutdown()
+            self._run_bounded_shutdown(
+                "commands-admission",
+                commands.begin_shutdown,
+                deadline=deadline,
+            )
             self._commands_shutdown_begun = True
         if bus is not None and not self._bus_stopped and not self._bus_shutdown_begun:
-            bus.begin_shutdown()
+            self._run_bounded_shutdown(
+                "bus-admission",
+                bus.begin_shutdown,
+                deadline=deadline,
+            )
             self._bus_shutdown_begun = True
         if commands is not None and not self._commands_stopped:
             self._run_bounded_shutdown(
                 "commands",
-                lambda: commands.shutdown(wait=True),
+                lambda: self._shutdown_commands(commands, deadline),
                 deadline=deadline,
             )
             self._commands_stopped = True
@@ -263,6 +271,19 @@ class WebResourceContainer:
         if bus is not None and not self._bus_released:
             self._release_bus(bus)
             self._bus_released = True
+
+    @staticmethod
+    def _shutdown_commands(commands: RuntimeCommandRunner, deadline: float) -> None:
+        remaining = max(0.0, deadline - time.monotonic())
+        parameters = inspect.signature(commands.shutdown).parameters.values()
+        accepts_timeout = any(
+            parameter.name == "timeout_sec" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        if accepts_timeout:
+            commands.shutdown(wait=True, timeout_sec=remaining)
+        else:
+            commands.shutdown(wait=True)
 
     @staticmethod
     def _shutdown_bus(bus: EventBus, deadline: float) -> None:

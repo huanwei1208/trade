@@ -25,7 +25,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 from trade_py.bus.admission import AdmissionPermit, ChannelAdmission, validate_channel_config
@@ -48,6 +47,7 @@ _CLAIM_RENEW_INITIAL_BACKOFF_SECONDS = 1.0
 _CLAIM_RENEW_MAX_BACKOFF_SECONDS = 15.0
 _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 _HEARTBEAT_JOIN_TIMEOUT_SECONDS = 0.1
+_TERMINAL_PERSIST_RETRY_SECONDS = 0.05
 _PAYLOAD_OMITTED = object()
 
 
@@ -61,38 +61,46 @@ class _EventLogOnceStore(Protocol):
     ) -> tuple[dict[str, Any], bool]: ...
 
 
-def _freeze_json(value: Any) -> Any:
-    if isinstance(value, dict):
-        return MappingProxyType({str(key): _freeze_json(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_freeze_json(item) for item in value)
-    return value
+def _validate_json_mapping_keys(value: Any, *, path: str = "$") -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(
+                    "event payload mapping keys must be strings: "
+                    f"path={path} key_type={type(key).__name__}"
+                )
+            _validate_json_mapping_keys(item, path=f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_json_mapping_keys(item, path=f"{path}[{index}]")
 
 
 def _reject_non_finite_json_constant(value: str) -> NoReturn:
     raise ValueError(f"non-finite JSON constant is not allowed: {value}")
 
 
-def _canonical_payload(payload: object) -> tuple[str, Mapping[str, Any]]:
+def _canonical_payload(payload: object) -> tuple[str, dict[str, Any]]:
     if payload is _PAYLOAD_OMITTED:
         payload = {}
     elif not isinstance(payload, dict):
         raise TypeError(f"event payload must be a dict, got {type(payload).__name__}")
+    _validate_json_mapping_keys(payload)
     payload_json = json.dumps(payload, allow_nan=False)
     decoded = json.loads(payload_json, parse_constant=_reject_non_finite_json_constant)
     if not isinstance(decoded, dict):
         raise TypeError(f"event payload must encode a JSON object, got {type(decoded).__name__}")
-    return payload_json, cast("Mapping[str, Any]", _freeze_json(decoded))
+    return payload_json, cast("dict[str, Any]", decoded)
 
 
-def _decode_durable_payload(payload_json: object) -> Mapping[str, Any]:
+def _decode_durable_payload(payload_json: object) -> dict[str, Any]:
     decoded = json.loads(
         "null" if payload_json is None else str(payload_json),
         parse_constant=_reject_non_finite_json_constant,
     )
     if not isinstance(decoded, dict):
         raise TypeError(f"expected JSON object, got {type(decoded).__name__}")
-    return cast("Mapping[str, Any]", _freeze_json(decoded))
+    _validate_json_mapping_keys(decoded)
+    return cast("dict[str, Any]", decoded)
 
 
 def _linux_process_start_ticks(pid: int) -> str:
@@ -235,6 +243,13 @@ class _RuntimeAdmissionFailure(RuntimeError):
         super().__init__(detail)
 
 
+@dataclass(frozen=True)
+class _HandlerTerminalOutcome:
+    status: str
+    elapsed_ms: int
+    error_message: str | None = None
+
+
 @dataclass
 class _OwnedHandlerExecution:
     event_id: int
@@ -243,10 +258,12 @@ class _OwnedHandlerExecution:
     permit: AdmissionPermit
     heartbeat_stop: threading.Event
     heartbeat: threading.Thread
+    claim_lost: threading.Event
     future: Future[None] | None = None
     cleanup_lock: threading.Lock = field(default_factory=threading.Lock)
     cleaned: bool = False
-    cancellation_recorded: bool = False
+    terminal_outcome: _HandlerTerminalOutcome | None = None
+    terminal_resolved: bool = False
 
 
 # ── EventBus ───────────────────────────────────────────────────────────────────
@@ -613,6 +630,16 @@ class EventBus:
         admission = self._admission[channel]
         with self._lifecycle_lock:
             outcome, permit = admission.acquire()
+            if permit is not None:
+                return self._submit_admitted_handler(
+                    event,
+                    handler,
+                    handler_name,
+                    channel,
+                    claim_token,
+                    admission,
+                    permit,
+                )
         if permit is None:
             detail = self._admission_failure_detail(outcome, channel)
             self._db.mark_handler_admission_failed(
@@ -636,7 +663,19 @@ class EventBus:
                 outcome=outcome,
                 detail=detail,
             )
+        raise AssertionError("EventBus admission returned an invalid permit state")
 
+    def _submit_admitted_handler(
+        self,
+        event: Event,
+        handler: Callable[[Event], None],
+        handler_name: str,
+        channel: str,
+        claim_token: str,
+        admission: ChannelAdmission,
+        permit: AdmissionPermit,
+    ) -> HandlerAdmissionResult:
+        """Register one executor future before lifecycle shutdown can close admission."""
         heartbeat_stop = threading.Event()
         claim_lost = threading.Event()
         heartbeat = threading.Thread(
@@ -652,6 +691,7 @@ class EventBus:
             permit=permit,
             heartbeat_stop=heartbeat_stop,
             heartbeat=heartbeat,
+            claim_lost=claim_lost,
         )
         try:
             heartbeat.start()
@@ -683,7 +723,6 @@ class EventBus:
                 detail=detail,
                 cause=exc,
             )
-
         with self._owned_lock:
             self._owned_executions[(event.id, handler_name)] = execution
         self._mark_handler_started(event.id)
@@ -694,7 +733,6 @@ class EventBus:
                 event,
                 handler_name,
                 execution,
-                claim_lost,
             )
             execution.future = future
         except Exception as exc:
@@ -824,12 +862,11 @@ class EventBus:
         event: Event,
         handler_name: str,
         execution: _OwnedHandlerExecution,
-        claim_lost: threading.Event,
     ) -> None:
         t0 = _time.time()
         try:
             execution.permit.mark_active()
-            if claim_lost.is_set():
+            if execution.claim_lost.is_set():
                 raise RuntimeError(
                     f"handler claim lost before execution for event_id={event.id} "
                     f"handler={handler_name}"
@@ -843,36 +880,15 @@ class EventBus:
             else:
                 handler(event)
             elapsed = int((_time.time() - t0) * 1000)
-            if claim_lost.is_set():
-                raise RuntimeError(
-                    f"handler completion claim lost for event_id={event.id} handler={handler_name}"
-                )
-            if not self._db.mark_handler_ok(
-                event.id,
-                handler_name,
-                elapsed,
-                claim_token=execution.claim_token,
-            ):
-                raise RuntimeError(
-                    f"handler completion claim lost for event_id={event.id} handler={handler_name}"
-                )
-            logger.debug(
-                "handler %s ok | event_id=%s topic=%s elapsed=%dms",
-                handler_name,
-                event.id,
-                event.topic,
-                elapsed,
-            )
+            outcome = _HandlerTerminalOutcome(status="ok", elapsed_ms=elapsed)
         except Exception as exc:
             elapsed = int((_time.time() - t0) * 1000)
-            error_message = str(exc)
-            if isinstance(exc, _RuntimeAdmissionFailure):
-                error_message = (
-                    f"runtime_admission:{exc.category}: "
-                    f"{type(exc.__cause__ or exc).__name__}: {exc}"
-                )
-            elif error_message.startswith("runtime_admission:"):
-                error_message = f"handler_error:{error_message}"
+            error_message = self._handler_error_message(exc)
+            outcome = _HandlerTerminalOutcome(
+                status="error",
+                elapsed_ms=elapsed,
+                error_message=error_message,
+            )
             logger.error(
                 "handler %s | event_id=%s topic=%s failed: %s",
                 handler_name,
@@ -881,26 +897,150 @@ class EventBus:
                 exc,
                 exc_info=True,
             )
-            self._db.mark_handler_error(
+        self._set_terminal_outcome(execution, outcome)
+        while not self._try_persist_terminal_outcome(execution):
+            _time.sleep(_TERMINAL_PERSIST_RETRY_SECONDS)
+        if outcome.status == "ok" and not execution.claim_lost.is_set():
+            logger.debug(
+                "handler %s ok | event_id=%s topic=%s elapsed=%dms",
+                handler_name,
+                event.id,
+                event.topic,
+                outcome.elapsed_ms,
+            )
+        heartbeat_stopped = self._stop_claim_heartbeat(
+            execution.heartbeat_stop,
+            execution.heartbeat,
+        )
+        if heartbeat_stopped:
+            self._release_execution(execution)
+        else:
+            logger.error(
+                "handler heartbeat remained alive after completion | event_id=%s handler=%s",
                 event.id,
                 handler_name,
-                error_message,
-                elapsed,
-                claim_token=execution.claim_token,
             )
-        finally:
-            heartbeat_stopped = self._stop_claim_heartbeat(
-                execution.heartbeat_stop,
-                execution.heartbeat,
-            )
-            if heartbeat_stopped:
-                self._release_execution(execution)
-            else:
-                logger.error(
-                    "handler heartbeat remained alive after completion | event_id=%s handler=%s",
-                    event.id,
-                    handler_name,
+
+    @staticmethod
+    def _handler_error_message(exc: Exception) -> str:
+        error_message = str(exc)
+        if isinstance(exc, _RuntimeAdmissionFailure):
+            return f"runtime_admission:{exc.category}: {type(exc.__cause__ or exc).__name__}: {exc}"
+        if error_message.startswith("runtime_admission:"):
+            return f"handler_error:{error_message}"
+        return error_message
+
+    @staticmethod
+    def _set_terminal_outcome(
+        execution: _OwnedHandlerExecution,
+        outcome: _HandlerTerminalOutcome,
+    ) -> None:
+        with execution.cleanup_lock:
+            if execution.terminal_outcome is None:
+                execution.terminal_outcome = outcome
+                return
+            if execution.terminal_outcome != outcome:
+                raise RuntimeError(
+                    "EventBus execution terminal outcome changed "
+                    f"for event_id={execution.event_id} handler={execution.handler_name}"
                 )
+
+    def _try_persist_terminal_outcome(self, execution: _OwnedHandlerExecution) -> bool:
+        with execution.cleanup_lock:
+            if execution.terminal_resolved:
+                return True
+            outcome = execution.terminal_outcome
+        if outcome is None:
+            return False
+        if execution.claim_lost.is_set():
+            if outcome.status == "admission_failed":
+                return self._resolve_durable_cancellation(execution, outcome)
+            with execution.cleanup_lock:
+                execution.terminal_resolved = True
+            return True
+        try:
+            if outcome.status == "ok":
+                updated = self._db.mark_handler_ok(
+                    execution.event_id,
+                    execution.handler_name,
+                    outcome.elapsed_ms,
+                    claim_token=execution.claim_token,
+                )
+            elif outcome.status == "error":
+                updated = self._db.mark_handler_error(
+                    execution.event_id,
+                    execution.handler_name,
+                    outcome.error_message or "",
+                    outcome.elapsed_ms,
+                    claim_token=execution.claim_token,
+                )
+            elif outcome.status == "admission_failed":
+                updated = self._db.mark_handler_admission_failed(
+                    execution.event_id,
+                    execution.handler_name,
+                    outcome.error_message or "",
+                    claim_token=execution.claim_token,
+                )
+            else:
+                raise RuntimeError(f"unknown EventBus terminal outcome: {outcome.status}")
+        except Exception:
+            logger.exception(
+                "handler terminal persistence failed; retaining execution ownership | "
+                "event_id=%s handler=%s terminal_status=%s",
+                execution.event_id,
+                execution.handler_name,
+                outcome.status,
+            )
+            return False
+        if not updated:
+            if outcome.status == "admission_failed":
+                return self._resolve_durable_cancellation(execution, outcome)
+            execution.claim_lost.set()
+            logger.error(
+                "handler terminal persistence lost claim ownership | "
+                "event_id=%s handler=%s terminal_status=%s",
+                execution.event_id,
+                execution.handler_name,
+                outcome.status,
+            )
+        with execution.cleanup_lock:
+            execution.terminal_resolved = True
+        return True
+
+    def _resolve_durable_cancellation(
+        self,
+        execution: _OwnedHandlerExecution,
+        outcome: _HandlerTerminalOutcome,
+    ) -> bool:
+        try:
+            row = self._db.get_handler_run(
+                execution.event_id,
+                execution.handler_name,
+            )
+        except Exception:
+            logger.exception(
+                "cancelled handler state verification failed; retaining execution ownership | "
+                "event_id=%s handler=%s",
+                execution.event_id,
+                execution.handler_name,
+            )
+            return False
+        durable = (
+            row is not None
+            and row.get("status") == "error"
+            and row.get("error_message") == outcome.error_message
+        )
+        if not durable:
+            logger.error(
+                "cancelled handler lacks durable replay classification; "
+                "retaining execution ownership | event_id=%s handler=%s",
+                execution.event_id,
+                execution.handler_name,
+            )
+            return False
+        with execution.cleanup_lock:
+            execution.terminal_resolved = True
+        return True
 
     @staticmethod
     def _stop_claim_heartbeat(
@@ -930,7 +1070,23 @@ class EventBus:
             executions = tuple(self._owned_executions.values())
         for execution in executions:
             future = execution.future
-            if future is None or future.running() or future.done() or not future.cancel():
+            if future is None or future.running():
+                continue
+            if not future.done() and not future.cancel():
+                continue
+            if not future.cancelled():
+                continue
+            self._set_terminal_outcome(
+                execution,
+                _HandlerTerminalOutcome(
+                    status="admission_failed",
+                    elapsed_ms=0,
+                    error_message=(
+                        "runtime_admission:shutdown_cancelled: queued handler preserved for replay"
+                    ),
+                ),
+            )
+            if not self._try_persist_terminal_outcome(execution):
                 continue
             heartbeat_stopped = self._stop_claim_heartbeat(
                 execution.heartbeat_stop,
@@ -944,14 +1100,6 @@ class EventBus:
                     execution.handler_name,
                 )
                 continue
-            if not execution.cancellation_recorded:
-                self._db.mark_handler_admission_failed(
-                    execution.event_id,
-                    execution.handler_name,
-                    "runtime_admission:shutdown_cancelled: queued handler preserved for replay",
-                    claim_token=execution.claim_token,
-                )
-                execution.cancellation_recorded = True
             self._release_execution(execution)
             cancelled += 1
         return cancelled
@@ -961,7 +1109,12 @@ class EventBus:
             executions = tuple(self._owned_executions.values())
         for execution in executions:
             future = execution.future
-            if future is not None and future.done() and not execution.heartbeat.is_alive():
+            if (
+                future is not None
+                and future.done()
+                and execution.terminal_resolved
+                and not execution.heartbeat.is_alive()
+            ):
                 self._release_execution(execution)
 
     def _owned_counts(self) -> tuple[int, int]:
@@ -969,17 +1122,28 @@ class EventBus:
         with self._owned_lock:
             executions = tuple(self._owned_executions.values())
         handlers = sum(
-            1 for execution in executions if execution.future is None or not execution.future.done()
+            1
+            for execution in executions
+            if (
+                execution.future is None
+                or not execution.future.done()
+                or not execution.terminal_resolved
+            )
         )
         heartbeats = sum(1 for execution in executions if execution.heartbeat.is_alive())
         return handlers, heartbeats
 
     def _wait_for_owned_shutdown(self, deadline: float) -> bool:
         while _time.monotonic() < deadline:
+            self._cancel_queued_executions()
             with self._owned_lock:
                 executions = tuple(self._owned_executions.values())
             for execution in executions:
-                if execution.future is not None and execution.future.done():
+                if (
+                    execution.future is not None
+                    and execution.future.done()
+                    and execution.terminal_resolved
+                ):
                     if self._stop_claim_heartbeat(
                         execution.heartbeat_stop,
                         execution.heartbeat,
@@ -1052,7 +1216,7 @@ class EventBus:
         """Return process-local channel capacity without scanning durable data."""
         with self._lifecycle_lock:
             lifecycle = self._lifecycle
-        channels = tuple(self._admission[name].snapshot() for name in _CHANNEL_NAMES)
+            channels = tuple(self._admission[name].snapshot() for name in _CHANNEL_NAMES)
         if lifecycle is BusLifecycle.STOPPING:
             status = RuntimeCapacityStatus.STOPPING
         elif lifecycle is BusLifecycle.STOPPED:

@@ -54,7 +54,10 @@ def make_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _install_force_exit_safeguard(*, watchdog_delay: float | None = None) -> None:
+def _install_force_exit_safeguard(
+    *,
+    watchdog_delay: float | None = None,
+) -> threading.Event:
     """Install a SIGINT handler that force-exits on the second Ctrl+C press.
 
     Uvicorn installs its own SIGINT handler during ``uvicorn.run()`` which
@@ -65,20 +68,25 @@ def _install_force_exit_safeguard(*, watchdog_delay: float | None = None) -> Non
     spawns non-daemon threads), pressing Ctrl+C twice always terminates the
     process.
     """
-    _pressed = [False]
+    pressed = [False]
+    shutdown_complete = threading.Event()
 
     def _handler(signum, frame):
         if watchdog_delay is not None:
-            _schedule_force_exit(delay=watchdog_delay)
-        if _pressed[0]:
+            _schedule_force_exit(
+                delay=watchdog_delay,
+                exit_code=130,
+                reason="interrupt shutdown deadline exceeded",
+                cancel_event=shutdown_complete,
+            )
+        if pressed[0]:
             sys.stderr.write("\nForced exit.\n")
             os._exit(130)
-        _pressed[0] = True
+        pressed[0] = True
         sys.stderr.write("\nInterrupt received. Press Ctrl+C again to force-exit.\n")
-        # Restore default SIGINT so the next press just does SIG_DFL (terminate).
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     signal.signal(signal.SIGINT, _handler)
+    return shutdown_complete
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,27 +121,46 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info("Starting trade web on %s:%d  data_root=%s", args.host, args.port, args.data_root)
 
-    _install_force_exit_safeguard(watchdog_delay=5.0)
+    shutdown_complete = _install_force_exit_safeguard(watchdog_delay=5.0)
+    try:
+        uvicorn.run(
+            "trade_web:create_app",
+            factory=True,
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            log_level="info",
+            timeout_graceful_shutdown=3,
+        )
+    finally:
+        shutdown_complete.set()
 
-    uvicorn.run(
-        "trade_web:create_app",
-        factory=True,
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level="info",
-        timeout_graceful_shutdown=3,
-    )
-
-    # Uvicorn has already completed lifespan shutdown. The signal handler arms
-    # the emergency watchdog before that shutdown starts, so no private runtime
-    # singleton authority is needed here.
-    _install_force_exit_safeguard(watchdog_delay=2.0)
-    _schedule_force_exit(delay=2.0)
+    leftovers = _non_daemon_thread_names()
+    if leftovers:
+        _schedule_force_exit(
+            delay=2.0,
+            exit_code=1,
+            reason=f"incomplete shutdown; non-daemon threads remain: {','.join(leftovers)}",
+        )
     return 0
 
 
-def _schedule_force_exit(delay: float) -> None:
+def _non_daemon_thread_names() -> list[str]:
+    current = threading.current_thread()
+    return [
+        thread.name
+        for thread in threading.enumerate()
+        if thread is not current and thread.is_alive() and not thread.daemon
+    ]
+
+
+def _schedule_force_exit(
+    delay: float,
+    *,
+    exit_code: int,
+    reason: str,
+    cancel_event: threading.Event | None = None,
+) -> None:
     """Spawn a daemon thread that force-exits the process after ``delay`` seconds.
 
     Guarantees the process terminates even if some non-daemon thread
@@ -143,19 +170,20 @@ def _schedule_force_exit(delay: float) -> None:
     """
 
     def _exit() -> None:
-        time.sleep(delay)
-        leftovers = [
-            t.name
-            for t in threading.enumerate()
-            if t is not threading.current_thread() and t.is_alive() and not t.daemon
-        ]
-        if leftovers:
-            logger.warning(
-                "web shutdown: non-daemon threads still alive after %.1fs: %s (forcing exit)",
-                delay,
-                ", ".join(leftovers),
-            )
-        os._exit(0)
+        if cancel_event is not None:
+            if cancel_event.wait(timeout=delay):
+                return
+        else:
+            time.sleep(delay)
+        leftovers = _non_daemon_thread_names()
+        diagnostic = (
+            f"web shutdown forced after {delay:.1f}s: {reason}; "
+            f"non_daemon_threads={','.join(leftovers) if leftovers else 'none'}; "
+            f"exit_code={exit_code}"
+        )
+        logger.error(diagnostic)
+        sys.stderr.write(f"\n{diagnostic}\n")
+        os._exit(exit_code)
 
     threading.Thread(target=_exit, daemon=True, name="trade-web-force-exit").start()
 

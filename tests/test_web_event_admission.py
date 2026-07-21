@@ -76,6 +76,37 @@ def test_event_routes_reject_supplied_non_object_payload_before_writes(
     assert resources.db.job_runs_recent(limit=500) == before_runs
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize(
+    ("path", "prefix"),
+    [
+        ("/api/trigger", '{"topic":"ops.web.nonfinite","payload":{"value":'),
+        ("/api/dag/999999/run", '{"mode":"self","payload":{"value":'),
+        ("/api/run", '{"target":"morning","payload":{"value":'),
+    ],
+)
+def test_web_transport_rejects_non_finite_payload_before_writes(
+    web_client: tuple[TestClient, Any],
+    path: str,
+    prefix: str,
+    constant: str,
+) -> None:
+    client, resources = web_client
+    before_events = resources.db.event_log_recent(limit=500)
+    before_runs = resources.db.job_runs_recent(limit=500)
+
+    response = client.post(
+        path,
+        content=f"{prefix}{constant}}}}}",
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "payload must contain only finite JSON numbers"}
+    assert resources.db.event_log_recent(limit=500) == before_events
+    assert resources.db.job_runs_recent(limit=500) == before_runs
+
+
 def test_trigger_accepted_response_remains_compatible(web_client: tuple[TestClient, Any]) -> None:
     client, resources = web_client
 

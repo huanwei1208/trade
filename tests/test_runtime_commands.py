@@ -16,6 +16,7 @@ from trade_web.backend.runtime import command_child
 from trade_web.backend.runtime.commands import (
     CommandRunStore,
     CommandStartOutcome,
+    CommandStartResult,
     RuntimeCommandRunner,
 )
 
@@ -301,6 +302,7 @@ def test_command_runner_spawn_failure_and_stopping_are_explicit(
     assert failed.outcome is CommandStartOutcome.SPAWN_FAILED
     assert failed.run_id == 1
     assert "fork unavailable" in str(failed.detail)
+    _wait_until(lambda: bool(db.finished), message="spawn failure audit was not persisted")
     assert db.finished[0]["status"] == "error"
     assert "spawn_error=OSError: fork unavailable" in str(db.finished[0]["result_summary"])
     assert "exit_code=not_spawned" in str(db.finished[0]["result_summary"])
@@ -464,6 +466,7 @@ def test_shutdown_retains_terminal_state_and_owner_until_persistence_recovers(
     runner = RuntimeCommandRunner(
         str(tmp_path),
         db,
+        max_concurrent=1,
         shutdown_timeout_sec=0.1,
     )
     assert runner.start("morning").accepted
@@ -473,6 +476,7 @@ def test_shutdown_retains_terminal_state_and_owner_until_persistence_recovers(
         lambda: len(db.attempts) >= 3,
         message="watcher did not attempt terminal persistence",
     )
+    assert runner.start("evening").outcome is CommandStartOutcome.SATURATED
 
     with pytest.raises(
         RuntimeError,
@@ -496,6 +500,202 @@ def test_shutdown_retains_terminal_state_and_owner_until_persistence_recovers(
     assert db.finished[0]["elapsed_ms"] == first_completion[3]
     replacement = RuntimeCommandRunner(str(tmp_path), _JobDB())
     replacement.shutdown(wait=True)
+
+
+def test_pending_completion_self_heals_and_reopens_capacity_without_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class RecoveringFinishDB(_JobDB):
+        def __init__(self) -> None:
+            super().__init__()
+            self.allow_finish = threading.Event()
+            self.attempts = 0
+
+        def job_run_finish(
+            self,
+            run_id: int,
+            status: str,
+            result_summary: str | None = None,
+            symbols_processed: int | None = None,
+            elapsed_ms: int | None = None,
+            message: str | None = None,
+        ) -> None:
+            self.attempts += 1
+            if not self.allow_finish.is_set():
+                raise RuntimeError("temporarily unavailable")
+            super().job_run_finish(
+                run_id,
+                status,
+                result_summary,
+                symbols_processed,
+                elapsed_ms,
+                message,
+            )
+
+    first_process = _Process()
+    second_process = _Process()
+    processes = iter((first_process, second_process))
+    db = RecoveringFinishDB()
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: next(processes))
+    runner = RuntimeCommandRunner(str(tmp_path), db, max_concurrent=1)
+
+    assert runner.start("morning").accepted
+    first_process.release_wait.set()
+    _wait_until(lambda: db.attempts >= 2, message="normal-uptime retry worker did not run")
+    assert runner.start("evening").outcome is CommandStartOutcome.SATURATED
+    assert len(runner._pending_completions) == 1
+
+    db.allow_finish.set()
+    _wait_until(lambda: bool(db.finished), message="pending completion did not self-heal")
+    resumed = runner.start("evening")
+    assert resumed.accepted
+
+    second_process.release_wait.set()
+    runner.shutdown(wait=True)
+
+
+def test_begin_shutdown_closes_admission_while_start_persistence_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    persistence_started = threading.Event()
+    release_persistence = threading.Event()
+
+    class BlockingStartDB(_JobDB):
+        def job_run_start(
+            self,
+            job_name: str,
+            stage: str | None = None,
+            trigger_event_id: int | None = None,
+            *,
+            run_key: str | None = None,
+        ) -> int:
+            del trigger_event_id, run_key
+            persistence_started.set()
+            assert release_persistence.wait(timeout=2)
+            return self._start(job_name, stage)
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("shutdown start must not spawn")
+        ),
+    )
+    db = BlockingStartDB()
+    runner = RuntimeCommandRunner(str(tmp_path), db, max_concurrent=1)
+    results: list[CommandStartResult] = []
+    start_thread = threading.Thread(
+        target=lambda: results.append(runner.start("morning")),
+        name="blocked-command-start",
+    )
+    start_thread.start()
+    assert persistence_started.wait(timeout=1)
+
+    started = time.monotonic()
+    runner.begin_shutdown()
+    assert time.monotonic() - started < 0.05
+    assert runner.start("evening").outcome is CommandStartOutcome.STOPPING
+
+    release_persistence.set()
+    start_thread.join(timeout=2)
+    assert results[0].outcome is CommandStartOutcome.STOPPING
+    _wait_until(lambda: bool(db.finished), message="cancelled start was not finalized")
+    runner.shutdown(wait=True)
+
+
+def test_inflight_start_consumes_capacity_and_shutdown_honors_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    persistence_started = threading.Event()
+    release_persistence = threading.Event()
+
+    class BlockingStartDB(_JobDB):
+        def job_run_start(
+            self,
+            job_name: str,
+            stage: str | None = None,
+            trigger_event_id: int | None = None,
+            *,
+            run_key: str | None = None,
+        ) -> int:
+            del trigger_event_id, run_key
+            persistence_started.set()
+            assert release_persistence.wait(timeout=2)
+            return self._start(job_name, stage)
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stopping in-flight start must not spawn")
+        ),
+    )
+    db = BlockingStartDB()
+    runner = RuntimeCommandRunner(
+        str(tmp_path),
+        db,
+        max_concurrent=1,
+        shutdown_timeout_sec=0.05,
+    )
+    results: list[CommandStartResult] = []
+    start_thread = threading.Thread(
+        target=lambda: results.append(runner.start("morning")),
+        name="deadline-blocked-command-start",
+    )
+    start_thread.start()
+    assert persistence_started.wait(timeout=1)
+    assert runner.start("evening").outcome is CommandStartOutcome.SATURATED
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="starts=1"):
+        runner.shutdown(wait=True)
+    assert time.monotonic() - started < 0.12
+    with pytest.raises(
+        RuntimeError,
+        match="runtime command owner already active for data root",
+    ):
+        RuntimeCommandRunner(str(tmp_path), _JobDB())
+
+    release_persistence.set()
+    start_thread.join(timeout=2)
+    assert results[0].outcome is CommandStartOutcome.STOPPING
+    _wait_until(lambda: bool(db.finished), message="in-flight stop was not finalized")
+    runner.shutdown(wait=True)
+
+
+def test_transient_wait_failure_keeps_process_owned_until_terminal_audit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class TransientWaitProcess(_Process):
+        def __init__(self) -> None:
+            super().__init__()
+            self.wait_attempts = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_attempts += 1
+            if self.wait_attempts == 1:
+                self.wait_started.set()
+                raise OSError("temporary wait failure")
+            return super().wait(timeout=timeout)
+
+    process = TransientWaitProcess()
+    db = _JobDB()
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    runner = RuntimeCommandRunner(str(tmp_path), db, max_concurrent=1)
+
+    assert runner.start("morning").accepted
+    assert process.wait_started.wait(timeout=1)
+    assert runner.start("evening").outcome is CommandStartOutcome.SATURATED
+    process.release_wait.set()
+    _wait_until(lambda: bool(db.finished), message="terminal audit was lost after wait failure")
+
+    assert process.wait_attempts >= 2
+    assert db.finished[0]["status"] == "ok"
+    runner.shutdown(wait=True)
 
 
 def test_shutdown_deadline_bounds_blocked_completion_persistence(
@@ -566,10 +766,18 @@ def test_command_runner_watcher_failure_keeps_unterminated_process_owned(
 
     process = FailingProcess()
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    thread_start = threading.Thread.start
+
+    def fail_watcher_start(thread: threading.Thread) -> None:
+        if thread.name == "trade-web-command-persistence-retry":
+            thread_start(thread)
+            return
+        raise RuntimeError("thread unavailable")
+
     monkeypatch.setattr(
         threading.Thread,
         "start",
-        lambda _thread: (_ for _ in ()).throw(RuntimeError("thread unavailable")),
+        fail_watcher_start,
     )
     runner = RuntimeCommandRunner(
         str(tmp_path),
@@ -586,6 +794,7 @@ def test_command_runner_watcher_failure_keeps_unterminated_process_owned(
     assert runner.start("evening").outcome is CommandStartOutcome.STOPPING
 
     process.return_code = 0
+    monkeypatch.setattr(threading.Thread, "start", thread_start)
     runner.shutdown(wait=True)
 
 

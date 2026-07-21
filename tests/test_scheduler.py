@@ -362,6 +362,60 @@ def test_nested_agenda_trigger_records_durable_child_deferred_outcome(tmp_path) 
     db.close()
 
 
+def test_nested_object_agenda_payload_survives_child_recovery_as_json_native(
+    tmp_path,
+) -> None:
+    db = TradeDB(tmp_path)
+    bus = _bus(db)
+    child_payloads: list[dict] = []
+
+    def capture_child(event: Event) -> None:
+        assert isinstance(event.payload, dict)
+        assert isinstance(event.payload["nested"], dict)
+        assert isinstance(event.payload["nested"]["items"], list)
+        child_payloads.append(dict(event.payload))
+
+    bus.subscribe("ops.object_payload_child", capture_child)
+    bus.subscribe(Topic.AGENDA_DUE, _make_agenda_handler(db, str(tmp_path)))
+
+    parent = bus.publish(
+        Topic.AGENDA_DUE,
+        {
+            "agenda_id": 0,
+            "trigger_topic": "ops.object_payload_child",
+            "payload_json": {"nested": {"items": [1, {"value": 7}]}},
+        },
+    )
+    deadline = time.monotonic() + 2
+    children: list[dict] = []
+    while time.monotonic() < deadline:
+        children = db.event_log_recent(limit=10, topic="ops.object_payload_child")
+        if children:
+            break
+        time.sleep(0.01)
+
+    assert len(children) == 1
+    child_id = int(children[0]["id"])
+    assert int(children[0]["parent_event_id"]) == parent.id
+    assert json.loads(str(children[0]["payload"])) == {"nested": {"items": [1, {"value": 7}]}}
+    assert bus.wait_for_idle(min_event_id=parent.id, timeout_sec=2)
+    assert child_payloads == [{"nested": {"items": [1, {"value": 7}]}}]
+    bus.shutdown()
+
+    db.mark_handler_started(child_id, capture_child.__qualname__)
+
+    restarted = _bus(db)
+    restarted.subscribe("ops.object_payload_child", capture_child)
+    restarted.replay_pending()
+    assert restarted.wait_for_idle(min_event_id=child_id, timeout_sec=2)
+    assert child_payloads == [
+        {"nested": {"items": [1, {"value": 7}]}},
+        {"nested": {"items": [1, {"value": 7}]}},
+    ]
+    restarted.shutdown()
+    db.close()
+
+
 def test_nested_agenda_trigger_reuses_child_after_post_commit_exception(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

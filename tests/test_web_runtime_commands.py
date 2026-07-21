@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from enum import Enum
 from typing import Any
 
@@ -36,7 +37,7 @@ def test_api_run_admits_isolated_command_without_calling_in_process_cli(
 
     captured: list[tuple[str, str | None, int]] = []
 
-    def start(
+    async def start_async(
         _runner: RuntimeCommandRunner,
         target: str,
         *,
@@ -51,7 +52,7 @@ def test_api_run_admits_isolated_command_without_calling_in_process_cli(
             pid=4321,
         )
 
-    monkeypatch.setattr(RuntimeCommandRunner, "start", start)
+    monkeypatch.setattr(RuntimeCommandRunner, "start_async", start_async)
     monkeypatch.setattr(
         run_cli,
         "main",
@@ -127,7 +128,7 @@ def test_api_run_surfaces_command_admission_failure(
     monkeypatch.setenv("TRADE_DATA_ROOT", str(tmp_path))
     from trade_web import create_app
 
-    def start(
+    async def start_async(
         _runner: RuntimeCommandRunner,
         target: str,
         **_kwargs,
@@ -139,7 +140,7 @@ def test_api_run_surfaces_command_admission_failure(
             detail=f"{outcome.value} fixture",
         )
 
-    monkeypatch.setattr(RuntimeCommandRunner, "start", start)
+    monkeypatch.setattr(RuntimeCommandRunner, "start_async", start_async)
     app = create_app()
 
     with TestClient(app) as client:
@@ -170,12 +171,12 @@ def test_api_run_validates_payload_before_command_admission_or_writes(
 
     calls = 0
 
-    def start(*_args, **_kwargs) -> CommandStartResult:
+    async def start_async(*_args, **_kwargs) -> CommandStartResult:
         nonlocal calls
         calls += 1
         raise AssertionError("invalid request must not reach command runner")
 
-    monkeypatch.setattr(RuntimeCommandRunner, "start", start)
+    monkeypatch.setattr(RuntimeCommandRunner, "start_async", start_async)
     app = create_app()
 
     with TestClient(app) as client:
@@ -225,12 +226,12 @@ def test_api_run_rejects_invalid_limit_before_command_admission(
 
     calls = 0
 
-    def start(*_args, **_kwargs) -> CommandStartResult:
+    async def start_async(*_args, **_kwargs) -> CommandStartResult:
         nonlocal calls
         calls += 1
         raise AssertionError("invalid request must not reach command runner")
 
-    monkeypatch.setattr(RuntimeCommandRunner, "start", start)
+    monkeypatch.setattr(RuntimeCommandRunner, "start_async", start_async)
     app = create_app()
 
     with TestClient(app) as client:
@@ -281,7 +282,7 @@ def test_api_run_maps_future_persistence_failure_without_leaking_detail(
     monkeypatch.setenv("TRADE_DATA_ROOT", str(tmp_path))
     from trade_web import create_app
 
-    def start(
+    async def start_async(
         _runner: RuntimeCommandRunner,
         target: str,
         **_kwargs: Any,
@@ -292,7 +293,7 @@ def test_api_run_maps_future_persistence_failure_without_leaking_detail(
             detail="sqlite3.OperationalError: /private/path/trade.db is locked",
         )
 
-    monkeypatch.setattr(RuntimeCommandRunner, "start", start)
+    monkeypatch.setattr(RuntimeCommandRunner, "start_async", start_async)
     app = create_app()
 
     with TestClient(app) as client:
@@ -321,7 +322,7 @@ def test_api_run_is_queryable_in_job_runs_without_persisting_payload(
     monkeypatch.setenv("TRADE_DATA_ROOT", str(tmp_path))
     from trade_web import create_app
 
-    def start(
+    async def start_async(
         runner: RuntimeCommandRunner,
         target: str,
         *,
@@ -338,7 +339,7 @@ def test_api_run_is_queryable_in_job_runs_without_persisting_payload(
             pid=5432,
         )
 
-    monkeypatch.setattr(RuntimeCommandRunner, "start", start)
+    monkeypatch.setattr(RuntimeCommandRunner, "start_async", start_async)
     app = create_app()
 
     with TestClient(app) as client:
@@ -356,3 +357,55 @@ def test_api_run_is_queryable_in_job_runs_without_persisting_payload(
     assert row["stage"] == "web_command"
     assert row["status"] == "running"
     assert "do-not-persist" not in json.dumps(row)
+
+
+def test_api_run_offloads_blocked_start_without_blocking_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("TRADE_DATA_ROOT", str(tmp_path))
+    from trade_web import create_app
+
+    start_blocked = threading.Event()
+    release_start = threading.Event()
+
+    def start_reserved(
+        _runner: RuntimeCommandRunner,
+        _slot_id: int,
+        target: str,
+        *,
+        payload_json: str | None,
+        limit: int,
+    ) -> CommandStartResult:
+        del payload_json, limit
+        start_blocked.set()
+        assert release_start.wait(timeout=2)
+        _runner._release_unrecorded_start(_slot_id)
+        return CommandStartResult(
+            outcome=CommandStartOutcome.PERSISTENCE_FAILED,
+            target=target,
+        )
+
+    monkeypatch.setattr(RuntimeCommandRunner, "_start_reserved", start_reserved)
+    app = create_app()
+    response_holder: list[Any] = []
+
+    with TestClient(app) as client:
+        request_thread = threading.Thread(
+            target=lambda: response_holder.append(
+                client.post("/api/run", json={"target": "morning"})
+            ),
+            name="blocked-api-run",
+        )
+        request_thread.start()
+        try:
+            assert start_blocked.wait(timeout=1)
+            health = client.get("/")
+            assert health.status_code == 200
+            assert request_thread.is_alive()
+        finally:
+            release_start.set()
+            request_thread.join(timeout=2)
+
+    assert not request_thread.is_alive()
+    assert response_holder[0].status_code == 503

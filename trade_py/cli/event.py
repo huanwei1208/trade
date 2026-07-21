@@ -11,10 +11,12 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import sys
 import time
 from dataclasses import dataclass
 from datetime import date
+from typing import NoReturn
 
 from trade_py.cli import global_flag_parent
 from trade_py.infra.settings.context import default_data_root
@@ -22,6 +24,7 @@ from trade_py.infra.settings.context import default_data_root
 logger = logging.getLogger(__name__)
 
 _DATA_ROOT = str(default_data_root())
+_EXIT_TEMPFAIL = 75
 
 _VALID_TYPES = [
     "policy_positive",
@@ -57,6 +60,17 @@ class EventRunResult:
     summary: str
     exit_code: int = 0
     rows_processed: int | None = None
+
+
+def _reject_non_finite_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number is not allowed: {value}")
+    return parsed
 
 
 def _track_event_run(
@@ -235,13 +249,15 @@ def make_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_trigger(args: argparse.Namespace) -> int:
-    from trade_py.bus import bootstrap_from_dag, get_bus
-    from trade_py.db.trade_db import TradeDB
-
     try:
-        payload = json.loads(args.payload)
-    except json.JSONDecodeError as exc:
-        print(f"Invalid --payload JSON: {exc.msg}", file=sys.stderr)
+        payload = json.loads(
+            args.payload,
+            parse_float=_parse_finite_json_float,
+            parse_constant=_reject_non_finite_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+        print(f"Invalid --payload JSON: {detail}", file=sys.stderr)
         return 2
     if not isinstance(payload, dict):
         print(
@@ -250,22 +266,78 @@ def _cmd_trigger(args: argparse.Namespace) -> int:
         )
         return 2
 
-    db = TradeDB(args.data_root)
-    db.job_runs_mark_stale_by_policy()
-    db.event_log_mark_stale()
-    bus = get_bus(db)
-    bootstrap_from_dag(db, args.data_root)
-    event = bus.publish(args.topic, payload)
-    print(f"Published event_id={event.id}  topic={args.topic}")
-    idle = bus.wait_for_idle(min_event_id=event.id, timeout_sec=float(args.timeout_sec))
-    if not idle:
-        logger.warning(
-            "event trigger timeout waiting for cascade to settle topic=%s event_id=%s",
-            args.topic,
-            event.id,
+    from trade_py.bus import EventAdmissionError, bootstrap_from_dag, get_bus
+    from trade_py.bus.models import AdmissionOutcome
+    from trade_py.db.trade_db import TradeDB
+
+    db = None
+    bus = None
+    exit_code = 1
+    try:
+        db = TradeDB(args.data_root)
+        db.job_runs_mark_stale_by_policy()
+        db.event_log_mark_stale()
+        bus = get_bus(db)
+        bootstrap_from_dag(db, args.data_root, bus=bus)
+        try:
+            result = bus.publish_with_outcome(args.topic, payload)
+        except EventAdmissionError as exc:
+            result = exc.result
+
+        dispatch_status = "accepted" if result.accepted else "deferred"
+        action = "none" if result.accepted else "replay_existing"
+        accepted_handlers = sum(
+            1 for handler in result.handlers if handler.outcome is AdmissionOutcome.ACCEPTED
         )
-    bus.shutdown(wait=True)
-    return 0
+        verb = "Published" if result.accepted else "Deferred"
+        print(
+            f"{verb} event_id={result.event.id}  topic={args.topic} durable=true "
+            f"outcome={result.outcome.value} dispatch_status={dispatch_status} "
+            f"action={action} handlers_accepted={accepted_handlers}/{len(result.handlers)}"
+        )
+        if not result.accepted:
+            exit_code = _EXIT_TEMPFAIL
+        else:
+            idle = bus.wait_for_idle(
+                min_event_id=result.event.id,
+                timeout_sec=float(args.timeout_sec),
+            )
+            if not idle:
+                logger.warning(
+                    "event trigger timeout waiting for cascade to settle topic=%s event_id=%s",
+                    args.topic,
+                    result.event.id,
+                )
+            exit_code = 0
+    except Exception as exc:
+        logger.error(
+            "event trigger failed topic=%s: %s",
+            args.topic,
+            exc,
+            exc_info=True,
+        )
+        print(
+            f"Event trigger failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    finally:
+        cleanup_failed = False
+        if bus is not None:
+            try:
+                bus.shutdown(wait=True)
+            except Exception as exc:
+                cleanup_failed = True
+                logger.error("event trigger bus shutdown failed: %s", exc, exc_info=True)
+        if db is not None:
+            try:
+                db.close()
+            except Exception as exc:
+                cleanup_failed = True
+                logger.error("event trigger database close failed: %s", exc, exc_info=True)
+        if cleanup_failed and exit_code == 0:
+            exit_code = 1
+    return exit_code
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
