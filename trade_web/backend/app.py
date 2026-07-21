@@ -3767,7 +3767,11 @@ def create_app():
     # ── SPA fallback (MUST be last) ──────────────────────────────────────────
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
-        if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi.json"):
+        if (
+            full_path.startswith("api/")
+            or full_path.startswith("docs")
+            or full_path.startswith("openapi.json")
+        ):
             raise HTTPException(status_code=404)
         index_path = static_dir / "index.html"
         if index_path.exists():
