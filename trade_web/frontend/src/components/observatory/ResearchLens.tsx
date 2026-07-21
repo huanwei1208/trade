@@ -35,12 +35,23 @@ const RESEARCH_TONE: Record<string, "ok" | "warn" | "err" | "info" | "muted"> = 
 };
 
 export function ResearchLens({ hypothesis, researchRun, loading, error }: ResearchLensProps) {
-  const state = researchRun?.research_state || hypothesis?.research_state || "unknown";
+  const state = researchRun?.research_state?.trim() || "unknown";
   const insufficient = state === "blocked" || state === "unknown";
   const metrics = researchRun?.metrics;
+  const researchRunVersion = researchRun?.hypothesis_version;
+  const hypothesisVersion = hypothesis?.hypothesis_version;
+  const provenanceComplete =
+    Boolean(researchRun?.dataset_snapshot_id) &&
+    Boolean(researchRun?.knowledge_as_of) &&
+    Boolean(researchRunVersion?.trim()) &&
+    Boolean(hypothesisVersion?.trim()) &&
+    researchRunVersion === hypothesisVersion;
 
   return (
     <div className="obs-research-lens" data-testid="research-lens">
+      <div className="obs-research__scope" data-testid="research-scope-notice">
+        Separately scoped research evidence — not confirmation of the selected Market snapshot.
+      </div>
       <PanelCard title="Hypothesis H1" subdued>
         {loading && <div className="obs-empty">Loading hypothesis…</div>}
         {error && <div className="obs-error">{error}</div>}
@@ -50,8 +61,16 @@ export function ResearchLens({ hypothesis, researchRun, loading, error }: Resear
               <span className="obs-research__id">
                 {hypothesis?.hypothesis_id || "H1"} · {hypothesis?.hypothesis_version || "—"}
               </span>
-              <StatusPill label={`State: ${humanizeEnum(state)}`} tone={RESEARCH_TONE[state] || "muted"} subtle />
-              <StatusPill label={hypothesis?.directional ? "directional" : "non-directional"} tone="muted" subtle />
+              <StatusPill
+                label={`State: ${humanizeEnum(state)}`}
+                tone={RESEARCH_TONE[state] || "muted"}
+                subtle
+              />
+              <StatusPill
+                label={hypothesis?.directional ? "directional" : "non-directional"}
+                tone="muted"
+                subtle
+              />
             </div>
             <p className="obs-research__statement">{hypothesis?.statement || "—"}</p>
             <div className="obs-detail-grid">
@@ -69,8 +88,8 @@ export function ResearchLens({ hypothesis, researchRun, loading, error }: Resear
           <div className="obs-research__insufficient" data-testid="research-insufficient">
             <StatusPill label={`Research ${humanizeEnum(state)}`} tone="warn" subtle />
             <p className="obs-lens__hint">
-              Data is insufficient to present a validated effect. The system does not fabricate a result — this is an
-              honest insufficient / blocked state.
+              Data is insufficient to present a validated effect. The system does not fabricate a
+              result — this is an honest insufficient / blocked state.
             </p>
           </div>
         ) : (
@@ -80,7 +99,10 @@ export function ResearchLens({ hypothesis, researchRun, loading, error }: Resear
             <Metric label="CI high" value={readMetricString(metrics, "ci_high")} />
             <Metric label="BH q-value" value={readMetricString(metrics, "q_value")} />
             <Metric label="Sample size" value={readMetricString(metrics, "sample_size")} />
-            <Metric label="Data readiness" value={humanizeEnum(readMetricString(metrics, "data_readiness") || undefined)} />
+            <Metric
+              label="Data readiness"
+              value={humanizeEnum(readMetricString(metrics, "data_readiness") || undefined)}
+            />
           </div>
         )}
       </PanelCard>
@@ -92,24 +114,30 @@ export function ResearchLens({ hypothesis, researchRun, loading, error }: Resear
             <span aria-hidden="true">⧉</span> FUTURE OUTCOME · research-only view
           </div>
           <p className="obs-lens__hint">
-            RV7 forward distribution and matured/pending labels live here. This region is only rendered inside the
-            Research lens and is intentionally styled distinctly.
+            Future-outcome evidence appears here only when a separately scoped, provenance-bound
+            research receipt supplies it. This region is intentionally distinct from Market views.
           </p>
-          <ForestPlaceholder />
+          <div className="obs-empty" data-testid="research-distribution-unavailable">
+            Fold and distribution evidence is unavailable because this research receipt does not
+            provide immutable, provenance-bound distribution values.
+          </div>
         </div>
       </PanelCard>
 
       <OpenInLab
         snapshotId={researchRun?.dataset_snapshot_id}
         knowledgeAsOf={researchRun?.knowledge_as_of}
-        hypothesisVersion={hypothesis?.hypothesis_version}
+        hypothesisVersion={researchRun?.hypothesis_version}
+        provenanceComplete={provenanceComplete}
       />
 
       {(researchRun?.evidence_refs ?? []).length > 0 && (
         <PanelCard title="Evidence" subdued>
           <ul className="obs-code-list" data-testid="research-evidence">
             {(researchRun?.evidence_refs ?? []).map((ref) => (
-              <li key={ref}><code>{ref}</code></li>
+              <li key={ref}>
+                <code>{ref}</code>
+              </li>
             ))}
           </ul>
         </PanelCard>
@@ -118,39 +146,24 @@ export function ResearchLens({ hypothesis, researchRun, loading, error }: Resear
   );
 }
 
-function ForestPlaceholder() {
-  // Minimal SVG "forest" scaffold (no data recompute). Distinct background makes
-  // it obvious this is the research-only future region.
-  return (
-    <svg viewBox="0 0 320 90" className="obs-forest" role="img" aria-label="Fold effect forest plot (illustrative axis)">
-      <line x1="160" y1="6" x2="160" y2="84" stroke="var(--line-strong)" strokeDasharray="2 3" />
-      <text x="160" y="88" fontSize="8" textAnchor="middle" fill="var(--text-3)">effect = 1.0</text>
-      {[20, 40, 60].map((y, i) => (
-        <g key={y}>
-          <line x1={110 - i * 8} y1={y} x2={210 + i * 6} y2={y} stroke="var(--text-2)" strokeWidth="1.2" />
-          <circle cx={150 + i * 12} cy={y} r="2.5" fill="var(--accent-cyan)" />
-        </g>
-      ))}
-    </svg>
-  );
-}
-
 function OpenInLab({
   snapshotId,
   knowledgeAsOf,
   hypothesisVersion,
+  provenanceComplete,
 }: {
   snapshotId?: string | null;
   knowledgeAsOf?: string | null;
   hypothesisVersion?: string | null;
+  provenanceComplete: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const canOpen = Boolean(snapshotId);
+  const canOpen = provenanceComplete;
   const params = {
     asset: "crypto.BTC",
-    snapshot_id: snapshotId || "<unresolved-snapshot>",
-    knowledge_as_of: knowledgeAsOf || "latest",
-    hypothesis_version: hypothesisVersion || "btc-vol-persistence-v1",
+    snapshot_id: snapshotId,
+    knowledge_as_of: knowledgeAsOf,
+    hypothesis_version: hypothesisVersion,
   };
   const command = `trade research btc run --hypothesis H1 --snapshot-id ${params.snapshot_id} --dry-run`;
   const deepLink = `research/notebooks/btc_h1_observatory.py --snapshot-id ${params.snapshot_id}`;
@@ -173,12 +186,12 @@ function OpenInLab({
       }
     >
       <p className="obs-lens__hint">
-        Display only. This shows a deep link, param file, and a copyable command that fixes the snapshot_id. It does NOT
-        start a process, create a notebook, or register a run.
+        Display only. This shows a deep link, param file, and a copyable command that fixes the
+        snapshot_id. It does NOT start a process, create a notebook, or register a run.
       </p>
       {!canOpen && (
         <div className="obs-empty" data-testid="open-in-lab-unavailable">
-          No immutable snapshot_id resolved yet — cannot produce a reproducible deep link.
+          Complete matched provenance is unavailable — cannot produce a reproducible deep link.
         </div>
       )}
       {open && canOpen && (
@@ -189,7 +202,9 @@ function OpenInLab({
           </div>
           <div className="obs-open-lab__block">
             <div className="obs-cert-split__title">Reproducible command</div>
-            <pre className="obs-code-block" data-testid="open-in-lab-command">{command}</pre>
+            <pre className="obs-code-block" data-testid="open-in-lab-command">
+              {command}
+            </pre>
           </div>
           <div className="obs-open-lab__block">
             <div className="obs-cert-split__title">Notebook deep link</div>

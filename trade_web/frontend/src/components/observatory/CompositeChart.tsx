@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type RefObject } from "react";
 
-import type { ObsChannel, ObsCompositeSeries, ObsSeriesRow } from "../../lib/api";
+import type { ObsChannel, ObsCompositeSeries, ObsExcludedDate, ObsSeriesRow } from "../../lib/api";
 import {
   makeIndexScale,
   makeValueScale,
@@ -11,14 +11,16 @@ import {
 import {
   applyRangeWindow,
   buildSegments,
+  downsampleSeriesRows,
   extractLayers,
   formalWatermarkDate,
   isPlottable,
   layerTreatment,
   markersForRow,
+  OBSERVATORY_CHART_POINT_BUDGET,
   parseDecimal,
-  unionDates,
   type LayerKey,
+  type NonColorMarkerKind,
 } from "../../lib/observatory";
 
 // Three-layer composite chart (docs/26 §7.8, §11.1, §12.1). The three lifecycle
@@ -37,8 +39,11 @@ type CompositeChartProps = {
   range: string; // 30D / 90D / 1Y / All
   selectedDate?: string | null;
   onSelectDate?: (date: string) => void;
+  dateInputRef?: RefObject<HTMLInputElement | null>;
   height?: number;
   visibleLayers?: Record<LayerKey, boolean>;
+  excludedDates?: ObsExcludedDate[];
+  quarantineBreakLayer?: LayerKey;
 };
 
 const WIDTH = 860;
@@ -53,19 +58,203 @@ const LAYER_COLOR: Record<LayerKey, string> = {
   latest_observed: "var(--accent-cyan)",
 };
 
+type ChartMarkerNode = {
+  x: number;
+  y: number;
+  row: ObsSeriesRow;
+  layer: LayerKey;
+  kind: NonColorMarkerKind;
+  source: "layer" | "context";
+};
+
+type ChartMarkerSelection = {
+  nodes: ChartMarkerNode[];
+  sampled: boolean;
+};
+
+const RETAINED_MARKER_KINDS: NonColorMarkerKind[] = [
+  "quarantine",
+  "missing",
+  "unobserved",
+  "revision",
+];
+
+function sortChartMarkers(markerNodes: ChartMarkerNode[]): ChartMarkerNode[] {
+  return [...markerNodes].sort(
+    (left, right) =>
+      left.x - right.x ||
+      (left.row.date ?? "").localeCompare(right.row.date ?? "") ||
+      left.layer.localeCompare(right.layer) ||
+      left.kind.localeCompare(right.kind),
+  );
+}
+
+function evenlySampleChartMarkers(
+  markerNodes: ChartMarkerNode[],
+  budget: number,
+): ChartMarkerNode[] {
+  if (budget <= 0) {
+    return [];
+  }
+  if (markerNodes.length <= budget) {
+    return markerNodes;
+  }
+
+  return Array.from({ length: budget }, (_, index) => {
+    const selectedIndex = Math.round((index * (markerNodes.length - 1)) / (budget - 1));
+    return markerNodes[selectedIndex] as ChartMarkerNode;
+  });
+}
+
+function downsampleChartMarkers(markerNodes: ChartMarkerNode[]): ChartMarkerSelection {
+  if (markerNodes.length <= OBSERVATORY_CHART_POINT_BUDGET) {
+    return { nodes: markerNodes, sampled: false };
+  }
+
+  const sorted = sortChartMarkers(markerNodes);
+  const retained = RETAINED_MARKER_KINDS.flatMap((kind) => {
+    const marker = sorted.find((node) => node.kind === kind);
+    return marker ? [marker] : [];
+  });
+  const retainedNodes = new Set(retained);
+  const evenlySampled = evenlySampleChartMarkers(
+    sorted.filter((node) => !retainedNodes.has(node)),
+    OBSERVATORY_CHART_POINT_BUDGET - retained.length,
+  );
+
+  return {
+    nodes: sortChartMarkers([...retained, ...evenlySampled]),
+    sampled: true,
+  };
+}
+
+function markerSelectionNotice(selection: ChartMarkerSelection): string | null {
+  if (!selection.sampled) {
+    return null;
+  }
+  return "Status markers sampled to the chart display budget; each available status type is retained.";
+}
+
+function mergeExcludedDates(...groups: ObsExcludedDate[][]): ObsExcludedDate[] {
+  const dates = new Map<string, ObsExcludedDate>();
+  for (const excludedDate of groups.flat()) {
+    if (!excludedDate.date) {
+      continue;
+    }
+    const existing = dates.get(excludedDate.date);
+    dates.set(excludedDate.date, {
+      ...existing,
+      ...excludedDate,
+      date: excludedDate.date,
+      quality_flags: [
+        ...new Set([...(existing?.quality_flags ?? []), ...(excludedDate.quality_flags ?? [])]),
+      ],
+    });
+  }
+  return [...dates.values()];
+}
+
+function mergeQuarantineBreakRows(
+  rows: ObsSeriesRow[],
+  excludedDateByValue: Map<string, ObsExcludedDate>,
+): ObsSeriesRow[] {
+  const rowsByDate = new Map(
+    rows
+      .filter((row): row is ObsSeriesRow & { date: string } => Boolean(row.date))
+      .map((row) => [row.date, row]),
+  );
+  const dates = new Set([...rowsByDate.keys(), ...excludedDateByValue.keys()]);
+
+  return [...dates].sort().map((date) => {
+    const existingRow = rowsByDate.get(date);
+    const excludedDate = excludedDateByValue.get(date);
+    if (!excludedDate) {
+      return existingRow as ObsSeriesRow;
+    }
+
+    return {
+      ...existingRow,
+      date,
+      close: null,
+      availability_state: "unknown",
+      quality_flags: [
+        ...new Set([
+          ...(existingRow?.quality_flags ?? []),
+          ...(excludedDate.quality_flags ?? []),
+          "quarantined",
+        ]),
+      ],
+    };
+  });
+}
+
 export function CompositeChart({
   composite,
   range,
   selectedDate,
   onSelectDate,
+  dateInputRef,
   height = 300,
   visibleLayers,
+  excludedDates = [],
+  quarantineBreakLayer,
 }: CompositeChartProps) {
   // Long-period price defaults to log scale (docs/26 §12.1). 30D/90D linear.
-  const [scaleMode, setScaleMode] = useState<ScaleMode>(range === "1Y" || range === "All" ? "log" : "linear");
+  const [scaleMode, setScaleMode] = useState<ScaleMode>(
+    range === "1Y" || range === "All" ? "log" : "linear",
+  );
 
   const layers = useMemo(() => extractLayers(composite), [composite]);
-  const allDates = useMemo(() => unionDates(composite), [composite]);
+  const excludedDatesByLayer = useMemo(
+    () =>
+      new Map(
+        layers.map((layer) => [
+          layer.key,
+          mergeExcludedDates(
+            layer.excludedDates,
+            layer.key === quarantineBreakLayer ? excludedDates : [],
+          ),
+        ]),
+      ),
+    [layers, excludedDates, quarantineBreakLayer],
+  );
+  const allExcludedDates = useMemo(
+    () => mergeExcludedDates(excludedDates, ...[...excludedDatesByLayer.values()]),
+    [excludedDates, excludedDatesByLayer],
+  );
+  const layersWithQuarantineGaps = useMemo(
+    () =>
+      layers.map((layer) => {
+        const layerExcludedDates = excludedDatesByLayer.get(layer.key) ?? [];
+        return {
+          ...layer,
+          rows: mergeQuarantineBreakRows(
+            layer.rows,
+            new Map(
+              layerExcludedDates
+                .filter(
+                  (excludedDate): excludedDate is ObsExcludedDate & { date: string } =>
+                    typeof excludedDate.date === "string",
+                )
+                .map((excludedDate) => [excludedDate.date, excludedDate]),
+            ),
+          ),
+        };
+      }),
+    [layers, excludedDatesByLayer],
+  );
+  const allDates = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...layersWithQuarantineGaps.flatMap((layer) => layer.rows.map((row) => row.date)),
+          ...allExcludedDates.map((excludedDate) => excludedDate.date),
+        ]),
+      )
+        .filter((date): date is string => Boolean(date))
+        .sort(),
+    [allExcludedDates, layersWithQuarantineGaps],
+  );
   const windowDates = useMemo(() => applyRangeWindow(allDates, range), [allDates, range]);
   const dateIndex = useMemo(() => {
     const map = new Map<string, number>();
@@ -78,7 +267,7 @@ export function CompositeChart({
   // Shared y-domain across ALL layers so no single layer redefines the scale.
   const domain = useMemo(() => {
     const values: number[] = [];
-    for (const layer of layers) {
+    for (const layer of layersWithQuarantineGaps) {
       for (const row of layer.rows) {
         if (row.date && dateIndex.has(row.date) && isPlottable(row)) {
           const v = parseDecimal(row.close);
@@ -89,7 +278,7 @@ export function CompositeChart({
       }
     }
     return paddedDomain(values);
-  }, [layers, dateIndex]);
+  }, [layersWithQuarantineGaps, dateIndex]);
 
   const xScale = useMemo(
     () => makeIndexScale(windowDates.length, WIDTH, PAD_LEFT, PAD_RIGHT),
@@ -109,9 +298,18 @@ export function CompositeChart({
   }
 
   const enabled = (key: LayerKey) => (visibleLayers ? visibleLayers[key] : true);
+  const excludedDateByValue = new Map(
+    allExcludedDates
+      .filter(
+        (excludedDate): excludedDate is ObsExcludedDate & { date: string } =>
+          typeof excludedDate.date === "string" && dateIndex.has(excludedDate.date),
+      )
+      .map((excludedDate) => [excludedDate.date, excludedDate]),
+  );
 
   // Marker rows across all layers (for non-color quarantine/revision glyphs).
-  const markerNodes: Array<{ x: number; y: number; row: ObsSeriesRow; layer: LayerKey }> = [];
+  const markerNodes: ChartMarkerNode[] = [];
+  const layerQuarantineMarkerDates = new Set<string>();
 
   return (
     <div className="obs-chart" data-testid="composite-chart">
@@ -140,6 +338,25 @@ export function CompositeChart({
         </div>
         <CompositeLegend />
       </div>
+      {onSelectDate ? (
+        <label className="obs-chart__date-inspector">
+          <span>Inspect market date</span>
+          <input
+            ref={dateInputRef}
+            type="date"
+            value={selectedDate ?? ""}
+            min={windowDates[0]}
+            max={windowDates[windowDates.length - 1]}
+            aria-label="Inspect a visible market date"
+            onChange={(event) => {
+              if (windowDates.includes(event.target.value)) {
+                onSelectDate(event.target.value);
+              }
+            }}
+            data-testid="chart-date-inspector"
+          />
+        </label>
+      ) : null}
 
       <svg
         className="obs-chart__svg"
@@ -150,7 +367,13 @@ export function CompositeChart({
       >
         <defs>
           {/* Persistent textures — candidate/observed never look "published". */}
-          <pattern id="hatch-candidate" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <pattern
+            id="hatch-candidate"
+            width="6"
+            height="6"
+            patternUnits="userSpaceOnUse"
+            patternTransform="rotate(45)"
+          >
             <line x1="0" y1="0" x2="0" y2="6" stroke="var(--warn)" strokeWidth="1.4" />
           </pattern>
           <pattern id="outline-observed" width="5" height="5" patternUnits="userSpaceOnUse">
@@ -160,13 +383,27 @@ export function CompositeChart({
 
         {/* y grid + axis labels */}
         {[0, 0.25, 0.5, 0.75, 1].map((t) => {
-          const value = scaleMode === "log"
-            ? Math.pow(10, Math.log10(Math.max(domain.min, 1e-9)) + t * (Math.log10(Math.max(domain.max, 1e-9)) - Math.log10(Math.max(domain.min, 1e-9))))
-            : domain.min + t * (domain.max - domain.min);
+          const value =
+            scaleMode === "log"
+              ? Math.pow(
+                  10,
+                  Math.log10(Math.max(domain.min, 1e-9)) +
+                    t *
+                      (Math.log10(Math.max(domain.max, 1e-9)) -
+                        Math.log10(Math.max(domain.min, 1e-9))),
+                )
+              : domain.min + t * (domain.max - domain.min);
           const y = yScale(value);
           return (
             <g key={t}>
-              <line x1={PAD_LEFT} y1={y} x2={WIDTH - PAD_RIGHT} y2={y} stroke="var(--line)" strokeWidth="1" />
+              <line
+                x1={PAD_LEFT}
+                y1={y}
+                x2={WIDTH - PAD_RIGHT}
+                y2={y}
+                stroke="var(--line)"
+                strokeWidth="1"
+              />
               <text x={4} y={y + 3} fontSize="9" fill="var(--text-3)">
                 {value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
               </text>
@@ -198,14 +435,18 @@ export function CompositeChart({
         )}
 
         {/* Layers — draw formal first (baseline), then candidate, then observed. */}
-        {layers.map((layer) => {
+        {layersWithQuarantineGaps.map((layer) => {
           if (!enabled(layer.key)) {
             return null;
           }
           const treatment = layerTreatment(layer.key);
           const rowsInWindow = layer.rows.filter((r) => r.date && dateIndex.has(r.date));
-          const segments = buildSegments(rowsInWindow).map((seg) =>
-            seg.map((p) => ({ index: dateIndex.get(rowsInWindow[p.index].date as string) as number, value: p.value })),
+          const displayedRows = downsampleSeriesRows(rowsInWindow);
+          const segments = buildSegments(displayedRows).map((seg) =>
+            seg.map((point) => ({
+              index: dateIndex.get(point.date) as number,
+              value: point.value,
+            })),
           );
           const paths = segmentedLinePaths(segments, xScale, yScale);
 
@@ -213,18 +454,29 @@ export function CompositeChart({
           for (const row of rowsInWindow) {
             const markers = markersForRow(row);
             if (markers.length && row.date && dateIndex.has(row.date)) {
+              if (markers.some((marker) => marker.kind === "quarantine")) {
+                layerQuarantineMarkerDates.add(row.date);
+              }
               const v = parseDecimal(row.close);
-              markerNodes.push({
-                x: xScale(dateIndex.get(row.date) as number),
-                y: v !== null ? yScale(v) : height - PAD_BOTTOM - 6,
-                row,
-                layer: layer.key,
-              });
+              for (const marker of markers) {
+                markerNodes.push({
+                  x: xScale(dateIndex.get(row.date) as number),
+                  y: v !== null ? yScale(v) : height - PAD_BOTTOM - 6,
+                  row,
+                  layer: layer.key,
+                  kind: marker.kind,
+                  source: "layer",
+                });
+              }
             }
           }
 
           return (
-            <g key={layer.key} data-testid={`layer-${layer.key}`} data-render-role={treatment.isBaseline ? "baseline" : "overlay"}>
+            <g
+              key={layer.key}
+              data-testid={`layer-${layer.key}`}
+              data-render-role={treatment.isBaseline ? "baseline" : "overlay"}
+            >
               {paths.map((d, i) => (
                 <path
                   key={i}
@@ -241,18 +493,65 @@ export function CompositeChart({
           );
         })}
 
-        {/* Non-color markers: icon + shape (color is redundant, not required). */}
-        {markerNodes.map((node, i) => {
-          const markers = markersForRow(node.row);
-          const primary = markers[0];
+        {(() => {
+          const fallbackMarkers: ChartMarkerNode[] = [...excludedDateByValue.values()]
+            .filter((excludedDate) => !layerQuarantineMarkerDates.has(excludedDate.date))
+            .map((excludedDate) => ({
+              x: xScale(dateIndex.get(excludedDate.date) as number),
+              y: height - PAD_BOTTOM - 6,
+              row: {
+                date: excludedDate.date,
+                close: null,
+                availability_state: "unknown" as const,
+                quality_flags: ["quarantined"],
+              },
+              layer: "latest_observed" as const,
+              kind: "quarantine" as const,
+              source: "context" as const,
+            }));
+
+          const selection = downsampleChartMarkers([...markerNodes, ...fallbackMarkers]);
           return (
-            <g key={`${node.row.date}-${node.layer}-${i}`} data-testid="chart-marker" data-marker-kind={primary?.kind}>
-              <text x={node.x} y={node.y - 6} fontSize="10" textAnchor="middle" fill="var(--text-1)">
-                {primary?.icon}
-              </text>
-            </g>
+            <>
+              {markerSelectionNotice(selection) ? (
+                <text
+                  x={WIDTH - PAD_RIGHT}
+                  y={height - 4}
+                  fontSize="9"
+                  textAnchor="end"
+                  fill="var(--text-3)"
+                  data-testid="chart-marker-sampling-notice"
+                >
+                  {markerSelectionNotice(selection)}
+                </text>
+              ) : null}
+              {selection.nodes.map((node, index) => {
+                const marker = markersForRow(node.row).find(
+                  (candidate) => candidate.kind === node.kind,
+                );
+                return (
+                  <g
+                    key={`${node.row.date}-${node.layer}-${node.kind}-${index}`}
+                    data-testid={
+                      node.source === "context" ? "chart-context-quarantine-marker" : "chart-marker"
+                    }
+                    data-marker-kind={node.kind}
+                  >
+                    <text
+                      x={node.x}
+                      y={node.y - 6}
+                      fontSize="10"
+                      textAnchor="middle"
+                      fill="var(--text-1)"
+                    >
+                      {marker?.icon}
+                    </text>
+                  </g>
+                );
+              })}
+            </>
           );
-        })}
+        })()}
 
         {/* Selected-date crosshair (locks the date across panels). */}
         {selectedDate && dateIndex.has(selectedDate) && (
@@ -267,23 +566,29 @@ export function CompositeChart({
           />
         )}
 
-        {/* Invisible hit targets for date selection. */}
-        {onSelectDate &&
-          windowDates.map((d, i) => (
-            <rect
-              key={d}
-              x={xScale(i) - 3}
-              y={PAD_TOP}
-              width={6}
-              height={height - PAD_TOP - PAD_BOTTOM}
-              fill="transparent"
-              style={{ cursor: "pointer" }}
-              onClick={() => onSelectDate(d)}
-              data-testid={`hit-${d}`}
-            >
-              <title>{d}</title>
-            </rect>
-          ))}
+        {onSelectDate ? (
+          <rect
+            x={PAD_LEFT}
+            y={PAD_TOP}
+            width={WIDTH - PAD_LEFT - PAD_RIGHT}
+            height={height - PAD_TOP - PAD_BOTTOM}
+            fill="transparent"
+            style={{ cursor: "pointer" }}
+            onPointerUp={(event) => {
+              const bounds = event.currentTarget.getBoundingClientRect();
+              if (!bounds.width) {
+                return;
+              }
+              const ratio = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
+              const index = Math.round(ratio * (windowDates.length - 1));
+              const date = windowDates[index];
+              if (date) {
+                onSelectDate(date);
+              }
+            }}
+            data-testid="chart-pointer-overlay"
+          />
+        ) : null}
       </svg>
     </div>
   );

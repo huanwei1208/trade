@@ -67,13 +67,41 @@ const CONTEXT = {
   compatibility_state: "compatible",
   acquisition_state: "succeeded",
   purpose_fitness: [
-    { purpose: "manual_observation", allowed: true, status: "allowed", reason_codes: [], evidence_refs: [] },
-    { purpose: "formal_system_consumption", allowed: false, status: "blocked", reason_codes: ["CHANNEL_UNAVAILABLE"], evidence_refs: [] },
-    { purpose: "strict_research", allowed: false, status: "blocked", reason_codes: ["RESEARCH_NOT_ELIGIBLE"], evidence_refs: [] },
+    {
+      purpose: "manual_observation",
+      allowed: true,
+      status: "allowed",
+      reason_codes: [],
+      evidence_refs: [],
+    },
+    {
+      purpose: "formal_system_consumption",
+      allowed: false,
+      status: "blocked",
+      reason_codes: ["CHANNEL_UNAVAILABLE"],
+      evidence_refs: [],
+    },
+    {
+      purpose: "strict_research",
+      allowed: false,
+      status: "blocked",
+      reason_codes: ["RESEARCH_NOT_ELIGIBLE"],
+      evidence_refs: [],
+    },
   ],
-  artifact_refs: [{ name: "canonical", sha256: "abc123", relative_path: "runs/run_observed/canonical.parquet" }],
+  artifact_refs: [
+    { name: "canonical", sha256: "abc123", relative_path: "runs/run_observed/canonical.parquet" },
+  ],
   findings_summary: { acquisition_stability: "3 / 29 real success days" },
-  excluded_dates: [{ date: "2026-07-15", exclusion_reason: "quarantined", quality_flags: ["quarantined"], evidence_refs: [], marker_position: null }],
+  excluded_dates: [
+    {
+      date: "2026-07-15",
+      exclusion_reason: "quarantined",
+      quality_flags: ["quarantined"],
+      evidence_refs: [],
+      marker_position: null,
+    },
+  ],
   reason_codes: [],
   view_fingerprint: "vf_context_0001",
   etag: "etag_context_0001",
@@ -86,17 +114,51 @@ const CONTEXT = {
 };
 
 const FORMAL_ROWS = [
-  row("2026-07-09", "58000", { membership: ["formal"], render_role: "formal_baseline", source_run_id: "run_formal" }),
-  row("2026-07-10", "59000", { membership: ["formal"], render_role: "formal_baseline", source_run_id: "run_formal" }),
-  row("2026-07-11", "60000", { membership: ["formal"], render_role: "formal_baseline", source_run_id: "run_formal" }),
+  row("2026-07-09", "58000", {
+    membership: ["formal"],
+    render_role: "formal_baseline",
+    source_run_id: "run_formal",
+  }),
+  row("2026-07-10", "59000", {
+    membership: ["formal"],
+    render_role: "formal_baseline",
+    source_run_id: "run_formal",
+  }),
+  row("2026-07-11", "60000", {
+    membership: ["formal"],
+    render_role: "formal_baseline",
+    source_run_id: "run_formal",
+  }),
 ];
 
 const CANDIDATE_ROWS = [
-  row("2026-07-10", "59050", { membership: ["evaluated_candidate"], render_role: "candidate_overlap", revision_state: "changed", source_run_id: "run_candidate" }),
-  row("2026-07-11", "60000", { membership: ["evaluated_candidate"], render_role: "candidate_overlap", source_run_id: "run_candidate" }),
-  row("2026-07-12", "61000", { membership: ["evaluated_candidate"], render_role: "candidate_only", source_run_id: "run_candidate" }),
-  row("2026-07-13", null, { membership: ["evaluated_candidate"], render_role: "candidate_only", availability_state: "missing", source_run_id: "run_candidate" }),
-  row("2026-07-14", "62000", { membership: ["evaluated_candidate"], render_role: "candidate_only", source_run_id: "run_candidate" }),
+  row("2026-07-10", "59050", {
+    membership: ["evaluated_candidate"],
+    render_role: "candidate_overlap",
+    revision_state: "changed",
+    source_run_id: "run_candidate",
+  }),
+  row("2026-07-11", "60000", {
+    membership: ["evaluated_candidate"],
+    render_role: "candidate_overlap",
+    source_run_id: "run_candidate",
+  }),
+  row("2026-07-12", "61000", {
+    membership: ["evaluated_candidate"],
+    render_role: "candidate_only",
+    source_run_id: "run_candidate",
+  }),
+  row("2026-07-13", null, {
+    membership: ["evaluated_candidate"],
+    render_role: "candidate_only",
+    availability_state: "missing",
+    source_run_id: "run_candidate",
+  }),
+  row("2026-07-14", "62000", {
+    membership: ["evaluated_candidate"],
+    render_role: "candidate_only",
+    source_run_id: "run_candidate",
+  }),
 ];
 
 const OBSERVED_ROWS = [
@@ -113,7 +175,11 @@ const COMPOSITE = {
   etag: "etag_composite_0001",
   fingerprint_basis: "fb_0001",
   layers: {
-    formal: { channel: "formal", context: { ...CONTEXT, resolved_channel: "formal", market_watermark: "2026-07-11" }, rows: FORMAL_ROWS },
+    formal: {
+      channel: "formal",
+      context: { ...CONTEXT, resolved_channel: "formal", market_watermark: "2026-07-11" },
+      rows: FORMAL_ROWS,
+    },
     evaluated_candidate: { channel: "evaluated_candidate", context: CONTEXT, rows: CANDIDATE_ROWS },
     latest_observed: { channel: "latest_observed", context: CONTEXT, rows: OBSERVED_ROWS },
   },
@@ -126,7 +192,16 @@ const FORMAL_SERIES = {
   context: { ...CONTEXT, resolved_channel: "formal", market_watermark: "2026-07-11" },
   rows: FORMAL_ROWS.map((r, i) => ({
     ...r,
-    metrics: i === FORMAL_ROWS.length - 1 ? { return_1d: "1.69", return_7d: "3.44", return_30d: "12.10", drawdown: "-4.20", rv20_percentile: "72" } : {},
+    metrics:
+      i === FORMAL_ROWS.length - 1
+        ? {
+            return_1d: "1.69",
+            return_7d: "3.44",
+            return_30d: "12.10",
+            drawdown: "-4.20",
+            rv20_percentile: "72",
+          }
+        : {},
   })),
   pit_valid: true,
   reason_codes: [],
@@ -150,19 +225,62 @@ const TRUST = {
   snapshot_id: "snapshot_observed_0001",
   run_id: "run_observed",
   gates: [
-    { gate: "contract", status: "pass", reason_code: null, detail: "identity verified", metrics: {} },
-    { gate: "acquisition", status: "warn", reason_code: "D1_INSUFFICIENT", detail: "3 / 29 real success days", metrics: {} },
-    { gate: "publish", status: "block", reason_code: "CHANNEL_UNAVAILABLE", detail: "not published", metrics: {} },
+    {
+      gate: "contract",
+      status: "pass",
+      reason_code: null,
+      detail: "identity verified",
+      metrics: {},
+    },
+    {
+      gate: "acquisition",
+      status: "warn",
+      reason_code: "D1_INSUFFICIENT",
+      detail: "3 / 29 real success days",
+      metrics: {},
+    },
+    {
+      gate: "publish",
+      status: "block",
+      reason_code: "CHANNEL_UNAVAILABLE",
+      detail: "not published",
+      metrics: {},
+    },
   ],
-  findings: [{ finding_id: "f001", gate: "acquisition", severity: "warn", reason_code: "D1_INSUFFICIENT", affected_dates: ["2026-07-12"], evidence_refs: ["run_candidate"] }],
+  findings: [
+    {
+      finding_id: "f001",
+      gate: "acquisition",
+      severity: "warn",
+      reason_code: "D1_INSUFFICIENT",
+      affected_dates: ["2026-07-12"],
+      evidence_refs: ["run_candidate"],
+    },
+  ],
   acquisition_state: "succeeded",
   quality_state: "degraded",
 };
 
 const RUNS = {
   runs: [
-    { run_id: "run_observed", created_at: "2026-07-18T01:00:00Z", market_watermark: "2026-07-18", data_readiness: "degraded", quality_state: "degraded", lifecycle_state: "staged", canonical_rows: 725 },
-    { run_id: "run_formal", created_at: "2026-07-11T01:00:00Z", market_watermark: "2026-07-11", data_readiness: "ready", quality_state: "assured", lifecycle_state: "published", canonical_rows: 730 },
+    {
+      run_id: "run_observed",
+      created_at: "2026-07-18T01:00:00Z",
+      market_watermark: "2026-07-18",
+      data_readiness: "degraded",
+      quality_state: "degraded",
+      lifecycle_state: "staged",
+      canonical_rows: 725,
+    },
+    {
+      run_id: "run_formal",
+      created_at: "2026-07-11T01:00:00Z",
+      market_watermark: "2026-07-11",
+      data_readiness: "ready",
+      quality_state: "assured",
+      lifecycle_state: "published",
+      canonical_rows: 730,
+    },
   ],
   next_cursor: null,
   catalog_fingerprint: "catalog_fp_0001",
@@ -183,8 +301,24 @@ const RUN_DETAIL = {
 };
 
 const RUN_DIFF = {
-  base: { run_id: "run_formal", watermark: "2026-07-11", canonical_rows: 730, canonical_hash: "hf", code_revision: "aaa", config_hash: "c1", schema_hash: "s1" },
-  compare: { run_id: "run_observed", watermark: "2026-07-18", canonical_rows: 725, canonical_hash: "ho", code_revision: "bbb", config_hash: "c1", schema_hash: "s1" },
+  base: {
+    run_id: "run_formal",
+    watermark: "2026-07-11",
+    canonical_rows: 730,
+    canonical_hash: "hf",
+    code_revision: "aaa",
+    config_hash: "c1",
+    schema_hash: "s1",
+  },
+  compare: {
+    run_id: "run_observed",
+    watermark: "2026-07-18",
+    canonical_rows: 725,
+    canonical_hash: "ho",
+    code_revision: "bbb",
+    config_hash: "c1",
+    schema_hash: "s1",
+  },
   added_dates: ["2026-07-12", "2026-07-16", "2026-07-17", "2026-07-18"],
   removed_dates: ["2026-07-05"],
   changed_dates: [{ date: "2026-07-10", base_close: "59000", compare_close: "59050" }],
@@ -199,7 +333,8 @@ const HYPOTHESES = {
     {
       hypothesis_id: "H1",
       hypothesis_version: "btc-vol-persistence-v1",
-      statement: "After BTC 20-day realized volatility enters a high-volatility regime, is the next seven full-UTC-day realized volatility significantly and stably higher than normal days?",
+      statement:
+        "After BTC 20-day realized volatility enters a high-volatility regime, is the next seven full-UTC-day realized volatility significantly and stably higher than normal days?",
       directional: false,
       research_state: "candidate",
       current_research_run_id: "H1:gen_0007",
@@ -217,17 +352,60 @@ const RESEARCH_RUN = {
   knowledge_as_of: "2026-07-11T00:00:00Z",
   research_state: "candidate",
   is_current: true,
-  metrics: { effect_ratio: "1.42", ci_low: "1.05", ci_high: "1.93", q_value: "0.031", sample_size: "58", data_readiness: "degraded" },
+  metrics: {
+    effect_ratio: "1.42",
+    ci_low: "1.05",
+    ci_high: "1.93",
+    q_value: "0.031",
+    sample_size: "58",
+    data_readiness: "degraded",
+  },
   evidence_refs: ["receipts/h1_gen_0007.json"],
 };
 
 function json(route: Route, body: unknown) {
-  return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  return route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+}
+
+function invalid(route: Route, message: string) {
+  return route.fulfill({
+    status: 422,
+    contentType: "application/json",
+    body: JSON.stringify({
+      message,
+      reason_codes: ["INVALID_SNAPSHOT_SELECTOR"],
+      evidence_refs: [],
+      retryable: false,
+    }),
+  });
+}
+
+function requireSnapshot(url: URL, route: Route) {
+  if (url.searchParams.get("snapshot_id") !== CONTEXT.snapshot_id) {
+    return invalid(route, "Mock requires the selected Context snapshot_id.");
+  }
+  return null;
+}
+
+function requireBoundedWindow(url: URL, route: Route) {
+  const from = url.searchParams.get("from");
+  const to = url.searchParams.get("to");
+  if (from !== "2026-04-20" || to !== "2026-07-18") {
+    return invalid(route, "Mock requires the Context-derived 90D server window.");
+  }
+  return null;
 }
 
 export async function mockObservatoryApi(page: Page): Promise<void> {
   // Non-observatory endpoints the shell may call (trust overview) — stub empty.
-  await page.route("**/api/trust/overview", (route) => json(route, { as_of: "2026-07-19", trust_scalar: null, coverage: null, trend: [] }));
+  await page.route("**/api/trust/overview", (route) =>
+    json(route, { as_of: "2026-07-19", trust_scalar: null, coverage: null, trend: [] }),
+  );
+  await page.route("**/api/today-page", (route) => json(route, {}));
 
   await page.route("**/api/v1/observatory/**", (route) => {
     const url = new URL(route.request().url());
@@ -237,37 +415,89 @@ export async function mockObservatoryApi(page: Page): Promise<void> {
     // capability response. The E2E suite exercises a prepared, enabled backend, so
     // this fixture returns `ready` to keep the existing Observatory flows valid.
     if (path.endsWith("/capability")) {
-      return json(route, { enabled: true, state: "ready", show_nav: true, generation_id: "gen_0007" });
+      return json(route, {
+        enabled: true,
+        state: "ready",
+        show_nav: true,
+        generation_id: "gen_0007",
+      });
     }
     if (path.endsWith("/context")) {
+      if (url.searchParams.get("channel") !== "observed") {
+        return invalid(route, "Mock supports the observed channel only.");
+      }
       return json(route, CONTEXT);
     }
     if (path.endsWith("/series")) {
       const view = url.searchParams.get("view") || "composite";
+      const windowError = requireBoundedWindow(url, route);
+      if (windowError) {
+        return windowError;
+      }
       if (view === "composite") {
+        if (url.searchParams.has("snapshot_id")) {
+          return invalid(route, "Composite comparison must not carry snapshot_id.");
+        }
         return json(route, COMPOSITE);
       }
-      return json(route, FORMAL_SERIES);
+      const snapshotError = requireSnapshot(url, route);
+      if (snapshotError) {
+        return snapshotError;
+      }
+      if (view !== "observed") {
+        return invalid(route, "Mock selected-channel series must match Context.");
+      }
+      return json(route, {
+        ...FORMAL_SERIES,
+        view: "observed",
+        context: CONTEXT,
+        rows: OBSERVED_ROWS,
+      });
     }
     if (path.includes("/dates/")) {
+      const snapshotError = requireSnapshot(url, route);
+      if (snapshotError) {
+        return snapshotError;
+      }
       return json(route, DATE_EVIDENCE);
     }
     if (path.endsWith("/trust")) {
+      const snapshotError = requireSnapshot(url, route);
+      if (snapshotError) {
+        return snapshotError;
+      }
       return json(route, TRUST);
     }
     if (path.endsWith("/runs")) {
+      if (url.searchParams.get("limit") !== "50") {
+        return invalid(route, "Mock requires cursor-bounded run requests.");
+      }
       return json(route, RUNS);
     }
     if (path.endsWith("/runs/diff")) {
-      return json(route, RUN_DIFF);
+      const base = url.searchParams.get("base");
+      const compare = url.searchParams.get("compare");
+      if (!base || !compare) {
+        return invalid(route, "Mock requires explicit base and compare run ids.");
+      }
+      return json(route, {
+        ...RUN_DIFF,
+        base: { ...RUN_DIFF.base, run_id: base },
+        compare: { ...RUN_DIFF.compare, run_id: compare },
+      });
     }
     if (path.includes("/runs/")) {
-      return json(route, RUN_DETAIL);
+      const runId = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1));
+      return json(route, { ...RUN_DETAIL, run_id: runId });
     }
     if (path.endsWith("/hypotheses")) {
       return json(route, HYPOTHESES);
     }
     if (path.includes("/research-runs/")) {
+      const researchRunId = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1));
+      if (researchRunId !== "H1:gen_0007") {
+        return invalid(route, "Mock requires explicit H1 research run selection.");
+      }
       return json(route, RESEARCH_RUN);
     }
     return json(route, {});

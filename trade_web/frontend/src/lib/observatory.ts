@@ -14,10 +14,20 @@
 import type {
   ObsChannel,
   ObsCompositeSeries,
+  ObsExcludedDate,
   ObsLayer,
   ObsLens,
   ObsSeriesRow,
 } from "./api";
+
+export type ObservatoryResourceStatus = "idle" | "loading" | "confirmed" | "unavailable" | "failed";
+
+export type ObservatorySafeError = {
+  message: string;
+  reasonCodes: string[];
+  evidenceRefs: string[];
+  retryable: boolean;
+};
 
 // ── Decimal handling ─────────────────────────────────────────────────────────
 // Prices/volumes arrive as decimal-preserving strings. We ONLY convert to a
@@ -43,6 +53,7 @@ export type ExtractedLayer = {
   present: boolean;
   channel?: string;
   rows: ObsSeriesRow[];
+  excludedDates: ObsExcludedDate[];
   reasonCodes: string[];
 };
 
@@ -60,6 +71,7 @@ export function extractLayers(composite: ObsCompositeSeries | null | undefined):
       present: Boolean(layer),
       channel: layer?.channel,
       rows: layer?.rows ?? [],
+      excludedDates: layer?.context?.excluded_dates ?? [],
       reasonCodes: layer?.context?.reason_codes ?? [],
     };
   });
@@ -135,7 +147,11 @@ export function markersForRow(row: ObsSeriesRow): NonColorMarker[] {
   if ((row.quality_flags ?? []).includes("quarantined")) {
     out.push({ kind: "quarantine", ...MARKER_TABLE.quarantine });
   }
-  if (row.revision_state && row.revision_state !== "unchanged" && row.revision_state !== "unknown") {
+  if (
+    row.revision_state &&
+    row.revision_state !== "unchanged" &&
+    row.revision_state !== "unknown"
+  ) {
     out.push({ kind: "revision", ...MARKER_TABLE.revision });
   }
   if (row.availability_state === "missing") {
@@ -197,7 +213,9 @@ export function layerTreatment(key: LayerKey): LayerTreatment {
  * The formal watermark date = last plottable formal date. Everything to the
  * right is candidate/observed-only territory and must render with texture.
  */
-export function formalWatermarkDate(composite: ObsCompositeSeries | null | undefined): string | null {
+export function formalWatermarkDate(
+  composite: ObsCompositeSeries | null | undefined,
+): string | null {
   const formal = extractLayers(composite).find((l) => l.key === "formal");
   if (!formal || !formal.rows.length) {
     return null;
@@ -216,7 +234,9 @@ export function formalWatermarkDate(composite: ObsCompositeSeries | null | undef
  */
 export function observedOnlyDates(composite: ObsCompositeSeries | null | undefined): string[] {
   const layers = extractLayers(composite);
-  const formalDates = new Set((layers.find((l) => l.key === "formal")?.rows ?? []).map((r) => r.date));
+  const formalDates = new Set(
+    (layers.find((l) => l.key === "formal")?.rows ?? []).map((r) => r.date),
+  );
   const candidateDates = new Set(
     (layers.find((l) => l.key === "evaluated_candidate")?.rows ?? []).map((r) => r.date),
   );
@@ -246,6 +266,104 @@ const RANGE_DAYS: Record<string, number | null> = {
   All: null,
 };
 
+export const OBSERVATORY_CHART_POINT_BUDGET = 720;
+export const OBSERVATORY_COVERAGE_DAY_BUDGET = 90;
+
+export type ObservatoryWindowBounds =
+  | { kind: "all" }
+  | { kind: "bounded"; from: string; to: string }
+  | { kind: "unavailable"; reasonCodes: string[] };
+
+function utcDateOffset(date: string, offsetDays: number): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return null;
+  }
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    return null;
+  }
+  parsed.setUTCDate(parsed.getUTCDate() + offsetDays);
+  return parsed.toISOString().slice(0, 10);
+}
+
+/**
+ * The server owns the market watermark; the browser only derives the requested
+ * display window around that supplied date. All intentionally sends no bounds.
+ */
+export function observatoryWindowBounds(
+  marketWatermark: string | null | undefined,
+  range: string,
+): ObservatoryWindowBounds {
+  const days = RANGE_DAYS[range];
+  if (days === null) {
+    return { kind: "all" };
+  }
+  if (days === undefined) {
+    return { kind: "unavailable", reasonCodes: ["REQUESTED_RANGE_INVALID"] };
+  }
+  if (!marketWatermark) {
+    return { kind: "unavailable", reasonCodes: ["MARKET_WATERMARK_UNAVAILABLE"] };
+  }
+  const from = utcDateOffset(marketWatermark, -(days - 1));
+  return from
+    ? { kind: "bounded", from, to: marketWatermark }
+    : { kind: "unavailable", reasonCodes: ["MARKET_WATERMARK_INVALID"] };
+}
+
+/** Selects evenly distributed display dates while preserving both endpoints. */
+export function downsampleDisplayDates(
+  sortedDates: string[],
+  budget = OBSERVATORY_CHART_POINT_BUDGET,
+): string[] {
+  if (budget < 2 || sortedDates.length <= budget) {
+    return sortedDates;
+  }
+  const selected: string[] = [];
+  for (let index = 0; index < budget; index += 1) {
+    const sourceIndex = Math.round((index * (sortedDates.length - 1)) / (budget - 1));
+    const date = sortedDates[sourceIndex];
+    if (date && selected[selected.length - 1] !== date) {
+      selected.push(date);
+    }
+  }
+  return selected;
+}
+
+/**
+ * Bounds one layer's SVG geometry without inventing a bridge across a missing
+ * row. For long data with gaps, each sampled run gets a representative gap row
+ * so `buildSegments` continues to emit separate paths.
+ */
+export function downsampleSeriesRows(
+  rows: ObsSeriesRow[],
+  budget = OBSERVATORY_CHART_POINT_BUDGET,
+): ObsSeriesRow[] {
+  if (rows.length <= budget || budget < 3) {
+    return rows.slice(0, Math.max(0, budget));
+  }
+
+  const hasGap = rows.some((row) => !isPlottable(row));
+  const pointBudget = hasGap ? Math.floor((budget + 1) / 2) : budget;
+  const selectedIndexes = new Set<number>();
+  for (let position = 0; position < pointBudget; position += 1) {
+    selectedIndexes.add(Math.round((position * (rows.length - 1)) / (pointBudget - 1)));
+  }
+
+  const displayed: ObsSeriesRow[] = [];
+  let previousIndex: number | null = null;
+  for (const index of [...selectedIndexes].sort((left, right) => left - right)) {
+    if (previousIndex !== null) {
+      const gap = rows.slice(previousIndex + 1, index).find((row) => !isPlottable(row));
+      if (gap) {
+        displayed.push(gap);
+      }
+    }
+    displayed.push(rows[index]);
+    previousIndex = index;
+  }
+  return displayed.slice(0, budget);
+}
+
 /**
  * Window a sorted date axis to the trailing N calendar days for a range. "All"
  * returns the axis unchanged. Uses the last date as the anchor so the window is
@@ -273,7 +391,9 @@ export function applyRangeWindow(sortedDates: string[], range: string): string[]
  * formal baseline treatment, which the resolver must never emit. The chart uses
  * this as a defensive assertion surface for tests.
  */
-export function candidateRowsRenderedAsPublished(composite: ObsCompositeSeries | null | undefined): ObsSeriesRow[] {
+export function candidateRowsRenderedAsPublished(
+  composite: ObsCompositeSeries | null | undefined,
+): ObsSeriesRow[] {
   const candidate = extractLayers(composite).find((l) => l.key === "evaluated_candidate");
   if (!candidate) {
     return [];
@@ -355,7 +475,8 @@ export function deserializeObservatoryState(params: URLSearchParams): Observator
   const channel = params.get("obsChannel");
   const range = params.get("obsRange");
   return {
-    lens: lens && OBS_LENSES.includes(lens as ObsLens) ? (lens as ObsLens) : DEFAULT_OBS_URL_STATE.lens,
+    lens:
+      lens && OBS_LENSES.includes(lens as ObsLens) ? (lens as ObsLens) : DEFAULT_OBS_URL_STATE.lens,
     channel:
       channel && OBS_CHANNELS.includes(channel as ObsChannel)
         ? (channel as ObsChannel)
@@ -375,7 +496,10 @@ export function urlHasObservatory(params: URLSearchParams): boolean {
 
 // ── Purpose fitness helpers ──────────────────────────────────────────────────
 
-export function purposeTone(status: string | undefined, allowed: boolean | undefined): "ok" | "warn" | "err" | "muted" {
+export function purposeTone(
+  status: string | undefined,
+  allowed: boolean | undefined,
+): "ok" | "warn" | "err" | "muted" {
   if (allowed) {
     return "ok";
   }
@@ -394,17 +518,25 @@ export function purposeTone(status: string | undefined, allowed: boolean | undef
 // entry links to evidence; nothing is generated by a model (docs/26 §11.4).
 
 export type WhatChangedEntry = {
-  kind: "added_dates" | "removed_dates" | "revised_dates" | "quarantined_dates" | "watermark" | "formal_move";
+  kind:
+    | "added_dates"
+    | "removed_dates"
+    | "revised_dates"
+    | "quarantined_dates"
+    | "watermark"
+    | "formal_move";
   label: string;
   detail: string;
   evidenceRefs: string[];
 };
 
-export function buildWhatChanged(composite: ObsCompositeSeries | null | undefined): WhatChangedEntry[] {
+export function buildWhatChanged(
+  composite: ObsCompositeSeries | null | undefined,
+  excludedDates: ObsExcludedDate[] = [],
+): WhatChangedEntry[] {
   const entries: WhatChangedEntry[] = [];
   const layers = extractLayers(composite);
   const observed = layers.find((l) => l.key === "latest_observed");
-  const formal = layers.find((l) => l.key === "formal");
 
   const observedOnly = observedOnlyDates(composite);
   if (observedOnly.length) {
@@ -431,22 +563,30 @@ export function buildWhatChanged(composite: ObsCompositeSeries | null | undefine
     });
   }
 
-  const quarantined = (observed?.rows ?? []).filter((r) => (r.quality_flags ?? []).includes("quarantined"));
-  if (quarantined.length) {
+  const quarantined = new Map<string, string[]>();
+  for (const row of observed?.rows ?? []) {
+    if ((row.quality_flags ?? []).includes("quarantined") && row.date) {
+      quarantined.set(row.date, row.source_run_id ? [row.source_run_id] : []);
+    }
+  }
+  for (const excludedDate of excludedDates) {
+    if (excludedDate.date) {
+      quarantined.set(excludedDate.date, excludedDate.evidence_refs ?? []);
+    }
+  }
+  if (quarantined.size) {
+    const dates = Array.from(quarantined.keys()).sort();
     entries.push({
       kind: "quarantined_dates",
-      label: `${quarantined.length} quarantined date(s)`,
-      detail: quarantined
-        .slice(0, 5)
-        .map((r) => r.date)
-        .join(", "),
-      evidenceRefs: quarantined.map((r) => r.source_run_id || "").filter(Boolean),
+      label: `${dates.length} quarantined date(s)`,
+      detail: dates.slice(0, 5).join(", "),
+      evidenceRefs: dates.flatMap((date) => quarantined.get(date) ?? []).filter(Boolean),
     });
   }
 
   const formalWatermark = formalWatermarkDate(composite);
   const observedWatermark = observed?.rows?.length
-    ? observed.rows.filter(isPlottable).slice(-1)[0]?.date ?? null
+    ? (observed.rows.filter(isPlottable).slice(-1)[0]?.date ?? null)
     : null;
   if (formalWatermark && observedWatermark && observedWatermark > formalWatermark) {
     entries.push({

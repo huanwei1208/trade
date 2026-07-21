@@ -1,8 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { CompositeChart } from "../../components/observatory/CompositeChart";
 import { DateEvidenceLens } from "../../components/observatory/DateEvidenceLens";
-import { MarketSummary, WhatChanged, WhyNotFormal } from "../../components/observatory/OverviewPanels";
+import { ObservatoryErrorState } from "../../components/observatory/ObservatoryErrorState";
+import {
+  MarketSummary,
+  WhatChanged,
+  WhyNotFormal,
+} from "../../components/observatory/OverviewPanels";
 import { ResearchLens } from "../../components/observatory/ResearchLens";
 import { RunsLineageLens } from "../../components/observatory/RunsLineageLens";
 import { SnapshotContextBar } from "../../components/observatory/SnapshotContextBar";
@@ -12,28 +17,39 @@ import type {
   ObsCompositeSeries,
   ObsContext,
   ObsDateEvidence,
+  ObsHypothesis,
   ObsHypothesesPayload,
   ObsResearchRun,
+  ObsRunDetail,
+  ObsRunDiff,
   ObsRunsPayload,
   ObsSingleSeries,
   ObsTrust,
 } from "../../lib/api";
 import {
-  fetchJson,
   observatoryDatePath,
   observatoryHypothesesPath,
   observatoryResearchRunPath,
+  observatoryRunDetailPath,
+  observatoryRunDiffPath,
   observatoryRunsPath,
   observatoryTrustPath,
-  useApiResource,
   type ObsLens,
 } from "../../lib/api";
-import {
-  observatoryContextPath,
-  observatorySeriesPath,
-} from "../../lib/api";
+import { observatoryContextPath, observatorySeriesPath } from "../../lib/api";
 import { classNames } from "../../lib/ui";
-import type { ObservatoryUrlState } from "../../lib/observatory";
+import {
+  observatoryWindowBounds,
+  type ObservatorySafeError,
+  type ObservatoryUrlState,
+  type ObservatoryWindowBounds,
+} from "../../lib/observatory";
+import {
+  parseObservatoryError,
+  useObservatoryResource,
+  type ObservatoryValidationFailure,
+  type ObservatoryResourceState,
+} from "./observatoryResource";
 
 type ObservatoryPageProps = {
   refreshToken: number;
@@ -41,51 +57,346 @@ type ObservatoryPageProps = {
   onUrlStateChange: (next: Partial<ObservatoryUrlState>) => void;
 };
 
+type ObservatoryPageResource<T> = ObservatoryResourceState<T> & {
+  loading: boolean;
+  retry: () => void;
+};
+
 const LENS_TABS: Array<{ key: ObsLens; label: string }> = [
-  { key: "overview", label: "Overview" },
-  { key: "trust", label: "Trust" },
-  { key: "runs", label: "Runs & Lineage" },
+  { key: "overview", label: "Market" },
+  { key: "trust", label: "Assurance / Gates" },
+  { key: "runs", label: "Assurance / Run lineage" },
   { key: "research", label: "Research" },
 ];
 
 const RANGE_OPTIONS = ["30D", "90D", "1Y", "All"];
 
-export function ObservatoryPage({ refreshToken, urlState, onUrlStateChange }: ObservatoryPageProps) {
-  const knowledgeParam = urlState.knowledgeAsOf === "latest" ? undefined : urlState.knowledgeAsOf;
+const COMPOSITE_LAYER_FOR_CHANNEL: Record<
+  ObsChannel,
+  "formal" | "evaluated_candidate" | "latest_observed"
+> = {
+  formal: "formal",
+  evaluated_candidate: "evaluated_candidate",
+  observed: "latest_observed",
+};
 
-  // Context (Truth Bar). Channel-driven; always fetched.
-  const contextResource = useApiResource<ObsContext>(
-    observatoryContextPath({ channel: urlState.channel, knowledgeAsOf: knowledgeParam }),
-    { deps: [refreshToken, urlState.channel, urlState.knowledgeAsOf], cacheKey: "obs:context" },
+const RESEARCH_STATES = new Set([
+  "exploratory",
+  "eligible",
+  "candidate",
+  "monitoring",
+  "validated",
+  "rejected",
+  "blocked",
+  "unknown",
+]);
+
+function identityMismatch(
+  message = "The response did not match the active Observatory selection.",
+): ObservatoryValidationFailure {
+  return {
+    message,
+    reasonCodes: ["RESPONSE_IDENTITY_MISMATCH"],
+    retryable: true,
+  };
+}
+
+function hasNonEmptyText(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasEvidenceReferences(value: string[] | null | undefined): boolean {
+  return Array.isArray(value) && value.some((reference) => hasNonEmptyText(reference));
+}
+
+function validateContext(
+  context: ObsContext,
+  channel: ObsChannel,
+  knowledgeAsOf: string,
+): true | ObservatoryValidationFailure {
+  const contextKnowledgeAsOf =
+    context.requested_knowledge_as_of === null ? "latest" : context.requested_knowledge_as_of;
+  if (
+    context.resolved_channel !== channel ||
+    !context.snapshot_id ||
+    contextKnowledgeAsOf !== knowledgeAsOf
+  ) {
+    return identityMismatch(
+      "The resolved market Context did not match the committed knowledge selector.",
+    );
+  }
+  return true;
+}
+
+function validateResearchRun(
+  researchRun: ObsResearchRun,
+  hypothesis: ObsHypothesis | null,
+): true | ObservatoryValidationFailure {
+  if (!hasNonEmptyText(hypothesis?.hypothesis_version)) {
+    return {
+      message: "The selected H1 hypothesis does not provide an immutable version identity.",
+      reasonCodes: ["H1_RESEARCH_VERSION_UNAVAILABLE"],
+      retryable: false,
+    };
+  }
+  if (!hasNonEmptyText(researchRun.hypothesis_version)) {
+    return {
+      message: "The current H1 research receipt does not provide a version identity.",
+      reasonCodes: ["H1_RESEARCH_VERSION_UNAVAILABLE"],
+      retryable: false,
+    };
+  }
+  if (
+    researchRun.hypothesis_id !== "H1" ||
+    researchRun.research_run_id !== hypothesis?.current_research_run_id ||
+    researchRun.is_current !== true ||
+    researchRun.hypothesis_version !== hypothesis.hypothesis_version
+  ) {
+    return identityMismatch();
+  }
+  if (!hasNonEmptyText(researchRun.research_state)) {
+    return {
+      message: "The current H1 research receipt does not provide a research state.",
+      reasonCodes: ["H1_RESEARCH_STATE_UNAVAILABLE"],
+      retryable: false,
+    };
+  }
+  if (!RESEARCH_STATES.has(researchRun.research_state.trim())) {
+    return {
+      message: "The current H1 research receipt has an unrecognized research state.",
+      reasonCodes: ["H1_RESEARCH_STATE_UNAVAILABLE"],
+      retryable: false,
+    };
+  }
+  if (!hasNonEmptyText(researchRun.dataset_snapshot_id)) {
+    return {
+      message: "The current H1 research receipt does not provide a dataset snapshot identity.",
+      reasonCodes: ["H1_RESEARCH_SNAPSHOT_UNAVAILABLE"],
+      retryable: false,
+    };
+  }
+  if (!hasNonEmptyText(researchRun.knowledge_as_of)) {
+    return {
+      message: "The current H1 research receipt does not provide a knowledge cutoff.",
+      reasonCodes: ["H1_RESEARCH_KNOWLEDGE_UNAVAILABLE"],
+      retryable: false,
+    };
+  }
+  if (!hasEvidenceReferences(researchRun.evidence_refs)) {
+    return {
+      message: "The current H1 research receipt does not provide evidence references.",
+      reasonCodes: ["H1_RESEARCH_EVIDENCE_UNAVAILABLE"],
+      retryable: false,
+    };
+  }
+  return true;
+}
+
+function validateSelectedSeries(
+  series: ObsSingleSeries,
+  channel: ObsChannel,
+  snapshotId: string,
+): true | ObservatoryValidationFailure {
+  if (series.view !== channel || series.context?.snapshot_id !== snapshotId) {
+    return identityMismatch();
+  }
+  if (series.pit_valid !== true) {
+    return {
+      message: "The selected market series is not point-in-time valid for this evidence selection.",
+      reasonCodes: series.reason_codes?.length ? series.reason_codes : ["PIT_NOT_VALID"],
+      retryable: false,
+    };
+  }
+  return true;
+}
+
+function validateComposite(
+  series: ObsCompositeSeries,
+  channel: ObsChannel,
+  snapshotId: string,
+): true | ObservatoryValidationFailure {
+  if (series.view !== "composite") {
+    return identityMismatch();
+  }
+  const layer = series.layers?.[COMPOSITE_LAYER_FOR_CHANNEL[channel]];
+  if (layer?.context?.snapshot_id !== snapshotId) {
+    return identityMismatch(
+      "The selected composite layer did not match the resolved market snapshot.",
+    );
+  }
+  return true;
+}
+
+function windowUnavailableError(
+  windowBounds: ObservatoryWindowBounds,
+): ObservatorySafeError | null {
+  if (windowBounds.kind !== "unavailable") {
+    return null;
+  }
+  return {
+    message:
+      "The selected market range cannot be loaded because its resolved market watermark is unavailable.",
+    reasonCodes: windowBounds.reasonCodes,
+    evidenceRefs: [],
+    retryable: true,
+  };
+}
+
+export function ObservatoryPage({
+  refreshToken,
+  urlState,
+  onUrlStateChange,
+}: ObservatoryPageProps) {
+  const committedKnowledgeAsOf = urlState.knowledgeAsOf.trim() || "latest";
+  const knowledgeParam = committedKnowledgeAsOf === "latest" ? undefined : committedKnowledgeAsOf;
+  const historicalCompositeUnavailable = committedKnowledgeAsOf !== "latest";
+  const needsSnapshotContext = urlState.lens === "overview" || urlState.lens === "trust";
+  const contextResource = useObservatoryResource<ObsContext>(
+    needsSnapshotContext
+      ? observatoryContextPath({ channel: urlState.channel, knowledgeAsOf: knowledgeParam })
+      : null,
+    {
+      reloadKey: refreshToken,
+      validateResponse: (context) =>
+        validateContext(context, urlState.channel, committedKnowledgeAsOf),
+    },
   );
+  const context = confirmedData(contextResource);
+  const snapshotId = context?.snapshot_id ?? null;
+  const windowBounds = observatoryWindowBounds(context?.market_watermark, urlState.range);
+  const requestWindow =
+    windowBounds.kind === "bounded" ? { from: windowBounds.from, to: windowBounds.to } : {};
+  const windowError = windowUnavailableError(windowBounds);
 
-  // Composite series for the main chart.
-  const compositeResource = useApiResource<ObsCompositeSeries>(
-    observatorySeriesPath({ view: "composite", knowledgeAsOf: knowledgeParam }),
-    { deps: [refreshToken, urlState.knowledgeAsOf], cacheKey: "obs:composite" },
+  const selectedSeriesResource = useObservatoryResource<ObsSingleSeries>(
+    snapshotId && !windowError
+      ? observatorySeriesPath({
+          view: urlState.channel,
+          snapshotId,
+          ...requestWindow,
+        })
+      : null,
+    {
+      reloadKey: refreshToken,
+      validateResponse: (series) =>
+        snapshotId
+          ? validateSelectedSeries(series, urlState.channel, snapshotId)
+          : identityMismatch(),
+    },
   );
-
-  // Formal single-snapshot series feeds the market summary metrics.
-  const formalSeriesResource = useApiResource<ObsSingleSeries>(
-    observatorySeriesPath({ view: "formal", knowledgeAsOf: knowledgeParam }),
-    { deps: [refreshToken, urlState.knowledgeAsOf], cacheKey: "obs:formal-series" },
+  const selectedSeriesConfirmed = selectedSeriesResource.status === "confirmed";
+  const compositeResource = useObservatoryResource<ObsCompositeSeries>(
+    urlState.lens === "overview" && context && !windowError && !historicalCompositeUnavailable
+      ? observatorySeriesPath({
+          view: "composite",
+          knowledgeAsOf: knowledgeParam,
+          ...requestWindow,
+        })
+      : null,
+    {
+      reloadKey: refreshToken,
+      validateResponse: (series) =>
+        snapshotId ? validateComposite(series, urlState.channel, snapshotId) : identityMismatch(),
+    },
   );
+  const trustResource = useObservatoryResource<ObsTrust>(
+    urlState.lens === "trust" && snapshotId && !windowError && selectedSeriesConfirmed
+      ? observatoryTrustPath({ channel: urlState.channel, snapshotId })
+      : null,
+    {
+      reloadKey: refreshToken,
+      validateResponse: (trust) => trust.snapshot_id === snapshotId,
+    },
+  );
+  const dateEvidenceResource = useObservatoryResource<ObsDateEvidence>(
+    urlState.lens === "overview" &&
+      snapshotId &&
+      urlState.date &&
+      !windowError &&
+      selectedSeriesConfirmed
+      ? observatoryDatePath(urlState.date, { channel: urlState.channel, snapshotId })
+      : null,
+    {
+      reloadKey: refreshToken,
+      validateResponse: (evidence) =>
+        evidence.snapshot_id === snapshotId && evidence.date === urlState.date,
+    },
+  );
+  const runsResource = useObservatoryResource<ObsRunsPayload>(
+    urlState.lens === "runs" ? observatoryRunsPath({ limit: 50 }) : null,
+    { reloadKey: refreshToken },
+  );
+  const detailResource = useObservatoryResource<ObsRunDetail>(
+    urlState.lens === "runs" && urlState.runId ? observatoryRunDetailPath(urlState.runId) : null,
+    {
+      reloadKey: refreshToken,
+      validateResponse: (detail) => detail.run_id === urlState.runId,
+    },
+  );
+  const diffResource = useObservatoryResource<ObsRunDiff>(
+    urlState.lens === "runs" && urlState.runId && urlState.compareRunId
+      ? observatoryRunDiffPath(urlState.runId, urlState.compareRunId)
+      : null,
+    {
+      reloadKey: refreshToken,
+      validateResponse: (diff) =>
+        diff.base?.run_id === urlState.runId && diff.compare?.run_id === urlState.compareRunId,
+    },
+  );
+  const hypothesesResource = useObservatoryResource<ObsHypothesesPayload>(
+    urlState.lens === "research" ? observatoryHypothesesPath() : null,
+    { reloadKey: refreshToken },
+  );
+  const h1 =
+    confirmedData(hypothesesResource)?.hypotheses?.find(
+      (hypothesis) => hypothesis.hypothesis_id === "H1",
+    ) ?? null;
+  const h1RunId = h1?.current_research_run_id;
+  const h1Version = h1?.hypothesis_version;
+  const hypothesesRefreshConfirmed = hypothesesResource.confirmedReloadKey === refreshToken;
+  const researchRunReloadKey = `${hypothesesResource.confirmedReloadKey ?? ""}:${h1RunId ?? ""}:${h1Version ?? ""}`;
+  const researchRunResource = useObservatoryResource<ObsResearchRun>(
+    urlState.lens === "research" &&
+      hypothesesRefreshConfirmed &&
+      hasNonEmptyText(h1RunId) &&
+      hasNonEmptyText(h1Version)
+      ? observatoryResearchRunPath(h1RunId)
+      : null,
+    {
+      reloadKey: researchRunReloadKey,
+      validateResponse: (researchRun) => validateResearchRun(researchRun, h1),
+    },
+  );
+  const researchRunRefreshConfirmed =
+    researchRunResource.confirmedReloadKey === researchRunReloadKey;
+  const [knowledgeDraft, setKnowledgeDraft] = useState(urlState.knowledgeAsOf);
+  const dateInspectorRef = useRef<HTMLInputElement>(null);
 
-  const context = contextResource.data;
-  const composite = compositeResource.data;
+  useEffect(() => {
+    setKnowledgeDraft(urlState.knowledgeAsOf);
+  }, [urlState.knowledgeAsOf]);
+
+  function commitKnowledge() {
+    const nextKnowledge = knowledgeDraft.trim() || "latest";
+    if (nextKnowledge !== urlState.knowledgeAsOf) {
+      onUrlStateChange({ knowledgeAsOf: nextKnowledge, date: null });
+    }
+  }
+
+  function closeDateEvidence() {
+    onUrlStateChange({ date: null });
+    window.requestAnimationFrame(() => dateInspectorRef.current?.focus());
+  }
 
   return (
     <div className="obs-page" data-testid="observatory-page">
-      <SnapshotContextBar context={context} loading={contextResource.loading} />
-
       <div className="obs-controls">
-        <div className="tabs" role="tablist" aria-label="Observatory lens">
+        <div className="tabs" role="group" aria-label="Observatory lens">
           {LENS_TABS.map((tab) => (
             <button
               key={tab.key}
               type="button"
-              role="tab"
-              aria-selected={urlState.lens === tab.key}
+              aria-pressed={urlState.lens === tab.key}
               className={classNames("tab", urlState.lens === tab.key && "active")}
               data-testid={`lens-tab-${tab.key}`}
               onClick={() => onUrlStateChange({ lens: tab.key })}
@@ -95,69 +406,89 @@ export function ObservatoryPage({ refreshToken, urlState, onUrlStateChange }: Ob
           ))}
         </div>
 
-        <div className="obs-controls__right">
-          <label className="obs-select">
-            <span>Channel</span>
-            <select
-              value={urlState.channel}
-              onChange={(e) => onUrlStateChange({ channel: e.target.value as ObsChannel })}
-              data-testid="channel-select"
-            >
-              <option value="observed">Latest observed</option>
-              <option value="evaluated_candidate">Evaluated candidate</option>
-              <option value="formal">Formal</option>
-            </select>
-          </label>
-          <label className="obs-select">
-            <span>Range</span>
-            <select value={urlState.range} onChange={(e) => onUrlStateChange({ range: e.target.value })} data-testid="range-select">
-              {RANGE_OPTIONS.map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-          </label>
-          <label className="obs-select">
-            <span>Knowledge</span>
-            <input
-              type="text"
-              value={urlState.knowledgeAsOf}
-              onChange={(e) => onUrlStateChange({ knowledgeAsOf: e.target.value || "latest" })}
-              placeholder="latest or YYYY-MM-DD"
-              data-testid="knowledge-input"
-              style={{ width: 150 }}
-            />
-          </label>
-        </div>
+        {(urlState.lens === "overview" || urlState.lens === "trust") && (
+          <div className="obs-controls__right">
+            <label className="obs-select">
+              <span>Channel</span>
+              <select
+                value={urlState.channel}
+                onChange={(e) => onUrlStateChange({ channel: e.target.value as ObsChannel })}
+                data-testid="channel-select"
+              >
+                <option value="observed">Latest observed</option>
+                <option value="evaluated_candidate">Evaluated candidate</option>
+                <option value="formal">Formal</option>
+              </select>
+            </label>
+            <label className="obs-select">
+              <span>{urlState.lens === "overview" ? "Range" : "Evidence window"}</span>
+              <select
+                value={urlState.range}
+                onChange={(e) => onUrlStateChange({ range: e.target.value })}
+                data-testid="range-select"
+              >
+                {RANGE_OPTIONS.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {urlState.lens === "overview" ? (
+              <label className="obs-select">
+                <span>Knowledge</span>
+                <input
+                  type="text"
+                  value={knowledgeDraft}
+                  onChange={(event) => setKnowledgeDraft(event.target.value)}
+                  onBlur={commitKnowledge}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.currentTarget.blur();
+                    }
+                  }}
+                  placeholder="latest or YYYY-MM-DD"
+                  data-testid="knowledge-input"
+                  style={{ width: 150 }}
+                />
+              </label>
+            ) : null}
+          </div>
+        )}
       </div>
 
       {urlState.lens === "overview" && (
-        <OverviewLens
-          composite={composite}
-          compositeLoading={compositeResource.loading}
-          compositeError={compositeResource.error?.message ?? null}
-          context={context}
-          formalSeries={formalSeriesResource.data}
+        <MarketWorkspace
+          contextResource={contextResource}
+          selectedSeriesResource={selectedSeriesResource}
+          compositeResource={compositeResource}
+          dateEvidenceResource={dateEvidenceResource}
           range={urlState.range}
           selectedDate={urlState.date ?? null}
           channel={urlState.channel}
-          refreshToken={refreshToken}
+          windowError={windowError}
+          historicalCompositeUnavailable={historicalCompositeUnavailable}
+          dateInspectorRef={dateInspectorRef}
           onSelectDate={(date) => onUrlStateChange({ date })}
-          onCloseDate={() => onUrlStateChange({ date: null })}
+          onCloseDate={closeDateEvidence}
         />
       )}
 
       {urlState.lens === "trust" && (
-        <TrustLensContainer
-          channel={urlState.channel}
-          composite={composite}
-          refreshToken={refreshToken}
+        <AssuranceGatesWorkspace
+          contextResource={contextResource}
+          selectedSeriesResource={selectedSeriesResource}
+          trustResource={trustResource}
+          windowError={windowError}
           onSelectDate={(date) => onUrlStateChange({ date, lens: "overview" })}
         />
       )}
 
       {urlState.lens === "runs" && (
-        <RunsLensContainer
-          refreshToken={refreshToken}
+        <RunLineageWorkspace
+          runsResource={runsResource}
+          detailResource={detailResource}
+          diffResource={diffResource}
           selectedRunId={urlState.runId ?? null}
           compareRunId={urlState.compareRunId ?? null}
           onSelectRun={(runId) => onUrlStateChange({ runId })}
@@ -165,183 +496,416 @@ export function ObservatoryPage({ refreshToken, urlState, onUrlStateChange }: Ob
         />
       )}
 
-      {urlState.lens === "research" && <ResearchLensContainer refreshToken={refreshToken} />}
+      {urlState.lens === "research" && (
+        <ResearchWorkspace
+          hypothesesResource={hypothesesResource}
+          researchRunResource={researchRunResource}
+          hypothesis={h1}
+          hypothesesRefreshConfirmed={hypothesesRefreshConfirmed}
+          researchRunRefreshConfirmed={researchRunRefreshConfirmed}
+        />
+      )}
     </div>
   );
 }
 
-// ── Overview lens (composite chart + panels + date evidence) ─────────────────
+function confirmedData<T>(resource: ObservatoryResourceState<T>): T | null {
+  return resource.status === "confirmed" ? resource.data : null;
+}
 
-function OverviewLens({
-  composite,
-  compositeLoading,
-  compositeError,
-  context,
-  formalSeries,
+function MarketWorkspace({
+  contextResource,
+  selectedSeriesResource,
+  compositeResource,
+  dateEvidenceResource,
   range,
   selectedDate,
   channel,
-  refreshToken,
+  windowError,
+  historicalCompositeUnavailable,
+  dateInspectorRef,
   onSelectDate,
   onCloseDate,
 }: {
-  composite: ObsCompositeSeries | null | undefined;
-  compositeLoading: boolean;
-  compositeError: string | null;
-  context: ObsContext | null | undefined;
-  formalSeries: ObsSingleSeries | null | undefined;
+  contextResource: ObservatoryPageResource<ObsContext>;
+  selectedSeriesResource: ObservatoryPageResource<ObsSingleSeries>;
+  compositeResource: ObservatoryPageResource<ObsCompositeSeries>;
+  dateEvidenceResource: ObservatoryPageResource<ObsDateEvidence>;
   range: string;
   selectedDate: string | null;
   channel: ObsChannel;
-  refreshToken: number;
+  windowError: ObservatorySafeError | null;
+  historicalCompositeUnavailable: boolean;
+  dateInspectorRef: RefObject<HTMLInputElement | null>;
   onSelectDate: (date: string) => void;
   onCloseDate: () => void;
 }) {
-  const [evidence, setEvidence] = useState<ObsDateEvidence | null>(null);
-  const [evidenceLoading, setEvidenceLoading] = useState(false);
-  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const context = confirmedData(contextResource);
+  const selectedSeries = confirmedData(selectedSeriesResource);
+  const composite = confirmedData(compositeResource);
+  const evidence = confirmedData(dateEvidenceResource);
+  const contextError = parseObservatoryError(contextResource.error);
+  const selectedSeriesError = parseObservatoryError(selectedSeriesResource.error);
+  const compositeError = parseObservatoryError(compositeResource.error);
+  const dateError = parseObservatoryError(dateEvidenceResource.error);
+  const selectedSeriesUnavailable =
+    Boolean(windowError) ||
+    selectedSeriesResource.status === "failed" ||
+    selectedSeriesResource.status === "unavailable";
+  const selectedSeriesPending =
+    selectedSeriesResource.status === "idle" || selectedSeriesResource.loading;
+  const historicalCompositeError: ObservatorySafeError | null = historicalCompositeUnavailable
+    ? {
+        message:
+          "Composite overlays are unavailable for this historical knowledge cut because the response does not provide per-layer point-in-time proof.",
+        reasonCodes: ["COMPOSITE_PIT_NOT_PROVEN"],
+        evidenceRefs: [],
+        retryable: false,
+      }
+    : null;
+  const compositeUnavailable =
+    Boolean(windowError) ||
+    historicalCompositeUnavailable ||
+    compositeResource.status === "failed" ||
+    compositeResource.status === "unavailable";
 
-  useEffect(() => {
-    if (!selectedDate) {
-      setEvidence(null);
-      return;
-    }
-    let cancelled = false;
-    setEvidenceLoading(true);
-    setEvidenceError(null);
-    fetchJson<ObsDateEvidence>(observatoryDatePath(selectedDate, { channel }))
-      .then((d) => !cancelled && setEvidence(d))
-      .catch((e) => !cancelled && setEvidenceError(e instanceof Error ? e.message : String(e)))
-      .finally(() => !cancelled && setEvidenceLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedDate, channel, refreshToken]);
+  if (contextResource.status !== "confirmed") {
+    return (
+      <div className="obs-overview">
+        <SnapshotContextBar
+          context={context}
+          status={contextResource.status}
+          error={contextError}
+          onRetry={contextResource.retry}
+        />
+        <div className="obs-dependent-blocked" role="status">
+          Market series, comparison, and date evidence remain blocked until the selected snapshot is
+          confirmed.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="obs-overview">
+      <SnapshotContextBar
+        context={context}
+        status={contextResource.status}
+        error={contextError}
+        onRetry={contextResource.retry}
+      />
       <section className="obs-chart-section">
-        {compositeError ? (
-          <div className="obs-error" data-testid="composite-error">{compositeError}</div>
-        ) : compositeLoading && !composite ? (
-          <div className="obs-empty">Loading composite series…</div>
+        {windowError ? (
+          <ObservatoryErrorState
+            title="Selected market window unavailable"
+            error={windowError}
+            unavailable
+            onRetry={contextResource.retry}
+          />
+        ) : compositeUnavailable ? (
+          <ObservatoryErrorState
+            title="Composite comparison unavailable"
+            error={historicalCompositeError ?? compositeError}
+            unavailable={
+              historicalCompositeUnavailable || compositeResource.status === "unavailable"
+            }
+            onRetry={
+              historicalCompositeUnavailable ? contextResource.retry : compositeResource.retry
+            }
+          />
+        ) : compositeResource.loading ? (
+          <div className="obs-empty" role="status">
+            Loading separate composite comparison…
+          </div>
+        ) : composite ? (
+          <CompositeChart
+            composite={composite}
+            range={range}
+            selectedDate={selectedDate}
+            onSelectDate={onSelectDate}
+            dateInputRef={dateInspectorRef}
+            excludedDates={context?.excluded_dates}
+            quarantineBreakLayer={COMPOSITE_LAYER_FOR_CHANNEL[channel]}
+          />
         ) : (
-          <CompositeChart composite={composite} range={range} selectedDate={selectedDate} onSelectDate={onSelectDate} />
+          <div className="obs-empty" role="status">
+            Waiting for separate composite comparison…
+          </div>
         )}
       </section>
 
+      {selectedSeriesUnavailable ? (
+        <ObservatoryErrorState
+          title="Selected-channel market series unavailable"
+          error={windowError ?? selectedSeriesError}
+          unavailable={Boolean(windowError) || selectedSeriesResource.status === "unavailable"}
+          onRetry={windowError ? contextResource.retry : selectedSeriesResource.retry}
+        />
+      ) : null}
       <div className="obs-overview__panels">
-        <MarketSummary formalSeries={formalSeries} context={context} />
+        <MarketSummary
+          series={selectedSeries}
+          context={context}
+          loading={selectedSeriesPending}
+          unavailable={selectedSeriesUnavailable}
+        />
         <WhyNotFormal context={context} />
-        <WhatChanged composite={composite} />
+        {composite ? (
+          <WhatChanged composite={composite} excludedDates={context?.excluded_dates} />
+        ) : null}
       </div>
 
       <DateEvidenceLens
         date={selectedDate}
         channel={channel}
         evidence={evidence}
-        loading={evidenceLoading}
-        error={evidenceError}
+        loading={dateEvidenceResource.loading || selectedSeriesPending}
+        error={windowError ?? (selectedSeriesUnavailable ? selectedSeriesError : dateError)}
+        onRetry={
+          windowError
+            ? contextResource.retry
+            : selectedSeriesUnavailable
+              ? selectedSeriesResource.retry
+              : dateEvidenceResource.retry
+        }
         onClose={onCloseDate}
       />
     </div>
   );
 }
 
-// ── Trust lens container ─────────────────────────────────────────────────────
-
-function TrustLensContainer({
-  channel,
-  composite,
-  refreshToken,
+function AssuranceGatesWorkspace({
+  contextResource,
+  selectedSeriesResource,
+  trustResource,
+  windowError,
   onSelectDate,
 }: {
-  channel: ObsChannel;
-  composite: ObsCompositeSeries | null | undefined;
-  refreshToken: number;
+  contextResource: ObservatoryPageResource<ObsContext>;
+  selectedSeriesResource: ObservatoryPageResource<ObsSingleSeries>;
+  trustResource: ObservatoryPageResource<ObsTrust>;
+  windowError: ObservatorySafeError | null;
   onSelectDate: (date: string) => void;
 }) {
-  const trustResource = useApiResource<ObsTrust>(observatoryTrustPath({ channel }), {
-    deps: [refreshToken, channel],
-    cacheKey: "obs:trust",
-  });
+  const context = confirmedData(contextResource);
+  const selectedSeries = confirmedData(selectedSeriesResource);
+  const trust = confirmedData(trustResource);
+  const contextError = parseObservatoryError(contextResource.error);
+  const selectedSeriesError = parseObservatoryError(selectedSeriesResource.error);
+  const trustError = parseObservatoryError(trustResource.error);
+  const selectedSeriesUnavailable =
+    Boolean(windowError) ||
+    selectedSeriesResource.status === "failed" ||
+    selectedSeriesResource.status === "unavailable";
+  const selectedSeriesPending =
+    selectedSeriesResource.status === "idle" || selectedSeriesResource.loading;
+
+  if (contextResource.status !== "confirmed") {
+    return (
+      <div className="obs-assurance-workspace">
+        <SnapshotContextBar
+          context={context}
+          status={contextResource.status}
+          error={contextError}
+          onRetry={contextResource.retry}
+        />
+        <div className="obs-dependent-blocked" role="status">
+          Coverage and gate evidence remain blocked until the selected snapshot is confirmed.
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <TrustLens
-      trust={trustResource.data}
-      composite={composite}
-      loading={trustResource.loading}
-      error={trustResource.error?.message ?? null}
-      onSelectDate={onSelectDate}
-    />
+    <div className="obs-assurance-workspace">
+      <SnapshotContextBar
+        context={context}
+        status={contextResource.status}
+        error={contextError}
+        onRetry={contextResource.retry}
+      />
+      {selectedSeriesUnavailable ? (
+        <ObservatoryErrorState
+          title="Coverage evidence unavailable"
+          error={windowError ?? selectedSeriesError}
+          unavailable={Boolean(windowError) || selectedSeriesResource.status === "unavailable"}
+          onRetry={windowError ? contextResource.retry : selectedSeriesResource.retry}
+        />
+      ) : null}
+      {trustResource.status === "failed" || trustResource.status === "unavailable" ? (
+        <ObservatoryErrorState
+          title="Snapshot gate evidence unavailable"
+          error={trustError}
+          unavailable={trustResource.status === "unavailable"}
+          onRetry={trustResource.retry}
+        />
+      ) : null}
+      <TrustLens
+        trust={trust}
+        series={selectedSeries}
+        coverageLoading={selectedSeriesPending}
+        loading={trustResource.loading || selectedSeriesPending}
+        error={windowError ?? (selectedSeriesUnavailable ? selectedSeriesError : trustError)}
+        coverageUnavailable={selectedSeriesUnavailable}
+        excludedDates={context?.excluded_dates}
+        onRetry={
+          windowError
+            ? contextResource.retry
+            : selectedSeriesUnavailable
+              ? selectedSeriesResource.retry
+              : trustResource.retry
+        }
+        onSelectDate={onSelectDate}
+      />
+    </div>
   );
 }
 
-// ── Runs lens container ──────────────────────────────────────────────────────
-
-function RunsLensContainer({
-  refreshToken,
+function RunLineageWorkspace({
+  runsResource,
+  detailResource,
+  diffResource,
   selectedRunId,
   compareRunId,
   onSelectRun,
   onCompareRun,
 }: {
-  refreshToken: number;
+  runsResource: ObservatoryPageResource<ObsRunsPayload>;
+  detailResource: ObservatoryPageResource<ObsRunDetail>;
+  diffResource: ObservatoryPageResource<ObsRunDiff>;
   selectedRunId: string | null;
   compareRunId: string | null;
   onSelectRun: (runId: string | null) => void;
   onCompareRun: (runId: string | null) => void;
 }) {
-  const runsResource = useApiResource<ObsRunsPayload>(observatoryRunsPath({ limit: 100 }), {
-    deps: [refreshToken],
-    cacheKey: "obs:runs",
-  });
   return (
-    <RunsLineageLens
-      runs={runsResource.data}
-      loading={runsResource.loading}
-      error={runsResource.error?.message ?? null}
-      selectedRunId={selectedRunId}
-      compareRunId={compareRunId}
-      onSelectRun={onSelectRun}
-      onCompareRun={onCompareRun}
-    />
+    <div className="obs-runs-workspace">
+      <WorkspaceScope
+        title="Assurance / Run lineage"
+        detail="Catalog-wide immutable run evidence. It is separately scoped and does not confirm the selected Market snapshot."
+      />
+      <RunsLineageLens
+        runs={confirmedData(runsResource)}
+        loading={runsResource.loading}
+        error={parseObservatoryError(runsResource.error)}
+        onRetry={runsResource.retry}
+        detail={confirmedData(detailResource)}
+        detailLoading={detailResource.loading}
+        detailError={parseObservatoryError(detailResource.error)}
+        onDetailRetry={detailResource.retry}
+        diff={confirmedData(diffResource)}
+        diffLoading={diffResource.loading}
+        diffError={parseObservatoryError(diffResource.error)}
+        onDiffRetry={diffResource.retry}
+        selectedRunId={selectedRunId}
+        compareRunId={compareRunId}
+        onSelectRun={onSelectRun}
+        onCompareRun={onCompareRun}
+      />
+    </div>
   );
 }
 
-// ── Research lens container ──────────────────────────────────────────────────
-
-function ResearchLensContainer({ refreshToken }: { refreshToken: number }) {
-  const hypothesesResource = useApiResource<ObsHypothesesPayload>(observatoryHypothesesPath(), {
-    deps: [refreshToken],
-    cacheKey: "obs:hypotheses",
-  });
-  const hypothesis = hypothesesResource.data?.hypotheses?.[0];
-  const researchRunId = hypothesis?.current_research_run_id ?? null;
-
-  const [researchRun, setResearchRun] = useState<ObsResearchRun | null>(null);
-  const [runError, setRunError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!researchRunId) {
-      setResearchRun(null);
-      return;
-    }
-    let cancelled = false;
-    setRunError(null);
-    fetchJson<ObsResearchRun>(observatoryResearchRunPath(researchRunId))
-      .then((d) => !cancelled && setResearchRun(d))
-      .catch((e) => !cancelled && setRunError(e instanceof Error ? e.message : String(e)));
-    return () => {
-      cancelled = true;
-    };
-  }, [researchRunId, refreshToken]);
-
+function ResearchWorkspace({
+  hypothesesResource,
+  researchRunResource,
+  hypothesis,
+  hypothesesRefreshConfirmed,
+  researchRunRefreshConfirmed,
+}: {
+  hypothesesResource: ObservatoryPageResource<ObsHypothesesPayload>;
+  researchRunResource: ObservatoryPageResource<ObsResearchRun>;
+  hypothesis: ObsHypothesis | null;
+  hypothesesRefreshConfirmed: boolean;
+  researchRunRefreshConfirmed: boolean;
+}) {
+  const noH1 = hypothesesResource.status === "confirmed" && !hypothesis;
+  const hypothesesError = parseObservatoryError(hypothesesResource.error);
+  const researchRunError = parseObservatoryError(researchRunResource.error);
+  const missingH1Run = hypothesis !== null && !hasNonEmptyText(hypothesis.current_research_run_id);
+  const missingH1Version = hypothesis !== null && !hasNonEmptyText(hypothesis.hypothesis_version);
+  const confirmedResearchRun = confirmedData(researchRunResource);
+  const researchRunConfirmed =
+    hypothesesRefreshConfirmed &&
+    researchRunRefreshConfirmed &&
+    confirmedResearchRun !== null &&
+    validateResearchRun(confirmedResearchRun, hypothesis) === true;
+  const unavailable =
+    noH1 ||
+    missingH1Run ||
+    missingH1Version ||
+    hypothesesResource.status === "failed" ||
+    hypothesesResource.status === "unavailable" ||
+    researchRunResource.status === "failed" ||
+    researchRunResource.status === "unavailable";
   return (
-    <ResearchLens
-      hypothesis={hypothesis}
-      researchRun={researchRun}
-      loading={hypothesesResource.loading}
-      error={hypothesesResource.error?.message ?? runError}
-    />
+    <div className="obs-research-workspace">
+      <WorkspaceScope
+        title="Research"
+        detail="H1 is rendered as separately scoped descriptive evidence. This workspace does not provide investment recommendations."
+      />
+      {unavailable ? (
+        <ObservatoryErrorState
+          title="H1 research evidence unavailable"
+          error={
+            hypothesesError ??
+            researchRunError ??
+            (noH1
+              ? {
+                  message:
+                    "The available research hypotheses do not include the required H1 evidence.",
+                  reasonCodes: ["H1_RESEARCH_HYPOTHESIS_UNAVAILABLE"],
+                  evidenceRefs: [],
+                  retryable: false,
+                }
+              : missingH1Run
+                ? {
+                    message:
+                      "The selected H1 hypothesis has no current immutable research run to display.",
+                    reasonCodes: ["H1_RESEARCH_RUN_UNAVAILABLE"],
+                    evidenceRefs: [],
+                    retryable: false,
+                  }
+                : missingH1Version
+                  ? {
+                      message:
+                        "The selected H1 hypothesis has no immutable version identity to match with a research receipt.",
+                      reasonCodes: ["H1_RESEARCH_VERSION_UNAVAILABLE"],
+                      evidenceRefs: [],
+                      retryable: false,
+                    }
+                  : null)
+          }
+          unavailable
+          onRetry={
+            noH1 ||
+            hypothesesResource.status === "failed" ||
+            hypothesesResource.status === "unavailable"
+              ? hypothesesResource.retry
+              : researchRunResource.retry
+          }
+        />
+      ) : hypothesis && researchRunConfirmed ? (
+        <ResearchLens
+          hypothesis={hypothesis}
+          researchRun={confirmedResearchRun}
+          loading={hypothesesResource.loading || researchRunResource.loading}
+          error={null}
+        />
+      ) : (
+        <div className="obs-empty" role="status">
+          Loading H1 research evidence…
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkspaceScope({ title, detail }: { title: string; detail: string }) {
+  return (
+    <section className="obs-workspace-scope" aria-label={title}>
+      <h2>{title}</h2>
+      <p>{detail}</p>
+    </section>
   );
 }

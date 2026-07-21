@@ -12,6 +12,9 @@ import {
   layerTreatment,
   markersForRow,
   observedOnlyDates,
+  observatoryWindowBounds,
+  downsampleDisplayDates,
+  downsampleSeriesRows,
   parseDecimal,
   purposeTone,
   serializeObservatoryState,
@@ -110,7 +113,9 @@ describe("missing dates are not interpolated", () => {
   });
 
   it("the candidate layer's missing 07-13 splits it into two segments", () => {
-    const candidate = extractLayers(COMPOSITE_FIXTURE).find((l) => l.key === "evaluated_candidate")!;
+    const candidate = extractLayers(COMPOSITE_FIXTURE).find(
+      (l) => l.key === "evaluated_candidate",
+    )!;
     const segments = buildSegments(candidate.rows);
     const dates = segments.map((seg) => seg.map((p) => p.date));
     // 07-10,07-11,07-12 | (07-13 missing) | 07-14
@@ -122,7 +127,10 @@ describe("missing dates are not interpolated", () => {
 
 describe("non-color semantics", () => {
   it("quarantine + revision carry icon + text + texture (not color alone)", () => {
-    const quarantined = markersForRow({ quality_flags: ["quarantined"], availability_state: "present" });
+    const quarantined = markersForRow({
+      quality_flags: ["quarantined"],
+      availability_state: "present",
+    });
     expect(quarantined).toHaveLength(1);
     expect(quarantined[0].kind).toBe("quarantine");
     expect(quarantined[0].icon).toBeTruthy();
@@ -139,7 +147,9 @@ describe("non-color semantics", () => {
     expect(markersForRow({ availability_state: "missing" })[0].kind).toBe("missing");
     expect(markersForRow({ availability_state: "unobserved" })[0].kind).toBe("unobserved");
     // unchanged/present has no marker.
-    expect(markersForRow({ availability_state: "present", revision_state: "unchanged" })).toEqual([]);
+    expect(markersForRow({ availability_state: "present", revision_state: "unchanged" })).toEqual(
+      [],
+    );
   });
 });
 
@@ -172,6 +182,54 @@ describe("range windowing and union dates", () => {
     const win = applyRangeWindow(dates, "30D");
     expect(win.length).toBeLessThanOrEqual(dates.length);
     expect(win[win.length - 1]).toBe("2026-07-18");
+  });
+
+  it("derives bounded server windows from the resolved watermark and preserves explicit All", () => {
+    expect(observatoryWindowBounds("2026-07-18", "30D")).toEqual({
+      kind: "bounded",
+      from: "2026-06-19",
+      to: "2026-07-18",
+    });
+    expect(observatoryWindowBounds("2026-07-18", "90D")).toEqual({
+      kind: "bounded",
+      from: "2026-04-20",
+      to: "2026-07-18",
+    });
+    expect(observatoryWindowBounds("2026-07-18", "All")).toEqual({ kind: "all" });
+    expect(observatoryWindowBounds(undefined, "30D")).toEqual({
+      kind: "unavailable",
+      reasonCodes: ["MARKET_WATERMARK_UNAVAILABLE"],
+    });
+    expect(observatoryWindowBounds("2026-02-30", "30D")).toEqual({
+      kind: "unavailable",
+      reasonCodes: ["MARKET_WATERMARK_INVALID"],
+    });
+    expect(observatoryWindowBounds("2026-07-18", "unknown")).toEqual({
+      kind: "unavailable",
+      reasonCodes: ["REQUESTED_RANGE_INVALID"],
+    });
+  });
+
+  it("bounds display points while retaining layer endpoints and a representative gap", () => {
+    const dates = Array.from(
+      { length: 2_000 },
+      (_, index) => `2020-01-${String((index % 28) + 1).padStart(2, "0")}-${index}`,
+    );
+    const sampledDates = downsampleDisplayDates(dates, 720);
+    expect(sampledDates).toHaveLength(720);
+    expect(sampledDates[0]).toBe(dates[0]);
+    expect(sampledDates[sampledDates.length - 1]).toBe(dates[dates.length - 1]);
+
+    const rows: ObsSeriesRow[] = Array.from({ length: 2_000 }, (_, index) => ({
+      date: `2020-01-${String((index % 28) + 1).padStart(2, "0")}-${index}`,
+      close: String(index + 1),
+      availability_state: index === 1_000 ? "missing" : "present",
+    }));
+    const sampledRows = downsampleSeriesRows(rows, 720);
+    expect(sampledRows.length).toBeLessThanOrEqual(720);
+    expect(sampledRows[0].date).toBe(rows[0].date);
+    expect(sampledRows[sampledRows.length - 1].date).toBe(rows[rows.length - 1].date);
+    expect(sampledRows.some((row) => row.availability_state === "missing")).toBe(true);
   });
 });
 

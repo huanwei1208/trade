@@ -11,12 +11,14 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function analyze(page: import("@playwright/test").Page) {
-  return new AxeBuilder({ page })
-    .include('[data-testid="observatory-page"]')
-    // Color-contrast tuning on a dark theme is out of scope for this pass; we
-    // still assert on serious/critical structural violations below.
-    .disableRules(["color-contrast"])
-    .analyze();
+  return (
+    new AxeBuilder({ page })
+      .include('[data-testid="observatory-page"]')
+      // Color-contrast tuning on a dark theme is out of scope for this pass; we
+      // still assert on serious/critical structural violations below.
+      .disableRules(["color-contrast"])
+      .analyze()
+  );
 }
 
 function criticalOrSerious(results: Awaited<ReturnType<typeof analyze>>) {
@@ -48,7 +50,7 @@ test("Research lens has no critical/serious a11y violations", async ({ page }) =
 test("status is conveyed by more than color (icons + text present)", async ({ page }) => {
   await page.goto("/?obsLens=overview");
   await expect(page.getByTestId("observatory-page")).toBeVisible();
-  await page.getByTestId("hit-2026-07-15").click();
+  await page.getByTestId("chart-date-inspector").fill("2026-07-15");
   // Non-color markers carry a text label, not just a colored dot.
   await expect(page.getByTestId("date-evidence-markers")).toContainText("Quarantined");
   // Chart markers carry a glyph.

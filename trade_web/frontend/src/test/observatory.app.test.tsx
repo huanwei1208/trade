@@ -87,7 +87,10 @@ describe("App Observatory capability gating (fail closed)", () => {
     // the page). A capability cache must NOT authorize: with the request failing,
     // there is no fresh success, so nav stays hidden and Observatory never mounts.
     window.localStorage.setItem("trade-web:page", JSON.stringify("observatory"));
-    window.localStorage.setItem("trade-web:obs-capability", JSON.stringify({ enabled: true, state: "ready", show_nav: true }));
+    window.localStorage.setItem(
+      "trade-web:obs-capability",
+      JSON.stringify({ enabled: true, state: "ready", show_nav: true }),
+    );
     control.capabilityFails = true;
     installFetch();
     render(<App />);
@@ -123,6 +126,21 @@ describe("App Observatory capability gating (fail closed)", () => {
   });
 
   it.each([
+    { enabled: false, state: "ready", show_nav: true },
+    { enabled: true, state: "catalog_missing", show_nav: true },
+  ])("denies contradictory capability payload %o", async (capability) => {
+    control.capabilityBody = capability;
+    installFetch();
+    setUrl("?obsLens=overview");
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("nav-today")).toBeTruthy());
+    expect(screen.queryByTestId("nav-observatory")).toBeNull();
+    expect(screen.queryByTestId("observatory-page")).toBeNull();
+    expect(screen.getByTestId("observatory-unavailable-notice")).toBeTruthy();
+  });
+
+  it.each([
     { state: "disabled", enabled: false },
     { state: "catalog_missing", enabled: true },
     { state: "catalog_stale", enabled: true },
@@ -137,5 +155,24 @@ describe("App Observatory capability gating (fail closed)", () => {
     // Direct-open must fail closed: unready backend never mounts Observatory.
     expect(screen.queryByTestId("observatory-page")).toBeNull();
     expect(screen.queryByTestId("nav-observatory")).toBeNull();
+    const notice = screen.getByTestId("observatory-unavailable-notice");
+    expect(notice).toHaveTextContent("BTC Observatory is unavailable.");
+    expect(
+      (screen.getByLabelText("Attempted Observatory link") as HTMLInputElement).value,
+    ).toContain("obsLens=overview");
+  });
+
+  it("keeps only safe Observatory selectors in a denied attempted link", async () => {
+    control.capabilityBody = { enabled: false, state: "disabled", show_nav: false };
+    installFetch();
+    setUrl("?obsLens=overview&obsDate=2026-07-15&access_token=not-safe");
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("observatory-unavailable-notice")).toBeTruthy());
+    const attemptedLink = (screen.getByLabelText("Attempted Observatory link") as HTMLInputElement)
+      .value;
+    expect(attemptedLink).toContain("obsLens=overview");
+    expect(attemptedLink).toContain("obsDate=2026-07-15");
+    expect(attemptedLink).not.toContain("access_token");
   });
 });

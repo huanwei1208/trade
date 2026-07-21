@@ -1,7 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { AppShell } from "./components/AppShell";
-import { useApiResource, type Locale, type ObsCapability, type PageKey, type TrustOverview } from "./lib/api";
+import {
+  useApiResource,
+  type Locale,
+  type ObsCapability,
+  type PageKey,
+  type TrustOverview,
+} from "./lib/api";
 import { observatoryCapabilityPath } from "./lib/api";
 import { formatDateTime } from "./lib/format";
 import { I18nProvider } from "./lib/i18n";
@@ -22,7 +28,17 @@ import { SymbolPage } from "./pages/SymbolPage";
 import { TodayPage } from "./pages/TodayPage";
 
 type OpsFocus = {
-  tab?: "overview" | "automation" | "readiness" | "compute" | "replay" | "trust" | "audit" | "recovery" | "pipeline" | "workflows";
+  tab?:
+    | "overview"
+    | "automation"
+    | "readiness"
+    | "compute"
+    | "replay"
+    | "trust"
+    | "audit"
+    | "recovery"
+    | "pipeline"
+    | "workflows";
   date?: string;
   dataset?: string;
 };
@@ -49,7 +65,11 @@ function readInitialQuery() {
   }
   const opsTab = params.get("opsTab");
   if (!opsTab) {
-    return { page: undefined as PageKey | undefined, opsFocus: {} as OpsFocus, obsState: undefined };
+    return {
+      page: undefined as PageKey | undefined,
+      opsFocus: {} as OpsFocus,
+      obsState: undefined,
+    };
   }
   const date = params.get("date") || undefined;
   const dataset = params.get("dataset") || undefined;
@@ -70,14 +90,54 @@ function readInitialQuery() {
   return { page: "ops" as PageKey, opsFocus, obsState: undefined };
 }
 
+function initialObservatoryAttempt(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const sourceParams = new URLSearchParams(window.location.search);
+  if (!urlHasObservatory(sourceParams)) {
+    return null;
+  }
+  const safeParams = new URLSearchParams();
+  for (const key of [
+    "obsLens",
+    "obsChannel",
+    "knowledgeAsOf",
+    "obsRange",
+    "obsRun",
+    "obsCompare",
+    "obsDate",
+  ]) {
+    const value = sourceParams.get(key);
+    if (value) {
+      safeParams.set(key, value);
+    }
+  }
+  const query = safeParams.toString();
+  return `${window.location.pathname}${query ? `?${query}` : ""}`;
+}
+
 export default function App() {
   const initialQuery = readInitialQuery();
+  const [attemptedObservatoryLink] = useState(initialObservatoryAttempt);
   const [locale, setLocale] = useLocalStorageState<Locale>("trade-web:locale", "zh-CN");
-  const [page, setPage] = useLocalStorageState<PageKey>("trade-web:page", initialQuery.page || "today");
-  const [selectedSymbol, setSelectedSymbol] = useLocalStorageState<string>("trade-web:selected-symbol", "");
-  const [symbolOrigin, setSymbolOrigin] = useLocalStorageState<PageKey>("trade-web:symbol-origin", "today");
+  const [page, setPage] = useLocalStorageState<PageKey>(
+    "trade-web:page",
+    initialQuery.page || "today",
+  );
+  const [selectedSymbol, setSelectedSymbol] = useLocalStorageState<string>(
+    "trade-web:selected-symbol",
+    "",
+  );
+  const [symbolOrigin, setSymbolOrigin] = useLocalStorageState<PageKey>(
+    "trade-web:symbol-origin",
+    "today",
+  );
   const [refreshToken, setRefreshToken] = useLocalStorageState<number>("trade-web:refresh-seq", 0);
-  const [opsFocus, setOpsFocus] = useLocalStorageState<OpsFocus>("trade-web:ops-focus", initialQuery.opsFocus);
+  const [opsFocus, setOpsFocus] = useLocalStorageState<OpsFocus>(
+    "trade-web:ops-focus",
+    initialQuery.opsFocus,
+  );
   const [obsState, setObsState] = useLocalStorageState<ObservatoryUrlState>(
     "trade-web:obs-state",
     initialQuery.obsState || DEFAULT_OBS_URL_STATE,
@@ -102,6 +162,8 @@ export default function App() {
     deps: [refreshToken],
   });
   const observatoryAuthorized =
+    observatoryCapability.data?.enabled === true &&
+    observatoryCapability.data?.state === "ready" &&
     observatoryCapability.data?.show_nav === true &&
     observatoryCapability.loading === false &&
     observatoryCapability.revalidating === false &&
@@ -113,7 +175,8 @@ export default function App() {
   // If Observatory is not freshly authorized, fall back to Today even when
   // localStorage or the URL (e.g. a direct ?obsLens link) requested it. This also
   // covers a rollback or an unbuilt/corrupt catalog.
-  const resolvedPage: PageKey = requestedPage === "observatory" && !observatoryAuthorized ? "today" : requestedPage;
+  const resolvedPage: PageKey =
+    requestedPage === "observatory" && !observatoryAuthorized ? "today" : requestedPage;
   const meta = getPageMeta(resolvedPage, locale, selectedSymbol);
   const asOf = formatDateTime(new Date().toISOString(), locale === "zh-CN" ? "zh-CN" : "en-US");
 
@@ -123,7 +186,18 @@ export default function App() {
     }
     const params = new URLSearchParams(window.location.search);
     // Reset scoped params first so lenses don't leak across pages.
-    for (const key of ["opsTab", "date", "dataset", "obsLens", "obsChannel", "knowledgeAsOf", "obsRange", "obsRun", "obsCompare", "obsDate"]) {
+    for (const key of [
+      "opsTab",
+      "date",
+      "dataset",
+      "obsLens",
+      "obsChannel",
+      "knowledgeAsOf",
+      "obsRange",
+      "obsRun",
+      "obsCompare",
+      "obsDate",
+    ]) {
       params.delete(key);
     }
     if (resolvedPage === "observatory") {
@@ -187,12 +261,64 @@ export default function App() {
         onLocaleChange={setLocale}
         onRefresh={() => setRefreshToken((current) => current + 1)}
       >
-        {resolvedPage === "today" && <TodayPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOpsFocus={openOpsFocus} onOpenCandidates={() => navigate("candidates")} />}
-        {resolvedPage === "candidates" && <CandidatesPage refreshToken={refreshToken} onOpenSymbol={openSymbol} onOpenOps={() => navigate("ops")} onOpenOpsFocus={openOpsFocus} />}
-        {resolvedPage === "symbol" && <SymbolPage symbol={selectedSymbol} refreshToken={refreshToken} onBack={() => navigate(symbolOrigin || "today")} onOpenOpsFocus={openOpsFocus} />}
-        {resolvedPage === "observatory" && <ObservatoryPage refreshToken={refreshToken} urlState={obsState} onUrlStateChange={updateObsState} />}
+        {resolvedPage === "today" && (
+          <TodayPage
+            refreshToken={refreshToken}
+            onOpenSymbol={openSymbol}
+            onOpenOpsFocus={openOpsFocus}
+            onOpenCandidates={() => navigate("candidates")}
+          />
+        )}
+        {resolvedPage === "today" && requestedPage === "observatory" && !observatoryAuthorized ? (
+          <section
+            className="observatory-unavailable-notice"
+            role="status"
+            data-testid="observatory-unavailable-notice"
+          >
+            <strong>BTC Observatory is unavailable.</strong>
+            <span>
+              The requested evidence workspace was not opened because its capability is not
+              currently ready.
+            </span>
+            {attemptedObservatoryLink ? (
+              <label>
+                Attempted link
+                <input
+                  aria-label="Attempted Observatory link"
+                  readOnly
+                  value={attemptedObservatoryLink}
+                />
+              </label>
+            ) : null}
+          </section>
+        ) : null}
+        {resolvedPage === "candidates" && (
+          <CandidatesPage
+            refreshToken={refreshToken}
+            onOpenSymbol={openSymbol}
+            onOpenOps={() => navigate("ops")}
+            onOpenOpsFocus={openOpsFocus}
+          />
+        )}
+        {resolvedPage === "symbol" && (
+          <SymbolPage
+            symbol={selectedSymbol}
+            refreshToken={refreshToken}
+            onBack={() => navigate(symbolOrigin || "today")}
+            onOpenOpsFocus={openOpsFocus}
+          />
+        )}
+        {resolvedPage === "observatory" && (
+          <ObservatoryPage
+            refreshToken={refreshToken}
+            urlState={obsState}
+            onUrlStateChange={updateObsState}
+          />
+        )}
         {resolvedPage === "research" && <ResearchPage refreshToken={refreshToken} />}
-        {resolvedPage === "ops" && <OpsPage refreshToken={refreshToken} focus={opsFocus} onFocusChange={setOpsFocus} />}
+        {resolvedPage === "ops" && (
+          <OpsPage refreshToken={refreshToken} focus={opsFocus} onFocusChange={setOpsFocus} />
+        )}
         {resolvedPage === "data" && <DataPage refreshToken={refreshToken} />}
       </AppShell>
     </I18nProvider>

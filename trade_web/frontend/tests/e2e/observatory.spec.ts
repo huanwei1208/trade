@@ -15,7 +15,9 @@ async function gotoObservatory(page: import("@playwright/test").Page, query = "?
   await expect(page.getByTestId("observatory-page")).toBeVisible();
 }
 
-test("Overview shows the Truth Bar with all three watermarks and the composite chart", async ({ page }) => {
+test("Overview shows the Truth Bar with all three watermarks and the composite chart", async ({
+  page,
+}) => {
   await gotoObservatory(page);
   await expect(page.getByTestId("obs-truthbar")).toBeVisible();
   await expect(page.getByTestId("wm-observed")).toHaveText("2026-07-18");
@@ -31,8 +33,8 @@ test("Overview shows the Truth Bar with all three watermarks and the composite c
 
 test("Observe/Investigate does NOT leak future-outcome labels", async ({ page }) => {
   await gotoObservatory(page);
-  // Select a date to open Date Evidence.
-  await page.getByTestId("hit-2026-07-15").click();
+  // Keyboard-equivalent date selector opens the same snapshot-pinned evidence.
+  await page.getByTestId("chart-date-inspector").fill("2026-07-15");
   await expect(page.getByTestId("date-evidence")).toBeVisible();
   await expect(page.getByTestId("research-visibility")).toContainText("not_visible");
   // The future-outcome region must NOT be present anywhere in Observe.
@@ -43,11 +45,22 @@ test("Observe/Investigate does NOT leak future-outcome labels", async ({ page })
 
 test("Date evidence drilldown shows provider, basis and non-color markers", async ({ page }) => {
   await gotoObservatory(page);
-  await page.getByTestId("hit-2026-07-15").click();
+  await page.getByTestId("chart-date-inspector").fill("2026-07-15");
   const panel = page.getByTestId("date-evidence");
   await expect(panel).toContainText("okx");
   await expect(panel).toContainText("basis_bps");
   await expect(page.getByTestId("date-evidence-markers")).toContainText("Quarantined");
+});
+
+test("Keyboard date inspection moves focus to evidence and Close returns it to the inspector", async ({
+  page,
+}) => {
+  await gotoObservatory(page);
+  const inspector = page.getByTestId("chart-date-inspector");
+  await inspector.fill("2026-07-15");
+  await expect(page.locator(".obs-date-evidence__focus")).toBeFocused();
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(inspector).toBeFocused();
 });
 
 test("Runs & Lineage: run diff reports added/removed/changed and code change", async ({ page }) => {
@@ -65,7 +78,9 @@ test("Runs & Lineage: run diff reports added/removed/changed and code change", a
   await expect(page.getByTestId("run-diff")).toContainText("code changed");
 });
 
-test("Research lens shows H1 evidence, the distinct future region, and Open in Lab", async ({ page }) => {
+test("Research lens shows H1 evidence, the distinct future region, and Open in Lab", async ({
+  page,
+}) => {
   await gotoObservatory(page, "?obsLens=research");
   await expect(page.getByTestId("research-hypothesis")).toContainText("H1");
   await expect(page.getByTestId("research-metrics")).toContainText("1.42");
@@ -73,12 +88,14 @@ test("Research lens shows H1 evidence, the distinct future region, and Open in L
   await expect(page.getByTestId("future-outcome-region")).toBeVisible();
   // Open in Lab is display-only and reveals a copyable command fixing snapshot_id.
   await page.getByTestId("open-in-lab-button").click();
-  await expect(page.getByTestId("open-in-lab-command")).toContainText("--snapshot-id snapshot_formal_0007");
+  await expect(page.getByTestId("open-in-lab-command")).toContainText(
+    "--snapshot-id snapshot_formal_0007",
+  );
 });
 
 test("Fixed URL restores lens + selected date on reload", async ({ page }) => {
   await gotoObservatory(page);
-  await page.getByTestId("hit-2026-07-16").click();
+  await page.getByTestId("chart-date-inspector").fill("2026-07-16");
   await expect(page.getByTestId("date-evidence")).toBeVisible();
   // The URL should now carry obsDate.
   await expect(page).toHaveURL(/obsDate=2026-07-16/);
@@ -98,7 +115,9 @@ test("Switching lenses updates the URL and restores after reload", async ({ page
   await expect(page.getByTestId("trust-lens")).toBeVisible();
 });
 
-test("Unready backend: a direct ?obsLens URL does NOT open Observatory (fail closed)", async ({ page }) => {
+test("Unready backend: a direct ?obsLens URL does NOT open Observatory (fail closed)", async ({
+  page,
+}) => {
   // Override only the capability route to report an unready state; the rest of the
   // observatory fixtures stay mocked. A direct-open URL must fail closed: the
   // Observatory page must not mount and the nav entry must stay hidden.
@@ -114,4 +133,6 @@ test("Unready backend: a direct ?obsLens URL does NOT open Observatory (fail clo
   await expect(page.getByTestId("nav-today")).toBeVisible();
   await expect(page.getByTestId("observatory-page")).toHaveCount(0);
   await expect(page.getByTestId("nav-observatory")).toHaveCount(0);
+  await expect(page.getByTestId("observatory-unavailable-notice")).toBeVisible();
+  await expect(page.getByLabel("Attempted Observatory link")).toHaveValue(/obsLens=overview/);
 });

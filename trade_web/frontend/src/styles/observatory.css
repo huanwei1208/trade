@@ -1,0 +1,119 @@
+.obs-truthbar--state {
+  align-items: flex-start;
+}
+
+.obs-truthbar__state-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-0);
+}
+
+.obs-truthbar__reasons {
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+
+.obs-chart__date-inspector {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-2);
+  font-size: 0.75rem;
+}
+
+.obs-chart__date-inspector input {
+  padding: 3px 6px;
+}
+
+.obs-assurance-workspace,
+.obs-runs-workspace,
+.obs-research-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.obs-dependent-blocked {
+  padding: var(--space-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-button);
+  color: var(--text-2);
+  font-size: 0.85rem;
+}
+
+.obs-workspace-scope {
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--accent-blue);
+  background: var(--panel);
+}
+
+.obs-workspace-scope h2 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-0);
+}
+
+.obs-workspace-scope p {
+  margin: var(--space-1) 0 0;
+  color: var(--text-2);
+  font-size: 0.82rem;
+}
+
+.obs-resource-error {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid rgba(255, 91, 110, 0.35);
+  border-radius: var(--radius-button);
+  background: var(--err-soft);
+  color: var(--text-1);
+  font-size: 0.84rem;
+}
+
+.obs-resource-error__title {
+  color: var(--err);
+  font-weight: 700;
+}
+
+.obs-resource-error p {
+  margin: 0;
+}
+
+.obs-date-evidence__focus:focus {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 3px;
+}
+
+.obs-research__scope {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-button);
+  color: var(--text-2);
+  font-size: 0.8rem;
+}
+
+.observatory-unavailable-notice {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid rgba(255, 180, 50, 0.45);
+  border-radius: var(--radius-card);
+  background: var(--warn-soft);
+  color: var(--text-1);
+  font-size: 0.84rem;
+}
+
+.observatory-unavailable-notice label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 0.75rem;
+}
+
+.observatory-unavailable-notice input {
+  width: 100%;
+  max-width: 760px;
+  padding: 6px 8px;
+  color: var(--text-1);
+  background: var(--panel);
+}
