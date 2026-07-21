@@ -12,7 +12,7 @@ remove the capability route from the app.
 """
 
 import os
-from typing import Any, Optional
+from typing import Any
 
 from trade_py.observatory.domain.vocab import ObservatoryError, ReasonCode
 
@@ -41,7 +41,9 @@ def status_for(reason_code: str) -> int:
     return _REASON_STATUS.get(reason_code, 400)
 
 
-def register_observatory_capability(app, data_root: str | None = None, *, enabled: bool | None = None) -> None:
+def register_observatory_capability(
+    app, data_root: str | None = None, *, enabled: bool | None = None
+) -> None:
     """Register only the always-on read-only capability probe.
 
     This route is reachable regardless of the rollout flag so the frontend and the
@@ -102,7 +104,7 @@ def register_observatory_routes(app, data_root: str | None = None) -> None:
     """
 
     from fastapi import APIRouter, Query, Request
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, Response
 
     # Lazy facade import: kept out of module scope so importing this module (for the
     # always-on capability probe) never depends on the facade or its heavy deps.
@@ -122,10 +124,10 @@ def register_observatory_routes(app, data_root: str | None = None) -> None:
             headers["Retry-After"] = str(exc.extra.get("retry_after", 1))
         return JSONResponse(status_code=status, content=payload, headers=headers)
 
-    def _maybe_304(request: Request, payload: dict[str, Any]) -> JSONResponse | None:
+    def _maybe_304(request: Request, payload: dict[str, Any]) -> Response | None:
         etag = payload.get("etag")
         if etag and request.headers.get("if-none-match") == etag:
-            return JSONResponse(status_code=304, content=None, headers={"ETag": etag})
+            return Response(status_code=304, headers={"ETag": etag})
         return None
 
     def _ok(payload: dict[str, Any]) -> JSONResponse:
@@ -189,9 +191,13 @@ def register_observatory_routes(app, data_root: str | None = None) -> None:
         return not_modified or _ok(payload)
 
     @router.get(f"/assets/{ASSET_PATH}/dates/{{market_date}}")
-    def date_evidence(market_date: str, snapshot_id: str | None = Query(None), channel: str = Query("formal")):
+    def date_evidence(
+        market_date: str, snapshot_id: str | None = Query(None), channel: str = Query("formal")
+    ):
         try:
-            return JSONResponse(_query().date_evidence(market_date, snapshot_id=snapshot_id, channel=channel))
+            return JSONResponse(
+                _query().date_evidence(market_date, snapshot_id=snapshot_id, channel=channel)
+            )
         except ObservatoryError as exc:
             return _error_response(exc)
 

@@ -1,16 +1,26 @@
 """WP3 FastAPI observatory API tests (plan §27 owner: test_btc_observatory_api)."""
+
 from __future__ import annotations
 
 import pytest
 
-from trade_py.observatory.catalog import store as catalog_store
 from tests.observatory.fixtures import build_observatory_fixture
+from trade_py.observatory.catalog import store as catalog_store
 
 fastapi = pytest.importorskip("fastapi")
 from fastapi import FastAPI  # noqa: E402
+from fastapi.routing import APIRoute  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from trade_web.backend.observatory import register_observatory_routes  # noqa: E402
+
+
+def _observatory_paths(app: FastAPI) -> set[str]:
+    return {
+        route.path
+        for route in app.routes
+        if isinstance(route, APIRoute) and "observatory" in route.path
+    }
 
 
 @pytest.fixture()
@@ -45,6 +55,7 @@ def test_context_etag_304(client):
         headers={"If-None-Match": etag},
     )
     assert resp2.status_code == 304
+    assert resp2.content == b""
 
 
 def test_series_composite_three_layers(client):
@@ -94,7 +105,11 @@ def test_trust_candidate_channel_does_not_regress(client):
     # rather than falling back to an older ready run.
     resp = c.get("/api/v1/observatory/assets/crypto.BTC/trust?channel=evaluated_candidate")
     assert resp.status_code == 200
-    assert resp.json()["run_id"] in {fx["invalid_run_id"], fx["candidate_run_id"], fx["observed_run_id"]}
+    assert resp.json()["run_id"] in {
+        fx["invalid_run_id"],
+        fx["candidate_run_id"],
+        fx["observed_run_id"],
+    }
 
 
 def test_runs_pagination_stable(client):
@@ -107,7 +122,9 @@ def test_runs_pagination_stable(client):
     # Cursor paging does not duplicate.
     first_ids = [r["run_id"] for r in body["runs"]]
     if body["next_cursor"]:
-        resp2 = c.get(f"/api/v1/observatory/assets/crypto.BTC/runs?limit=2&cursor={body['next_cursor']}")
+        resp2 = c.get(
+            f"/api/v1/observatory/assets/crypto.BTC/runs?limit=2&cursor={body['next_cursor']}"
+        )
         second_ids = [r["run_id"] for r in resp2.json()["runs"]]
         assert not set(first_ids) & set(second_ids)
 
@@ -141,8 +158,8 @@ def test_path_traversal_rejected(client):
 
 def test_path_traversal_rejected_at_facade(client):
     c, fx = client
-    from trade_py.observatory.query.facade import ObservatoryQuery
     from trade_py.observatory.domain.vocab import ObservatoryError, ReasonCode
+    from trade_py.observatory.query.facade import ObservatoryQuery
 
     q = ObservatoryQuery(fx["data_root"])
     with pytest.raises(ObservatoryError) as exc:
@@ -240,7 +257,7 @@ def test_rollout_default_off_hides_data_routes_but_reports_disabled(tmp_path, mo
     from trade_web import create_app
 
     app = create_app()
-    obs_paths = sorted({r.path for r in app.routes if "observatory" in getattr(r, "path", "")})
+    obs_paths = sorted(_observatory_paths(app))
     # Only the always-on capability probe; no data routes.
     assert obs_paths == ["/api/v1/observatory/capability"]
 
@@ -263,7 +280,7 @@ def test_rollout_enabled_registers_routes(tmp_path, monkeypatch):
     from trade_web import create_app
 
     app = create_app()
-    obs_paths = sorted({r.path for r in app.routes if "observatory" in getattr(r, "path", "")})
+    obs_paths = sorted(_observatory_paths(app))
     assert "/api/v1/observatory/capability" in obs_paths
     assert "/api/v1/observatory/assets/crypto.BTC/context" in obs_paths
 
@@ -293,7 +310,7 @@ def test_data_route_defect_does_not_drop_capability_probe(tmp_path, monkeypatch)
     from trade_web import create_app
 
     app = create_app()
-    obs_paths = sorted({r.path for r in app.routes if "observatory" in getattr(r, "path", "")})
+    obs_paths = sorted(_observatory_paths(app))
     # The capability probe survives; data routes are absent.
     assert "/api/v1/observatory/capability" in obs_paths
     assert "/api/v1/observatory/assets/crypto.BTC/context" not in obs_paths
@@ -322,5 +339,5 @@ def test_capability_route_import_is_facade_independent():
     app = FastAPI()
     register_observatory_capability(app, "data", enabled=False)
     assert "trade_py.observatory.query.facade" not in sys.modules
-    obs_paths = {r.path for r in app.routes if "observatory" in getattr(r, "path", "")}
+    obs_paths = _observatory_paths(app)
     assert "/api/v1/observatory/capability" in obs_paths
