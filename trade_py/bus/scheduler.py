@@ -4,15 +4,18 @@ Registers schedule entries that publish gate.* events on the EventBus.
 Contains NO business logic; all job execution is driven by pipeline_dag
 via bootstrap_from_dag().
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, time
 from typing import TYPE_CHECKING, Any
 
 import schedule
 
 from trade_py.bus import EventBus, Topic
+from trade_py.bus.models import AdmissionOutcome, PublishResult
 
 if TYPE_CHECKING:
     from trade_py.db.trade_db import TradeDB
@@ -171,7 +174,7 @@ _SCHEDULE_BLUEPRINT: list[dict[str, Any]] = [
 ]
 
 
-def _is_trading_day(db: "TradeDB", now: datetime | None = None, exchange: str = "SSE") -> bool:
+def _is_trading_day(db: TradeDB, now: datetime | None = None, exchange: str = "SSE") -> bool:
     now = now or datetime.now()
     is_open = db.trading_calendar_is_open(now.date(), exchange=exchange)
     if is_open is None:
@@ -179,7 +182,7 @@ def _is_trading_day(db: "TradeDB", now: datetime | None = None, exchange: str = 
     return bool(is_open)
 
 
-def _market_session_open(db: "TradeDB", now: datetime | None = None) -> bool:
+def _market_session_open(db: TradeDB, now: datetime | None = None) -> bool:
     now = now or datetime.now()
     if not _is_trading_day(db, now):
         return False
@@ -194,7 +197,115 @@ def _market_session_open(db: "TradeDB", now: datetime | None = None) -> bool:
     return in_am or in_pm
 
 
-def drain_due_agenda(bus: EventBus, db: "TradeDB", *, limit: int = 20) -> int:
+def _agenda_dispatch_failure_summary(result: PublishResult[Any]) -> str:
+    details = "; ".join(item.detail for item in result.handlers if item.detail)
+    summary = (
+        f"agenda dispatch deferred: outcome={result.outcome.value} "
+        f"event_id={result.event.id} action=replay_event_bus_event"
+    )
+    return f"{summary} detail={details}" if details else summary
+
+
+def _restore_unattempted_agenda(
+    db: TradeDB,
+    rows: list[dict[str, Any]],
+    *,
+    outcome: AdmissionOutcome,
+    event_id: int,
+) -> None:
+    summary = (
+        f"agenda dispatch deferred before publish: prior_outcome={outcome.value} "
+        f"prior_event_id={event_id} action=retry_next_scheduler_scan"
+    )
+    for row in rows:
+        db.agenda_queue_update_status(
+            int(row["agenda_id"]),
+            "pending",
+            result_summary=summary,
+        )
+
+
+def _restore_agenda_after_publish_exception(
+    db: TradeDB,
+    rows: list[dict[str, Any]],
+    *,
+    error: Exception,
+) -> tuple[int, int]:
+    summary = (
+        "agenda dispatch persistence/admission failed before typed outcome: "
+        f"error={type(error).__name__}: {error} action=retry_next_scheduler_scan"
+    )
+    restored = 0
+    failed = 0
+    for row in rows:
+        agenda_id = int(row["agenda_id"])
+        try:
+            db.agenda_queue_update_status(
+                agenda_id,
+                "pending",
+                result_summary=summary,
+            )
+            restored += 1
+        except Exception:
+            failed += 1
+            logger.exception(
+                "Failed to restore queued agenda after publish exception: agenda_id=%s",
+                agenda_id,
+            )
+    return restored, failed
+
+
+def _publish_scheduled_topic(bus: EventBus, topic: str) -> bool:
+    """Publish one scheduled gate without letting overload stop the daemon."""
+    try:
+        result = bus.publish_with_outcome(topic)
+    except Exception:
+        logger.exception("Scheduled gate persistence failed: topic=%s", topic)
+        return False
+    if result.outcome is AdmissionOutcome.ACCEPTED:
+        return True
+    details = "; ".join(item.detail for item in result.handlers if item.detail)
+    log_level = (
+        logging.ERROR if result.outcome is AdmissionOutcome.SUBMISSION_FAILED else logging.WARNING
+    )
+    logger.log(
+        log_level,
+        "Scheduled gate deferred: topic=%s event_id=%s outcome=%s detail=%s "
+        "action=replay_event_bus_event",
+        topic,
+        result.event.id,
+        result.outcome.value,
+        details or "none",
+    )
+    return False
+
+
+def _recover_pending_events(bus: EventBus) -> None:
+    """Run one bounded crash/transient recovery pass without stopping the daemon."""
+    try:
+        bus.replay_pending(batch_size=20, max_events=100)
+    except Exception:
+        logger.exception("Scheduled EventBus recovery pass failed")
+
+
+def _publish_agenda_once(
+    bus: EventBus,
+    row: dict[str, Any],
+) -> PublishResult[Any]:
+    agenda_id = int(row["agenda_id"])
+    return bus.publish_once(
+        Topic.AGENDA_DUE,
+        dict(row),
+        idempotency_key=f"agenda:{agenda_id}",
+    )
+
+
+def drain_due_agenda(bus: EventBus, db: TradeDB, *, limit: int = 20) -> int:
+    """Dispatch claimed rows until overload, returning only accepted event count.
+
+    A rejected current row remains owned by EventBus replay. Any unattempted rows
+    return to pending for the next scheduler scan, and the current batch stops.
+    """
     expired = db.agenda_queue_expire_stale(grace_minutes=120)
     if expired:
         logger.info("Expired %d stale agenda items before dispatch", expired)
@@ -202,21 +313,80 @@ def drain_due_agenda(bus: EventBus, db: "TradeDB", *, limit: int = 20) -> int:
     if not rows:
         return 0
     logger.info("Dispatching %d due agenda items", len(rows))
-    for row in rows:
-        bus.publish(Topic.AGENDA_DUE, dict(row))
-    return len(rows)
+    accepted = 0
+    for index, row in enumerate(rows):
+        try:
+            result = _publish_agenda_once(bus, row)
+        except Exception as first_error:
+            try:
+                result = _publish_agenda_once(bus, row)
+            except Exception as retry_error:
+                recoverable_rows = rows[index:]
+                restored, failed = _restore_agenda_after_publish_exception(
+                    db,
+                    recoverable_rows,
+                    error=retry_error,
+                )
+                logger.exception(
+                    "Agenda dispatch persistence/admission failed: agenda_id=%s job_name=%s "
+                    "accepted=%s restored=%s restore_failed=%s first_error=%s",
+                    row.get("agenda_id"),
+                    row.get("job_name"),
+                    accepted,
+                    restored,
+                    failed,
+                    first_error,
+                )
+                return accepted
+            logger.warning(
+                "Agenda dispatch recovered ambiguous publish with durable identity: "
+                "agenda_id=%s event_id=%s first_error=%s",
+                row.get("agenda_id"),
+                result.event.id,
+                first_error,
+            )
+        if result.outcome is AdmissionOutcome.ACCEPTED:
+            accepted += 1
+            continue
+
+        agenda_id = int(row["agenda_id"])
+        summary = _agenda_dispatch_failure_summary(result)
+        db.agenda_queue_update_status(agenda_id, "error", result_summary=summary)
+        unattempted = rows[index + 1 :]
+        _restore_unattempted_agenda(
+            db,
+            unattempted,
+            outcome=result.outcome,
+            event_id=result.event.id,
+        )
+        log_level = (
+            logging.ERROR
+            if result.outcome is AdmissionOutcome.SUBMISSION_FAILED
+            else logging.WARNING
+        )
+        logger.log(
+            log_level,
+            "Agenda dispatch batch stopped: agenda_id=%s event_id=%s outcome=%s "
+            "accepted=%s deferred=%s",
+            agenda_id,
+            result.event.id,
+            result.outcome.value,
+            accepted,
+            len(unattempted),
+        )
+        break
+    return accepted
 
 
-def describe_schedule(db: "TradeDB", now: datetime | None = None) -> list[dict[str, Any]]:
+def describe_schedule(db: TradeDB, now: datetime | None = None) -> list[dict[str, Any]]:
     now = now or datetime.now()
     items: list[dict[str, Any]] = []
     is_trading_day = _is_trading_day(db, now)
     market_open = _market_session_open(db, now)
     for item in _SCHEDULE_BLUEPRINT:
         current = dict(item)
-        current["currently_eligible"] = (
-            (not current["trading_day_only"] or is_trading_day)
-            and (not current["market_hours_only"] or market_open)
+        current["currently_eligible"] = (not current["trading_day_only"] or is_trading_day) and (
+            not current["market_hours_only"] or market_open
         )
         current["state_hint"] = (
             "waiting_market_session"
@@ -229,14 +399,27 @@ def describe_schedule(db: "TradeDB", now: datetime | None = None) -> list[dict[s
     return items
 
 
-def register_schedule(bus: EventBus, db: "TradeDB") -> None:
+def register_schedule(bus: EventBus, db: TradeDB) -> None:
     """Register time-based gate events. Scheduler fires timing; bus handles dispatch."""
-    _p = lambda t: (lambda: bus.publish(t))  # noqa: E731
-    _guarded = lambda t: (lambda: bus.publish(t) if _is_trading_day(db) else logger.debug("Skipping %s: non-trading day", t))  # noqa: E731
+
+    def _publish(topic: str) -> Callable[[], None]:
+        def publish() -> None:
+            _publish_scheduled_topic(bus, topic)
+
+        return publish
+
+    def _guarded(topic: str) -> Callable[[], None]:
+        def publish() -> None:
+            if _is_trading_day(db):
+                _publish_scheduled_topic(bus, topic)
+            else:
+                logger.debug("Skipping %s: non-trading day", topic)
+
+        return publish
 
     def _publish_intraday() -> None:
         if _market_session_open(db):
-            bus.publish(Topic.GATE_INTRADAY)
+            _publish_scheduled_topic(bus, Topic.GATE_INTRADAY)
 
     def _publish_due_agenda() -> None:
         drain_due_agenda(bus, db, limit=20)
@@ -244,17 +427,18 @@ def register_schedule(bus: EventBus, db: "TradeDB") -> None:
     schedule.every().day.at("07:00").do(_guarded(Topic.GATE_MORNING))
     schedule.every(1).minutes.do(_publish_intraday)
     schedule.every(1).minutes.do(_publish_due_agenda)
+    schedule.every(1).minutes.do(_recover_pending_events, bus)
     schedule.every().day.at("07:05").do(_guarded(Topic.GATE_PRE_MARKET))
-    schedule.every().day.at("09:00", "Asia/Shanghai").do(_p(Topic.GATE_CRYPTO_DAILY))
+    schedule.every().day.at("09:00", "Asia/Shanghai").do(_publish(Topic.GATE_CRYPTO_DAILY))
     schedule.every().day.at("07:35").do(_guarded(Topic.GATE_SIGNAL_AM))
     schedule.every().day.at("15:15").do(_guarded(Topic.GATE_MARKET_CLOSE))
-    schedule.every().day.at("22:00").do(_p(Topic.GATE_EVENING))
-    schedule.every().day.at("22:30").do(_p(Topic.GATE_EVENT_EXTRACT))
-    schedule.every().day.at("22:45").do(_p(Topic.GATE_EVALUATE_DAILY))
-    schedule.every().saturday.at("07:30").do(_p(Topic.GATE_SECTOR_WEEKLY))
-    schedule.every().saturday.at("08:00").do(_p(Topic.GATE_FUND_WEEKLY))
-    schedule.every().sunday.at("08:00").do(_p(Topic.GATE_MACRO_WEEKLY))
-    schedule.every().sunday.at("09:00").do(_p(Topic.GATE_MODEL_WEEKLY))
+    schedule.every().day.at("22:00").do(_publish(Topic.GATE_EVENING))
+    schedule.every().day.at("22:30").do(_publish(Topic.GATE_EVENT_EXTRACT))
+    schedule.every().day.at("22:45").do(_publish(Topic.GATE_EVALUATE_DAILY))
+    schedule.every().saturday.at("07:30").do(_publish(Topic.GATE_SECTOR_WEEKLY))
+    schedule.every().saturday.at("08:00").do(_publish(Topic.GATE_FUND_WEEKLY))
+    schedule.every().sunday.at("08:00").do(_publish(Topic.GATE_MACRO_WEEKLY))
+    schedule.every().sunday.at("09:00").do(_publish(Topic.GATE_MODEL_WEEKLY))
 
     logger.info("Registered %d schedule gates", len(schedule.jobs))
-    bus.replay_pending()  # crash recovery: re-dispatch stuck pending events
+    _recover_pending_events(bus)

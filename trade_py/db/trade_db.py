@@ -7,6 +7,7 @@ DB location (in priority order):
   1. {data_root}/.db/trade.db      (new path, post-migration)
   2. {data_root}/.metadata/trade.db (legacy path, pre-migration)
 """
+
 from __future__ import annotations
 
 import json
@@ -15,17 +16,90 @@ import sqlite3
 import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NoReturn
 
-from trade_py.db.migrations import run_migrations
 from trade_py.db._utils import _json_loads_safe  # noqa: F401 (re-exported for compat)
 from trade_py.db.ebrt_crud import EBRTCRUDMixin
-from trade_py.db.signal_crud import SignalCRUDMixin
 from trade_py.db.kg_crud import KGCRUDMixin
+from trade_py.db.migrations import run_migrations
+from trade_py.db.signal_crud import SignalCRUDMixin
 from trade_py.utils.a_share_symbols import infer_a_share_suffix
 
 logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _reject_non_finite_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
+
+
+def _json_values_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return left == right
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _json_values_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _json_values_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    return left == right
+
+
+_EVENT_LOG_REPLAYABLE_SQL = """
+    WITH replay_event_ids(event_id) AS (
+        SELECT event.id
+        FROM event_log AS event INDEXED BY idx_event_status
+        WHERE event.status='pending'
+          AND event.id > :after_id
+          AND COALESCE(event.handler, '') <> '<payload_decode>'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM event_handler_runs AS handler INDEXED BY idx_event_handler_runs_event
+              WHERE handler.event_id=event.id
+                AND handler.handler_name NOT LIKE '<handoff:%'
+          )
+        UNION
+        SELECT handler.event_id
+        FROM event_handler_runs AS handler INDEXED BY idx_event_handler_runs_status
+        JOIN event_log AS event ON event.id=handler.event_id
+        WHERE handler.status='pending'
+          AND handler.event_id > :after_id
+          AND handler.handler_name NOT LIKE '<handoff:%'
+          AND COALESCE(event.handler, '') <> '<payload_decode>'
+        UNION
+        SELECT handler.event_id
+        FROM event_handler_runs AS handler INDEXED BY idx_event_handler_runs_status
+        JOIN event_log AS event ON event.id=handler.event_id
+        WHERE handler.status='running'
+          AND handler.event_id > :after_id
+          AND handler.handler_name NOT LIKE '<handoff:%'
+          AND handler.started_at < datetime('now', 'localtime', :stale_modifier)
+          AND COALESCE(event.handler, '') <> '<payload_decode>'
+        UNION
+        SELECT handler.event_id
+        FROM event_handler_runs AS handler INDEXED BY idx_event_handler_runs_status
+        JOIN event_log AS event ON event.id=handler.event_id
+        WHERE handler.status='error'
+          AND handler.event_id > :after_id
+          AND handler.handler_name NOT LIKE '<handoff:%'
+          AND substr(COALESCE(handler.error_message, ''), 1, 18)='runtime_admission:'
+          AND COALESCE(event.handler, '') <> '<payload_decode>'
+    )
+    SELECT event.id, event.topic, event.payload,
+           event.parent_event_id, event.status,
+           event.handler, event.error, event.created_at
+    FROM replay_event_ids AS candidate
+    JOIN event_log AS event ON event.id=candidate.event_id
+    ORDER BY event.id
+    LIMIT :limit
+"""
 
 # ── Instruments helpers ────────────────────────────────────────────────────────
 
@@ -44,75 +118,163 @@ _STATUS_STAR_ST = 3
 _INDUSTRY_UNKNOWN = 255
 
 _INDUSTRY_NAMES = {
-    0: "农林牧渔", 1: "采掘", 2: "基础化工", 3: "钢铁", 4: "有色金属",
-    5: "电子", 6: "汽车", 7: "家用电器", 8: "食品饮料", 9: "纺织服装",
-    10: "轻工制造", 11: "医药生物", 12: "公用事业", 13: "交通运输", 14: "房地产",
-    15: "商业贸易", 16: "社会服务", 17: "银行", 18: "非银金融", 19: "建筑装饰",
-    20: "建筑材料", 21: "机械设备", 22: "国防军工", 23: "计算机", 24: "传媒",
-    25: "通信", 26: "环保", 27: "电力设备", 28: "美容护理", 29: "煤炭",
-    30: "石油石化", _INDUSTRY_UNKNOWN: "未分类",
+    0: "农林牧渔",
+    1: "采掘",
+    2: "基础化工",
+    3: "钢铁",
+    4: "有色金属",
+    5: "电子",
+    6: "汽车",
+    7: "家用电器",
+    8: "食品饮料",
+    9: "纺织服装",
+    10: "轻工制造",
+    11: "医药生物",
+    12: "公用事业",
+    13: "交通运输",
+    14: "房地产",
+    15: "商业贸易",
+    16: "社会服务",
+    17: "银行",
+    18: "非银金融",
+    19: "建筑装饰",
+    20: "建筑材料",
+    21: "机械设备",
+    22: "国防军工",
+    23: "计算机",
+    24: "传媒",
+    25: "通信",
+    26: "环保",
+    27: "电力设备",
+    28: "美容护理",
+    29: "煤炭",
+    30: "石油石化",
+    _INDUSTRY_UNKNOWN: "未分类",
 }
 
 
 _DEFAULT_SETTINGS: list[tuple[str, str, str, str, str]] = [
-    ("risk.target_annual_vol",   "0.11",    "float",  "risk",      "目标年化波动率"),
-    ("risk.max_single_weight",   "0.10",    "float",  "risk",      "单股最大仓位"),
-    ("risk.max_industry_weight", "0.35",    "float",  "risk",      "行业最大仓位"),
-    ("risk.base_cash_pct",       "0.10",    "float",  "risk",      "基础现金比例"),
-    ("cost.stamp_tax_rate",      "0.0005",  "float",  "risk",      "印花税率"),
-    ("cost.commission_rate",     "0.00025", "float",  "risk",      "佣金率"),
-    ("cost.commission_min_yuan", "5.0",     "float",  "risk",      "最低佣金（元）"),
-    ("backtest.initial_capital", "1000000", "float",  "backtest",  "初始资金（元）"),
-    ("backtest.max_positions",   "25",      "int",    "backtest",  "最大持仓数"),
-    ("backtest.min_positions",   "15",      "int",    "backtest",  "最小持仓数"),
-    ("signal.window_act_threshold",   "80", "int",    "signal",    "出手窗口质量分 cutoff"),
-    ("signal.window_watch_threshold", "60", "int",    "signal",    "观察窗口质量分 cutoff"),
-    ("scheduler.scan_interval",  "5",       "int",    "scheduler", "盘中扫描间隔（分钟）"),
-    ("kline.start",              "2024-01-01", "string", "market_data", "K线默认起始日期"),
-    ("index.start_date",         "2024-01-01", "string", "market_data", "指数/板块默认起始日期"),
-    ("tushare.http_url",         "",       "string", "market_data", "Tushare API URL"),
-    ("tushare.min_interval_sec", "0.6",    "float",  "market_data", "Tushare最小请求间隔（秒）"),
-    ("tushare.minute_budget",    "50",     "int",    "market_data", "Tushare每分钟预算"),
-    ("tushare.chunk_days",       "1825",   "int",    "market_data", "Tushare K线单次请求天数跨度"),
-    ("tushare.rate_limit_backoff_sec", "5,15,30,45,60", "string", "market_data", "Tushare限流退避序列（秒）"),
-    ("tushare.audit_log_enabled","1",      "bool",   "market_data", "Tushare请求审计日志"),
-    ("storage.enabled",          "0", "bool", "storage", "启用远端存储/备份"),
-    ("storage.backend",          "local", "string", "storage", "存储后端"),
-    ("storage.google_drive_key_file", "", "string", "storage", "Google Drive service account key file"),
+    ("risk.target_annual_vol", "0.11", "float", "risk", "目标年化波动率"),
+    ("risk.max_single_weight", "0.10", "float", "risk", "单股最大仓位"),
+    ("risk.max_industry_weight", "0.35", "float", "risk", "行业最大仓位"),
+    ("risk.base_cash_pct", "0.10", "float", "risk", "基础现金比例"),
+    ("cost.stamp_tax_rate", "0.0005", "float", "risk", "印花税率"),
+    ("cost.commission_rate", "0.00025", "float", "risk", "佣金率"),
+    ("cost.commission_min_yuan", "5.0", "float", "risk", "最低佣金（元）"),
+    ("backtest.initial_capital", "1000000", "float", "backtest", "初始资金（元）"),
+    ("backtest.max_positions", "25", "int", "backtest", "最大持仓数"),
+    ("backtest.min_positions", "15", "int", "backtest", "最小持仓数"),
+    ("signal.window_act_threshold", "80", "int", "signal", "出手窗口质量分 cutoff"),
+    ("signal.window_watch_threshold", "60", "int", "signal", "观察窗口质量分 cutoff"),
+    ("scheduler.scan_interval", "5", "int", "scheduler", "盘中扫描间隔（分钟）"),
+    ("kline.start", "2024-01-01", "string", "market_data", "K线默认起始日期"),
+    ("index.start_date", "2024-01-01", "string", "market_data", "指数/板块默认起始日期"),
+    ("tushare.http_url", "", "string", "market_data", "Tushare API URL"),
+    ("tushare.min_interval_sec", "0.6", "float", "market_data", "Tushare最小请求间隔（秒）"),
+    ("tushare.minute_budget", "50", "int", "market_data", "Tushare每分钟预算"),
+    ("tushare.chunk_days", "1825", "int", "market_data", "Tushare K线单次请求天数跨度"),
+    (
+        "tushare.rate_limit_backoff_sec",
+        "5,15,30,45,60",
+        "string",
+        "market_data",
+        "Tushare限流退避序列（秒）",
+    ),
+    ("tushare.audit_log_enabled", "1", "bool", "market_data", "Tushare请求审计日志"),
+    ("storage.enabled", "0", "bool", "storage", "启用远端存储/备份"),
+    ("storage.backend", "local", "string", "storage", "存储后端"),
+    (
+        "storage.google_drive_key_file",
+        "",
+        "string",
+        "storage",
+        "Google Drive service account key file",
+    ),
     ("storage.google_drive_folder_id", "", "string", "storage", "Google Drive root folder id"),
     ("storage.google_drive_timeout_ms", "30000", "int", "storage", "Google Drive timeout"),
     ("storage.google_drive_retry_count", "2", "int", "storage", "Google Drive retry count"),
     ("storage.backup_remote_dir", "trade-backups", "string", "storage", "备份远端目录"),
-    ("sentiment.start",          "2024-01-01", "string", "market_data", "情绪数据默认起始日期"),
-    ("sentiment.scheduler_semantic_mode", "base", "string", "market_data", "调度情绪流水线语义模式"),
+    ("sentiment.start", "2024-01-01", "string", "market_data", "情绪数据默认起始日期"),
+    (
+        "sentiment.scheduler_semantic_mode",
+        "base",
+        "string",
+        "market_data",
+        "调度情绪流水线语义模式",
+    ),
     ("sentiment.settle_window_days", "7", "int", "market_data", "情绪数据稳定窗口（天）"),
-    ("event.min_magnitude",      "0.4",   "float",  "market_data", "事件提取最低强度"),
-    ("event.sync_window_days",   "7",     "int",    "market_data", "事件补齐窗口（天）"),
+    ("event.min_magnitude", "0.4", "float", "market_data", "事件提取最低强度"),
+    ("event.sync_window_days", "7", "int", "market_data", "事件补齐窗口（天）"),
     ("eval.min_fund_flow_coverage", "0.85", "float", "evaluation", "资金流覆盖率门槛"),
     ("eval.min_fundamental_coverage", "0.85", "float", "evaluation", "基本面覆盖率门槛"),
     ("eval.min_event_count", "5", "int", "evaluation", "每日最少事件数"),
     ("eval.min_labeled_propagation_ratio", "0.05", "float", "evaluation", "事件标签成熟度门槛"),
     ("eval.min_model_rank_ic_5d", "0.02", "float", "evaluation", "模型 5d RankIC 门槛"),
-    ("hooks.notify_url",  "",               "string", "hooks", "推送 Webhook URL"),
-    ("hooks.notify_on",   "failure,success", "string", "hooks", "触发推送的事件"),
+    ("hooks.notify_url", "", "string", "hooks", "推送 Webhook URL"),
+    ("hooks.notify_on", "failure,success", "string", "hooks", "触发推送的事件"),
 ]
 
 _CONFIG_JSON_SEEDS: list[tuple[str, str, str, str]] = [
     ("config.defaults", "trade_py/infra/config/defaults.json", "config", "历史默认配置"),
-    ("catalog.feeds.backfill_priority", "trade_py/infra/config/feeds/backfill_priority.json", "catalog", "回补优先级目录"),
-    ("catalog.feeds.china_public", "trade_py/infra/config/feeds/china_public.json", "catalog", "中国公开 feed 目录"),
+    (
+        "catalog.feeds.backfill_priority",
+        "trade_py/infra/config/feeds/backfill_priority.json",
+        "catalog",
+        "回补优先级目录",
+    ),
+    (
+        "catalog.feeds.china_public",
+        "trade_py/infra/config/feeds/china_public.json",
+        "catalog",
+        "中国公开 feed 目录",
+    ),
     ("catalog.feeds.gdelt", "trade_py/infra/config/feeds/gdelt.json", "catalog", "GDELT 频道目录"),
-    ("catalog.feeds.global_public", "trade_py/infra/config/feeds/global_public.json", "catalog", "全球公开 feed 目录"),
-    ("catalog.feeds.premium", "trade_py/infra/config/feeds/premium.json", "catalog", "付费 feed 目录"),
+    (
+        "catalog.feeds.global_public",
+        "trade_py/infra/config/feeds/global_public.json",
+        "catalog",
+        "全球公开 feed 目录",
+    ),
+    (
+        "catalog.feeds.premium",
+        "trade_py/infra/config/feeds/premium.json",
+        "catalog",
+        "付费 feed 目录",
+    ),
     ("catalog.feeds.rss", "trade_py/infra/config/feeds/rss.json", "catalog", "RSS feed 目录"),
 ]
 
 _CONFIG_TEXT_SEEDS: list[tuple[str, str, str, str]] = [
-    ("config.module.market_data", "trade_py/infra/config/modules/market_data.yaml", "config", "市场数据模块配置"),
-    ("config.module.security", "trade_py/infra/config/modules/security.yaml", "config", "安全模块配置"),
-    ("config.module.sentiment", "trade_py/infra/config/modules/sentiment.yaml", "config", "情绪模块配置"),
-    ("config.module.storage", "trade_py/infra/config/modules/storage.yaml", "config", "存储模块配置"),
-    ("config.resource.sentiment_dict", "trade_py/infra/config/sentiment_dict.txt", "config", "情绪词典"),
+    (
+        "config.module.market_data",
+        "trade_py/infra/config/modules/market_data.yaml",
+        "config",
+        "市场数据模块配置",
+    ),
+    (
+        "config.module.security",
+        "trade_py/infra/config/modules/security.yaml",
+        "config",
+        "安全模块配置",
+    ),
+    (
+        "config.module.sentiment",
+        "trade_py/infra/config/modules/sentiment.yaml",
+        "config",
+        "情绪模块配置",
+    ),
+    (
+        "config.module.storage",
+        "trade_py/infra/config/modules/storage.yaml",
+        "config",
+        "存储模块配置",
+    ),
+    (
+        "config.resource.sentiment_dict",
+        "trade_py/infra/config/sentiment_dict.txt",
+        "config",
+        "情绪词典",
+    ),
 ]
 
 
@@ -159,8 +321,18 @@ def _infer_status(name: str) -> int:
 
 
 def _industry_case_expr(column: str) -> str:
-    parts = [f"WHEN {code} THEN '{name}'" for code, name in _INDUSTRY_NAMES.items() if code != _INDUSTRY_UNKNOWN]
-    return "CASE " + column + " " + " ".join(parts) + f" ELSE '{_INDUSTRY_NAMES[_INDUSTRY_UNKNOWN]}' END"
+    parts = [
+        f"WHEN {code} THEN '{name}'"
+        for code, name in _INDUSTRY_NAMES.items()
+        if code != _INDUSTRY_UNKNOWN
+    ]
+    return (
+        "CASE "
+        + column
+        + " "
+        + " ".join(parts)
+        + f" ELSE '{_INDUSTRY_NAMES[_INDUSTRY_UNKNOWN]}' END"
+    )
 
 
 def _normalize_date_text(value: Any) -> str | None:
@@ -184,6 +356,7 @@ def _normalize_date_text(value: Any) -> str | None:
 
 
 # _json_loads_safe is imported from trade_py.db._utils above
+
 
 def _read_repo_json(rel_path: str) -> Any:
     path = _REPO_ROOT / rel_path
@@ -241,7 +414,7 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         self._conn.execute("PRAGMA temp_store=MEMORY")
         self._init_schema()
         run_migrations(self._conn)
-        self._ensure_indexes()   # safe after migrations have added new columns
+        self._ensure_indexes()  # safe after migrations have added new columns
         self._ensure_model_registry_columns()
         self._seed_defaults()
 
@@ -249,7 +422,7 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         with self._conn_lock:
             self._conn.close()
 
-    def __enter__(self) -> "TradeDB":
+    def __enter__(self) -> TradeDB:
         return self
 
     def __exit__(self, *_) -> None:
@@ -321,7 +494,7 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_id       INTEGER NOT NULL,
                 handler_name   TEXT NOT NULL,
-                status         TEXT NOT NULL DEFAULT 'pending', -- pending, ok, error
+                status         TEXT NOT NULL DEFAULT 'pending', -- pending, running, ok, error
                 error_message  TEXT,
                 started_at     TEXT NOT NULL,
                 finished_at    TEXT,
@@ -1044,8 +1217,15 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             return _json_loads_safe(value, default)
         return default if value is None else value
 
-    def set(self, key: str, value: Any, *, value_type: str | None = None,
-            category: str = "general", label: str | None = None) -> None:
+    def set(
+        self,
+        key: str,
+        value: Any,
+        *,
+        value_type: str | None = None,
+        category: str = "general",
+        label: str | None = None,
+    ) -> None:
         if value_type is None:
             if isinstance(value, bool):
                 value_type = "bool"
@@ -1117,9 +1297,7 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         self._conn.commit()
 
     def watchlist_remove(self, symbol: str) -> None:
-        self._conn.execute(
-            "UPDATE watchlist SET active = 0 WHERE symbol = ?", (symbol,)
-        )
+        self._conn.execute("UPDATE watchlist SET active = 0 WHERE symbol = ?", (symbol,))
         self._conn.commit()
 
     def watchlist_get(self) -> list[str]:
@@ -1140,34 +1318,55 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             ORDER BY w.added_at
             """
         ).fetchall()
-        return [{"symbol": r["symbol"], "name": r["name"], "market_name": r["market_name"]}
-                for r in rows]
+        return [
+            {"symbol": r["symbol"], "name": r["name"], "market_name": r["market_name"]}
+            for r in rows
+        ]
 
     # ── Job run history ────────────────────────────────────────────────────────
 
-    def job_run_start(self, job_name: str, stage: str | None = None,
-                      trigger_event_id: int | None = None) -> int:
+    def job_run_start(
+        self,
+        job_name: str,
+        stage: str | None = None,
+        trigger_event_id: int | None = None,
+        *,
+        run_key: str | None = None,
+    ) -> int:
+        run_marker = f"<run-key:{run_key}>" if run_key else None
         with self._conn_lock:
             cur = self._conn.execute(
-                "INSERT INTO job_runs (job_name, stage, trigger_event_id, status, started_at) "
-                "VALUES (?, ?, ?, 'running', datetime('now', 'localtime'))",
-                (job_name, stage, trigger_event_id),
+                """
+                INSERT INTO job_runs
+                    (job_name, stage, trigger_event_id, status, message, started_at)
+                VALUES (?, ?, ?, 'running', ?, datetime('now', 'localtime'))
+                """,
+                (job_name, stage, trigger_event_id, run_marker),
             )
             self._conn.commit()
             return cur.lastrowid  # type: ignore[return-value]
 
-    def job_run_finish(self, run_id: int, status: str,
-                       result_summary: str | None = None,
-                       symbols_processed: int | None = None,
-                       elapsed_ms: int | None = None,
-                       # Legacy params
-                       message: str | None = None) -> None:
+    def job_run_finish(
+        self,
+        run_id: int,
+        status: str,
+        result_summary: str | None = None,
+        symbols_processed: int | None = None,
+        elapsed_ms: int | None = None,
+        # Legacy params
+        message: str | None = None,
+    ) -> None:
         summary = result_summary or message
         with self._conn_lock:
             self._conn.execute(
                 """
                 UPDATE job_runs
-                SET status = ?, result_summary = ?, message = ?,
+                SET status = ?,
+                    result_summary = ?,
+                    message = CASE
+                        WHEN message LIKE '<run-key:%>' THEN message
+                        ELSE ?
+                    END,
                     symbols_processed = ?, elapsed_ms = ?,
                     completed_at = datetime('now', 'localtime'),
                     finished_at = datetime('now', 'localtime'),
@@ -1177,6 +1376,81 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 (status, summary, summary, symbols_processed, elapsed_ms, elapsed_ms, run_id),
             )
             self._conn.commit()
+
+    def job_run_latest_success(
+        self,
+        trigger_event_id: int,
+        job_name: str,
+        *,
+        run_key: str | None = None,
+    ) -> dict | None:
+        """Return the latest successful run for one durable event/job identity."""
+        run_marker = f"<run-key:{run_key}>" if run_key else None
+        with self._conn_lock:
+            row = self._conn.execute(
+                """
+                SELECT *
+                FROM job_runs
+                WHERE trigger_event_id=?
+                  AND job_name=?
+                  AND status='ok'
+                  AND (? IS NULL OR message=?)
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (trigger_event_id, job_name, run_marker, run_marker),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def job_runs_finish_running_stage(
+        self,
+        stage: str,
+        *,
+        status: str,
+        result_summary: str,
+    ) -> int:
+        """Atomically finish every running job for one exact stage."""
+        with self._conn_lock:
+            cur = self._conn.execute(
+                """
+                UPDATE job_runs
+                SET status=?,
+                    result_summary=?,
+                    message=CASE
+                        WHEN message LIKE '<run-key:%>' THEN message
+                        ELSE ?
+                    END,
+                    completed_at=datetime('now', 'localtime'),
+                    finished_at=datetime('now', 'localtime'),
+                    elapsed_ms=COALESCE(
+                        elapsed_ms,
+                        MAX(
+                            0,
+                            CAST(
+                                (
+                                    julianday('now', 'localtime')
+                                    - julianday(started_at)
+                                ) * 86400000
+                                AS INTEGER
+                            )
+                        )
+                    ),
+                    duration_s=COALESCE(
+                        duration_s,
+                        MAX(
+                            0.0,
+                            (
+                                julianday('now', 'localtime')
+                                - julianday(started_at)
+                            ) * 86400.0
+                        )
+                    )
+                WHERE stage=? AND status='running'
+                """,
+                (status, result_summary, result_summary, stage),
+            )
+            self._conn.commit()
+            return int(cur.rowcount or 0)
 
     def job_runs_mark_stale(self, older_than_hours: float = 2.0, note: str | None = None) -> int:
         summary = note or f"marked stale after {older_than_hours:.1f}h without completion"
@@ -1305,9 +1579,13 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
 
     # ── Instruments ────────────────────────────────────────────────────────────
 
-    def upsert_instrument(self, symbol: str, name: str,
-                          market: int | None = None,
-                          industry_idx: int = _INDUSTRY_UNKNOWN) -> None:
+    def upsert_instrument(
+        self,
+        symbol: str,
+        name: str,
+        market: int | None = None,
+        industry_idx: int = _INDUSTRY_UNKNOWN,
+    ) -> None:
         code = symbol.split(".")[0]
         if market is None:
             market = _infer_market(code)
@@ -1411,6 +1689,447 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 return value
         return boundary
 
+    def runtime_payload_signature_inputs(self) -> tuple[Any, ...]:
+        """Return read-only freshness inputs for Web runtime payload signatures."""
+        with self._conn_lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    COALESCE((SELECT MAX(updated_at) FROM daily_quality_gate), ''),
+                    COALESCE((SELECT MAX(id) FROM job_runs), 0),
+                    COALESCE((SELECT MAX(id) FROM event_log), 0),
+                    COALESCE((SELECT MAX(updated_at) FROM agenda_queue), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM planned_events), ''),
+                    COALESCE((SELECT MAX(trained_at) FROM model_registry), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM sync_state), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM kg_relations), ''),
+                    COALESCE((SELECT MAX(generated_at) FROM kg_edge_candidates), ''),
+                    COALESCE((SELECT MAX(created_at) FROM market_events), ''),
+                    COALESCE((SELECT MAX(validated_at) FROM event_propagations), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM settings), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM signals), ''),
+                    COALESCE((SELECT MAX(as_of_date) FROM BeliefState), ''),
+                    COALESCE((SELECT MAX(created_at) FROM Recommendation), '')
+                """
+            ).fetchone()
+        return tuple(row) if row is not None else ()
+
+    def readiness_signature_components(self) -> list[str | int]:
+        """Return stable DB-owned inputs for the Web readiness cache signature."""
+        with self._conn_lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    COALESCE((SELECT MAX(updated_at) FROM daily_quality_gate), ''),
+                    COALESCE((SELECT MAX(eval_date) FROM dataset_snapshots), ''),
+                    COALESCE((SELECT MAX(eval_date) FROM QualityReport), ''),
+                    COALESCE((SELECT MAX(as_of_date) FROM FreshnessStatus), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM sync_state), ''),
+                    COALESCE((SELECT MAX(updated_at) FROM readiness_recovery_actions), ''),
+                    COALESCE((SELECT MAX(date) FROM signals), ''),
+                    COALESCE((SELECT MAX(as_of_date) FROM BeliefState), ''),
+                    COALESCE((SELECT MAX(as_of_date) FROM Recommendation), ''),
+                    COALESCE((SELECT MAX(substr(updated_at, 1, 10)) FROM sector_members), ''),
+                    COALESCE((SELECT MAX(substr(trained_at, 1, 10)) FROM model_registry), '')
+                """
+            ).fetchone()
+            values = list(row) if row is not None else [""] * 11
+            repair_run_id = self._optional_table_max("data_repair_runs", "id", 0)
+            data_gap_updated = self._optional_table_max("data_gaps", "updated_at", "")
+        return [*values[:5], repair_run_id, data_gap_updated, *values[5:]]
+
+    def _optional_table_max(self, table: str, column: str, default: str | int) -> str | int:
+        table_exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if table_exists is None:
+            return default
+        row = self._conn.execute(f"SELECT MAX({column}) FROM {table}").fetchone()
+        return row[0] if row is not None and row[0] is not None else default
+
+    def symbol_event_types(self, symbol: str, as_of: str, limit: int) -> list[str]:
+        """Return recent propagated event types for one symbol."""
+        with self._conn_lock:
+            rows = self._conn.execute(
+                """
+                SELECT event.event_type
+                FROM event_propagations AS propagation
+                JOIN market_events AS event ON event.event_id=propagation.event_id
+                WHERE propagation.symbol=? AND event.event_date <= ?
+                GROUP BY event.event_type
+                ORDER BY MAX(event.event_date) DESC
+                LIMIT ?
+                """,
+                (symbol, as_of, max(1, int(limit))),
+            ).fetchall()
+        return [str(row["event_type"]) for row in rows if row["event_type"]]
+
+    def instrument_names(self, symbols: list[str]) -> dict[str, str]:
+        """Return instrument display names for the requested symbols."""
+        cleaned = list(
+            dict.fromkeys(
+                str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()
+            )
+        )
+        result: dict[str, str] = {}
+        with self._conn_lock:
+            for start in range(0, len(cleaned), 800):
+                batch = cleaned[start : start + 800]
+                if not batch:
+                    continue
+                placeholders = ",".join("?" for _ in batch)
+                rows = self._conn.execute(
+                    f"SELECT symbol, name FROM instruments WHERE symbol IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                result.update({str(row["symbol"] or ""): str(row["name"] or "") for row in rows})
+        return result
+
+    def kg_projection_summary(self, symbol_limit: int = 12) -> dict[str, list[dict[str, Any]]]:
+        """Return KG propagation and active-relation summaries for Web rendering."""
+        with self._conn_lock:
+            top_symbols = self._conn.execute(
+                """
+                SELECT propagation.symbol,
+                       COUNT(*) AS propagation_count,
+                       ROUND(AVG(propagation.kg_score), 4) AS avg_kg_score,
+                       MAX(event.event_date) AS latest_event_date
+                FROM event_propagations AS propagation
+                LEFT JOIN market_events AS event ON event.event_id=propagation.event_id
+                GROUP BY propagation.symbol
+                ORDER BY propagation_count DESC, avg_kg_score DESC
+                LIMIT ?
+                """,
+                (max(0, int(symbol_limit)),),
+            ).fetchall()
+            relation_types = self._conn.execute(
+                """
+                SELECT rel_type, COUNT(*) AS relation_count
+                FROM kg_relations
+                WHERE status='active' AND (valid_to IS NULL OR valid_to >= date('now'))
+                GROUP BY rel_type
+                ORDER BY relation_count DESC, rel_type
+                """
+            ).fetchall()
+        return {
+            "top_symbols": [dict(row) for row in top_symbols],
+            "relation_types": [dict(row) for row in relation_types],
+        }
+
+    def quality_history_projection(self, limit: int = 7) -> dict[str, list[dict[str, Any]]]:
+        """Return aligned quality-report and daily-gate history rows."""
+        bounded_limit = max(1, int(limit))
+        with self._conn_lock:
+            reports = self._conn.execute(
+                """
+                SELECT eval_date, metrics_json
+                FROM QualityReport
+                ORDER BY eval_date DESC
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+            gates = self._conn.execute(
+                """
+                SELECT eval_date, metrics_json
+                FROM daily_quality_gate
+                ORDER BY eval_date DESC
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        return {
+            "reports": [dict(row) for row in reports],
+            "gates": [dict(row) for row in gates],
+        }
+
+    def evidence_lookup(self, evidence_id: str) -> dict[str, Any] | None:
+        """Return the evidence fields used by Web explanation projections."""
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT evidence_type, direction FROM Evidence WHERE evidence_id=?",
+                (evidence_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def symbol_evidence_projection(
+        self,
+        symbol: str,
+        as_of: str,
+        days: int,
+        evidence_limit: int = 20,
+    ) -> dict[str, Any]:
+        """Return DB evidence rows and relevant sector/macro events for one symbol."""
+        with self._conn_lock:
+            sector = self._conn.execute(
+                "SELECT sector_code FROM sector_members WHERE symbol=?",
+                (symbol,),
+            ).fetchone()
+            sector_code = str(sector["sector_code"]) if sector is not None else None
+            event_rows = self._conn.execute(
+                """
+                SELECT event_id, event_date, event_type, entity_id,
+                       magnitude, confidence, sentiment_score, news_volume, summary
+                FROM market_events
+                WHERE event_date >= date(?, '-' || ? || ' days')
+                  AND event_date <= ?
+                ORDER BY event_date DESC
+                LIMIT 50
+                """,
+                (as_of, str(max(0, int(days))), as_of),
+            ).fetchall()
+            evidence_rows = self._conn.execute(
+                """
+                SELECT evidence_id, as_of_date, evidence_type, direction,
+                       strength, reliability, novelty
+                FROM Evidence
+                WHERE symbol=?
+                ORDER BY as_of_date DESC
+                LIMIT ?
+                """,
+                (symbol, max(0, int(evidence_limit))),
+            ).fetchall()
+        relevant_events = []
+        for row in event_rows:
+            entity_id = str(row["entity_id"] or "")
+            upper_entity = entity_id.upper()
+            is_sector = bool(
+                sector_code
+                and entity_id
+                and (
+                    entity_id == sector_code
+                    or upper_entity == "SW_UNKNOWN"
+                    or upper_entity.startswith("SW_MACRO")
+                )
+            )
+            is_macro = bool(
+                entity_id and ("macro" in entity_id.lower() or upper_entity == "SW_UNKNOWN")
+            )
+            if is_sector or is_macro:
+                relevant_events.append(dict(row))
+        return {
+            "sector_code": sector_code,
+            "market_events": relevant_events,
+            "evidence_items": [dict(row) for row in evidence_rows],
+        }
+
+    def symbol_sector_peer_projection(
+        self,
+        symbol: str,
+        as_of: str,
+        peer_limit: int,
+    ) -> dict[str, Any]:
+        """Return sector sentiment and peer DB evidence without per-peer queries."""
+        bounded_limit = max(0, int(peer_limit))
+        with self._conn_lock:
+            sector = self._conn.execute(
+                "SELECT sector_code, sector_name FROM sector_members WHERE symbol=?",
+                (symbol,),
+            ).fetchone()
+            if sector is None:
+                return {
+                    "sector_code": None,
+                    "sector_name": None,
+                    "sector_sentiment": 0.0,
+                    "sector_event_count": 0,
+                    "peers": [],
+                }
+            sector_code = str(sector["sector_code"])
+            sector_name = str(sector["sector_name"] or "")
+            sentiment = self._sector_sentiment(sector_code, sector_name, as_of)
+            peer_rows = self._conn.execute(
+                """
+                WITH peers AS (
+                    SELECT symbol, rowid AS peer_order
+                    FROM sector_members
+                    WHERE sector_code=? AND symbol != ?
+                    ORDER BY rowid
+                    LIMIT ?
+                ),
+                latest_recommendation AS (
+                    SELECT recommendation.*
+                    FROM Recommendation AS recommendation
+                    JOIN (
+                        SELECT symbol, MAX(as_of_date) AS as_of_date
+                        FROM Recommendation
+                        GROUP BY symbol
+                    ) AS latest
+                      ON latest.symbol=recommendation.symbol
+                     AND latest.as_of_date=recommendation.as_of_date
+                )
+                SELECT peers.symbol,
+                       peers.peer_order,
+                       instrument.name,
+                       signal.symbol AS signal_symbol,
+                       signal.window_score,
+                       signal.net_sentiment,
+                       recommendation.rec_id,
+                       recommendation.action,
+                       recommendation.conviction,
+                       recommendation.score,
+                       recommendation.risk,
+                       belief.symbol AS belief_symbol,
+                       belief.belief_vec_json,
+                       belief.confidence AS belief_confidence,
+                       sync.last_date AS kline_last_date
+                FROM peers
+                LEFT JOIN instruments AS instrument ON instrument.symbol=peers.symbol
+                LEFT JOIN signals AS signal
+                  ON signal.symbol=peers.symbol AND signal.date=?
+                LEFT JOIN latest_recommendation AS recommendation
+                  ON recommendation.symbol=peers.symbol
+                LEFT JOIN BeliefState AS belief
+                  ON belief.symbol=peers.symbol AND belief.as_of_date=?
+                LEFT JOIN sync_state AS sync
+                  ON sync.symbol=peers.symbol
+                 AND sync.source='tushare_kline'
+                 AND sync.dataset='daily'
+                ORDER BY peers.peer_order
+                LIMIT ?
+                """,
+                (sector_code, symbol, bounded_limit * 3, as_of, as_of, bounded_limit),
+            ).fetchall()
+        peers = [self._peer_projection_row(row) for row in peer_rows]
+        return {
+            "sector_code": sector_code,
+            "sector_name": sector_name,
+            "sector_sentiment": sentiment["average"],
+            "sector_event_count": sentiment["count"],
+            "peers": peers,
+        }
+
+    def _sector_sentiment(self, sector_code: str, sector_name: str, as_of: str) -> dict[str, Any]:
+        row = self._conn.execute(
+            """
+            SELECT AVG(sentiment_score) AS average, COUNT(*) AS count
+            FROM market_events
+            WHERE entity_id=? AND event_date >= date(?, '-7 days')
+            """,
+            (sector_code, as_of),
+        ).fetchone()
+        average = float(row["average"]) if row is not None and row["average"] is not None else 0.0
+        count = int(row["count"] or 0) if row is not None else 0
+        if average == 0.0:
+            sw_name = "SW_" + sector_name.replace(" ", "")
+            row = self._conn.execute(
+                """
+                SELECT AVG(sentiment_score) AS average, COUNT(*) AS count
+                FROM market_events
+                WHERE entity_id LIKE ? AND event_date >= date(?, '-7 days')
+                """,
+                (sw_name[:12] + "%", as_of),
+            ).fetchone()
+            if row is not None and row["average"] is not None:
+                average = float(row["average"])
+                count = int(row["count"] or 0)
+        return {"average": average, "count": count}
+
+    @staticmethod
+    def _peer_projection_row(row: sqlite3.Row) -> dict[str, Any]:
+        symbol = str(row["symbol"])
+        peer: dict[str, Any] = {
+            "symbol": symbol,
+            "name": str(row["name"] or symbol),
+        }
+        if row["signal_symbol"] is not None:
+            peer["window_score"] = row["window_score"]
+            peer["net_sentiment"] = row["net_sentiment"]
+        if row["rec_id"] is not None:
+            peer.update(
+                {
+                    "action": row["action"],
+                    "conviction": row["conviction"],
+                    "score": row["score"],
+                    "risk": row["risk"],
+                }
+            )
+        if row["belief_symbol"] is not None:
+            belief_vec = _json_loads_safe(row["belief_vec_json"], {})
+            peer["belief_mu"] = float(belief_vec.get("mu", 0.0))
+            peer["belief_confidence"] = float(row["belief_confidence"] or 0.0)
+        if row["kline_last_date"] is not None:
+            peer["kline_last_date"] = row["kline_last_date"]
+        return peer
+
+    def symbol_data_freshness_projection(self, symbol: str, as_of: str) -> dict[str, Any]:
+        """Return DB-owned freshness inputs for the symbol data-ops matrix."""
+        with self._conn_lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    (SELECT last_date FROM sync_state
+                     WHERE source='tushare_kline' AND dataset='daily' AND symbol=?
+                     LIMIT 1) AS kline_last_date,
+                    (SELECT row_count FROM sync_state
+                     WHERE source='tushare_kline' AND dataset='daily' AND symbol=?
+                     LIMIT 1) AS kline_row_count,
+                    (SELECT last_date FROM sync_state
+                     WHERE dataset='fund_flow' AND symbol=? LIMIT 1) AS fund_flow_last_date,
+                    (SELECT last_date FROM sync_state
+                     WHERE dataset='fundamental' AND symbol=? LIMIT 1) AS fundamental_last_date,
+                    (SELECT MAX(as_of_date) FROM Evidence
+                     WHERE symbol=?) AS sentiment_last_date,
+                    (SELECT sector_code FROM sector_members
+                     WHERE symbol=? LIMIT 1) AS sector_code,
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM BeliefState WHERE symbol=? AND as_of_date=?
+                        ) THEN ?
+                        ELSE (SELECT MAX(as_of_date) FROM BeliefState WHERE symbol=?)
+                    END AS belief_last_date,
+                    (SELECT MAX(as_of_date) FROM Recommendation
+                     WHERE symbol=?) AS recommendation_last_date
+                """,
+                (
+                    symbol,
+                    symbol,
+                    symbol,
+                    symbol,
+                    symbol,
+                    symbol,
+                    symbol,
+                    as_of,
+                    as_of,
+                    symbol,
+                    symbol,
+                ),
+            ).fetchone()
+            sector_code = row["sector_code"] if row is not None else None
+            if sector_code:
+                events = self._conn.execute(
+                    """
+                    SELECT MAX(event_date) AS last_date, COUNT(*) AS row_count
+                    FROM market_events
+                    WHERE entity_id=?
+                    """,
+                    (sector_code,),
+                ).fetchone()
+            else:
+                events = self._conn.execute(
+                    """
+                    SELECT MAX(event_date) AS last_date, COUNT(*) AS row_count
+                    FROM market_events
+                    """
+                ).fetchone()
+        if row is None:
+            return {}
+        return {
+            "kline": {
+                "last_date": row["kline_last_date"],
+                "row_count": row["kline_row_count"],
+            },
+            "fund_flow": {"last_date": row["fund_flow_last_date"]},
+            "fundamental": {"last_date": row["fundamental_last_date"]},
+            "sentiment": {"last_date": row["sentiment_last_date"]},
+            "events": {
+                "last_date": events["last_date"] if events is not None else None,
+                "row_count": int(events["row_count"] or 0) if events is not None else 0,
+            },
+            "belief": {"last_date": row["belief_last_date"]},
+            "recommend": {"last_date": row["recommendation_last_date"]},
+        }
+
     def get_symbols_by_sector(self, sector: Any) -> list[str]:
         rows = self._conn.execute(
             "SELECT symbol FROM sector_members WHERE industry_code = ?",
@@ -1420,13 +2139,13 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
 
     # ── Sync State (replaces watermarks + downloads) ───────────────────────────
 
-    def sync_state_get(self, source: str, dataset: str,
-                       symbol: str = "") -> Optional[date]:
+    def sync_state_get(self, source: str, dataset: str, symbol: str = "") -> date | None:
         """Get last synced date for (source, dataset, symbol)."""
-        row = self._conn.execute(
-            "SELECT last_date FROM sync_state WHERE source=? AND dataset=? AND symbol=?",
-            (source, dataset, symbol),
-        ).fetchone()
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT last_date FROM sync_state WHERE source=? AND dataset=? AND symbol=?",
+                (source, dataset, symbol),
+            ).fetchone()
         if row is None or row[0] is None:
             return None
         try:
@@ -1434,37 +2153,41 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         except (ValueError, TypeError):
             return None
 
-    def sync_state_set(self, source: str, dataset: str, symbol: str = "",
-                       last_date: date | str | None = None,
-                       row_count: int | None = None,
-                       cursor: dict | None = None) -> None:
+    def sync_state_set(
+        self,
+        source: str,
+        dataset: str,
+        symbol: str = "",
+        last_date: date | str | None = None,
+        row_count: int | None = None,
+        cursor: dict | None = None,
+    ) -> None:
         """Upsert sync state record."""
-        last_date_str = (
-            last_date.isoformat() if isinstance(last_date, date)
-            else last_date
-        )
+        last_date_str = last_date.isoformat() if isinstance(last_date, date) else last_date
         cursor_str = json.dumps(cursor) if cursor is not None else "{}"
-        self._conn.execute(
-            """
-            INSERT INTO sync_state (source, dataset, symbol, last_date, row_count, cursor, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(source, dataset, symbol) DO UPDATE SET
-                last_date = COALESCE(excluded.last_date, last_date),
-                row_count = COALESCE(excluded.row_count, row_count),
-                cursor = excluded.cursor,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (source, dataset, symbol, last_date_str, row_count, cursor_str),
-        )
-        self._conn.commit()
+        with self._conn_lock:
+            self._conn.execute(
+                """
+                INSERT INTO sync_state
+                    (source, dataset, symbol, last_date, row_count, cursor, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(source, dataset, symbol) DO UPDATE SET
+                    last_date = COALESCE(excluded.last_date, last_date),
+                    row_count = COALESCE(excluded.row_count, row_count),
+                    cursor = excluded.cursor,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (source, dataset, symbol, last_date_str, row_count, cursor_str),
+            )
+            self._conn.commit()
 
-    def sync_state_get_cursor(self, source: str, dataset: str,
-                              symbol: str = "") -> dict:
+    def sync_state_get_cursor(self, source: str, dataset: str, symbol: str = "") -> dict:
         """Get the cursor JSON dict for (source, dataset, symbol). Returns {} if none."""
-        row = self._conn.execute(
-            "SELECT cursor FROM sync_state WHERE source=? AND dataset=? AND symbol=?",
-            (source, dataset, symbol),
-        ).fetchone()
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT cursor FROM sync_state WHERE source=? AND dataset=? AND symbol=?",
+                (source, dataset, symbol),
+            ).fetchone()
         if row is None or not row[0]:
             return {}
         try:
@@ -1472,21 +2195,84 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         except (ValueError, TypeError):
             return {}
 
-    # Backward compat: watermark methods
-    def get_watermark(self, source: str, dataset: str, symbol: str) -> Optional[date]:
-        return self.sync_state_get(source, dataset, symbol)
+    def sync_state_mark_verified(self, source: str, dataset: str, symbol: str) -> bool:
+        """Atomically mark an existing sync-state cursor as verified."""
+        with self._conn_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT cursor
+                    FROM sync_state
+                    WHERE source=? AND dataset=? AND symbol=?
+                    """,
+                    (source, dataset, symbol),
+                ).fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return False
+                raw_cursor = row["cursor"]
+                try:
+                    cursor = json.loads(raw_cursor or "{}")
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        "invalid sync_state cursor JSON "
+                        f"for source={source} dataset={dataset} symbol={symbol}"
+                    ) from exc
+                if not isinstance(cursor, dict):
+                    raise TypeError(
+                        "sync_state cursor must be a JSON object "
+                        f"for source={source} dataset={dataset} symbol={symbol}"
+                    )
+                cursor["verified"] = True
+                cursor["verified_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                cur = self._conn.execute(
+                    """
+                    UPDATE sync_state
+                    SET cursor=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE source=? AND dataset=? AND symbol=?
+                    """,
+                    (json.dumps(cursor), source, dataset, symbol),
+                )
+                self._conn.commit()
+                return int(cur.rowcount or 0) == 1
+            except Exception:
+                self._conn.rollback()
+                raise
 
-    def set_watermark(self, source: str, dataset: str, symbol: str,
-                      last_date: date) -> None:
-        self.sync_state_set(source, dataset, symbol, last_date=last_date)
+    def sync_state_latest_date(self, dataset: str) -> str | None:
+        """Return the latest recorded date for one exact dataset."""
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT MAX(last_date) FROM sync_state WHERE dataset=?",
+                (dataset,),
+            ).fetchone()
+        value = row[0] if row is not None else None
+        return str(value) if value is not None else None
+
+    # Backward compat: watermark methods
+    def get_watermark(self, source: str, dataset: str, symbol: str) -> date | None:
+        with self._conn_lock:
+            return self.sync_state_get(source, dataset, symbol)
+
+    def set_watermark(self, source: str, dataset: str, symbol: str, last_date: date) -> None:
+        with self._conn_lock:
+            self.sync_state_set(source, dataset, symbol, last_date=last_date)
 
     # Backward compat: downloads methods
     def record_download(self, symbol: str, start: date, end: date, row_count: int) -> None:
-        self.sync_state_set("tushare_kline", "daily", symbol,
-                            last_date=end, row_count=row_count)
+        with self._conn_lock:
+            self.sync_state_set(
+                "tushare_kline",
+                "daily",
+                symbol,
+                last_date=end,
+                row_count=row_count,
+            )
 
-    def last_download_date(self, symbol: str) -> Optional[date]:
-        return self.sync_state_get("tushare_kline", "daily", symbol)
+    def last_download_date(self, symbol: str) -> date | None:
+        with self._conn_lock:
+            return self.sync_state_get("tushare_kline", "daily", symbol)
 
     # ── Asset Registry ──────────────────────────────────────────────────────
 
@@ -1518,14 +2304,23 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
-                asset["asset_id"], asset["asset_class"], asset["symbol"],
-                asset.get("quote_asset", "USD"), asset.get("venue"),
-                asset.get("interval", "1d"), int(asset.get("enabled", 1)),
-                int(asset.get("priority", 5)), int(asset.get("batch_size", 100)),
-                int(asset.get("min_interval_ms", 300)), int(asset.get("backfill_days", 730)),
-                asset.get("watermark_date"), asset.get("last_sync_at"),
-                asset.get("last_sync_status"), asset.get("last_error"),
-                int(asset.get("last_rows", 0)), config_json or "{}",
+                asset["asset_id"],
+                asset["asset_class"],
+                asset["symbol"],
+                asset.get("quote_asset", "USD"),
+                asset.get("venue"),
+                asset.get("interval", "1d"),
+                int(asset.get("enabled", 1)),
+                int(asset.get("priority", 5)),
+                int(asset.get("batch_size", 100)),
+                int(asset.get("min_interval_ms", 300)),
+                int(asset.get("backfill_days", 730)),
+                asset.get("watermark_date"),
+                asset.get("last_sync_at"),
+                asset.get("last_sync_status"),
+                asset.get("last_error"),
+                int(asset.get("last_rows", 0)),
+                config_json or "{}",
             ),
         )
         self._conn.commit()
@@ -1620,9 +2415,7 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
 
     def asset_registry_delete(self, asset_id: str) -> bool:
         with self._conn_lock:
-            cur = self._conn.execute(
-                "DELETE FROM asset_registry WHERE asset_id = ?", (asset_id,)
-            )
+            cur = self._conn.execute("DELETE FROM asset_registry WHERE asset_id = ?", (asset_id,))
             self._conn.commit()
             return cur.rowcount > 0
 
@@ -1636,17 +2429,19 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             trade_date = _normalize_date_text(row.get("trade_date"))
             if not trade_date:
                 continue
-            payload.append({
-                "exchange": str(row.get("exchange") or "SSE").upper(),
-                "trade_date": trade_date,
-                "is_open": 1 if int(row.get("is_open") or 0) else 0,
-                "pretrade_date": _normalize_date_text(row.get("pretrade_date")),
-                "session_am_open": row.get("session_am_open") or "09:30:00",
-                "session_am_close": row.get("session_am_close") or "11:30:00",
-                "session_pm_open": row.get("session_pm_open") or "13:00:00",
-                "session_pm_close": row.get("session_pm_close") or "15:00:00",
-                "source": str(row.get("source") or "tushare"),
-            })
+            payload.append(
+                {
+                    "exchange": str(row.get("exchange") or "SSE").upper(),
+                    "trade_date": trade_date,
+                    "is_open": 1 if int(row.get("is_open") or 0) else 0,
+                    "pretrade_date": _normalize_date_text(row.get("pretrade_date")),
+                    "session_am_open": row.get("session_am_open") or "09:30:00",
+                    "session_am_close": row.get("session_am_close") or "11:30:00",
+                    "session_pm_open": row.get("session_pm_open") or "13:00:00",
+                    "session_pm_close": row.get("session_pm_close") or "15:00:00",
+                    "source": str(row.get("source") or "tushare"),
+                }
+            )
         if not payload:
             return
         with self._conn_lock:
@@ -1674,7 +2469,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             )
             self._conn.commit()
 
-    def trading_calendar_get(self, trade_date: str | date | datetime, exchange: str = "SSE") -> dict | None:
+    def trading_calendar_get(
+        self, trade_date: str | date | datetime, exchange: str = "SSE"
+    ) -> dict | None:
         trade_date_str = _normalize_date_text(trade_date)
         if not trade_date_str:
             return None
@@ -1691,7 +2488,34 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             ).fetchone()
         return dict(row) if row is not None else None
 
-    def trading_calendar_is_open(self, trade_date: str | date | datetime, exchange: str = "SSE") -> bool | None:
+    def trading_calendar_range(
+        self,
+        start_date: str | date | datetime,
+        end_date: str | date | datetime,
+        exchange: str = "SSE",
+    ) -> list[dict]:
+        """Return one exchange's bounded calendar rows in ascending date order."""
+        start_date_str = _normalize_date_text(start_date)
+        end_date_str = _normalize_date_text(end_date)
+        if not start_date_str or not end_date_str or start_date_str > end_date_str:
+            return []
+        with self._conn_lock:
+            rows = self._conn.execute(
+                """
+                SELECT exchange, trade_date, is_open, pretrade_date,
+                       session_am_open, session_am_close, session_pm_open, session_pm_close,
+                       source, updated_at
+                FROM trading_calendar
+                WHERE exchange=? AND trade_date BETWEEN ? AND ?
+                ORDER BY trade_date
+                """,
+                (exchange.upper(), start_date_str, end_date_str),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def trading_calendar_is_open(
+        self, trade_date: str | date | datetime, exchange: str = "SSE"
+    ) -> bool | None:
         row = self.trading_calendar_get(trade_date, exchange=exchange)
         if row is None:
             return None
@@ -1752,27 +2576,29 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             event_date = _normalize_date_text(row.get("event_date"))
             if not planned_event_id or not scheduled_at or not event_date:
                 continue
-            payload.append({
-                "planned_event_id": planned_event_id,
-                "source": str(row.get("source") or "manual"),
-                "vendor_event_id": str(row.get("vendor_event_id") or ""),
-                "event_type": str(row.get("event_type") or "calendar_event"),
-                "entity_id": str(row.get("entity_id") or ""),
-                "event_date": event_date,
-                "event_time": str(row.get("event_time") or ""),
-                "scheduled_at": scheduled_at,
-                "timezone": str(row.get("timezone") or "Asia/Shanghai"),
-                "title": str(row.get("title") or planned_event_id),
-                "country": str(row.get("country") or ""),
-                "currency": str(row.get("currency") or ""),
-                "importance": str(row.get("importance") or "medium"),
-                "status": str(row.get("status") or "scheduled"),
-                "expected_value": row.get("expected_value"),
-                "previous_value": row.get("previous_value"),
-                "actual_value": row.get("actual_value"),
-                "realized_event_id": row.get("realized_event_id"),
-                "payload_json": row.get("payload_json") or "{}",
-            })
+            payload.append(
+                {
+                    "planned_event_id": planned_event_id,
+                    "source": str(row.get("source") or "manual"),
+                    "vendor_event_id": str(row.get("vendor_event_id") or ""),
+                    "event_type": str(row.get("event_type") or "calendar_event"),
+                    "entity_id": str(row.get("entity_id") or ""),
+                    "event_date": event_date,
+                    "event_time": str(row.get("event_time") or ""),
+                    "scheduled_at": scheduled_at,
+                    "timezone": str(row.get("timezone") or "Asia/Shanghai"),
+                    "title": str(row.get("title") or planned_event_id),
+                    "country": str(row.get("country") or ""),
+                    "currency": str(row.get("currency") or ""),
+                    "importance": str(row.get("importance") or "medium"),
+                    "status": str(row.get("status") or "scheduled"),
+                    "expected_value": row.get("expected_value"),
+                    "previous_value": row.get("previous_value"),
+                    "actual_value": row.get("actual_value"),
+                    "realized_event_id": row.get("realized_event_id"),
+                    "payload_json": row.get("payload_json") or "{}",
+                }
+            )
         if not payload:
             return
         with self._conn_lock:
@@ -1846,7 +2672,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 """
                 SELECT *
                 FROM planned_events
-                """ + where + """
+                """
+                + where
+                + """
                 ORDER BY scheduled_at ASC, planned_event_id ASC
                 LIMIT ?
                 """,
@@ -1892,12 +2720,30 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
     def planned_event_update(self, planned_event_id: str, **fields: Any) -> None:
         if not fields:
             return
-        columns = [k for k in fields.keys() if k in {
-            "vendor_event_id", "event_type", "entity_id", "event_date", "event_time",
-            "scheduled_at", "timezone", "title", "country", "currency", "importance",
-            "status", "expected_value", "previous_value", "actual_value", "realized_event_id",
-            "payload_json",
-        }]
+        columns = [
+            k
+            for k in fields.keys()
+            if k
+            in {
+                "vendor_event_id",
+                "event_type",
+                "entity_id",
+                "event_date",
+                "event_time",
+                "scheduled_at",
+                "timezone",
+                "title",
+                "country",
+                "currency",
+                "importance",
+                "status",
+                "expected_value",
+                "previous_value",
+                "actual_value",
+                "realized_event_id",
+                "payload_json",
+            }
+        ]
         if not columns:
             return
         assigns = ", ".join(f"{col}=?" for col in columns)
@@ -1923,17 +2769,19 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             phase = str(row.get("phase") or "").strip()
             if not planned_event_id or not run_at or not phase:
                 continue
-            payload.append({
-                "planned_event_id": planned_event_id,
-                "phase": phase,
-                "run_at": run_at,
-                "trigger_topic": str(row.get("trigger_topic") or ""),
-                "job_name": str(row.get("job_name") or ""),
-                "payload_json": row.get("payload_json") or "{}",
-                "priority": int(row.get("priority") or 100),
-                "status": str(row.get("status") or "pending"),
-                "result_summary": row.get("result_summary"),
-            })
+            payload.append(
+                {
+                    "planned_event_id": planned_event_id,
+                    "phase": phase,
+                    "run_at": run_at,
+                    "trigger_topic": str(row.get("trigger_topic") or ""),
+                    "job_name": str(row.get("job_name") or ""),
+                    "payload_json": row.get("payload_json") or "{}",
+                    "priority": int(row.get("priority") or 100),
+                    "status": str(row.get("status") or "pending"),
+                    "result_summary": row.get("result_summary"),
+                }
+            )
         if not payload:
             return
         with self._conn_lock:
@@ -2064,7 +2912,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 SELECT aq.*, pe.title, pe.event_type, pe.event_date
                 FROM agenda_queue aq
                 LEFT JOIN planned_events pe ON pe.planned_event_id = aq.planned_event_id
-                """ + where + """
+                """
+                + where
+                + """
                 ORDER BY aq.run_at DESC, aq.agenda_id DESC
                 LIMIT ?
                 """,
@@ -2085,7 +2935,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             as_of_dt = as_of
         else:
             as_of_dt = datetime.fromisoformat(str(as_of))
-        cutoff = (as_of_dt - timedelta(minutes=max(1, int(grace_minutes)))).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff = (as_of_dt - timedelta(minutes=max(1, int(grace_minutes)))).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         placeholders = ",".join("?" for _ in phases)
         params: list[Any] = [
             "expired stale agenda",
@@ -2115,7 +2967,11 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         *,
         result_summary: str | None = None,
     ) -> None:
-        executed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if status in {"done", "skipped", "error", "running"} else None
+        executed_at = (
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if status in {"done", "skipped", "error", "running"}
+            else None
+        )
         with self._conn_lock:
             self._conn.execute(
                 """
@@ -2207,8 +3063,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
 
     # ── Event Log (was bus_events) ─────────────────────────────────────────────
 
-    def event_log_insert(self, topic: str, payload_json: str,
-                         parent_event_id: int | None = None) -> int:
+    def event_log_insert(
+        self, topic: str, payload_json: str, parent_event_id: int | None = None
+    ) -> int:
         with self._conn_lock:
             cur = self._conn.execute(
                 "INSERT INTO event_log (topic, payload, parent_event_id, status, created_at) "
@@ -2218,9 +3075,170 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             self._conn.commit()
             return cur.lastrowid  # type: ignore[return-value]
 
-    def event_log_complete(self, id: int, status: str, handler: str,
-                           error: str | None = None,
-                           elapsed_ms: int | None = None) -> None:
+    def event_log_get_or_insert_once(
+        self,
+        topic: str,
+        payload_json: str,
+        idempotency_key: str,
+        parent_event_id: int | None = None,
+    ) -> tuple[dict, bool]:
+        """Persist one event for a topic, parent, and durable idempotency identity."""
+        marker = f"<handoff:once:{idempotency_key}>"
+        with self._conn_lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    """
+                    SELECT event.*
+                    FROM event_log AS event
+                    JOIN event_handler_runs AS handler
+                      ON handler.event_id=event.id AND handler.handler_name=?
+                    WHERE event.topic=? AND event.parent_event_id IS ?
+                    ORDER BY event.id
+                    LIMIT 1
+                    """,
+                    (marker, topic, parent_event_id),
+                ).fetchone()
+                if row is not None:
+                    self._require_idempotent_payload_match(
+                        row,
+                        payload_json,
+                        identity=f"topic={topic} idempotency_key={idempotency_key}",
+                    )
+                    self._conn.commit()
+                    return dict(row), False
+                cur = self._conn.execute(
+                    """
+                    INSERT INTO event_log
+                        (topic, payload, parent_event_id, status, created_at)
+                    VALUES (?, ?, ?, 'pending', datetime('now', 'localtime'))
+                    """,
+                    (topic, payload_json, parent_event_id),
+                )
+                if cur.lastrowid is None:
+                    raise RuntimeError("idempotent event insert did not return an id")
+                event_id = int(cur.lastrowid)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._conn.execute(
+                    """
+                    INSERT INTO event_handler_runs
+                        (event_id, handler_name, status, started_at, finished_at, duration_ms)
+                    VALUES (?, ?, 'ok', ?, ?, 0)
+                    """,
+                    (event_id, marker, now, now),
+                )
+                created = self._conn.execute(
+                    "SELECT * FROM event_log WHERE id=?",
+                    (event_id,),
+                ).fetchone()
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        if created is None:
+            raise RuntimeError(f"idempotent event insert was not readable: event_id={event_id}")
+        return dict(created), True
+
+    @staticmethod
+    def _require_idempotent_payload_match(
+        row: sqlite3.Row,
+        payload_json: str,
+        *,
+        identity: str,
+    ) -> None:
+        try:
+            existing_payload = json.loads(
+                str(row["payload"]),
+                parse_constant=_reject_non_finite_json_constant,
+            )
+        except (TypeError, ValueError):
+            return
+        if not isinstance(existing_payload, dict):
+            return
+        requested_payload = json.loads(
+            payload_json,
+            parse_constant=_reject_non_finite_json_constant,
+        )
+        if not _json_values_equal(existing_payload, requested_payload):
+            raise RuntimeError(f"idempotent event payload conflict: {identity}")
+
+    def event_log_get_or_insert_child(
+        self,
+        topic: str,
+        payload_json: str,
+        parent_event_id: int,
+        handoff_key: str,
+    ) -> tuple[dict, bool]:
+        """Persist one child handoff per parent/producer/topic identity."""
+        marker = f"<handoff:{handoff_key}>"
+        with self._conn_lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    """
+                    SELECT event_log.*
+                    FROM event_log
+                    JOIN event_handler_runs
+                      ON event_handler_runs.event_id=event_log.id
+                     AND event_handler_runs.handler_name=?
+                    WHERE event_log.parent_event_id=?
+                      AND event_log.topic=?
+                    ORDER BY event_log.id
+                    LIMIT 1
+                    """,
+                    (marker, parent_event_id, topic),
+                ).fetchone()
+                if row is not None:
+                    self._require_idempotent_payload_match(
+                        row,
+                        payload_json,
+                        identity=(
+                            f"topic={topic} parent_event_id={parent_event_id} "
+                            f"handoff_key={handoff_key}"
+                        ),
+                    )
+                    self._conn.commit()
+                    return dict(row), False
+                cur = self._conn.execute(
+                    """
+                    INSERT INTO event_log
+                        (topic, payload, parent_event_id, status, created_at)
+                    VALUES (?, ?, ?, 'pending', datetime('now', 'localtime'))
+                    """,
+                    (topic, payload_json, parent_event_id),
+                )
+                if cur.lastrowid is None:
+                    raise RuntimeError("child event insert did not return an id")
+                event_id = int(cur.lastrowid)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._conn.execute(
+                    """
+                    INSERT INTO event_handler_runs
+                        (event_id, handler_name, status, started_at, finished_at, duration_ms)
+                    VALUES (?, ?, 'ok', ?, ?, 0)
+                    """,
+                    (event_id, marker, now, now),
+                )
+                created = self._conn.execute(
+                    "SELECT * FROM event_log WHERE id=?",
+                    (event_id,),
+                ).fetchone()
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        if created is None:
+            raise RuntimeError(f"child event insert was not readable: event_id={event_id}")
+        return dict(created), True
+
+    def event_log_complete(
+        self,
+        id: int,
+        status: str,
+        handler: str,
+        error: str | None = None,
+        elapsed_ms: int | None = None,
+    ) -> None:
         with self._conn_lock:
             self._conn.execute(
                 """
@@ -2244,7 +3262,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 ).fetchall()
         return [dict(r) for r in rows]
 
-    def event_log_since(self, after_id: int = 0, limit: int = 100, topic: str | None = None) -> list[dict]:
+    def event_log_since(
+        self, after_id: int = 0, limit: int = 100, topic: str | None = None
+    ) -> list[dict]:
         with self._conn_lock:
             if topic:
                 rows = self._conn.execute(
@@ -2280,8 +3300,20 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                     processed_at=datetime('now', 'localtime')
                 WHERE status='pending'
                   AND created_at < datetime('now', 'localtime', ?)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM event_handler_runs
+                      WHERE event_handler_runs.event_id=event_log.id
+                        AND event_handler_runs.status='running'
+                        AND event_handler_runs.started_at >=
+                            datetime('now', 'localtime', ?)
+                  )
                 """,
-                (summary, f"-{older_than_hours} hours"),
+                (
+                    summary,
+                    f"-{older_than_hours} hours",
+                    f"-{older_than_hours} hours",
+                ),
             )
             self._conn.commit()
             return int(cur.rowcount or 0)
@@ -2308,6 +3340,72 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                     "SELECT * FROM event_log WHERE status='pending' ORDER BY id"
                 ).fetchall()
         return [dict(r) for r in rows]
+
+    def event_log_replayable(
+        self,
+        *,
+        after_id: int = 0,
+        limit: int = 100,
+        stale_after_seconds: int = 120,
+    ) -> list[dict]:
+        """Return a bounded startup-recovery batch.
+
+        Automatic startup recovery includes crash-pending work and explicit
+        transient runtime admission failures. Business/provider failures remain
+        terminal until an operator requests an explicit replay.
+        """
+        with self._conn_lock:
+            rows = self._conn.execute(
+                _EVENT_LOG_REPLAYABLE_SQL,
+                {
+                    "after_id": max(0, int(after_id)),
+                    "stale_modifier": f"-{max(1, int(stale_after_seconds))} seconds",
+                    "limit": max(1, min(int(limit), 1000)),
+                },
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def replayable_handler_names(
+        self,
+        event_id: int,
+        *,
+        stale_after_seconds: int = 120,
+    ) -> set[str] | None:
+        """Return recoverable durable handlers, or None before identities exist."""
+        stale_modifier = f"-{max(1, int(stale_after_seconds))} seconds"
+        with self._conn_lock:
+            total_row = self._conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM event_handler_runs
+                WHERE event_id=? AND handler_name NOT LIKE '<handoff:%'
+                """,
+                (event_id,),
+            ).fetchone()
+            if int(total_row["total"] or 0) == 0:
+                return None
+            rows = self._conn.execute(
+                """
+                SELECT handler_name
+                FROM event_handler_runs
+                WHERE event_id=?
+                  AND handler_name NOT LIKE '<handoff:%'
+                  AND (
+                      status='pending'
+                      OR (
+                          status='running'
+                          AND started_at < datetime('now', 'localtime', ?)
+                      )
+                      OR (
+                          status='error'
+                          AND substr(COALESCE(error_message, ''), 1, 18)
+                              ='runtime_admission:'
+                      )
+                  )
+                """,
+                (event_id, stale_modifier),
+            ).fetchall()
+        return {str(row["handler_name"]) for row in rows}
 
     # ── Event Handler Runs (per-handler idempotency) ──────────────────────────
 
@@ -2349,68 +3447,354 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 """,
                 (event_id, handler_name, now),
             )
-            # If event was previously marked ok, a new pending handler resets it.
             self._conn.execute(
                 "UPDATE event_log SET status='pending' WHERE id=? AND status='ok'",
                 (event_id,),
             )
             self._conn.commit()
 
-    def mark_handler_ok(self, event_id: int, handler_name: str, duration_ms: int) -> None:
-        """Mark a handler run as 'ok' and recompute overall event_log status."""
+    def prepare_handler_runs(self, event_id: int, handler_names: list[str]) -> None:
+        """Persist every eligible handler identity before any executor admission."""
+        if not handler_names:
+            return
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with self._conn_lock:
+            self._conn.executemany(
+                """
+                INSERT INTO event_handler_runs (event_id, handler_name, status, started_at)
+                VALUES (?, ?, 'pending', ?)
+                ON CONFLICT(event_id, handler_name) DO NOTHING
+                """,
+                [(event_id, handler_name, now) for handler_name in handler_names],
+            )
             self._conn.execute(
                 """
-                INSERT INTO event_handler_runs
-                    (event_id, handler_name, status, started_at, finished_at, duration_ms)
-                VALUES (?, ?, 'ok',
-                        COALESCE((SELECT started_at FROM event_handler_runs
-                                   WHERE event_id=? AND handler_name=?), ?),
-                        ?, ?)
-                ON CONFLICT(event_id, handler_name) DO UPDATE SET
-                    status='ok',
-                    finished_at=excluded.finished_at,
-                    error_message=NULL,
-                    duration_ms=excluded.duration_ms
+                UPDATE event_log
+                SET status='pending', processed_at=NULL
+                WHERE id=?
+                  AND status='ok'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM event_handler_runs
+                      WHERE event_id=? AND status != 'ok'
+                  )
                 """,
-                (event_id, handler_name, event_id, handler_name, now, now, duration_ms),
+                (event_id, event_id),
             )
-            self._recompute_event_status(event_id)
             self._conn.commit()
 
-    def mark_handler_error(self, event_id: int, handler_name: str,
-                           error_message: str, duration_ms: int) -> None:
-        """Mark a handler run as 'error' and set event_log status to error."""
+    def claim_handler_run(
+        self,
+        event_id: int,
+        handler_name: str,
+        claim_token: str,
+        *,
+        stale_after_seconds: int = 120,
+    ) -> bool:
+        """Atomically claim one non-successful handler across SQLite connections."""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        truncated = error_message[:500] if error_message else None
+        stale_modifier = f"-{max(1, int(stale_after_seconds))} seconds"
+        marker = f"claim:{claim_token}"
+        with self._conn_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT status, error_message,
+                           started_at < datetime('now', 'localtime', ?) AS is_stale
+                    FROM event_handler_runs
+                    WHERE event_id=? AND handler_name=?
+                    """,
+                    (stale_modifier, event_id, handler_name),
+                ).fetchone()
+                if row is None or not self._handler_run_is_claimable(row):
+                    self._conn.commit()
+                    return False
+                cur = self._conn.execute(
+                    """
+                    UPDATE event_handler_runs
+                    SET status='running',
+                        error_message=?,
+                        started_at=?,
+                        finished_at=NULL,
+                        duration_ms=NULL
+                    WHERE event_id=? AND handler_name=?
+                    """,
+                    (marker, now, event_id, handler_name),
+                )
+                claimed = int(cur.rowcount or 0) == 1
+                if claimed:
+                    self._recompute_event_status(event_id)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return claimed
+
+    @classmethod
+    def _handler_run_is_claimable(cls, row: sqlite3.Row) -> bool:
+        status = str(row["status"])
+        if status in {"pending", "error"}:
+            return True
+        if status != "running" or not bool(row["is_stale"]):
+            return False
+        return cls._stale_claim_owner_is_disproven(row["error_message"])
+
+    @staticmethod
+    def _stale_claim_owner_is_disproven(error_message: object) -> bool:
+        marker = str(error_message or "")
+        process_prefix = "claim:process:"
+        if not marker.startswith(process_prefix):
+            return True
+        identity = marker.removeprefix(process_prefix).split(":", 2)
+        if len(identity) != 3 or not identity[2]:
+            return False
+        try:
+            pid = int(identity[0])
+            expected_start_ticks = int(identity[1])
+        except ValueError:
+            return False
+        if pid <= 0 or expected_start_ticks < 0:
+            return False
+        try:
+            stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        current_start_ticks = TradeDB._linux_proc_start_ticks(stat_text)
+        if current_start_ticks is None:
+            return False
+        return current_start_ticks != expected_start_ticks
+
+    @staticmethod
+    def _linux_proc_start_ticks(stat_text: str) -> int | None:
+        command_end = stat_text.rfind(")")
+        if command_end < 0:
+            return None
+        fields_after_command = stat_text[command_end + 1 :].split()
+        if len(fields_after_command) <= 19:
+            return None
+        try:
+            return int(fields_after_command[19])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _claim_marker(claim_token: str) -> str:
+        return f"claim:{claim_token}"
+
+    def renew_handler_claim(
+        self,
+        event_id: int,
+        handler_name: str,
+        claim_token: str,
+    ) -> bool:
+        """Extend one active handler claim lease if the caller still owns it."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._conn_lock:
+            cur = self._conn.execute(
+                """
+                UPDATE event_handler_runs
+                SET started_at=?
+                WHERE event_id=?
+                  AND handler_name=?
+                  AND status='running'
+                  AND error_message=?
+                """,
+                (
+                    now,
+                    event_id,
+                    handler_name,
+                    self._claim_marker(claim_token),
+                ),
+            )
+            self._conn.commit()
+        return int(cur.rowcount or 0) == 1
+
+    def mark_handler_ok(
+        self,
+        event_id: int,
+        handler_name: str,
+        duration_ms: int,
+        *,
+        claim_token: str | None = None,
+    ) -> bool:
+        """Mark a handler run as `ok` and recompute the aggregate event state."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._conn_lock:
+            if claim_token is None:
+                self._conn.execute(
+                    """
+                    INSERT INTO event_handler_runs
+                        (event_id, handler_name, status, started_at, finished_at, duration_ms)
+                    VALUES (?, ?, 'ok',
+                            COALESCE((SELECT started_at FROM event_handler_runs
+                                       WHERE event_id=? AND handler_name=?), ?),
+                            ?, ?)
+                    ON CONFLICT(event_id, handler_name) DO UPDATE SET
+                        status='ok',
+                        finished_at=excluded.finished_at,
+                        error_message=NULL,
+                        duration_ms=excluded.duration_ms
+                    """,
+                    (event_id, handler_name, event_id, handler_name, now, now, duration_ms),
+                )
+                updated = True
+            else:
+                cur = self._conn.execute(
+                    """
+                    UPDATE event_handler_runs
+                    SET status='ok',
+                        finished_at=?,
+                        error_message=NULL,
+                        duration_ms=?
+                    WHERE event_id=?
+                      AND handler_name=?
+                      AND status='running'
+                      AND error_message=?
+                    """,
+                    (
+                        now,
+                        duration_ms,
+                        event_id,
+                        handler_name,
+                        self._claim_marker(claim_token),
+                    ),
+                )
+                updated = int(cur.rowcount or 0) == 1
+            if updated:
+                self._recompute_event_status(event_id)
+            self._conn.commit()
+        return updated
+
+    def mark_handler_error(
+        self,
+        event_id: int,
+        handler_name: str,
+        error_message: str,
+        duration_ms: int,
+        *,
+        claim_token: str | None = None,
+    ) -> bool:
+        """Mark an owned handler run as `error` and update the parent event."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        provenance = self._handler_error_provenance(handler_name, error_message)
+        truncated = provenance[:500] if provenance else None
+        with self._conn_lock:
+            if claim_token is None:
+                self._conn.execute(
+                    """
+                    INSERT INTO event_handler_runs
+                        (event_id, handler_name, status, error_message,
+                         started_at, finished_at, duration_ms)
+                    VALUES (?, ?, 'error', ?,
+                            COALESCE((SELECT started_at FROM event_handler_runs
+                                       WHERE event_id=? AND handler_name=?), ?),
+                            ?, ?)
+                    ON CONFLICT(event_id, handler_name) DO UPDATE SET
+                        status='error',
+                        error_message=excluded.error_message,
+                        finished_at=excluded.finished_at,
+                        duration_ms=excluded.duration_ms
+                    """,
+                    (
+                        event_id,
+                        handler_name,
+                        truncated,
+                        event_id,
+                        handler_name,
+                        now,
+                        now,
+                        duration_ms,
+                    ),
+                )
+                updated = True
+            else:
+                cur = self._conn.execute(
+                    """
+                    UPDATE event_handler_runs
+                    SET status='error',
+                        error_message=?,
+                        finished_at=?,
+                        duration_ms=?
+                    WHERE event_id=?
+                      AND handler_name=?
+                      AND status='running'
+                      AND error_message=?
+                    """,
+                    (
+                        truncated,
+                        now,
+                        duration_ms,
+                        event_id,
+                        handler_name,
+                        self._claim_marker(claim_token),
+                    ),
+                )
+                updated = int(cur.rowcount or 0) == 1
+            if updated:
+                self._recompute_event_status(event_id)
+            self._conn.commit()
+        return updated
+
+    @staticmethod
+    def _handler_error_provenance(handler_name: str, error_message: str) -> str:
+        if handler_name.startswith("dag.") and error_message.startswith(
+            "submission_failed: DAG child handoff "
+        ):
+            return f"runtime_admission:{error_message}"
+        return error_message
+
+    def mark_handler_admission_failed(
+        self,
+        event_id: int,
+        handler_name: str,
+        reason: str,
+        *,
+        claim_token: str | None = None,
+    ) -> bool:
+        """Record a stable replayable failure when work never reached a handler."""
+        provenance = (
+            reason if reason.startswith("runtime_admission:") else f"runtime_admission:{reason}"
+        )
+        return self.mark_handler_error(
+            event_id,
+            handler_name,
+            provenance,
+            0,
+            claim_token=claim_token,
+        )
+
+    def mark_replay_payload_invalid(self, event_id: int, detail: str) -> None:
+        """Fail closed when a durable event payload cannot be decoded as an object."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        error = f"payload_decode_failed: {detail}"[:500]
         with self._conn_lock:
             self._conn.execute(
                 """
-                INSERT INTO event_handler_runs
-                    (event_id, handler_name, status, error_message,
-                     started_at, finished_at, duration_ms)
-                VALUES (?, ?, 'error', ?,
-                        COALESCE((SELECT started_at FROM event_handler_runs
-                                   WHERE event_id=? AND handler_name=?), ?),
-                        ?, ?)
-                ON CONFLICT(event_id, handler_name) DO UPDATE SET
-                    status='error',
-                    error_message=excluded.error_message,
-                    finished_at=excluded.finished_at,
-                    duration_ms=excluded.duration_ms
+                UPDATE event_handler_runs
+                SET status='error',
+                    error_message=?,
+                    finished_at=?,
+                    duration_ms=0
+                WHERE event_id=?
+                  AND status != 'ok'
+                  AND handler_name NOT LIKE '<handoff:%'
                 """,
-                (event_id, handler_name, truncated, event_id, handler_name,
-                 now, now, duration_ms),
+                (error, now, event_id),
             )
-            # Any handler error -> event is error
             self._conn.execute(
                 """
-                UPDATE event_log SET status='error', handler=?, error=?,
-                    elapsed_ms=?, processed_at=?
-                WHERE id=? AND status != 'error'
+                UPDATE event_log
+                SET status='error',
+                    handler='<payload_decode>',
+                    error=?,
+                    elapsed_ms=0,
+                    processed_at=?
+                WHERE id=?
                 """,
-                (handler_name, truncated, duration_ms, now, event_id),
+                (error, now, event_id),
             )
             self._conn.commit()
 
@@ -2418,20 +3802,21 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         """Recompute event_log status based on handler run states.
 
         Sets:
-          - 'ok'      if there are NO pending/error handlers (all completed ok)
-          - 'error'   if any handler errored (already set by mark_handler_error)
+          - 'ok'      if there are NO pending/running/error handlers
+          - 'error'   if any handler errored
           - 'pending' if some handlers haven't finished yet
         Must be called within self._conn_lock.
         """
-        # Count handlers per status
         row = self._conn.execute(
             """
             SELECT
                 SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok_count,
                 SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS err_count,
-                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN status IN ('pending', 'running') THEN 1 ELSE 0 END)
+                    AS pending_count,
                 COUNT(*) AS total
-            FROM event_handler_runs WHERE event_id=?
+            FROM event_handler_runs
+            WHERE event_id=? AND handler_name NOT LIKE '<handoff:%'
             """,
             (event_id,),
         ).fetchone()
@@ -2443,28 +3828,74 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if err_count > 0:
-            # Already marked error by mark_handler_error; skip update
-            return
-        if pending_count == 0 and total > 0 and ok_count == total:
-            # All handlers succeeded
+            error_row = self._conn.execute(
+                """
+                SELECT handler_name, error_message, duration_ms, finished_at
+                FROM event_handler_runs
+                WHERE event_id=?
+                  AND status='error'
+                  AND handler_name NOT LIKE '<handoff:%'
+                ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+                LIMIT 1
+                """,
+                (event_id,),
+            ).fetchone()
             self._conn.execute(
                 """
-                UPDATE event_log SET status='ok',
+                UPDATE event_log
+                SET status='error',
+                    handler=?,
+                    error=?,
+                    elapsed_ms=?,
+                    processed_at=COALESCE(?, ?)
+                WHERE id=?
+                """,
+                (
+                    error_row["handler_name"],
+                    error_row["error_message"],
+                    error_row["duration_ms"],
+                    error_row["finished_at"],
+                    now,
+                    event_id,
+                ),
+            )
+            return
+        if pending_count == 0 and total > 0 and ok_count == total:
+            self._conn.execute(
+                """
+                UPDATE event_log
+                SET status='ok',
+                    handler=(
+                        SELECT CASE
+                            WHEN COUNT(*)=1 THEN MAX(handler_name)
+                            ELSE '<multiple>'
+                        END
+                        FROM event_handler_runs
+                        WHERE event_id=? AND handler_name NOT LIKE '<handoff:%'
+                    ),
+                    error=NULL,
                     processed_at=?,
                     elapsed_ms=COALESCE(
                         (SELECT SUM(duration_ms) FROM event_handler_runs
-                         WHERE event_id=? AND duration_ms IS NOT NULL),
+                         WHERE event_id=?
+                           AND handler_name NOT LIKE '<handoff:%'
+                           AND duration_ms IS NOT NULL),
                         elapsed_ms)
                 WHERE id=?
                 """,
-                (now, event_id, event_id),
+                (event_id, now, event_id, event_id),
             )
         else:
-            # Still pending — some handlers haven't finished yet
-            # Keep status as pending (do not overwrite if already set to ok/error
-            # by a direct legacy call path)
             self._conn.execute(
-                "UPDATE event_log SET status='pending' WHERE id=? AND status NOT IN ('ok','error')",
+                """
+                UPDATE event_log
+                SET status='pending',
+                    handler=NULL,
+                    error=NULL,
+                    processed_at=NULL,
+                    elapsed_ms=NULL
+                WHERE id=?
+                """,
                 (event_id,),
             )
 
@@ -2483,8 +3914,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
     def bus_event_insert(self, topic: str, payload_json: str) -> int:
         return self.event_log_insert(topic, payload_json)
 
-    def bus_event_complete(self, id: int, status: str, handler: str,
-                           error: str | None = None) -> None:
+    def bus_event_complete(
+        self, id: int, status: str, handler: str, error: str | None = None
+    ) -> None:
         self.event_log_complete(id, status, handler, error)
 
     def bus_events_recent(self, limit: int = 50, topic: str | None = None) -> list[dict]:
@@ -2566,7 +3998,6 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             ).fetchall()
         jobs = [dict(row) for row in job_rows]
 
-        event_by_id = {int(row["id"]): row for row in event_rows}
         event_by_topic: dict[str, list[dict]] = {}
         event_by_job: dict[str, list[dict]] = {}
         for row in event_rows:
@@ -2591,39 +4022,45 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                     job_name = str(item.get("job_name") or "").strip()
                     if not job_name:
                         continue
-                    synthetic_nodes.append({
-                        "id": None,
-                        "job_name": job_name,
-                        "stage": item.get("stage"),
-                        "source": root.get("topic"),
-                        "emits": None,
-                        "description": item.get("description") or payload.get("goal"),
-                        "enabled": True,
-                    })
+                    synthetic_nodes.append(
+                        {
+                            "id": None,
+                            "job_name": job_name,
+                            "stage": item.get("stage"),
+                            "source": root.get("topic"),
+                            "emits": None,
+                            "description": item.get("description") or payload.get("goal"),
+                            "enabled": True,
+                        }
+                    )
             if not synthetic_nodes:
                 for job_name in payload.get("job_names") or []:
                     if not str(job_name).strip():
                         continue
-                    synthetic_nodes.append({
-                        "id": None,
-                        "job_name": str(job_name),
-                        "stage": None,
-                        "source": root.get("topic"),
-                        "emits": None,
-                        "description": payload.get("goal"),
-                        "enabled": True,
-                    })
+                    synthetic_nodes.append(
+                        {
+                            "id": None,
+                            "job_name": str(job_name),
+                            "stage": None,
+                            "source": root.get("topic"),
+                            "emits": None,
+                            "description": payload.get("goal"),
+                            "enabled": True,
+                        }
+                    )
             if not synthetic_nodes and jobs:
                 for job in jobs:
-                    synthetic_nodes.append({
-                        "id": None,
-                        "job_name": job.get("job_name"),
-                        "stage": job.get("stage"),
-                        "source": root.get("topic"),
-                        "emits": None,
-                        "description": payload.get("goal"),
-                        "enabled": True,
-                    })
+                    synthetic_nodes.append(
+                        {
+                            "id": None,
+                            "job_name": job.get("job_name"),
+                            "stage": job.get("stage"),
+                            "source": root.get("topic"),
+                            "emits": None,
+                            "description": payload.get("goal"),
+                            "enabled": True,
+                        }
+                    )
             expected_nodes = synthetic_nodes
         nodes: list[dict] = []
         for row in expected_nodes:
@@ -2648,20 +4085,22 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 status = "ok" if str(emitted_event.get("status") or "") == "ok" else "pending"
             elif str(root.get("status") or "") in {"pending", "running"}:
                 status = "queued"
-            nodes.append({
-                "dag_id": row.get("id"),
-                "job_name": job_name,
-                "stage": row.get("stage"),
-                "source": source_topic,
-                "emits": emits_topic,
-                "description": row.get("description"),
-                "enabled": bool(row.get("enabled")),
-                "status": status,
-                "error": error,
-                "job_run": job,
-                "source_event": source_event,
-                "emitted_event": emitted_event,
-            })
+            nodes.append(
+                {
+                    "dag_id": row.get("id"),
+                    "job_name": job_name,
+                    "stage": row.get("stage"),
+                    "source": source_topic,
+                    "emits": emits_topic,
+                    "description": row.get("description"),
+                    "enabled": bool(row.get("enabled")),
+                    "status": status,
+                    "error": error,
+                    "job_run": job,
+                    "source_event": source_event,
+                    "emitted_event": emitted_event,
+                }
+            )
 
         completed = sum(1 for node in nodes if node["status"] == "ok")
         running = sum(1 for node in nodes if node["status"] in {"running", "queued", "pending"})
@@ -2681,8 +4120,10 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             }
         else:
             direct_event_errors = [
-                row for row in event_rows
-                if str(row.get("status") or "") == "error" and str(row.get("handler") or "") != "<stale_cleanup>"
+                row
+                for row in event_rows
+                if str(row.get("status") or "") == "error"
+                and str(row.get("handler") or "") != "<stale_cleanup>"
             ]
             stale_errors = [row for row in event_rows if str(row.get("status") or "") == "error"]
             err = (direct_event_errors or stale_errors or [None])[0]
@@ -2757,16 +4198,18 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             detail = self.event_workflow_detail(root_id)
             if not detail:
                 continue
-            result.append({
-                "root_event_id": detail["root_event_id"],
-                "topic": detail["topic"],
-                "title": detail["title"],
-                "status": detail["status"],
-                "created_at": detail["created_at"],
-                "processed_at": detail["processed_at"],
-                "progress": detail["progress"],
-                "root_cause": detail["root_cause"],
-            })
+            result.append(
+                {
+                    "root_event_id": detail["root_event_id"],
+                    "topic": detail["topic"],
+                    "title": detail["title"],
+                    "status": detail["status"],
+                    "created_at": detail["created_at"],
+                    "processed_at": detail["processed_at"],
+                    "progress": detail["progress"],
+                    "root_cause": detail["root_cause"],
+                }
+            )
         return result
 
     def pipeline_dag_runtime(self, recent_limit: int = 200) -> dict[str, Any]:
@@ -2810,8 +4253,12 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             source_events = events_by_topic.get(source_topic, [])
             latest_run = job_runs[0] if job_runs else None
             latest_source = source_events[0] if source_events else None
-            latest_error_run = next((item for item in job_runs if str(item.get("status")) == "error"), None)
-            latest_error_event = next((item for item in source_events if str(item.get("status")) == "error"), None)
+            latest_error_run = next(
+                (item for item in job_runs if str(item.get("status")) == "error"), None
+            )
+            latest_error_event = next(
+                (item for item in source_events if str(item.get("status")) == "error"), None
+            )
             running_count = sum(1 for item in job_runs if str(item.get("status")) == "running")
             ok_count = sum(1 for item in job_runs[:10] if str(item.get("status")) == "ok")
             error_count = sum(1 for item in job_runs[:10] if str(item.get("status")) == "error")
@@ -2822,10 +4269,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 status = str(latest_run.get("status") or "unknown")
             elif latest_source:
                 status = str(latest_source.get("status") or "unknown")
-            error_detail = (
-                (latest_error_run or {}).get("result_summary")
-                or (latest_error_event or {}).get("error")
-            )
+            error_detail = (latest_error_run or {}).get("result_summary") or (
+                latest_error_event or {}
+            ).get("error")
             node = {
                 **dict(row),
                 "status": status,
@@ -2842,7 +4288,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             if emits_topic:
                 edges.append({"from": job_name, "to": emits_topic, "kind": "emit"})
             stage = str(row.get("stage") or "unknown")
-            stats = stage_summary.setdefault(stage, {"total": 0, "running": 0, "error": 0, "ok": 0, "disabled": 0})
+            stats = stage_summary.setdefault(
+                stage, {"total": 0, "running": 0, "error": 0, "ok": 0, "disabled": 0}
+            )
             stats["total"] += 1
             if not bool(row.get("enabled")):
                 stats["disabled"] += 1
@@ -2862,9 +4310,7 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                 "SELECT * FROM pipeline_dag WHERE enabled=1 ORDER BY stage, id"
             ).fetchall()
         else:
-            rows = self._conn.execute(
-                "SELECT * FROM pipeline_dag ORDER BY stage, id"
-            ).fetchall()
+            rows = self._conn.execute("SELECT * FROM pipeline_dag ORDER BY stage, id").fetchall()
         return [dict(r) for r in rows]
 
     def pipeline_dag_get(self, dag_id: int) -> dict[str, Any] | None:
@@ -2929,7 +4375,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
     ) -> None:
         expires_at = None
         if ttl_seconds and ttl_seconds > 0:
-            expires_at = (datetime.now() + timedelta(seconds=int(ttl_seconds))).isoformat(sep=" ", timespec="seconds")
+            expires_at = (datetime.now() + timedelta(seconds=int(ttl_seconds))).isoformat(
+                sep=" ", timespec="seconds"
+            )
         with self._conn_lock:
             self._conn.execute(
                 """
@@ -3015,7 +4463,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
         data["chain"] = _json_loads_safe(data.get("chain_json"), {})
         return data
 
-    def causal_snapshot_get_latest(self, symbol: str, *, as_of_date: str | None = None) -> dict[str, Any] | None:
+    def causal_snapshot_get_latest(
+        self, symbol: str, *, as_of_date: str | None = None
+    ) -> dict[str, Any] | None:
         query = "SELECT * FROM causal_decision_snapshots WHERE symbol=?"
         params: list[Any] = [symbol]
         if as_of_date:
@@ -3056,7 +4506,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
                         item.get("predicted_direction"),
                         item.get("realized_return"),
                         item.get("realized_volatility"),
-                        None if item.get("invalidator_hit") is None else (1 if item.get("invalidator_hit") else 0),
+                        None
+                        if item.get("invalidator_hit") is None
+                        else (1 if item.get("invalidator_hit") else 0),
                         item.get("calibration_error"),
                         item.get("decision_correctness"),
                         item.get("notes"),
@@ -3078,7 +4530,9 @@ class TradeDB(EBRTCRUDMixin, SignalCRUDMixin, KGCRUDMixin):
             result.append(data)
         return result
 
-    def causal_reward_records_replace(self, snapshot_id: str, records: list[dict[str, Any]]) -> None:
+    def causal_reward_records_replace(
+        self, snapshot_id: str, records: list[dict[str, Any]]
+    ) -> None:
         with self._conn_lock:
             self._conn.execute(
                 "DELETE FROM causal_reward_punishment WHERE snapshot_id=?",

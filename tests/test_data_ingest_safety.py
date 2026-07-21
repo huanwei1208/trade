@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +10,7 @@ import pandas as pd
 import pytest
 
 from trade_py.bus import Event, _dag_row_config, _make_dag_handler
+from trade_py.bus.models import AdmissionOutcome, PublishResult
 from trade_py.data.ingest.base import IngestResult
 from trade_py.data.ingest.batch import (
     BatchIngestEngine,
@@ -30,6 +33,28 @@ class _RecordingBus:
     ) -> None:
         self.published.append((topic, payload, parent_event_id))
 
+    def publish_child_once(
+        self,
+        topic: str,
+        payload: dict[str, Any],
+        *,
+        parent_event_id: int,
+        handoff_key: str,
+    ) -> PublishResult[Event]:
+        self.published.append((topic, payload, parent_event_id))
+        return PublishResult(
+            event=Event(
+                id=len(self.published),
+                topic=topic,
+                payload=payload,
+                parent_event_id=parent_event_id,
+                created_at=pd.Timestamp("2026-07-16T00:00:00Z").to_pydatetime(),
+                bus=self,  # type: ignore[arg-type]
+            ),
+            outcome=AdmissionOutcome.ACCEPTED,
+            handlers=(),
+        )
+
 
 def _event(db: TradeDB, bus: _RecordingBus, topic: str) -> Event:
     event_id = db.event_log_insert(topic, "{}", None)
@@ -46,9 +71,7 @@ def _event(db: TradeDB, bus: _RecordingBus, topic: str) -> Event:
 def test_v22_assigns_btc_to_assurance_writer_and_excludes_generic_ingest(tmp_path) -> None:
     db = TradeDB(tmp_path)
 
-    version = db._conn.execute(
-        "SELECT MAX(version) FROM schema_migrations"
-    ).fetchone()[0]
+    version = db._conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
     assert version == 22
 
     btc = db.asset_registry_get("crypto.BTC")
@@ -139,9 +162,7 @@ def test_corrupt_existing_parquet_and_wal_fail_closed(tmp_path) -> None:
     wal_path = engine._wal_path("crypto.ETH")
     wal_path.parent.mkdir(parents=True, exist_ok=True)
     wal_path.write_bytes(b"corrupt-wal")
-    frame = pd.DataFrame(
-        [{"date": "2026-07-15", "open": 1, "high": 2, "low": 1, "close": 2}]
-    )
+    frame = pd.DataFrame([{"date": "2026-07-15", "open": 1, "high": 2, "low": 1, "close": 2}])
     with pytest.raises(WalReadError, match="refusing overwrite"):
         engine._wal_append("crypto.ETH", frame)
     assert wal_path.read_bytes() == b"corrupt-wal"
@@ -192,9 +213,9 @@ def test_empty_provider_response_requires_current_watermark(
     current = (pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=1)).date().isoformat()
     canonical = engine._asset_output_path(eth)
     canonical.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(
-        [{"date": current, "open": 1, "high": 2, "low": 1, "close": 2}]
-    ).to_parquet(canonical, index=False)
+    pd.DataFrame([{"date": current, "open": 1, "high": 2, "low": 1, "close": 2}]).to_parquet(
+        canonical, index=False
+    )
     ready = engine._ingest_single_asset(eth)
     assert ready.success is True
     assert ready.new_rows == 0
@@ -234,3 +255,191 @@ def test_asset_batch_job_rejects_zero_target_and_partial_success(
 
     with pytest.raises(RuntimeError, match=message):
         _job_asset_batch_ingest(str(tmp_path), {"asset_class": "crypto"})
+
+
+def test_sync_state_facades_preserve_cursor_and_report_latest_dataset_date(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    db.sync_state_set(
+        "source_a",
+        "daily",
+        "AAA",
+        last_date="2026-07-19",
+        cursor={"checkpoint": "keep"},
+    )
+    db.sync_state_set(
+        "source_b",
+        "daily",
+        "BBB",
+        last_date="2026-07-21",
+    )
+    db.sync_state_set(
+        "source_c",
+        "weekly",
+        "CCC",
+        last_date="2026-07-22",
+    )
+
+    assert db.sync_state_mark_verified("source_a", "daily", "AAA") is True
+    assert db.sync_state_mark_verified("missing", "daily", "AAA") is False
+
+    cursor = db.sync_state_get_cursor("source_a", "daily", "AAA")
+    assert cursor["checkpoint"] == "keep"
+    assert cursor["verified"] is True
+    assert isinstance(cursor["verified_at"], str)
+    assert cursor["verified_at"]
+    assert db.sync_state_latest_date("daily") == "2026-07-21"
+    assert db.sync_state_latest_date("missing") is None
+    db.close()
+
+
+def test_sync_state_mark_verified_preserves_malformed_cursor_root_cause(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    db.sync_state_set("source_a", "daily", "AAA", last_date="2026-07-21")
+    db._conn.execute(
+        """
+        UPDATE sync_state
+        SET cursor='{'
+        WHERE source='source_a' AND dataset='daily' AND symbol='AAA'
+        """
+    )
+    db._conn.commit()
+
+    with pytest.raises(ValueError, match="invalid sync_state cursor JSON") as raised:
+        db.sync_state_mark_verified("source_a", "daily", "AAA")
+
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+    raw_cursor = db._conn.execute(
+        """
+        SELECT cursor
+        FROM sync_state
+        WHERE source='source_a' AND dataset='daily' AND symbol='AAA'
+        """
+    ).fetchone()[0]
+    assert raw_cursor == "{"
+    db.close()
+
+
+def test_sync_state_facades_serialize_shared_connection_concurrency(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+
+    def write_and_read(worker: int) -> None:
+        for offset in range(20):
+            symbol = f"S{worker:02d}-{offset:02d}"
+            sync_date = date(2026, 7, (offset % 20) + 1)
+            db.sync_state_set(
+                "concurrent",
+                "daily",
+                symbol,
+                last_date=sync_date,
+                row_count=offset,
+                cursor={"worker": worker, "offset": offset},
+            )
+            assert db.sync_state_get("concurrent", "daily", symbol) == sync_date
+            assert db.sync_state_get_cursor("concurrent", "daily", symbol) == {
+                "worker": worker,
+                "offset": offset,
+            }
+            assert db.sync_state_mark_verified("concurrent", "daily", symbol)
+            assert db.sync_state_get_cursor("concurrent", "daily", symbol)["verified"] is True
+            db.set_watermark("legacy", "daily", symbol, sync_date)
+            assert db.get_watermark("legacy", "daily", symbol) == sync_date
+            db.record_download(symbol, sync_date, sync_date, offset)
+            assert db.last_download_date(symbol) == sync_date
+            assert db.sync_state_latest_date("daily") is not None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(write_and_read, worker) for worker in range(8)]
+        for future in futures:
+            future.result()
+
+    with db._conn_lock:
+        row = db._conn.execute(
+            """
+            SELECT COUNT(*) AS row_count, MAX(last_date) AS latest_date
+            FROM sync_state
+            WHERE source=?
+            """,
+            ("concurrent",),
+        ).fetchone()
+    assert dict(row) == {"row_count": 160, "latest_date": "2026-07-20"}
+    db.close()
+
+
+def test_trading_calendar_range_uses_one_bounded_exchange_query(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    db.trading_calendar_upsert_batch(
+        [
+            {"exchange": "SSE", "trade_date": "2026-07-20", "is_open": 1},
+            {"exchange": "SSE", "trade_date": "2026-07-21", "is_open": 0},
+            {"exchange": "SSE", "trade_date": "2026-07-22", "is_open": 1},
+            {"exchange": "SZSE", "trade_date": "2026-07-21", "is_open": 1},
+        ]
+    )
+
+    rows = db.trading_calendar_range("2026-07-20", "2026-07-21")
+
+    assert [(row["trade_date"], row["is_open"]) for row in rows] == [
+        ("2026-07-20", 1),
+        ("2026-07-21", 0),
+    ]
+    assert db.trading_calendar_range("2026-07-22", "2026-07-20") == []
+    db.close()
+
+
+def test_job_runs_finish_running_stage_finishes_all_exact_stage_rows(tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    first_fetch = db.job_run_start("fetch_one", stage="fetch")
+    second_fetch = db.job_run_start("fetch_two", stage="fetch", run_key="fixture")
+    compute = db.job_run_start("compute_one", stage="compute")
+    completed_fetch = db.job_run_start("fetch_done", stage="fetch")
+    db.job_run_finish(completed_fetch, "ok", result_summary="already complete", elapsed_ms=1)
+    db._conn.execute(
+        """
+        UPDATE job_runs
+        SET started_at=datetime('now', 'localtime', '-2 seconds')
+        WHERE id IN (?, ?, ?)
+        """,
+        (first_fetch, second_fetch, compute),
+    )
+    db._conn.commit()
+
+    updated = db.job_runs_finish_running_stage(
+        "fetch",
+        status="error",
+        result_summary="runtime restarted",
+    )
+
+    assert updated == 2
+    rows = {
+        int(row["id"]): dict(row)
+        for row in db._conn.execute(
+            """
+            SELECT id, status, result_summary, message, completed_at, finished_at,
+                   elapsed_ms, duration_s
+            FROM job_runs
+            WHERE id IN (?, ?, ?, ?)
+            """,
+            (first_fetch, second_fetch, compute, completed_fetch),
+        ).fetchall()
+    }
+    for run_id in (first_fetch, second_fetch):
+        row = rows[run_id]
+        assert row["status"] == "error"
+        assert row["result_summary"] == "runtime restarted"
+        assert row["completed_at"] is not None
+        assert row["finished_at"] is not None
+        assert int(row["elapsed_ms"]) >= 1000
+        assert float(row["duration_s"]) >= 1.0
+    assert rows[first_fetch]["message"] == "runtime restarted"
+    assert rows[second_fetch]["message"] == "<run-key:fixture>"
+    assert rows[compute]["status"] == "running"
+    assert rows[completed_fetch]["status"] == "ok"
+    assert (
+        db.job_runs_finish_running_stage(
+            "fetch",
+            status="error",
+            result_summary="runtime restarted",
+        )
+        == 0
+    )
+    db.close()

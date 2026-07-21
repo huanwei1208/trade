@@ -16,6 +16,7 @@ Routes:
   GET  /api/runs                 → job_runs recent N entries
   GET  /api/models               → model_registry list
   GET  /api/status               → service health + quality gate + agenda + backups
+  GET  /api/runtime/capacity     → process-local EventBus capacity and lifecycle
   GET  /api/calendar             → trading calendar + planned events
   GET  /api/agenda               → recent agenda queue
   GET  /api/data-health          → data freshness / coverage snapshot
@@ -37,6 +38,7 @@ Routes:
   GET  /api/trust/overview       → portfolio-level trust summary
   POST /predict                  → online inference endpoint
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,21 +50,68 @@ import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from threading import Lock
-from threading import Thread
-from typing import Any
+from threading import Lock, Thread
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-try:  # pragma: no cover - optional at import time
-    from fastapi import Request as FastAPIRequest
-except Exception:  # pragma: no cover - fastapi missing outside web usage
-    FastAPIRequest = Any
-
-try:  # pragma: no cover - optional at import time
-    from fastapi import BackgroundTasks as FastAPIBackgroundTasks
-except Exception:  # pragma: no cover - fastapi missing outside web usage
-    FastAPIBackgroundTasks = Any
+if TYPE_CHECKING:
+    from fastapi import Request
+else:
+    try:  # pragma: no cover - optional at import time
+        from fastapi import Request
+    except ImportError:  # pragma: no cover - fastapi missing outside web usage
+        Request = Any
 
 logger = logging.getLogger(__name__)
+
+_PAYLOAD_OMITTED = object()
+
+
+class _SyncStateVerificationStore(Protocol):
+    def sync_state_mark_verified(
+        self,
+        source: str,
+        dataset: str,
+        symbol: str,
+    ) -> bool: ...
+
+
+class _WebRuntimeReadStore(Protocol):
+    def readiness_signature_components(self) -> list[str | int]: ...
+
+    def symbol_event_types(self, symbol: str, as_of: str, limit: int) -> list[str]: ...
+
+    def instrument_names(self, symbols: list[str]) -> dict[str, str]: ...
+
+    def kg_projection_summary(self, symbol_limit: int = 12) -> dict[str, list[dict[str, Any]]]: ...
+
+    def quality_history_projection(self, limit: int = 7) -> dict[str, list[dict[str, Any]]]: ...
+
+    def evidence_lookup(self, evidence_id: str) -> dict[str, Any] | None: ...
+
+    def symbol_evidence_projection(
+        self,
+        symbol: str,
+        as_of: str,
+        days: int,
+        evidence_limit: int = 20,
+    ) -> dict[str, Any]: ...
+
+    def symbol_sector_peer_projection(
+        self,
+        symbol: str,
+        as_of: str,
+        peer_limit: int,
+    ) -> dict[str, Any]: ...
+
+    def symbol_data_freshness_projection(
+        self,
+        symbol: str,
+        as_of: str,
+    ) -> dict[str, Any]: ...
+
+
+def _runtime_reads(db: object) -> _WebRuntimeReadStore:
+    return cast(_WebRuntimeReadStore, db)
 
 
 def _parse_iso_date(value: str | None) -> date | None:
@@ -103,8 +152,13 @@ def _tree_latest_date(root: Path) -> str | None:
     return latest
 
 
-def _hive_status(*, lag_days: int | None = None, coverage_pct: float | None = None,
-                 count: int | None = None, empty_is_error: bool = False) -> str:
+def _hive_status(
+    *,
+    lag_days: int | None = None,
+    coverage_pct: float | None = None,
+    count: int | None = None,
+    empty_is_error: bool = False,
+) -> str:
     if count is not None and empty_is_error and count <= 0:
         return "error"
     if coverage_pct is not None:
@@ -123,24 +177,48 @@ def _hive_status(*, lag_days: int | None = None, coverage_pct: float | None = No
 def create_app():
     """FastAPI app factory (used by uvicorn --factory)."""
     try:
-        from fastapi import Body, FastAPI, HTTPException
-        from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+        from fastapi import FastAPI, HTTPException, Query
+        from fastapi.responses import FileResponse, JSONResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
-    except ImportError:
-        raise ImportError("fastapi required: uv add fastapi uvicorn")
+    except ImportError as exc:
+        raise ImportError("fastapi required: uv add fastapi uvicorn") from exc
+
+    from trade_py.bus import EventAdmissionError
+    from trade_web.backend.event_admission import event_admission_failure_response
 
     data_root = os.environ.get("TRADE_DATA_ROOT", "data")
     shutdown_event = asyncio.Event()
+    from trade_web.backend.runtime import (
+        RuntimeService,
+        WebResourceContainer,
+        build_runtime_router,
+    )
+
+    resources = WebResourceContainer(data_root)
+    runtime_service = RuntimeService(resources, shutdown_event)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        resources.start()
         try:
             yield
         finally:
             shutdown_event.set()
+            resources.stop(wait=True)
 
     app = FastAPI(title="TradeDB Console", version="1.0", lifespan=lifespan)
+    app.state.resources = resources
+    app.state.runtime_service = runtime_service
+    app.include_router(build_runtime_router(runtime_service))
+
+    def _request_payload(req: dict[str, Any]) -> dict[str, Any]:
+        payload = req.get("payload", _PAYLOAD_OMITTED)
+        if payload is _PAYLOAD_OMITTED:
+            return {}
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="payload must be a JSON object")
+        return payload
 
     # BTC Observatory read-only routes (registered as a self-contained router so
     # this factory stays minimal; all logic lives in trade_web/backend/observatory).
@@ -174,14 +252,18 @@ def create_app():
     else:
         register_observatory_capability(app, data_root, enabled=False)
 
-    # Lazy-init inference service
-    from trade_web.backend.inference import InferenceService
-    _inference = InferenceService(data_root)
+    def _inference():
+        return resources.inference
 
-    # Services layer (state-centered decision architecture)
-    from trade_py.services.state_service import StateService
-    from trade_py.services.decision_service import DecisionService
-    from trade_py.services.explanation_service import ExplanationService
+    def _state_svc():
+        return resources.state_service
+
+    def _decision_svc():
+        return resources.decision_service
+
+    def _explain_svc():
+        return resources.explanation_service
+
     from trade_web.backend.ops_workspace import (
         build_ops_compute_layers,
         build_ops_dependency_path,
@@ -198,9 +280,6 @@ def create_app():
         execute_recovery_action,
         list_recovery_history,
     )
-    _state_svc    = StateService(data_root)
-    _decision_svc = DecisionService(inference=_inference)
-    _explain_svc  = ExplanationService(_state_svc, _decision_svc, inference=_inference)
 
     _payload_cache: dict[str, dict[str, Any]] = {}
     _payload_cache_lock = Lock()
@@ -209,65 +288,20 @@ def create_app():
     # ── DB helper ─────────────────────────────────────────────────────────────
 
     def _db():
-        from trade_py.db.trade_db import TradeDB
-        return TradeDB(data_root)
+        return resources.db
 
     def _current_asof(db=None) -> str:
-        local_db = db or _db()
-        try:
-            return local_db.get_latest_market_asof() or date.today().isoformat()
-        except Exception:
-            return date.today().isoformat()
+        return runtime_service.current_asof(db)
 
     def _payload_signature(kind: str, db=None) -> str:
-        local_db = db or _db()
-        with local_db._conn_lock:
-            row = local_db._conn.execute(
-                """
-                SELECT
-                    COALESCE((SELECT MAX(updated_at) FROM daily_quality_gate), ''),
-                    COALESCE((SELECT MAX(id) FROM job_runs), 0),
-                    COALESCE((SELECT MAX(id) FROM event_log), 0),
-                    COALESCE((SELECT MAX(updated_at) FROM agenda_queue), ''),
-                    COALESCE((SELECT MAX(updated_at) FROM planned_events), ''),
-                    COALESCE((SELECT MAX(trained_at) FROM model_registry), ''),
-                    COALESCE((SELECT MAX(updated_at) FROM sync_state), ''),
-                    COALESCE((SELECT MAX(updated_at) FROM kg_relations), ''),
-                    COALESCE((SELECT MAX(generated_at) FROM kg_edge_candidates), ''),
-                    COALESCE((SELECT MAX(created_at) FROM market_events), ''),
-                    COALESCE((SELECT MAX(validated_at) FROM event_propagations), ''),
-                    COALESCE((SELECT MAX(updated_at) FROM settings), ''),
-                    COALESCE((SELECT MAX(updated_at) FROM signals), ''),
-                    COALESCE((SELECT MAX(as_of_date) FROM BeliefState), ''),
-                    COALESCE((SELECT MAX(created_at) FROM Recommendation), '')
-                """
-            ).fetchone()
-        base = "|".join(str(item or "") for item in (row or ()))
-        return f"{kind}:{_PAYLOAD_SCHEMA_VERSION}:{_current_asof(local_db)}:{base}"
+        return runtime_service.payload_signature(kind, db)
 
     def _readiness_signature(*, days: int, end_date: str | None, datasets: str | None) -> str:
-        db = _db()
-        with db._conn_lock:
-            row = db._conn.execute(
-                """
-                SELECT
-                    COALESCE((SELECT MAX(updated_at) FROM daily_quality_gate), ''),
-                    COALESCE((SELECT MAX(eval_date) FROM dataset_snapshots), ''),
-                    COALESCE((SELECT MAX(eval_date) FROM QualityReport), ''),
-                    COALESCE((SELECT MAX(as_of_date) FROM FreshnessStatus), ''),
-                    COALESCE((SELECT MAX(updated_at) FROM sync_state), ''),
-                    COALESCE((SELECT MAX(id) FROM data_repair_runs), 0),
-                    COALESCE((SELECT MAX(updated_at) FROM data_gaps), ''),
-                    COALESCE((SELECT MAX(updated_at) FROM readiness_recovery_actions), ''),
-                    COALESCE((SELECT MAX(date) FROM signals), ''),
-                    COALESCE((SELECT MAX(as_of_date) FROM BeliefState), ''),
-                    COALESCE((SELECT MAX(as_of_date) FROM Recommendation), ''),
-                    COALESCE((SELECT MAX(substr(updated_at, 1, 10)) FROM sector_members), ''),
-                    COALESCE((SELECT MAX(substr(trained_at, 1, 10)) FROM model_registry), '')
-                """
-            ).fetchone()
-        base = "|".join(str(item or "") for item in (row or ()))
-        return f"readiness:{_PAYLOAD_SCHEMA_VERSION}:{days}:{end_date or ''}:{datasets or ''}:{base}"
+        components = _runtime_reads(_db()).readiness_signature_components()
+        base = "|".join(str(item or "") for item in components)
+        return (
+            f"readiness:{_PAYLOAD_SCHEMA_VERSION}:{days}:{end_date or ''}:{datasets or ''}:{base}"
+        )
 
     def _cache_get(name: str, *, signature: str, ttl_seconds: float) -> dict[str, Any] | None:
         now = time.monotonic()
@@ -326,73 +360,30 @@ def create_app():
         return _cache_set(name, signature=signature, payload=payload)
 
     def _read_symbol_sparkline(symbol: str, *, days: int = 12) -> list[dict[str, Any]]:
-        try:
-            from trade_py.data.market.kline import read_kline_range
+        from trade_web.backend.market_data import read_symbol_sparkline
 
-            end_date = date.today()
-            start_date = end_date - timedelta(days=max(14, days * 3))
-            df = read_kline_range(
-                data_root,
-                symbol,
-                start_date.isoformat(),
-                end_date.isoformat(),
-            )
-            if df.empty:
-                return []
-            points: list[dict[str, Any]] = []
-            for row in df.tail(days).to_dict(orient="records"):
-                points.append({
-                    "date": str(row.get("date") or row.get("trade_date") or ""),
-                    "close": float(row.get("close") or 0.0),
-                })
-            return points
-        except Exception:
-            return []
+        return read_symbol_sparkline(data_root, symbol, days=days)
 
     def _read_symbol_event_tags(db, symbol: str, *, as_of: str, limit: int = 3) -> list[str]:
         try:
-            with db._conn_lock:
-                rows = db._conn.execute(
-                    """
-                    SELECT DISTINCT event_type
-                    FROM market_events
-                    WHERE symbol = ? AND event_date <= ?
-                    ORDER BY event_date DESC
-                    LIMIT ?
-                    """,
-                    (symbol, as_of, max(1, int(limit))),
-                ).fetchall()
-            return [str(row[0]) for row in rows if row and row[0]]
-        except Exception:
+            return _runtime_reads(db).symbol_event_types(symbol, as_of, max(1, int(limit)))
+        except Exception as exc:
+            logger.warning(
+                "symbol event tags unavailable: symbol=%s error=%s", symbol, type(exc).__name__
+            )
             return []
 
     def _read_instrument_name_map(db, symbols: list[str]) -> dict[str, str]:
-        cleaned = [str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()]
+        cleaned = [
+            str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()
+        ]
         if not cleaned:
             return {}
-        result: dict[str, str] = {}
-        batch_size = 800
         try:
-            with db._conn_lock:
-                for start in range(0, len(cleaned), batch_size):
-                    batch = cleaned[start:start + batch_size]
-                    placeholders = ",".join("?" for _ in batch)
-                    rows = db._conn.execute(
-                        f"SELECT symbol, name FROM instruments WHERE symbol IN ({placeholders})",
-                        batch,
-                    ).fetchall()
-                    for row in rows:
-                        result[str(row["symbol"] or "")] = str(row["name"] or "")
-        except Exception:
+            return _runtime_reads(db).instrument_names(cleaned)
+        except Exception as exc:
+            logger.warning("instrument names unavailable: error=%s", type(exc).__name__)
             return {}
-        return result
-
-    async def _stream_wait(poll_seconds: float) -> bool:
-        try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=max(0.25, float(poll_seconds)))
-            return True
-        except asyncio.TimeoutError:
-            return shutdown_event.is_set()
 
     def _light_health_snapshot(db, gate: dict[str, Any]) -> dict[str, Any]:
         metrics = gate.get("metrics_json") or {}
@@ -425,8 +416,16 @@ def create_app():
             },
         }
         highlights = [
-            {"kind": "coverage", "title": "Fund Flow Coverage", "value": round(float(fund_cov or 0.0) * 100, 1)},
-            {"kind": "coverage", "title": "Fundamental Coverage", "value": round(float(fundamental_cov or 0.0) * 100, 1)},
+            {
+                "kind": "coverage",
+                "title": "Fund Flow Coverage",
+                "value": round(float(fund_cov or 0.0) * 100, 1),
+            },
+            {
+                "kind": "coverage",
+                "title": "Fundamental Coverage",
+                "value": round(float(fundamental_cov or 0.0) * 100, 1),
+            },
             {"kind": "event", "title": "Recent Event Count", "value": int(event_count or 0)},
         ]
         datasets = [
@@ -487,7 +486,11 @@ def create_app():
         fundamental_latest = _tree_latest_date(Path(data_root) / "market" / "fundamental")
 
         model_rows = db.model_registry_list()
-        active_models = [row for row in model_rows if row.get("is_active") or row.get("promotion_state") == "active"]
+        active_models = [
+            row
+            for row in model_rows
+            if row.get("is_active") or row.get("promotion_state") == "active"
+        ]
         due_agenda = db.agenda_queue_due(limit=20)
         planned_events = db.planned_events_list(
             start_date=date.today().isoformat(),
@@ -504,12 +507,16 @@ def create_app():
                 "lineage": "market-index -> kline -> factors -> signals",
                 "freshness_date": kline.get("max_date"),
                 "lag_days": _lag_days(kline.get("max_date")),
-                "coverage_pct": (kline_cov.get("coverage_pct") or 0.0) / 100.0 if kline_cov.get("coverage_pct") is not None else None,
+                "coverage_pct": (kline_cov.get("coverage_pct") or 0.0) / 100.0
+                if kline_cov.get("coverage_pct") is not None
+                else None,
                 "rows": kline.get("rows", 0),
                 "count": kline.get("symbols", 0),
                 "status": _hive_status(
                     lag_days=_lag_days(kline.get("max_date")),
-                    coverage_pct=((kline_cov.get("coverage_pct") or 0.0) / 100.0) if kline_cov.get("coverage_pct") is not None else None,
+                    coverage_pct=((kline_cov.get("coverage_pct") or 0.0) / 100.0)
+                    if kline_cov.get("coverage_pct") is not None
+                    else None,
                     count=kline.get("symbols", 0),
                     empty_is_error=True,
                 ),
@@ -560,11 +567,15 @@ def create_app():
                 "lineage": "reference -> event targets -> KG / features",
                 "freshness_date": None,
                 "lag_days": None,
-                "coverage_pct": (instruments.get("coverage_pct") or 0.0) / 100.0 if instruments.get("coverage_pct") is not None else None,
+                "coverage_pct": (instruments.get("coverage_pct") or 0.0) / 100.0
+                if instruments.get("coverage_pct") is not None
+                else None,
                 "rows": instruments.get("sector_member_rows", 0),
                 "count": instruments.get("total_symbols", 0),
                 "status": _hive_status(
-                    coverage_pct=((instruments.get("coverage_pct") or 0.0) / 100.0) if instruments.get("coverage_pct") is not None else None,
+                    coverage_pct=((instruments.get("coverage_pct") or 0.0) / 100.0)
+                    if instruments.get("coverage_pct") is not None
+                    else None,
                     count=instruments.get("total_symbols", 0),
                     empty_is_error=True,
                 ),
@@ -630,7 +641,9 @@ def create_app():
                 "domain": "calendar",
                 "refresh_target": "sync",
                 "lineage": "planned_events -> agenda -> realized market_events",
-                "freshness_date": planned_events[0].get("scheduled_at", "")[:10] if planned_events else None,
+                "freshness_date": planned_events[0].get("scheduled_at", "")[:10]
+                if planned_events
+                else None,
                 "lag_days": None,
                 "coverage_pct": None,
                 "rows": len(planned_events),
@@ -644,13 +657,19 @@ def create_app():
                 "domain": "model",
                 "refresh_target": "evaluate",
                 "lineage": "features -> train/evaluate -> active models -> signals",
-                "freshness_date": active_models[0].get("trained_at", "")[:10] if active_models else None,
-                "lag_days": _lag_days(active_models[0].get("trained_at", "")[:10] if active_models else None),
+                "freshness_date": active_models[0].get("trained_at", "")[:10]
+                if active_models
+                else None,
+                "lag_days": _lag_days(
+                    active_models[0].get("trained_at", "")[:10] if active_models else None
+                ),
                 "coverage_pct": None,
                 "rows": len(model_rows),
                 "count": len(active_models),
                 "status": _hive_status(
-                    lag_days=_lag_days(active_models[0].get("trained_at", "")[:10] if active_models else None),
+                    lag_days=_lag_days(
+                        active_models[0].get("trained_at", "")[:10] if active_models else None
+                    ),
                     count=len(active_models),
                     empty_is_error=True,
                 ),
@@ -659,7 +678,9 @@ def create_app():
         ]
         by_domain: dict[str, dict[str, Any]] = {}
         for item in datasets:
-            bucket = by_domain.setdefault(item["domain"], {"count": 0, "ok": 0, "partial": 0, "error": 0})
+            bucket = by_domain.setdefault(
+                item["domain"], {"count": 0, "ok": 0, "partial": 0, "error": 0}
+            )
             bucket["count"] += 1
             bucket[item["status"]] = bucket.get(item["status"], 0) + 1
         highlights = [
@@ -698,7 +719,11 @@ def create_app():
         if not workflows:
             return None
         preferred = next(
-            (row for row in workflows if str(row.get("status") or "") in {"error", "running", "partial"}),
+            (
+                row
+                for row in workflows
+                if str(row.get("status") or "") in {"error", "running", "partial"}
+            ),
             workflows[0],
         )
         root_event_id = int(preferred.get("root_event_id") or 0)
@@ -706,7 +731,9 @@ def create_app():
             return None
         return db.event_workflow_detail(root_event_id)
 
-    def _workflow_graph(nodes: list[dict[str, Any]]) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+    def _workflow_graph(
+        nodes: list[dict[str, Any]],
+    ) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
         by_emits: dict[str, list[int]] = {}
         node_ids: set[int] = set()
         for node in nodes:
@@ -767,8 +794,10 @@ def create_app():
             return depth
 
         preferred = [
-            node_id for node_id in ancestors
-            if str((node_by_id.get(node_id) or {}).get("status") or "") in {"error", "pending", "partial"}
+            node_id
+            for node_id in ancestors
+            if str((node_by_id.get(node_id) or {}).get("status") or "")
+            in {"error", "pending", "partial"}
         ] or list(ancestors)
         preferred.sort(key=lambda node_id: (_depth(node_id), node_id))
         return int(preferred[0]) if preferred else dag_id
@@ -851,8 +880,8 @@ def create_app():
             "system": {
                 "today": date.today().isoformat(),
                 "data_root": data_root,
-                "models_loaded_at": _inference.loaded_at,
-                "inference_models": _inference.model_names,
+                "models_loaded_at": _inference().loaded_at,
+                "inference_models": _inference().model_names,
             },
             "conclusion": conclusion,
             "progress": progress,
@@ -890,8 +919,7 @@ def create_app():
             limit=40,
         )
         failed_nodes = [
-            node for node in runtime.get("nodes", [])
-            if str(node.get("status") or "") == "error"
+            node for node in runtime.get("nodes", []) if str(node.get("status") or "") == "error"
         ][:20]
         return {
             "as_of": today,
@@ -919,33 +947,9 @@ def create_app():
         active_relations = db.kg_relations_list(limit=40, active_only=True)
         candidates = db.kg_candidates(limit=40, status="pending")
         nodes = db.kg_nodes_list(limit=24)
-        with db._conn_lock:
-            top_symbols = [
-                dict(row) for row in db._conn.execute(
-                    """
-                    SELECT ep.symbol,
-                           COUNT(*) AS propagation_count,
-                           ROUND(AVG(ep.kg_score), 4) AS avg_kg_score,
-                           MAX(me.event_date) AS latest_event_date
-                    FROM event_propagations ep
-                    LEFT JOIN market_events me ON me.event_id = ep.event_id
-                    GROUP BY ep.symbol
-                    ORDER BY propagation_count DESC, avg_kg_score DESC
-                    LIMIT 12
-                    """
-                ).fetchall()
-            ]
-            rel_type_summary = [
-                dict(row) for row in db._conn.execute(
-                    """
-                    SELECT rel_type, COUNT(*) AS relation_count
-                    FROM kg_relations
-                    WHERE status='active' AND (valid_to IS NULL OR valid_to >= date('now'))
-                    GROUP BY rel_type
-                    ORDER BY relation_count DESC, rel_type
-                    """
-                ).fetchall()
-            ]
+        projection = _runtime_reads(db).kg_projection_summary(symbol_limit=12)
+        top_symbols = [dict(row) for row in projection.get("top_symbols", [])]
+        rel_type_summary = [dict(row) for row in projection.get("relation_types", [])]
         return {
             "snapshot": {
                 "path": str(snapshot_path),
@@ -1004,12 +1008,14 @@ def create_app():
                         delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0))
                 except Exception:
                     pass
-                ebrt_recs.append({
-                    **r,
-                    "belief_mu": round(belief_mu, 4),
-                    "belief_sigma": round(belief_sigma, 4),
-                    "belief_delta_mu": round(delta_mu, 4),
-                })
+                ebrt_recs.append(
+                    {
+                        **r,
+                        "belief_mu": round(belief_mu, 4),
+                        "belief_sigma": round(belief_sigma, 4),
+                        "belief_delta_mu": round(delta_mu, 4),
+                    }
+                )
         except Exception:
             pass
 
@@ -1040,8 +1046,11 @@ def create_app():
                     "trust_scalar": t_star,
                     "trust_components": trust_vec,
                     "freshness": [
-                        {"dataset": f.get("dataset"), "lag_days": f.get("lag_days"),
-                         "status": f.get("status")}
+                        {
+                            "dataset": f.get("dataset"),
+                            "lag_days": f.get("lag_days"),
+                            "status": f.get("status"),
+                        }
                         for f in freshness
                     ],
                 }
@@ -1069,22 +1078,25 @@ def create_app():
                 if not sym:
                     continue
                 try:
-                    ws = _state_svc.build(sym, as_of_date=today_str)
-                    _, act = _decision_svc.decide(ws)
+                    ws = _state_svc().build(sym, as_of_date=today_str)
+                    _, act = _decision_svc().decide(ws)
                     action_str = act.action.value
                     rec_state = (
-                        "ACTIONABLE" if action_str in ("ADD", "PROBE")
-                        else "BROWSE_ONLY" if action_str in ("NO_ACTION", "avoid")
+                        "ACTIONABLE"
+                        if action_str in ("ADD", "PROBE")
+                        else "BROWSE_ONLY"
+                        if action_str in ("NO_ACTION", "avoid")
                         else "CONSTRAINED"
                     )
                     enriched = {
                         **pick,
-                        "action":        action_str,
-                        "confidence":    act.confidence,
-                        "thesis":        ws.state_summary,
-                        "trust_score":   round(ws.trust_score, 4),
-                        "trust_level":   "HIGH" if ws.trust_score > 0.70 else (
-                                          "MEDIUM" if ws.trust_score > 0.40 else "LOW"),
+                        "action": action_str,
+                        "confidence": act.confidence,
+                        "thesis": ws.state_summary,
+                        "trust_score": round(ws.trust_score, 4),
+                        "trust_level": "HIGH"
+                        if ws.trust_score > 0.70
+                        else ("MEDIUM" if ws.trust_score > 0.40 else "LOW"),
                         "top_invalidators": act.invalidators[:2],
                         "world_state_summary": ws.state_summary,
                         "event_tags": _read_symbol_event_tags(db, sym, as_of=today_str, limit=2),
@@ -1133,15 +1145,17 @@ def create_app():
                 if ta.get("recommendation_state") == "ACTIONABLE":
                     ta["recommendation_state"] = "CONSTRAINED"
         actionable_count = sum(
-            1 for row in top_actions
-            if str(row.get("action") or "") in {"ADD", "PROBE", "REDUCE"}
+            1 for row in top_actions if str(row.get("action") or "") in {"ADD", "PROBE", "REDUCE"}
         )
         watch_count = sum(1 for row in top_actions if str(row.get("action") or "") == "WATCH")
         decision_posture = (
-            "DEGRADED" if global_blocked else
-            "ACTIONABLE" if actionable_count > 0 else
-            "WATCHLIST" if watch_count > 0 else
-            "NO_ACTION"
+            "DEGRADED"
+            if global_blocked
+            else "ACTIONABLE"
+            if actionable_count > 0
+            else "WATCHLIST"
+            if watch_count > 0
+            else "NO_ACTION"
         )
         recovery_condition = (
             "Restore missing or stale datasets and recover trust gate before acting."
@@ -1244,23 +1258,30 @@ def create_app():
                 rec_state_val = "CONSTRAINED"
                 if len(picks) < 20:
                     try:
-                        ws = _state_svc.build(sym, as_of_date=today_str)
-                        _, act = _decision_svc.decide(ws)
-                        action_val    = act.action.value
+                        ws = _state_svc().build(sym, as_of_date=today_str)
+                        _, act = _decision_svc().decide(ws)
+                        action_val = act.action.value
                         confidence_val = act.confidence
-                        ws_summary    = ws.state_summary
-                        top_inv       = act.invalidators[:2]
+                        ws_summary = ws.state_summary
+                        top_inv = act.invalidators[:2]
                         trust_score_val = round(ws.trust_score, 4)
-                        trust_level_val = ("HIGH" if ws.trust_score > 0.70 else
-                                           "MEDIUM" if ws.trust_score > 0.40 else "LOW")
+                        trust_level_val = (
+                            "HIGH"
+                            if ws.trust_score > 0.70
+                            else "MEDIUM"
+                            if ws.trust_score > 0.40
+                            else "LOW"
+                        )
                         factor_summary_val = {
                             "positive": list(act.supporting_factors[:2]),
                             "negative": list(act.opposing_factors[:2]),
                         }
                         data_risk_flag_val = ws.blockers[0] if ws.blockers else None
                         rec_state_val = (
-                            "ACTIONABLE" if action_val in ("ADD", "PROBE")
-                            else "BROWSE_ONLY" if action_val in ("NO_ACTION", "avoid")
+                            "ACTIONABLE"
+                            if action_val in ("ADD", "PROBE")
+                            else "BROWSE_ONLY"
+                            if action_val in ("NO_ACTION", "avoid")
                             else "CONSTRAINED"
                         )
                     except Exception:
@@ -1269,29 +1290,33 @@ def create_app():
                     # For picks 21-50: derive recommendation_state from action directly
                     raw_action = str(r.get("action") or "").upper()
                     rec_state_val = (
-                        "ACTIONABLE" if raw_action in ("ADD", "PROBE")
-                        else "BROWSE_ONLY" if raw_action in ("NO_ACTION", "AVOID")
+                        "ACTIONABLE"
+                        if raw_action in ("ADD", "PROBE")
+                        else "BROWSE_ONLY"
+                        if raw_action in ("NO_ACTION", "AVOID")
                         else "CONSTRAINED"
                     )
-                picks.append({
-                    **r,
-                    "name": name,
-                    "belief_mu": round(belief_mu, 4),
-                    "belief_sigma": round(belief_sigma, 4),
-                    "belief_delta_mu": round(delta_mu, 4),
-                    "top_evidence": top_evidence,
-                    "sparkline": sparkline,
-                    "event_tags": event_tags,
-                    "action":               action_val,
-                    "confidence":           confidence_val,
-                    "world_state_summary":  ws_summary,
-                    "top_invalidators":     top_inv,
-                    "trust_score":          trust_score_val,
-                    "trust_level":          trust_level_val,
-                    "factor_summary":       factor_summary_val,
-                    "data_risk_flag":       data_risk_flag_val,
-                    "recommendation_state": rec_state_val,
-                })
+                picks.append(
+                    {
+                        **r,
+                        "name": name,
+                        "belief_mu": round(belief_mu, 4),
+                        "belief_sigma": round(belief_sigma, 4),
+                        "belief_delta_mu": round(delta_mu, 4),
+                        "top_evidence": top_evidence,
+                        "sparkline": sparkline,
+                        "event_tags": event_tags,
+                        "action": action_val,
+                        "confidence": confidence_val,
+                        "world_state_summary": ws_summary,
+                        "top_invalidators": top_inv,
+                        "trust_score": trust_score_val,
+                        "trust_level": trust_level_val,
+                        "factor_summary": factor_summary_val,
+                        "data_risk_flag": data_risk_flag_val,
+                        "recommendation_state": rec_state_val,
+                    }
+                )
             return {
                 "as_of": today_str,
                 "picks": picks,
@@ -1304,7 +1329,9 @@ def create_app():
             }
 
         # Fall back to old signal-based picks
-        recommend = db.signal_recommend(limit=resolved_limit if not search_text else max(resolved_limit, 200))
+        recommend = db.signal_recommend(
+            limit=resolved_limit if not search_text else max(resolved_limit, 200)
+        )
         picks = recommend.get("picks", [])
         fallback_name_map = _read_instrument_name_map(
             db,
@@ -1312,8 +1339,10 @@ def create_app():
         )
         if search_text:
             picks = [
-                pick for pick in picks
-                if search_text in f"{str(pick.get('symbol') or '').upper()} {fallback_name_map.get(str(pick.get('symbol') or '').upper(), '')}".lower()
+                pick
+                for pick in picks
+                if search_text
+                in f"{str(pick.get('symbol') or '').upper()} {fallback_name_map.get(str(pick.get('symbol') or '').upper(), '')}".lower()
             ]
         dropped = recommend.get("dropped", [])
         for pick in picks:
@@ -1369,7 +1398,9 @@ def create_app():
         return {"stages": by_stage, "total": len(rows)}
 
     @app.get("/api/dag/runtime")
-    async def get_dag_runtime(limit: int = 200):
+    async def get_dag_runtime(
+        limit: int = Query(200, ge=1, le=500),
+    ):
         db = _db()
         db.job_runs_mark_stale_by_policy()
         db.event_log_mark_stale()
@@ -1386,9 +1417,10 @@ def create_app():
         return {"id": dag_id, "enabled": False}
 
     @app.patch("/api/dag/{dag_id}/config")
-    async def update_dag_config(dag_id: int, req: dict = Body(...)):
+    async def update_dag_config(dag_id: int, req: dict):
         """Update config_json for a pipeline_dag row."""
         import json as _json
+
         config_data = req.get("config") or {}
         if not isinstance(config_data, dict):
             raise HTTPException(status_code=400, detail="config must be a JSON object")
@@ -1401,15 +1433,15 @@ def create_app():
         return {"id": dag_id, "config": config_data}
 
     @app.post("/api/dag/{dag_id}/run")
-    async def run_dag_node(dag_id: int, req: dict = Body(...)):
-        from trade_py.bus import bootstrap_from_dag, dispatch_dag_row, get_bus
+    async def run_dag_node(dag_id: int, req: dict):
+        from trade_py.bus import bootstrap_from_dag, dispatch_dag_row
 
         mode = str(req.get("mode") or "self").strip().lower()
         if mode not in {"self", "upstream", "downstream", "full"}:
-            raise HTTPException(status_code=400, detail="mode must be one of self, upstream, downstream, full")
-        payload = req.get("payload") or {}
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="payload must be a JSON object")
+            raise HTTPException(
+                status_code=400, detail="mode must be one of self, upstream, downstream, full"
+            )
+        payload = _request_payload(req)
         date_from = str(req.get("date_from") or "").strip() or None
         date_to = str(req.get("date_to") or "").strip() or None
         db = _db()
@@ -1435,16 +1467,19 @@ def create_app():
             "target_dag_id": target_dag_id,
             "mode": mode,
         }
-        bus = get_bus(db)
-        bootstrap_from_dag(db, data_root)
-        event = dispatch_dag_row(
-            db,
-            bus,
-            data_root,
-            target_row,
-            payload,
-            parent_event_id=None,
-        )
+        bus = resources.bus
+        bootstrap_from_dag(db, data_root, bus=bus)
+        try:
+            event = dispatch_dag_row(
+                db,
+                bus,
+                data_root,
+                target_row,
+                payload,
+                parent_event_id=None,
+            )
+        except EventAdmissionError as exc:
+            return event_admission_failure_response(exc)
         return {
             "accepted": True,
             "mode": mode,
@@ -1458,60 +1493,123 @@ def create_app():
     # ── API: trigger event ────────────────────────────────────────────────────
 
     @app.post("/api/trigger")
-    async def trigger_event(req: dict = Body(...)):
-        from trade_py.bus import get_bus, bootstrap_from_dag
+    async def trigger_event(req: dict):
+        from trade_py.bus import bootstrap_from_dag
 
         topic = str(req.get("topic") or "").strip()
         if not topic:
             raise HTTPException(status_code=400, detail="topic is required")
-        payload = req.get("payload") or {}
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="payload must be a JSON object")
+        payload = _request_payload(req)
         db = _db()
-        bus = get_bus(db)
-        bootstrap_from_dag(db, data_root)
-        event = bus.publish(topic, payload)
-        return {"event_id": event.id, "topic": topic}
+        bus = resources.bus
+        bootstrap_from_dag(db, data_root, bus=bus)
+        result = bus.publish_with_outcome(topic, payload)
+        if not result.accepted:
+            return event_admission_failure_response(result)
+        return {"event_id": result.event.id, "topic": topic}
 
     @app.post("/api/run")
-    async def run_target(req: dict = Body(...)):
-        from trade_py.cli import run as run_cli
-
+    async def run_target(req: dict):
         target = str(req.get("target") or "").strip()
         if not target:
             raise HTTPException(status_code=400, detail="target is required")
-        payload = req.get("payload") or {}
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="payload must be a JSON object")
-        limit = max(1, int(req.get("limit") or 10))
+        payload = _request_payload(req)
+        raw_limit = req.get("limit")
+        try:
+            limit = 10 if raw_limit is None else int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="limit must be between 1 and 500",
+            ) from exc
+        if limit < 1 or limit > 500:
+            raise HTTPException(
+                status_code=400,
+                detail="limit must be between 1 and 500",
+            )
 
-        argv = [target, "--data-root", data_root]
-        if target == "agenda":
-            argv += ["--limit", str(limit)]
-        if payload:
-            import json as _json
-
-            argv += ["--payload", _json.dumps(payload, ensure_ascii=False)]
-
-        def _run_workflow() -> None:
-            try:
-                run_cli.main(argv)
-            except Exception:
-                logger.exception("web-triggered workflow failed: %s", target)
-
-        Thread(target=_run_workflow, name=f"trade-web-run-{target}", daemon=True).start()
-        return {"accepted": True, "target": target, "limit": limit}
+        result = resources.commands.start(
+            target,
+            payload_json=json.dumps(payload, ensure_ascii=False) if payload else None,
+            limit=limit,
+        )
+        if result.accepted:
+            return {
+                "accepted": True,
+                "target": target,
+                "limit": limit,
+                "pid": result.pid,
+                "run_id": result.run_id,
+                "status": "running",
+            }
+        outcome_value = str(getattr(result.outcome, "value", result.outcome))
+        failure_contracts = {
+            "saturated": {
+                "message": "workflow command capacity is exhausted",
+                "reason_code": "COMMAND_CAPACITY_EXHAUSTED",
+                "status": "saturated",
+                "retry_after": "1",
+            },
+            "stopping": {
+                "message": "workflow command runtime is stopping",
+                "reason_code": "COMMAND_RUNTIME_STOPPING",
+                "status": "stopping",
+                "retry_after": "5",
+            },
+            "spawn_failed": {
+                "message": "workflow command could not be started",
+                "reason_code": "COMMAND_START_FAILED",
+                "status": "error",
+                "retry_after": None,
+            },
+            "persistence_failed": {
+                "message": "workflow command could not be recorded",
+                "reason_code": "COMMAND_PERSISTENCE_FAILED",
+                "status": "error",
+                "retry_after": None,
+            },
+        }
+        failure = failure_contracts.get(
+            outcome_value,
+            {
+                "message": "workflow command is unavailable",
+                "reason_code": "COMMAND_UNAVAILABLE",
+                "status": "error",
+                "retry_after": None,
+            },
+        )
+        retry_after = failure["retry_after"]
+        headers = {"Retry-After": retry_after} if isinstance(retry_after, str) else {}
+        return JSONResponse(
+            status_code=503,
+            headers=headers,
+            content={
+                "accepted": False,
+                "target": target,
+                "limit": limit,
+                "outcome": outcome_value,
+                "message": failure["message"],
+                "reason_code": failure["reason_code"],
+                "run_id": result.run_id,
+                "status": failure["status"],
+            },
+        )
 
     # ── API: event_log ────────────────────────────────────────────────────────
 
     @app.get("/api/events")
-    async def get_events(limit: int = 50, topic: str | None = None):
+    async def get_events(
+        limit: int = Query(50, ge=1, le=500),
+        topic: str | None = None,
+    ):
         db = _db()
         db.event_log_mark_stale()
         return db.event_log_recent(limit, topic)
 
     @app.get("/api/workflows")
-    async def get_workflows(limit: int = 20):
+    async def get_workflows(
+        limit: int = Query(20, ge=1, le=500),
+    ):
         db = _db()
         db.job_runs_mark_stale_by_policy()
         db.event_log_mark_stale()
@@ -1528,22 +1626,26 @@ def create_app():
         return detail
 
     @app.post("/api/workflows/{root_event_id}/rerun-node")
-    async def rerun_workflow_node(root_event_id: int, req: dict = Body(...)):
-        from trade_py.bus import bootstrap_from_dag, dispatch_dag_row, get_bus
+    async def rerun_workflow_node(root_event_id: int, req: dict):
+        from trade_py.bus import bootstrap_from_dag, dispatch_dag_row
 
         dag_id = int(req.get("dag_id") or req.get("node_id") or 0)
         if dag_id <= 0:
             raise HTTPException(status_code=400, detail="dag_id is required")
         mode = str(req.get("mode") or "self").strip().lower()
         if mode not in {"self", "upstream", "downstream", "full"}:
-            raise HTTPException(status_code=400, detail="mode must be one of self, upstream, downstream, full")
+            raise HTTPException(
+                status_code=400, detail="mode must be one of self, upstream, downstream, full"
+            )
         db = _db()
         db.job_runs_mark_stale_by_policy()
         db.event_log_mark_stale()
         detail = db.event_workflow_detail(root_event_id)
         if not detail:
             raise HTTPException(status_code=404, detail="workflow not found")
-        node = next((row for row in detail.get("nodes", []) if int(row.get("dag_id") or 0) == dag_id), None)
+        node = next(
+            (row for row in detail.get("nodes", []) if int(row.get("dag_id") or 0) == dag_id), None
+        )
         if not node:
             raise HTTPException(status_code=404, detail="dag node not found in workflow")
         dag_row = db.pipeline_dag_get(dag_id)
@@ -1565,32 +1667,39 @@ def create_app():
             "job_name": node.get("job_name"),
             "mode": mode,
         }
-        bus = get_bus(db)
-        bootstrap_from_dag(db, data_root)
+        bus = resources.bus
+        bootstrap_from_dag(db, data_root, bus=bus)
         target_row = dag_row
         if mode == "full":
-            event = bus.publish(str(detail.get("topic") or ""), payload, parent_event_id=root_event_id)
+            result = bus.publish_with_outcome(
+                str(detail.get("topic") or ""), payload, parent_event_id=root_event_id
+            )
+            if not result.accepted:
+                return event_admission_failure_response(result)
             return {
                 "accepted": True,
                 "mode": mode,
                 "root_event_id": root_event_id,
                 "dag_id": dag_id,
                 "job_name": node.get("job_name"),
-                "event_id": event.id,
+                "event_id": result.event.id,
                 "topic": detail.get("topic"),
                 "target_dag_id": dag_id,
             }
         if mode == "upstream":
             upstream_dag_id = _pick_upstream_replay_node(detail.get("nodes") or [], dag_id)
             target_row = db.pipeline_dag_get(upstream_dag_id) or dag_row
-        event = dispatch_dag_row(
-            db,
-            bus,
-            data_root,
-            target_row,
-            payload,
-            parent_event_id=root_event_id,
-        )
+        try:
+            event = dispatch_dag_row(
+                db,
+                bus,
+                data_root,
+                target_row,
+                payload,
+                parent_event_id=root_event_id,
+            )
+        except EventAdmissionError as exc:
+            return event_admission_failure_response(exc)
         return {
             "accepted": True,
             "mode": mode,
@@ -1605,7 +1714,10 @@ def create_app():
     # ── API: job_runs ─────────────────────────────────────────────────────────
 
     @app.get("/api/runs")
-    async def get_runs(limit: int = 50, stage: str | None = None):
+    async def get_runs(
+        limit: int = Query(50, ge=1, le=500),
+        stage: str | None = None,
+    ):
         db = _db()
         db.job_runs_mark_stale_by_policy()
         return db.job_runs_recent(limit, stage=stage)
@@ -1616,58 +1728,6 @@ def create_app():
     async def get_models():
         return _db().model_registry_list()
 
-    # ── API: status ───────────────────────────────────────────────────────────
-
-    @app.get("/api/status")
-    async def get_status():
-        db = _db()
-        today = date.today().isoformat()
-        gate = db.quality_gate_get()
-        try:
-            from trade_py.utils.data_inspector import get_data_status
-            data_status = get_data_status(data_root, sample_limit=8)
-        except Exception as exc:  # pragma: no cover - defensive web path
-            logger.warning("data status failed: %s", exc)
-            data_status = {
-                "quality_gate": {
-                    "status": "unknown",
-                    "reason_codes": ["DATA_STATUS_ERROR"],
-                    "components": {},
-                    "recovery_plan": [],
-                    "error": str(exc),
-                }
-            }
-        try:
-            from scripts.backup import backup_doctor
-            backup_health = backup_doctor(data_root)
-        except Exception as exc:  # pragma: no cover - defensive web path
-            logger.warning("backup doctor failed: %s", exc)
-            backup_health = {
-                "backend": "local",
-                "enabled": False,
-                "google_drive_available": False,
-                "google_drive_folder_id": "",
-                "google_drive_key_file": "",
-            }
-        return {
-            "status": "ok",
-            "data_root": data_root,
-            "today": today,
-            "inference_models": _inference.model_names,
-            "models_loaded_at": _inference.loaded_at,
-            "quality_gate": gate,
-            "data_quality_gate": data_status.get("quality_gate"),
-            "data_status": data_status,
-            "due_agenda": db.agenda_queue_due(limit=10),
-            "planned_events": db.planned_events_list(
-                start_date=today,
-                end_date=(date.today() + timedelta(days=7)).isoformat(),
-                limit=10,
-            ),
-            "backups": db.backup_snapshots_recent(limit=5),
-            "backup_health": backup_health,
-        }
-
     @app.get("/api/automation/overview")
     async def get_automation_overview():
         db = _db()
@@ -1677,7 +1737,8 @@ def create_app():
         latest_trading_day = (
             today_str
             if db.trading_calendar_is_open(today_str, exchange="SSE")
-            else db.trading_calendar_prev_trading_day(today_str, exchange="SSE") or latest_market_asof
+            else db.trading_calendar_prev_trading_day(today_str, exchange="SSE")
+            or latest_market_asof
         )
         calendar_rows: list[dict[str, Any]] = []
         for offset in range(-1, 4):
@@ -1690,7 +1751,8 @@ def create_app():
         recent_events = [
             row
             for row in db.event_log_recent(limit=120)
-            if str(row.get("topic") or "").startswith("gate.") or str(row.get("topic") or "") == "agenda.due"
+            if str(row.get("topic") or "").startswith("gate.")
+            or str(row.get("topic") or "") == "agenda.due"
         ][:12]
         try:
             from trade_py.bus.scheduler import describe_schedule
@@ -1778,26 +1840,33 @@ def create_app():
     @app.get("/api/research/warehouse/{layer}/{table}")
     async def get_research_warehouse_table(layer: str, table: str, limit: int = 100):
         from fastapi import HTTPException
+
         from trade_web.backend.research import read_research_table
 
         try:
             return read_research_table(data_root, layer=layer, table=table, limit=limit)
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/readiness-grid")
-    async def get_readiness_grid(days: int = 30, end_date: str | None = None, datasets: str | None = None):
+    async def get_readiness_grid(
+        days: int = 30, end_date: str | None = None, datasets: str | None = None
+    ):
         db = _db()
         db.job_runs_mark_stale_by_policy()
         db.event_log_mark_stale()
         resolved_days = int(days or 30)
         if resolved_days not in {30, 60, 90}:
             resolved_days = 30
-        dataset_list = [item.strip() for item in str(datasets or "").split(",") if item.strip()] or None
+        dataset_list = [
+            item.strip() for item in str(datasets or "").split(",") if item.strip()
+        ] or None
         scope = f"{resolved_days}:{end_date or ''}:{','.join(dataset_list or [])}"
         return _snapshot_get_or_build(
             "readiness-grid",
-            signature=_readiness_signature(days=resolved_days, end_date=end_date, datasets=datasets),
+            signature=_readiness_signature(
+                days=resolved_days, end_date=end_date, datasets=datasets
+            ),
             ttl_seconds=20.0,
             scope=scope,
             builder=lambda: build_readiness_grid(
@@ -1810,20 +1879,29 @@ def create_app():
         )
 
     @app.get("/api/readiness/replay-plan")
-    async def get_readiness_replay_plan(dataset: str, date: str | None = None, date_from: str | None = None, date_to: str | None = None):
+    async def get_readiness_replay_plan(
+        dataset: str,
+        date: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ):
         db = _db()
         resolved_from = date_from or date or dtm.date.today().isoformat()
         resolved_to = date_to or date or resolved_from
         return build_replay_plan(db, dataset.strip(), date_from=resolved_from, date_to=resolved_to)
 
     @app.get("/api/readiness/history")
-    async def get_readiness_history(dataset: str | None = None, date: str | None = None, limit: int = 40):
+    async def get_readiness_history(
+        dataset: str | None = None, date: str | None = None, limit: int = 40
+    ):
         return {
-            "items": list_recovery_history(_db(), dataset=dataset.strip() if dataset else None, date=date, limit=limit),
+            "items": list_recovery_history(
+                _db(), dataset=dataset.strip() if dataset else None, date=date, limit=limit
+            ),
         }
 
     @app.post("/api/readiness/detect-changes")
-    async def post_readiness_detect_changes(req: dict = Body(...)):
+    async def post_readiness_detect_changes(req: dict):
         dataset = str(req.get("dataset") or "").strip()
         if not dataset:
             raise HTTPException(status_code=400, detail="dataset is required")
@@ -1831,10 +1909,12 @@ def create_app():
         date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
         if not date_from:
             raise HTTPException(status_code=400, detail="date_from is required")
-        return detect_changed_data(data_root, _db(), dataset=dataset, date_from=date_from, date_to=date_to)
+        return detect_changed_data(
+            data_root, _db(), dataset=dataset, date_from=date_from, date_to=date_to
+        )
 
     @app.post("/api/readiness/backfill")
-    async def post_readiness_backfill(req: dict = Body(...)):
+    async def post_readiness_backfill(req: dict):
         dataset = str(req.get("dataset") or "").strip()
         if not dataset:
             raise HTTPException(status_code=400, detail="dataset is required")
@@ -1842,15 +1922,22 @@ def create_app():
         date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
         mode = str(req.get("mode") or "data_only").strip().lower()
         if mode not in {"data_only", "data_plus_downstream", "full_replay"}:
-            raise HTTPException(status_code=400, detail="mode must be one of data_only, data_plus_downstream, full_replay")
+            raise HTTPException(
+                status_code=400,
+                detail="mode must be one of data_only, data_plus_downstream, full_replay",
+            )
         if not date_from:
             raise HTTPException(status_code=400, detail="date_from is required")
         db = _db()
         plan = build_replay_plan(db, dataset, date_from=date_from, date_to=date_to)
-        fingerprint_before = compute_readiness_fingerprint(data_root, db, dataset=dataset, day=date_to)
+        fingerprint_before = compute_readiness_fingerprint(
+            data_root, db, dataset=dataset, day=date_to
+        )
         job_names = [plan.get("job_name")] if plan.get("job_name") else []
         if mode in {"data_plus_downstream", "full_replay"}:
-            job_names.extend(str(item.get("job_name") or "") for item in plan.get("downstream_nodes", []))
+            job_names.extend(
+                str(item.get("job_name") or "") for item in plan.get("downstream_nodes", [])
+            )
         if mode == "full_replay":
             job_names = [str(item.get("job_name") or "") for item in plan.get("full_chain", [])]
         action_id = create_recovery_action(
@@ -1882,7 +1969,7 @@ def create_app():
         return {"accepted": True, "action_id": action_id, "plan": plan}
 
     @app.post("/api/readiness/replay")
-    async def post_readiness_replay(req: dict = Body(...)):
+    async def post_readiness_replay(req: dict):
         dataset = str(req.get("dataset") or "").strip()
         if not dataset:
             raise HTTPException(status_code=400, detail="dataset is required")
@@ -1890,12 +1977,17 @@ def create_app():
         date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
         mode = str(req.get("mode") or "data_plus_downstream").strip().lower()
         if mode not in {"data_only", "data_plus_downstream", "full_replay"}:
-            raise HTTPException(status_code=400, detail="mode must be one of data_only, data_plus_downstream, full_replay")
+            raise HTTPException(
+                status_code=400,
+                detail="mode must be one of data_only, data_plus_downstream, full_replay",
+            )
         if not date_from:
             raise HTTPException(status_code=400, detail="date_from is required")
         db = _db()
         plan = build_replay_plan(db, dataset, date_from=date_from, date_to=date_to)
-        fingerprint_before = compute_readiness_fingerprint(data_root, db, dataset=dataset, day=date_to)
+        fingerprint_before = compute_readiness_fingerprint(
+            data_root, db, dataset=dataset, day=date_to
+        )
         action_id = create_recovery_action(
             db,
             dataset=dataset,
@@ -1903,7 +1995,9 @@ def create_app():
             date_to=date_to,
             action_type="replay",
             mode=mode,
-            job_names=[str(item.get("job_name") or "") for item in plan.get("downstream_nodes", [])],
+            job_names=[
+                str(item.get("job_name") or "") for item in plan.get("downstream_nodes", [])
+            ],
             affected_outputs=list(plan.get("affected_outputs") or []),
             request_payload=req,
             fingerprint_before=fingerprint_before,
@@ -1929,8 +2023,8 @@ def create_app():
         return build_ops_compute_layers(
             data_root,
             _db(),
-            _state_svc,
-            _explain_svc,
+            _state_svc(),
+            _explain_svc(),
             as_of_date=date,
         )
 
@@ -1940,13 +2034,13 @@ def create_app():
             return get_ops_node_result(
                 data_root,
                 _db(),
-                _state_svc,
-                _explain_svc,
+                _state_svc(),
+                _explain_svc(),
                 node_id=node_id,
                 as_of_date=date,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/ops/dependency-path")
     async def get_ops_dependency_path_api(node_ids: str):
@@ -1956,8 +2050,10 @@ def create_app():
         return build_ops_dependency_path(ids)
 
     @app.post("/api/ops/replay/preview")
-    async def post_ops_replay_preview_api(req: dict = Body(...)):
-        selected_node_ids = [str(item).strip() for item in (req.get("selected_node_ids") or []) if str(item).strip()]
+    async def post_ops_replay_preview_api(req: dict):
+        selected_node_ids = [
+            str(item).strip() for item in (req.get("selected_node_ids") or []) if str(item).strip()
+        ]
         selected_cells = list(req.get("selected_cells") or [])
         date_from = str(req.get("date_from") or req.get("date") or "").strip()
         date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
@@ -1976,11 +2072,13 @@ def create_app():
                 action=action,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/ops/replay/execute")
-    async def post_ops_replay_execute_api(req: dict = Body(...)):
-        selected_node_ids = [str(item).strip() for item in (req.get("selected_node_ids") or []) if str(item).strip()]
+    async def post_ops_replay_execute_api(req: dict):
+        selected_node_ids = [
+            str(item).strip() for item in (req.get("selected_node_ids") or []) if str(item).strip()
+        ]
         selected_cells = list(req.get("selected_cells") or [])
         date_from = str(req.get("date_from") or req.get("date") or "").strip()
         date_to = str(req.get("date_to") or req.get("date") or date_from).strip()
@@ -2000,126 +2098,7 @@ def create_app():
                 action=action,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-    @app.get("/api/events/stream")
-    async def stream_events(request: FastAPIRequest, after_id: int = 0, limit: int = 50, poll_seconds: float = 2.0):
-        async def _gen():
-            from trade_py.db.trade_db import TradeDB
-            last_id = max(0, int(after_id))
-            sse_db = TradeDB(data_root)
-            try:
-                while True:
-                    if shutdown_event.is_set():
-                        break
-                    try:
-                        if await request.is_disconnected():
-                            break
-                    except RuntimeError:
-                        break
-                    rows = sse_db.event_log_since(after_id=last_id, limit=limit)
-                    if rows:
-                        for row in rows:
-                            last_id = max(last_id, int(row.get("id") or 0))
-                            yield f"data: {json.dumps(row, ensure_ascii=False)}\n\n"
-                    else:
-                        yield ": ping\n\n"
-                    if await _stream_wait(poll_seconds):
-                        break
-            except asyncio.CancelledError:
-                return
-            except RuntimeError:
-                return
-            finally:
-                try:
-                    sse_db.close()
-                except Exception:
-                    pass
-
-        return StreamingResponse(
-            _gen(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    @app.get("/api/runtime/stream")
-    async def stream_runtime(request: FastAPIRequest, scope: str = "report", poll_seconds: float = 2.0):
-        scope_name = "events-page" if str(scope).strip().lower() == "events" else "report-page"
-
-        async def _gen():
-            from trade_py.db.trade_db import TradeDB
-            last_signature = ""
-            sse_db = TradeDB(data_root)
-            try:
-                while True:
-                    if shutdown_event.is_set():
-                        break
-                    try:
-                        if await request.is_disconnected():
-                            break
-                    except RuntimeError:
-                        break
-                    signature = _payload_signature(scope_name, db=sse_db)
-                    if signature != last_signature:
-                        last_signature = signature
-                        payload = {
-                            "scope": scope_name,
-                            "signature": signature,
-                            "ts": datetime.now().isoformat(timespec="seconds"),
-                        }
-                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                    else:
-                        yield ": ping\n\n"
-                    if await _stream_wait(poll_seconds):
-                        break
-            except asyncio.CancelledError:
-                return
-            except RuntimeError:
-                return
-            finally:
-                try:
-                    sse_db.close()
-                except Exception:
-                    pass
-
-        return StreamingResponse(
-            _gen(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    @app.get("/api/calendar")
-    async def get_calendar(date_str: str | None = None, days: int = 5):
-        db = _db()
-        start = date.fromisoformat(date_str) if date_str else date.today()
-        calendar_rows: list[dict[str, Any]] = []
-        for offset in range(max(0, int(days)) + 1):
-            cur = start + timedelta(days=offset)
-            row = db.trading_calendar_get(cur.isoformat(), exchange="SSE")
-            if row:
-                calendar_rows.append(row)
-        planned = db.planned_events_list(
-            start_date=start.isoformat(),
-            end_date=(start + timedelta(days=max(0, int(days)))).isoformat(),
-            limit=100,
-        )
-        return {"calendar": calendar_rows, "planned_events": planned}
-
-    @app.get("/api/agenda")
-    async def get_agenda(limit: int = 50, status: str | None = None):
-        return _db().agenda_queue_recent(limit=limit, status=status)
-
-    @app.get("/api/backups")
-    async def get_backups(limit: int = 20, status: str | None = None):
-        return _db().backup_snapshots_recent(limit=limit, status=status)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # ── POST /predict — online inference ─────────────────────────────────────
 
@@ -2131,14 +2110,14 @@ def create_app():
     async def predict(req: PredictRequest):
         if not req.symbols:
             raise HTTPException(status_code=400, detail="symbols list is empty")
-        results = _inference.predict(req.symbols, req.date)
+        results = _inference().predict(req.symbols, req.date)
         return results
 
     @app.post("/predict/reload")
     async def reload_models():
         """Hot-reload models from model_registry."""
-        _inference.reload()
-        return {"reloaded": True, "models": _inference.model_names}
+        _inference().reload()
+        return {"reloaded": True, "models": _inference().model_names}
 
     # ── API: belief/{symbol} (EBRT) ───────────────────────────────────────────
 
@@ -2157,20 +2136,25 @@ def create_app():
         try:
             cur = date.today()
             from datetime import timedelta as _td
+
             for _ in range(days):
                 row = db.belief_state_get(cur.isoformat(), symbol)
                 if row:
                     bv = row.get("belief_vec") or {}
                     bt = db.belief_transition_get(symbol, cur.isoformat())
-                    delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0)) if bt else 0.0
-                    history.append({
-                        "date": cur.isoformat(),
-                        "mu": float(bv.get("mu", 0.0)),
-                        "sigma": float(bv.get("sigma", 0.3)),
-                        "confidence": float(row.get("confidence") or 0.3),
-                        "uncertainty": float(row.get("uncertainty") or 0.3),
-                        "delta_mu": round(delta_mu, 4),
-                    })
+                    delta_mu = (
+                        float((bt.get("delta_vec") or {}).get("mu_delta", 0.0)) if bt else 0.0
+                    )
+                    history.append(
+                        {
+                            "date": cur.isoformat(),
+                            "mu": float(bv.get("mu", 0.0)),
+                            "sigma": float(bv.get("sigma", 0.3)),
+                            "confidence": float(row.get("confidence") or 0.3),
+                            "uncertainty": float(row.get("uncertainty") or 0.3),
+                            "delta_mu": round(delta_mu, 4),
+                        }
+                    )
                 cur -= _td(days=1)
         except Exception:
             pass
@@ -2183,22 +2167,21 @@ def create_app():
                 ev_type = "unknown"
                 ev_direction = 0.0
                 try:
-                    row = db._conn.execute(
-                        "SELECT evidence_type, direction FROM Evidence WHERE evidence_id=?",
-                        (a.get("evidence_id", ""),),
-                    ).fetchone()
+                    row = _runtime_reads(db).evidence_lookup(str(a.get("evidence_id") or ""))
                     if row:
-                        ev_type = row[0] or "unknown"
-                        ev_direction = float(row[1] or 0.0)
+                        ev_type = str(row.get("evidence_type") or "unknown")
+                        ev_direction = float(row.get("direction") or 0.0)
                 except Exception:
                     pass
-                top_attention.append({
-                    "evidence_id": a.get("evidence_id"),
-                    "evidence_type": ev_type,
-                    "weight": float(a.get("weight") or 0.0),
-                    "logit": float(a.get("logit") or 0.0),
-                    "direction": round(ev_direction, 2),
-                })
+                top_attention.append(
+                    {
+                        "evidence_id": a.get("evidence_id"),
+                        "evidence_type": ev_type,
+                        "weight": float(a.get("weight") or 0.0),
+                        "logit": float(a.get("logit") or 0.0),
+                        "direction": round(ev_direction, 2),
+                    }
+                )
         except Exception:
             pass
 
@@ -2273,11 +2256,11 @@ def create_app():
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol required")
         try:
-            ws = _state_svc.build(symbol, as_of_date=date)
+            ws = _state_svc().build(symbol, as_of_date=date)
             return ws.to_dict()
         except Exception as exc:
             logger.exception("get_state error for %s: %s", symbol, exc)
-            raise HTTPException(status_code=500, detail=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # ── API: explain/{symbol} ─────────────────────────────────────────────────
 
@@ -2288,11 +2271,11 @@ def create_app():
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol required")
         try:
-            exp = _explain_svc.explain(symbol, as_of_date=date)
+            exp = _explain_svc().explain(symbol, as_of_date=date)
             return exp.to_dict()
         except Exception as exc:
             logger.exception("get_explain error for %s: %s", symbol, exc)
-            raise HTTPException(status_code=500, detail=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.get("/api/causal/{symbol}")
     async def get_causal_chain(
@@ -2308,11 +2291,9 @@ def create_app():
             raise HTTPException(status_code=400, detail="symbol required")
         try:
             parsed_horizons = tuple(
-                int(item.strip())
-                for item in horizons.split(",")
-                if item.strip().isdigit()
+                int(item.strip()) for item in horizons.split(",") if item.strip().isdigit()
             ) or (1, 5, 20)
-            return _explain_svc.causal_chain(
+            return _explain_svc().causal_chain(
                 symbol,
                 as_of_date=date,
                 persist=persist,
@@ -2321,7 +2302,7 @@ def create_app():
             )
         except Exception as exc:
             logger.exception("get_causal_chain error for %s: %s", symbol, exc)
-            raise HTTPException(status_code=500, detail=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.get("/api/causal/{symbol}/validation")
     async def get_causal_validation(
@@ -2337,11 +2318,9 @@ def create_app():
             raise HTTPException(status_code=400, detail="symbol required")
         try:
             parsed_horizons = tuple(
-                int(item.strip())
-                for item in horizons.split(",")
-                if item.strip().isdigit()
+                int(item.strip()) for item in horizons.split(",") if item.strip().isdigit()
             ) or (1, 5, 20)
-            return _explain_svc.causal_validation(
+            return _explain_svc().causal_validation(
                 symbol,
                 snapshot_id=snapshot_id,
                 as_of_date=date,
@@ -2350,7 +2329,7 @@ def create_app():
             )
         except Exception as exc:
             logger.exception("get_causal_validation error for %s: %s", symbol, exc)
-            raise HTTPException(status_code=500, detail=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # ── API: actions-page ─────────────────────────────────────────────────────
 
@@ -2374,32 +2353,38 @@ def create_app():
             if not sym:
                 continue
             try:
-                ws     = _state_svc.build(sym, as_of_date=today_str)
-                _, act = _decision_svc.decide(ws)
+                ws = _state_svc().build(sym, as_of_date=today_str)
+                _, act = _decision_svc().decide(ws)
                 if act.action in (
-                    DecisionAction.WATCH, DecisionAction.PROBE,
-                    DecisionAction.ADD,   DecisionAction.REDUCE,
+                    DecisionAction.WATCH,
+                    DecisionAction.PROBE,
+                    DecisionAction.ADD,
+                    DecisionAction.REDUCE,
                 ):
-                    results.append({
-                        "symbol":       sym,
-                        "action":       act.action.value,
-                        "confidence":   act.confidence,
-                        "score":        round(act.score, 4),
-                        "risk":         round(act.risk, 4),
-                        "reason":       act.reason,
-                        "position_hint": act.position_hint,
-                        "state_summary": ws.state_summary,
-                    })
+                    results.append(
+                        {
+                            "symbol": sym,
+                            "action": act.action.value,
+                            "confidence": act.confidence,
+                            "score": round(act.score, 4),
+                            "risk": round(act.risk, 4),
+                            "reason": act.reason,
+                            "position_hint": act.position_hint,
+                            "state_summary": ws.state_summary,
+                        }
+                    )
             except Exception:
                 continue
 
-        results.sort(key=lambda x: (
-            {"ADD": 0, "PROBE": 1, "WATCH": 2, "REDUCE": 3}.get(x["action"], 9),
-            -x["score"],
-        ))
+        results.sort(
+            key=lambda x: (
+                {"ADD": 0, "PROBE": 1, "WATCH": 2, "REDUCE": 3}.get(x["action"], 9),
+                -x["score"],
+            )
+        )
         return {
-            "as_of":   today_str,
-            "total":   len(results),
+            "as_of": today_str,
+            "total": len(results),
             "actions": results,
         }
 
@@ -2411,19 +2396,11 @@ def create_app():
         db = _db()
         today_str = _current_asof(db)
         try:
-            with db._conn_lock:
-                rows = [
-                    dict(row)
-                    for row in db._conn.execute(
-                        "SELECT eval_date, metrics_json FROM QualityReport ORDER BY eval_date DESC LIMIT 7"
-                    ).fetchall()
-                ]
-                gate_rows = {
-                    str(row["eval_date"]): dict(row)
-                    for row in db._conn.execute(
-                        "SELECT eval_date, metrics_json FROM daily_quality_gate ORDER BY eval_date DESC LIMIT 7"
-                    ).fetchall()
-                }
+            projection = _runtime_reads(db).quality_history_projection(limit=7)
+            rows = [dict(row) for row in projection.get("reports", [])]
+            gate_rows = {
+                str(row.get("eval_date") or ""): dict(row) for row in projection.get("gates", [])
+            }
         except Exception:
             rows = []
             gate_rows = {}
@@ -2452,19 +2429,21 @@ def create_app():
                 or latest_gate.get("fundamental_coverage")
                 or 0.0
             )
-            trend.append({
-                "eval_date":    row.get("eval_date"),
-                "trust_scalar": round(float(metrics.get("trust_scalar") or 0.0), 4),
-                "coverage":     round(float(coverage or 0.0), 4),
-            })
-        trend.sort(key=lambda x: (x.get("eval_date") or ""))
+            trend.append(
+                {
+                    "eval_date": row.get("eval_date"),
+                    "trust_scalar": round(float(metrics.get("trust_scalar") or 0.0), 4),
+                    "coverage": round(float(coverage or 0.0), 4),
+                }
+            )
+        trend.sort(key=lambda x: x.get("eval_date") or "")
 
         latest = trend[-1] if trend else {}
         return {
-            "as_of":         today_str,
-            "trust_scalar":  latest.get("trust_scalar"),
-            "coverage":      latest.get("coverage"),
-            "trend":         trend,
+            "as_of": today_str,
+            "trust_scalar": latest.get("trust_scalar"),
+            "coverage": latest.get("coverage"),
+            "trend": trend,
         }
 
     # ── API: belief-graph/{symbol} ────────────────────────────────────────────
@@ -2496,14 +2475,18 @@ def create_app():
                 if row:
                     bv = row.get("belief_vec") or {}
                     bt = db.belief_transition_get(symbol, cur.isoformat())
-                    delta_mu = float((bt.get("delta_vec") or {}).get("mu_delta", 0.0)) if bt else 0.0
-                    history.append({
-                        "date": cur.isoformat(),
-                        "mu": float(bv.get("mu", 0.0)),
-                        "sigma": float(bv.get("sigma", 0.3)),
-                        "confidence": float(row.get("confidence") or 0.3),
-                        "delta_mu": round(delta_mu, 4),
-                    })
+                    delta_mu = (
+                        float((bt.get("delta_vec") or {}).get("mu_delta", 0.0)) if bt else 0.0
+                    )
+                    history.append(
+                        {
+                            "date": cur.isoformat(),
+                            "mu": float(bv.get("mu", 0.0)),
+                            "sigma": float(bv.get("sigma", 0.3)),
+                            "confidence": float(row.get("confidence") or 0.3),
+                            "delta_mu": round(delta_mu, 4),
+                        }
+                    )
                 cur -= _td(days=1)
             history = list(reversed(history))
         except Exception:
@@ -2532,7 +2515,7 @@ def create_app():
         trust_score = 0.0
         belief_vec_latest: dict = {}
         try:
-            exp = _explain_svc.explain(symbol, as_of_date=None)
+            exp = _explain_svc().explain(symbol, as_of_date=None)
             # DecisionExplanation has flat attrs: trust_score, trust_level, trust_components
             trust_score = float(getattr(exp, "trust_score", 0.0) or 0.0)
             trust_components = dict(getattr(exp, "trust_components", {}) or {})
@@ -2555,23 +2538,30 @@ def create_app():
         #           changes across holding horizons — this is always available when
         #           BeliefState has been computed.
         _SUB_BELIEF_NAMES = {
-            "feature_coverage":  {"zh": "特征覆盖度", "en": "Feature Coverage"},
-            "data_freshness":    {"zh": "数据新鲜度", "en": "Data Freshness"},
-            "data_quality":      {"zh": "数据质量",   "en": "Data Quality"},
-            "kline":             {"zh": "技术面",     "en": "Technical"},
-            "sentiment":         {"zh": "市场情绪",   "en": "Sentiment"},
-            "events":            {"zh": "事件信号",   "en": "Events"},
-            "fundamentals":      {"zh": "基本面",     "en": "Fundamentals"},
-            "uncertainty":       {"zh": "不确定性",   "en": "Uncertainty"},
-            "mu_1d":             {"zh": "1日预期",    "en": "1-Day Horizon"},
-            "mu_5d":             {"zh": "5日预期",    "en": "5-Day Horizon"},
-            "mu_20d":            {"zh": "20日预期",   "en": "20-Day Horizon"},
+            "feature_coverage": {"zh": "特征覆盖度", "en": "Feature Coverage"},
+            "data_freshness": {"zh": "数据新鲜度", "en": "Data Freshness"},
+            "data_quality": {"zh": "数据质量", "en": "Data Quality"},
+            "kline": {"zh": "技术面", "en": "Technical"},
+            "sentiment": {"zh": "市场情绪", "en": "Sentiment"},
+            "events": {"zh": "事件信号", "en": "Events"},
+            "fundamentals": {"zh": "基本面", "en": "Fundamentals"},
+            "uncertainty": {"zh": "不确定性", "en": "Uncertainty"},
+            "mu_1d": {"zh": "1日预期", "en": "1-Day Horizon"},
+            "mu_5d": {"zh": "5日预期", "en": "5-Day Horizon"},
+            "mu_20d": {"zh": "20日预期", "en": "20-Day Horizon"},
         }
         _SUB_BELIEF_WEIGHTS = {
-            "feature_coverage": 0.25, "data_freshness": 0.25,
-            "data_quality": 0.20, "kline": 0.30, "sentiment": 0.20,
-            "events": 0.15, "fundamentals": 0.10, "uncertainty": 0.05,
-            "mu_1d": 0.20, "mu_5d": 0.45, "mu_20d": 0.35,
+            "feature_coverage": 0.25,
+            "data_freshness": 0.25,
+            "data_quality": 0.20,
+            "kline": 0.30,
+            "sentiment": 0.20,
+            "events": 0.15,
+            "fundamentals": 0.10,
+            "uncertainty": 0.05,
+            "mu_1d": 0.20,
+            "mu_5d": 0.45,
+            "mu_20d": 0.35,
         }
         sub_beliefs: list[dict] = []
 
@@ -2579,14 +2569,16 @@ def create_app():
             # Use trust breakdown from InferenceService
             for key, val in trust_components.items():
                 names = _SUB_BELIEF_NAMES.get(key, {"zh": key, "en": key})
-                sub_beliefs.append({
-                    "id": key,
-                    "name_zh": names["zh"],
-                    "name_en": names["en"],
-                    "score": round(float(val), 4),
-                    "weight": _SUB_BELIEF_WEIGHTS.get(key, 0.1),
-                    "source": "trust_components",
-                })
+                sub_beliefs.append(
+                    {
+                        "id": key,
+                        "name_zh": names["zh"],
+                        "name_en": names["en"],
+                        "score": round(float(val), 4),
+                        "weight": _SUB_BELIEF_WEIGHTS.get(key, 0.1),
+                        "source": "trust_components",
+                    }
+                )
         elif belief_vec_latest:
             # Fallback: use belief time horizons as sub-beliefs
             for key in ("mu_1d", "mu_5d", "mu_20d"):
@@ -2596,15 +2588,17 @@ def create_app():
                     # mu is a raw belief score; clip to [0,1] for display
                     score = float(val)
                     score_display = max(0.0, min(1.0, (score + 1.0) / 2.0))
-                    sub_beliefs.append({
-                        "id": key,
-                        "name_zh": names["zh"],
-                        "name_en": names["en"],
-                        "score": round(score_display, 4),
-                        "weight": _SUB_BELIEF_WEIGHTS.get(key, 0.1),
-                        "source": "belief_vec",
-                        "raw_mu": round(score, 4),
-                    })
+                    sub_beliefs.append(
+                        {
+                            "id": key,
+                            "name_zh": names["zh"],
+                            "name_en": names["en"],
+                            "score": round(score_display, 4),
+                            "weight": _SUB_BELIEF_WEIGHTS.get(key, 0.1),
+                            "source": "belief_vec",
+                            "raw_mu": round(score, 4),
+                        }
+                    )
 
         # ── 5. Factors from top attention ─────────────────────────────────────
         factors: list[dict] = []
@@ -2614,24 +2608,23 @@ def create_app():
                 ev_type = "unknown"
                 ev_direction = 0.0
                 try:
-                    row = db._conn.execute(
-                        "SELECT evidence_type, direction FROM Evidence WHERE evidence_id=?",
-                        (a.get("evidence_id", ""),),
-                    ).fetchone()
+                    row = _runtime_reads(db).evidence_lookup(str(a.get("evidence_id") or ""))
                     if row:
-                        ev_type = row[0] or "unknown"
-                        ev_direction = float(row[1] or 0.0)
+                        ev_type = str(row.get("evidence_type") or "unknown")
+                        ev_direction = float(row.get("direction") or 0.0)
                 except Exception:
                     pass
                 weight = float(a.get("weight") or 0.0)
-                factors.append({
-                    "id": str(a.get("evidence_id", f"factor_{len(factors)}")),
-                    "name": ev_type,
-                    "score": round(0.5 + ev_direction * 0.5, 3),
-                    "weight": round(weight, 4),
-                    "direction": round(ev_direction, 2),
-                    "evidence_type": ev_type,
-                })
+                factors.append(
+                    {
+                        "id": str(a.get("evidence_id", f"factor_{len(factors)}")),
+                        "name": ev_type,
+                        "score": round(0.5 + ev_direction * 0.5, 3),
+                        "weight": round(weight, 4),
+                        "direction": round(ev_direction, 2),
+                        "evidence_type": ev_type,
+                    }
+                )
         except Exception:
             pass
 
@@ -2658,11 +2651,13 @@ def create_app():
                     target = sub_id
                     break
             if target and f.get("weight", 0) > 0.01:
-                provenance_edges.append({
-                    "from": f["id"],
-                    "to": target,
-                    "weight": f["weight"],
-                })
+                provenance_edges.append(
+                    {
+                        "from": f["id"],
+                        "to": target,
+                        "weight": f["weight"],
+                    }
+                )
 
         return {
             "symbol": symbol,
@@ -2691,91 +2686,41 @@ def create_app():
 
         db = _db()
         today = _current_asof(db)
-
-        # 1. Resolve sector for this symbol
-        sector_code: str | None = None
-        try:
-            row = db._conn.execute(
-                "SELECT sector_code FROM sector_members WHERE symbol=?", (symbol,)
-            ).fetchone()
-            if row:
-                sector_code = row[0]
-        except Exception:
-            pass
-
-        # 2. Market events for symbol's sector (last `days` days)
-        market_events: list[dict] = []
-        try:
-            entity_ids: list[str] = []
-            if sector_code:
-                # sector_code like 801280.SI → entity_id like SW_Environment
-                # Use entity_id pattern from market_events for sector
-                entity_ids.append(sector_code)
-            # Also include SW_Unknown and macro events
-            event_rows = db._conn.execute(
-                """SELECT event_id, event_date, event_type, entity_id,
-                          magnitude, confidence, sentiment_score, news_volume, summary
-                   FROM market_events
-                   WHERE event_date >= date(?, '-' || ? || ' days')
-                     AND event_date <= ?
-                   ORDER BY event_date DESC
-                   LIMIT 50""",
-                (today, str(days), today),
-            ).fetchall()
-            for r in event_rows:
-                eid, edate, etype, entity_id, mag, conf, sent, nvol, summ = r
-                # Include if: matches sector entity, or is macro/broad event
-                is_sector = entity_id and sector_code and (
-                    entity_id == sector_code
-                    or entity_id.upper() == "SW_UNKNOWN"
-                    or entity_id.upper().startswith("SW_MACRO")
-                )
-                is_macro = entity_id and (
-                    "macro" in str(entity_id).lower()
-                    or entity_id.upper() == "SW_UNKNOWN"
-                )
-                if is_sector or is_macro:
-                    market_events.append({
-                        "id": eid,
-                        "date": edate,
-                        "event_type": etype,
-                        "entity_id": entity_id,
-                        "magnitude": round(float(mag or 0), 3),
-                        "confidence": round(float(conf or 1.0), 3),
-                        "sentiment_score": round(float(sent or 0), 3),
-                        "news_volume": int(nvol or 0),
-                        "summary": summ or "",
-                        "source": "market_events",
-                    })
-        except Exception:
-            pass
-
-        # 3. Evidence rows for this symbol
-        evidence_items: list[dict] = []
-        try:
-            ev_rows = db._conn.execute(
-                """SELECT evidence_id, as_of_date, evidence_type, direction,
-                          strength, reliability, novelty
-                   FROM Evidence
-                   WHERE symbol=?
-                   ORDER BY as_of_date DESC
-                   LIMIT 20""",
-                (symbol,),
-            ).fetchall()
-            for r in ev_rows:
-                ev_id, as_of, ev_type, direction, strength, reliability, novelty = r
-                evidence_items.append({
-                    "id": ev_id,
-                    "date": as_of,
-                    "evidence_type": ev_type,
-                    "direction": round(float(direction or 0), 2),
-                    "strength": round(float(strength or 0), 3),
-                    "reliability": round(float(reliability or 0), 3),
-                    "novelty": round(float(novelty or 0), 3),
-                    "source": "evidence_table",
-                })
-        except Exception:
-            pass
+        projection = _runtime_reads(db).symbol_evidence_projection(
+            symbol,
+            today,
+            max(0, int(days)),
+            evidence_limit=20,
+        )
+        sector_code = projection.get("sector_code")
+        market_events = [
+            {
+                "id": row.get("event_id"),
+                "date": row.get("event_date"),
+                "event_type": row.get("event_type"),
+                "entity_id": row.get("entity_id"),
+                "magnitude": round(float(row.get("magnitude") or 0), 3),
+                "confidence": round(float(row.get("confidence") or 1.0), 3),
+                "sentiment_score": round(float(row.get("sentiment_score") or 0), 3),
+                "news_volume": int(row.get("news_volume") or 0),
+                "summary": row.get("summary") or "",
+                "source": "market_events",
+            }
+            for row in projection.get("market_events", [])
+        ]
+        evidence_items = [
+            {
+                "id": row.get("evidence_id"),
+                "date": row.get("as_of_date"),
+                "evidence_type": row.get("evidence_type"),
+                "direction": round(float(row.get("direction") or 0), 2),
+                "strength": round(float(row.get("strength") or 0), 3),
+                "reliability": round(float(row.get("reliability") or 0), 3),
+                "novelty": round(float(row.get("novelty") or 0), 3),
+                "source": "evidence_table",
+            }
+            for row in projection.get("evidence_items", [])
+        ]
 
         # 4. Attention scores (top factors with evidence context)
         attention_items: list[dict] = []
@@ -2786,22 +2731,21 @@ def create_app():
                 ev_type = "unknown"
                 direction = 0.0
                 try:
-                    r = db._conn.execute(
-                        "SELECT evidence_type, direction FROM Evidence WHERE evidence_id=?",
-                        (ev_id,),
-                    ).fetchone()
+                    r = _runtime_reads(db).evidence_lookup(ev_id)
                     if r:
-                        ev_type = r[0] or "unknown"
-                        direction = float(r[1] or 0.0)
+                        ev_type = str(r.get("evidence_type") or "unknown")
+                        direction = float(r.get("direction") or 0.0)
                 except Exception:
                     pass
-                attention_items.append({
-                    "id": ev_id,
-                    "evidence_type": ev_type,
-                    "weight": round(float(a.get("weight") or 0.0), 4),
-                    "direction": round(direction, 2),
-                    "source": "attention",
-                })
+                attention_items.append(
+                    {
+                        "id": ev_id,
+                        "evidence_type": ev_type,
+                        "weight": round(float(a.get("weight") or 0.0), 4),
+                        "direction": round(direction, 2),
+                        "source": "attention",
+                    }
+                )
         except Exception:
             pass
 
@@ -2831,123 +2775,34 @@ def create_app():
 
         db = _db()
         today = _current_asof(db)
-
-        # 1. Sector info for this symbol
-        sector_code: str | None = None
-        sector_name: str | None = None
-        try:
-            row = db._conn.execute(
-                "SELECT sector_code, sector_name FROM sector_members WHERE symbol=?",
-                (symbol,),
-            ).fetchone()
-            if row:
-                sector_code, sector_name = row[0], row[1]
-        except Exception:
-            pass
-
-        # 2. Sector sentiment from market_events
-        sector_sentiment = 0.0
-        sector_event_count = 0
-        try:
-            if sector_code:
-                rows = db._conn.execute(
-                    """SELECT AVG(sentiment_score), COUNT(*)
-                       FROM market_events
-                       WHERE entity_id=? AND event_date >= date(?, '-7 days')""",
-                    (sector_code, today),
-                ).fetchone()
-                if rows and rows[0] is not None:
-                    sector_sentiment = round(float(rows[0]), 3)
-                    sector_event_count = int(rows[1] or 0)
-        except Exception:
-            pass
-
-        # Also try by SW_* entity ID mapping
-        if sector_code and sector_sentiment == 0.0:
-            try:
-                # sector_name → SW_* style entity_id
-                sw_name = "SW_" + str(sector_name or "").replace(" ", "")
-                rows = db._conn.execute(
-                    """SELECT AVG(sentiment_score), COUNT(*)
-                       FROM market_events
-                       WHERE entity_id LIKE ? AND event_date >= date(?, '-7 days')""",
-                    (sw_name[:12] + "%", today),
-                ).fetchone()
-                if rows and rows[0] is not None:
-                    sector_sentiment = round(float(rows[0]), 3)
-                    sector_event_count = int(rows[1] or 0)
-            except Exception:
-                pass
-
-        # 3. Peer symbols in same sector
-        peers: list[dict] = []
-        if sector_code:
-            try:
-                peer_syms_rows = db._conn.execute(
-                    "SELECT symbol FROM sector_members WHERE sector_code=? AND symbol != ? LIMIT ?",
-                    (sector_code, symbol, peer_limit * 3),
-                ).fetchall()
-                peer_syms = [r[0] for r in peer_syms_rows]
-
-                for psym in peer_syms:
-                    peer_entry: dict = {"symbol": psym, "name": psym}
-                    # Instrument name
-                    try:
-                        instr = db.instrument_lookup(psym)
-                        if instr:
-                            peer_entry["name"] = str(instr.get("name") or psym)
-                    except Exception:
-                        pass
-                    # Signal data
-                    try:
-                        sig = db._conn.execute(
-                            "SELECT window_score, net_sentiment FROM signals WHERE symbol=? AND date=?",
-                            (psym, today),
-                        ).fetchone()
-                        if sig:
-                            peer_entry["window_score"] = sig[0]
-                            peer_entry["net_sentiment"] = round(float(sig[1] or 0), 3) if sig[1] is not None else None
-                    except Exception:
-                        pass
-                    # Recommendation
-                    try:
-                        rec = db._conn.execute(
-                            """SELECT action, conviction, score, risk
-                               FROM Recommendation WHERE symbol=? ORDER BY as_of_date DESC LIMIT 1""",
-                            (psym,),
-                        ).fetchone()
-                        if rec:
-                            peer_entry["action"] = rec[0]
-                            peer_entry["conviction"] = rec[1]
-                            peer_entry["score"] = round(float(rec[2] or 0), 3)
-                            peer_entry["risk"] = round(float(rec[3] or 0), 3)
-                    except Exception:
-                        pass
-                    # Belief (mu)
-                    try:
-                        bs = db.belief_state_get(today, psym)
-                        if bs:
-                            bv = bs.get("belief_vec") or {}
-                            peer_entry["belief_mu"] = round(float(bv.get("mu", 0.0)), 4)
-                            peer_entry["belief_confidence"] = round(float(bs.get("confidence") or 0.0), 3)
-                    except Exception:
-                        pass
-                    # 1-day change from sync_state
-                    try:
-                        ss = db._conn.execute(
-                            "SELECT last_date FROM sync_state WHERE source='tushare_kline' AND dataset='daily' AND symbol=?",
-                            (psym,),
-                        ).fetchone()
-                        if ss:
-                            peer_entry["kline_last_date"] = ss[0]
-                    except Exception:
-                        pass
-
-                    peers.append(peer_entry)
-                    if len(peers) >= peer_limit:
-                        break
-            except Exception:
-                pass
+        projection = _runtime_reads(db).symbol_sector_peer_projection(
+            symbol,
+            today,
+            max(0, int(peer_limit)),
+        )
+        sector_code = projection.get("sector_code")
+        sector_name = projection.get("sector_name")
+        sector_sentiment = round(float(projection.get("sector_sentiment") or 0.0), 3)
+        sector_event_count = int(projection.get("sector_event_count") or 0)
+        peers = []
+        for row in projection.get("peers", []):
+            peer_entry = dict(row)
+            peer_entry["symbol"] = str(peer_entry.get("symbol") or "")
+            peer_entry["name"] = str(peer_entry.get("name") or peer_entry["symbol"])
+            if peer_entry.get("net_sentiment") is not None:
+                peer_entry["net_sentiment"] = round(float(peer_entry["net_sentiment"]), 3)
+            if peer_entry.get("score") is not None:
+                peer_entry["score"] = round(float(peer_entry["score"]), 3)
+            if peer_entry.get("risk") is not None:
+                peer_entry["risk"] = round(float(peer_entry["risk"]), 3)
+            if peer_entry.get("belief_mu") is not None:
+                peer_entry["belief_mu"] = round(float(peer_entry["belief_mu"]), 4)
+            if peer_entry.get("belief_confidence") is not None:
+                peer_entry["belief_confidence"] = round(
+                    float(peer_entry["belief_confidence"]),
+                    3,
+                )
+            peers.append(peer_entry)
 
         return {
             "symbol": symbol,
@@ -2975,6 +2830,7 @@ def create_app():
         db = _db()
         today = _current_asof(db)
         dr = Path(data_root)
+        freshness = _runtime_reads(db).symbol_data_freshness_projection(symbol, today)
 
         def _parquet_freshness(parquet_path: Path) -> tuple[str | None, int | None]:
             """Return (last_date_str, lag_days) from a parquet's mtime or none."""
@@ -2982,6 +2838,7 @@ def create_app():
                 if parquet_path.exists():
                     mtime = parquet_path.stat().st_mtime
                     import datetime as _dt
+
                     mdate = _dt.datetime.fromtimestamp(mtime).date()
                     lag = (date.today() - mdate).days
                     return mdate.isoformat(), lag
@@ -2993,17 +2850,9 @@ def create_app():
         domains: list[dict] = []
 
         # ── kline ────────────────────────────────────────────────────────────
-        kline_last: str | None = None
-        kline_rows: int | None = None
-        try:
-            ss = db._conn.execute(
-                "SELECT last_date, row_count FROM sync_state WHERE source='tushare_kline' AND dataset='daily' AND symbol=?",
-                (symbol,),
-            ).fetchone()
-            if ss:
-                kline_last, kline_rows = ss[0], ss[1]
-        except Exception:
-            pass
+        kline = freshness.get("kline") or {}
+        kline_last = kline.get("last_date")
+        kline_rows = kline.get("row_count")
         # fallback from monthly parquet directories
         if not kline_last:
             try:
@@ -3015,83 +2864,61 @@ def create_app():
             except Exception:
                 pass
         kline_lag = _lag_days(kline_last)
-        domains.append({
-            "id": "kline",
-            "name_zh": "日K线",
-            "name_en": "Daily Kline",
-            "last_date": kline_last,
-            "lag_days": kline_lag,
-            "row_count": kline_rows,
-            "status": _hive_status(lag_days=kline_lag),
-            "source": "tushare_kline",
-            "can_repull": True,
-        })
+        domains.append(
+            {
+                "id": "kline",
+                "name_zh": "日K线",
+                "name_en": "Daily Kline",
+                "last_date": kline_last,
+                "lag_days": kline_lag,
+                "row_count": kline_rows,
+                "status": _hive_status(lag_days=kline_lag),
+                "source": "tushare_kline",
+                "can_repull": True,
+            }
+        )
 
         # ── fund_flow ─────────────────────────────────────────────────────────
         ff_path = dr / "market" / "fund_flow" / sym_file
         ff_last, ff_lag = _parquet_freshness(ff_path)
         if not ff_last:
-            try:
-                ss = db._conn.execute(
-                    "SELECT last_date FROM sync_state WHERE dataset='fund_flow' AND symbol=?",
-                    (symbol,),
-                ).fetchone()
-                if ss:
-                    ff_last = ss[0]
-                    ff_lag = _lag_days(ff_last)
-            except Exception:
-                pass
-        domains.append({
-            "id": "fund_flow",
-            "name_zh": "资金流向",
-            "name_en": "Fund Flow",
-            "last_date": ff_last,
-            "lag_days": ff_lag,
-            "status": _hive_status(lag_days=ff_lag),
-            "source": "akshare",
-            "can_repull": True,
-        })
+            ff_last = (freshness.get("fund_flow") or {}).get("last_date")
+            ff_lag = _lag_days(ff_last)
+        domains.append(
+            {
+                "id": "fund_flow",
+                "name_zh": "资金流向",
+                "name_en": "Fund Flow",
+                "last_date": ff_last,
+                "lag_days": ff_lag,
+                "status": _hive_status(lag_days=ff_lag),
+                "source": "akshare",
+                "can_repull": True,
+            }
+        )
 
         # ── fundamental ───────────────────────────────────────────────────────
-        fund_last: str | None = None
-        fund_lag: int | None = None
-        try:
-            ss = db._conn.execute(
-                "SELECT last_date FROM sync_state WHERE dataset='fundamental' AND symbol=?",
-                (symbol,),
-            ).fetchone()
-            if ss:
-                fund_last = ss[0]
-                fund_lag = _lag_days(fund_last)
-        except Exception:
-            pass
+        fund_last = (freshness.get("fundamental") or {}).get("last_date")
+        fund_lag = _lag_days(fund_last)
         if not fund_last:
             fund_path = dr / "market" / "fundamental" / sym_file
             fund_last, fund_lag = _parquet_freshness(fund_path)
-        domains.append({
-            "id": "fundamental",
-            "name_zh": "基本面",
-            "name_en": "Fundamental",
-            "last_date": fund_last,
-            "lag_days": fund_lag,
-            "status": _hive_status(lag_days=fund_lag, coverage_pct=None),
-            "source": "tushare",
-            "can_repull": False,
-        })
+        domains.append(
+            {
+                "id": "fundamental",
+                "name_zh": "基本面",
+                "name_en": "Fundamental",
+                "last_date": fund_last,
+                "lag_days": fund_lag,
+                "status": _hive_status(lag_days=fund_lag, coverage_pct=None),
+                "source": "tushare",
+                "can_repull": False,
+            }
+        )
 
         # ── sentiment ─────────────────────────────────────────────────────────
-        sent_last: str | None = None
-        sent_lag: int | None = None
-        try:
-            ev_row = db._conn.execute(
-                "SELECT MAX(as_of_date) FROM Evidence WHERE symbol=?",
-                (symbol,),
-            ).fetchone()
-            if ev_row and ev_row[0]:
-                sent_last = ev_row[0]
-                sent_lag = _lag_days(sent_last)
-        except Exception:
-            pass
+        sent_last = (freshness.get("sentiment") or {}).get("last_date")
+        sent_lag = _lag_days(sent_last)
         # Fallback: latest gold parquet
         if not sent_last:
             try:
@@ -3104,101 +2931,69 @@ def create_app():
                         sent_lag = _lag_days(sent_last)
             except Exception:
                 pass
-        domains.append({
-            "id": "sentiment",
-            "name_zh": "情绪信号",
-            "name_en": "Sentiment",
-            "last_date": sent_last,
-            "lag_days": sent_lag,
-            "status": _hive_status(lag_days=sent_lag),
-            "source": "nlp_pipeline",
-            "can_repull": False,
-        })
+        domains.append(
+            {
+                "id": "sentiment",
+                "name_zh": "情绪信号",
+                "name_en": "Sentiment",
+                "last_date": sent_last,
+                "lag_days": sent_lag,
+                "status": _hive_status(lag_days=sent_lag),
+                "source": "nlp_pipeline",
+                "can_repull": False,
+            }
+        )
 
         # ── events ────────────────────────────────────────────────────────────
-        events_last: str | None = None
-        events_count: int | None = None
-        try:
-            # Resolve sector_code for this symbol
-            sect_row = db._conn.execute(
-                "SELECT sector_code FROM sector_members WHERE symbol=?", (symbol,)
-            ).fetchone()
-            sect_code = sect_row[0] if sect_row else None
-            if sect_code:
-                ev_row = db._conn.execute(
-                    "SELECT MAX(event_date), COUNT(*) FROM market_events WHERE entity_id=?",
-                    (sect_code,),
-                ).fetchone()
-            else:
-                ev_row = db._conn.execute(
-                    "SELECT MAX(event_date), COUNT(*) FROM market_events"
-                ).fetchone()
-            if ev_row and ev_row[0]:
-                events_last = ev_row[0]
-                events_count = int(ev_row[1] or 0)
-        except Exception:
-            pass
+        events = freshness.get("events") or {}
+        events_last = events.get("last_date")
+        events_count = events.get("row_count")
         events_lag = _lag_days(events_last)
-        domains.append({
-            "id": "events",
-            "name_zh": "事件库",
-            "name_en": "Events",
-            "last_date": events_last,
-            "lag_days": events_lag,
-            "row_count": events_count,
-            "status": _hive_status(lag_days=events_lag),
-            "source": "kg_pipeline",
-            "can_repull": False,
-        })
+        domains.append(
+            {
+                "id": "events",
+                "name_zh": "事件库",
+                "name_en": "Events",
+                "last_date": events_last,
+                "lag_days": events_lag,
+                "row_count": events_count,
+                "status": _hive_status(lag_days=events_lag),
+                "source": "kg_pipeline",
+                "can_repull": False,
+            }
+        )
 
         # ── belief ────────────────────────────────────────────────────────────
-        belief_last: str | None = None
-        try:
-            bs = db.belief_state_get(today, symbol)
-            if bs:
-                belief_last = today
-            else:
-                # Fallback: any date
-                br = db._conn.execute(
-                    "SELECT MAX(as_of_date) FROM BeliefState WHERE symbol=?", (symbol,)
-                ).fetchone()
-                if br and br[0]:
-                    belief_last = br[0]
-        except Exception:
-            pass
+        belief_last = (freshness.get("belief") or {}).get("last_date")
         belief_lag = _lag_days(belief_last)
-        domains.append({
-            "id": "belief",
-            "name_zh": "信念状态",
-            "name_en": "Belief State",
-            "last_date": belief_last,
-            "lag_days": belief_lag,
-            "status": _hive_status(lag_days=belief_lag),
-            "source": "belief_pipeline",
-            "can_repull": False,
-        })
+        domains.append(
+            {
+                "id": "belief",
+                "name_zh": "信念状态",
+                "name_en": "Belief State",
+                "last_date": belief_last,
+                "lag_days": belief_lag,
+                "status": _hive_status(lag_days=belief_lag),
+                "source": "belief_pipeline",
+                "can_repull": False,
+            }
+        )
 
         # ── recommend ─────────────────────────────────────────────────────────
-        rec_last: str | None = None
-        try:
-            r = db._conn.execute(
-                "SELECT MAX(as_of_date) FROM Recommendation WHERE symbol=?", (symbol,)
-            ).fetchone()
-            if r and r[0]:
-                rec_last = r[0]
-        except Exception:
-            pass
+        rec_last = (freshness.get("recommend") or {}).get("last_date")
         rec_lag = _lag_days(rec_last)
-        domains.append({
-            "id": "recommend",
-            "name_zh": "决策推荐",
-            "name_en": "Recommendation",
-            "last_date": rec_last,
-            "lag_days": rec_lag,
-            "status": _hive_status(lag_days=rec_lag),
-            "source": "decision_pipeline",
-            "can_repull": False,
-        })
+        domains.append(
+            {
+                "id": "recommend",
+                "name_zh": "决策推荐",
+                "name_en": "Recommendation",
+                "last_date": rec_last,
+                "lag_days": rec_lag,
+                "status": _hive_status(lag_days=rec_lag),
+                "source": "decision_pipeline",
+                "can_repull": False,
+            }
+        )
 
         return {
             "symbol": symbol,
@@ -3209,7 +3004,7 @@ def create_app():
     # ── API: symbol-data-ops repair actions ───────────────────────────────────
 
     @app.post("/api/symbol-data-ops/repull")
-    async def symbol_data_ops_repull(request: FastAPIRequest):
+    async def symbol_data_ops_repull(request: Request):
         """Enqueue a re-pull for selected domains of a symbol.
 
         Body: { symbol: str, domains: list[str] }
@@ -3217,31 +3012,34 @@ def create_app():
         """
         try:
             body = await request.json()
-        except Exception:
-            raise HTTPException(status_code=422, detail="invalid JSON body")
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="invalid JSON body") from exc
         symbol = str(body.get("symbol") or "").strip().upper()
         domains = list(body.get("domains") or [])
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol required")
 
-        db = _db()
-        job_id = f"repull:{symbol}:{','.join(sorted(domains))}:{dtm.datetime.utcnow().isoformat()[:19]}"
+        job_id = (
+            f"repull:{symbol}:{','.join(sorted(domains))}:"
+            f"{dtm.datetime.now(dtm.timezone.utc).isoformat()[:19]}"
+        )
 
-        # Trigger via EventBus if available
-        try:
-            from trade_py.bus import EventBus, Topic
-            bus = EventBus(db)
-            # Map domain → job event
-            _DOMAIN_TOPICS = {
-                "kline": Topic.GATE_MORNING,
-                "fund_flow": Topic.GATE_MORNING,
-            }
-            for domain in domains:
-                topic = _DOMAIN_TOPICS.get(domain)
-                if topic:
-                    bus.publish(topic, {"symbol": symbol, "triggered_by": "symbol_data_ops"})
-        except Exception as exc:
-            logger.debug("repull bus publish failed: %s", exc)
+        from trade_py.bus import Topic
+
+        bus = resources.bus
+        domain_topics = {
+            "kline": Topic.GATE_MORNING,
+            "fund_flow": Topic.GATE_MORNING,
+        }
+        for domain in domains:
+            topic = domain_topics.get(domain)
+            if topic:
+                result = bus.publish_with_outcome(
+                    topic,
+                    {"symbol": symbol, "triggered_by": "symbol_data_ops"},
+                )
+                if not result.accepted:
+                    return event_admission_failure_response(result)
 
         return {
             "accepted": True,
@@ -3250,7 +3048,7 @@ def create_app():
         }
 
     @app.post("/api/symbol-data-ops/replay")
-    async def symbol_data_ops_replay(request: FastAPIRequest):
+    async def symbol_data_ops_replay(request: Request):
         """Enqueue downstream replay for selected domains of a symbol.
 
         Body: { symbol: str, domains: list[str] }
@@ -3258,14 +3056,16 @@ def create_app():
         """
         try:
             body = await request.json()
-        except Exception:
-            raise HTTPException(status_code=422, detail="invalid JSON body")
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="invalid JSON body") from exc
         symbol = str(body.get("symbol") or "").strip().upper()
         domains = list(body.get("domains") or [])
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol required")
 
-        job_id = f"replay:{symbol}:{','.join(sorted(domains))}:{dtm.datetime.utcnow().isoformat()[:19]}"
+        job_id = (
+            f"replay:{symbol}:{','.join(sorted(domains))}:{dtm.datetime.utcnow().isoformat()[:19]}"
+        )
 
         return {
             "accepted": True,
@@ -3274,7 +3074,7 @@ def create_app():
         }
 
     @app.post("/api/symbol-data-ops/mark-verified")
-    async def symbol_data_ops_mark_verified(request: FastAPIRequest):
+    async def symbol_data_ops_mark_verified(request: Request):
         """Mark selected domains as verified for a symbol.
 
         Body: { symbol: str, domains: list[str] }
@@ -3282,14 +3082,15 @@ def create_app():
         """
         try:
             body = await request.json()
-        except Exception:
-            raise HTTPException(status_code=422, detail="invalid JSON body")
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="invalid JSON body") from exc
         symbol = str(body.get("symbol") or "").strip().upper()
         domains = list(body.get("domains") or [])
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol required")
 
         db = _db()
+        sync_state_db = cast(_SyncStateVerificationStore, db)
         updated: list[str] = []
         _DOMAIN_TO_SOURCE = {
             "kline": ("tushare_kline", "daily"),
@@ -3302,24 +3103,8 @@ def create_app():
                 continue
             source, dataset = src_info
             try:
-                cursor_row = db._conn.execute(
-                    "SELECT cursor FROM sync_state WHERE source=? AND dataset=? AND symbol=?",
-                    (source, dataset, symbol),
-                ).fetchone()
-                cursor = {}
-                if cursor_row and cursor_row[0]:
-                    try:
-                        cursor = json.loads(cursor_row[0])
-                    except Exception:
-                        pass
-                cursor["verified"] = True
-                cursor["verified_at"] = dtm.datetime.utcnow().isoformat()[:19]
-                db._conn.execute(
-                    "UPDATE sync_state SET cursor=? WHERE source=? AND dataset=? AND symbol=?",
-                    (json.dumps(cursor), source, dataset, symbol),
-                )
-                db._conn.commit()
-                updated.append(domain)
+                if sync_state_db.sync_state_mark_verified(source, dataset, symbol):
+                    updated.append(domain)
             except Exception as exc:
                 logger.debug("mark-verified failed for %s/%s: %s", domain, symbol, exc)
 
@@ -3355,7 +3140,7 @@ def create_app():
         except Exception:
             name = symbol
 
-        context = _explain_svc.build_kline_context(
+        context = _explain_svc().build_kline_context(
             symbol,
             days=max(days, 60),
             as_of_date=date,
@@ -3368,7 +3153,7 @@ def create_app():
         # Decision explanation — primary truth source for Symbol page
         explanation: dict = {}
         try:
-            exp = _explain_svc.explain(symbol, as_of_date=date)
+            exp = _explain_svc().explain(symbol, as_of_date=date)
             explanation = exp.to_summary_dict()
         except Exception as exc:
             logger.debug("kline explain failed for %s: %s", symbol, exc)
@@ -3389,6 +3174,7 @@ def create_app():
             return 0, None, None
         try:
             import pandas as pd
+
             df = pd.read_parquet(path, columns=["date"])
             if df.empty:
                 return 0, None, None
@@ -3398,6 +3184,7 @@ def create_app():
             # Fallback: try pyarrow directly
             try:
                 import pyarrow.parquet as pq
+
                 table = pq.read_table(path, columns=["date"])
                 dates = table.column("date").to_pylist()
                 dates = [str(d) for d in dates if d is not None]
@@ -3407,7 +3194,9 @@ def create_app():
             except Exception:
                 return 0, None, None
 
-    def _asset_health(lag_days: int | None, *, exists: bool = True, coverage_pct: float | None = None) -> str:
+    def _asset_health(
+        lag_days: int | None, *, exists: bool = True, coverage_pct: float | None = None
+    ) -> str:
         """Classify health for observability: ok, stale, missing, error."""
         if not exists:
             return "missing"
@@ -3453,6 +3242,7 @@ def create_app():
             for p in sent_silver_dir.rglob("*.parquet"):
                 try:
                     import pandas as pd
+
                     df = pd.read_parquet(p, columns=["symbol"])
                     if symbol in df["symbol"].astype(str).values:
                         types.append("sentiment")
@@ -3473,15 +3263,19 @@ def create_app():
         """Asset inventory with data status for observability."""
         db = _db()
         assets: list[dict[str, Any]] = []
-        summary = {"total_assets": 0, "ok": 0, "stale": 0, "missing": 0, "error": 0}
+        summary: dict[str, int] = {
+            "total_assets": 0,
+            "ok": 0,
+            "stale": 0,
+            "missing": 0,
+            "error": 0,
+        }
 
         # Collect assets from asset_registry
         try:
             registry_rows = db.asset_registry_list(enabled_only=True)
         except Exception:
             registry_rows = []
-
-        today = date.today()
 
         # Process registered cross-asset entries (crypto, fx, commodity)
         for row in registry_rows:
@@ -3498,18 +3292,20 @@ def create_app():
             data_types = _detect_data_types_for_asset(asset_id, asset_class, symbol)
             if "kline" not in data_types and path.exists():
                 data_types.insert(0, "kline")
-            assets.append({
-                "asset_id": asset_id,
-                "asset_class": asset_class,
-                "symbol": symbol,
-                "venue": venue,
-                "data_types": data_types,
-                "total_rows": rows_count,
-                "first_date": first_dt,
-                "last_date": last_dt,
-                "lag_days": lag if lag is not None else -1,
-                "health": health,
-            })
+            assets.append(
+                {
+                    "asset_id": asset_id,
+                    "asset_class": asset_class,
+                    "symbol": symbol,
+                    "venue": venue,
+                    "data_types": data_types,
+                    "total_rows": rows_count,
+                    "first_date": first_dt,
+                    "last_date": last_dt,
+                    "lag_days": lag if lag is not None else -1,
+                    "health": health,
+                }
+            )
 
         # Also scan A-share kline directory for stocks not in asset_registry
         try:
@@ -3541,18 +3337,20 @@ def create_app():
                         for dt in sent_check:
                             if dt not in data_types:
                                 data_types.append(dt)
-                        assets.append({
-                            "asset_id": f"stock.{sym}",
-                            "asset_class": "stock",
-                            "symbol": sym,
-                            "venue": "akshare/tushare",
-                            "data_types": data_types,
-                            "total_rows": rows_count,
-                            "first_date": first_dt,
-                            "last_date": last_dt,
-                            "lag_days": lag if lag is not None else -1,
-                            "health": health,
-                        })
+                        assets.append(
+                            {
+                                "asset_id": f"stock.{sym}",
+                                "asset_class": "stock",
+                                "symbol": sym,
+                                "venue": "akshare/tushare",
+                                "data_types": data_types,
+                                "total_rows": rows_count,
+                                "first_date": first_dt,
+                                "last_date": last_dt,
+                                "lag_days": lag if lag is not None else -1,
+                                "health": health,
+                            }
+                        )
         except Exception:
             pass
 
@@ -3560,7 +3358,7 @@ def create_app():
         for a in assets:
             h = str(a.get("health") or "error")
             if h in summary:
-                summary[h] += 1  # type: ignore[literal-required]
+                summary[h] += 1
 
         return {"assets": assets, "summary": summary}
 
@@ -3598,6 +3396,7 @@ def create_app():
         if path and path.exists():
             try:
                 import pandas as pd
+
                 end_d = date.today()
                 start_d = end_d - timedelta(days=days_n * 2)  # extra buffer for non-trading days
                 df = pd.read_parquet(path)
@@ -3606,22 +3405,26 @@ def create_app():
                     df = df[df["date"] >= start_d.isoformat()]
                     df = df.sort_values("date").tail(days_n)
                     for _, r in df.iterrows():
-                        def _f(col: str) -> float | None:
-                            v = r.get(col)
+
+                        def _f(col: str, row=r) -> float | None:
+                            v = row.get(col)
                             if v is None or (isinstance(v, float) and pd.isna(v)):
                                 return None
                             try:
                                 return float(v)
                             except (TypeError, ValueError):
                                 return None
-                        rows.append({
-                            "date": str(r.get("date") or ""),
-                            "open": _f("open"),
-                            "high": _f("high"),
-                            "low": _f("low"),
-                            "close": _f("close"),
-                            "volume": _f("volume"),
-                        })
+
+                        rows.append(
+                            {
+                                "date": str(r.get("date") or ""),
+                                "open": _f("open"),
+                                "high": _f("high"),
+                                "low": _f("low"),
+                                "close": _f("close"),
+                                "volume": _f("volume"),
+                            }
+                        )
             except Exception as exc:
                 logger.warning("data/kline read failed for %s: %s", asset_id, exc)
 
@@ -3661,6 +3464,7 @@ def create_app():
         if path and path.exists():
             try:
                 import pandas as pd
+
                 df = pd.read_parquet(path, columns=["date"])
                 if not df.empty:
                     dates = sorted(set(df["date"].astype(str).str[:10].dropna().tolist()))
@@ -3679,15 +3483,21 @@ def create_app():
                                     gap_start = (prev + timedelta(days=1)).isoformat()
                                     gap_end = (d - timedelta(days=1)).isoformat()
                                     gap_len = delta - 1
-                                    gaps.append({
-                                        "start": gap_start,
-                                        "end": gap_end,
-                                        "days": gap_len,
-                                    })
+                                    gaps.append(
+                                        {
+                                            "start": gap_start,
+                                            "end": gap_end,
+                                            "days": gap_len,
+                                        }
+                                    )
                                     if gap_len > longest_gap_days:
                                         longest_gap_days = gap_len
                             prev = d
-                        coverage_pct = round(present_dates / expected_dates * 100.0, 2) if expected_dates > 0 else 0.0
+                        coverage_pct = (
+                            round(present_dates / expected_dates * 100.0, 2)
+                            if expected_dates > 0
+                            else 0.0
+                        )
             except Exception as exc:
                 logger.warning("data/gaps scan failed for %s: %s", asset_id, exc)
 
@@ -3730,6 +3540,7 @@ def create_app():
                         continue
                 try:
                     import pandas as pd
+
                     df = pd.read_parquet(p)
                     if df.empty:
                         continue
@@ -3737,7 +3548,12 @@ def create_app():
                     if "published_at" in df.columns:
                         df = df[df["published_at"].astype(str).str[:10] >= cutoff]
                     if source_filter and "source" in df.columns:
-                        df = df[df["source"].astype(str).str.lower().str.contains(source_filter, na=False)]
+                        df = df[
+                            df["source"]
+                            .astype(str)
+                            .str.lower()
+                            .str.contains(source_filter, na=False)
+                        ]
                     total += len(df)
                     for _, r in df.iterrows():
                         if len(articles) >= limit_n:
@@ -3751,17 +3567,24 @@ def create_app():
                             summary = summary[:300] + "..."
                         sent = r.get("sentiment_score")
                         try:
-                            sent_val = float(sent) if sent is not None and not (isinstance(sent, float) and pd.isna(sent)) else None
+                            sent_val = (
+                                float(sent)
+                                if sent is not None
+                                and not (isinstance(sent, float) and pd.isna(sent))
+                                else None
+                            )
                         except (TypeError, ValueError):
                             sent_val = None
-                        articles.append({
-                            "title": title,
-                            "source": src,
-                            "published_at": pub,
-                            "url": url,
-                            "sentiment_score": sent_val,
-                            "summary": summary,
-                        })
+                        articles.append(
+                            {
+                                "title": title,
+                                "source": src,
+                                "published_at": pub,
+                                "url": url,
+                                "sentiment_score": sent_val,
+                                "summary": summary,
+                            }
+                        )
                 except Exception as exc:
                     logger.debug("news read failed for %s: %s", p, exc)
                 if len(articles) >= limit_n:
@@ -3782,7 +3605,8 @@ def create_app():
         """Coverage matrix: per-asset-class coverage of key data types."""
         # Reuse asset list from /api/data/assets logic (call inline)
         assets_resp = await get_data_assets()
-        asset_list: list[dict[str, Any]] = assets_resp.get("assets", [])  # type: ignore[union-attr]
+        raw_assets = assets_resp.get("assets")
+        asset_list = raw_assets if isinstance(raw_assets, list) else []
 
         # Group by asset_class
         groups: dict[str, list[dict[str, Any]]] = {}
@@ -3797,14 +3621,20 @@ def create_app():
             total = len(items)
             dt_stats: dict[str, dict[str, Any]] = {}
             for dt in DATA_TYPES:
-                present = sum(1 for a in items if dt in (a.get("data_types") or []) and a.get("health") != "missing")
+                present = sum(
+                    1
+                    for a in items
+                    if dt in (a.get("data_types") or []) and a.get("health") != "missing"
+                )
                 pct = round(present / total * 100.0, 1) if total > 0 else 0.0
                 dt_stats[dt] = {"present": present, "total": total, "pct": pct}
-            asset_classes.append({
-                "name": cls_name,
-                "total_assets": total,
-                "data_types": dt_stats,
-            })
+            asset_classes.append(
+                {
+                    "name": cls_name,
+                    "total_assets": total,
+                    "data_types": dt_stats,
+                }
+            )
 
         return {"asset_classes": asset_classes}
 
