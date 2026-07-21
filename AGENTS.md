@@ -16,7 +16,10 @@ evidence-driven, auditable, and easy to review.
 
 ## Change Rules
 
-- **Isolation via git worktree (MANDATORY)**: Every feature/refactor/bugfix implementation MUST create and use a dedicated git worktree on a new branch before making any code changes. This prevents multi-agent interference and keeps the main working tree clean. Naming convention: `wt/<feature-slug>-<yyyymmdd>`. Example: `git worktree add ../trade-wt-asset-split -b wt/asset-split-20260712`. Never commit directly to master/main from a worktree until the branch is ready for PR/merge.
+- **Isolation via git worktree (MANDATORY for code changes, optional for docs)**:
+  - All code-affecting changes (Python/C++/TS/JS business logic, test code, build scripts, CMake/dependency config, DB schema, API contracts, runtime configuration, core engine/decision/data access logic) MUST create and use a dedicated git worktree on a new branch before making any changes. This prevents multi-agent interference and keeps the main working tree runtime clean and completely unaffected by in-progress development. Naming convention: `wt/<feature-slug>-<yyyymmdd>`. Example: `git worktree add ../trade-wt-asset-split -b wt/asset-split-20260712`. Never commit directly to master/main from a worktree until the branch is ready for merge.
+  - Exemption: Pure documentation changes (content in `docs/`/`openspec/`, README updates, comment additions/corrections, Markdown formatting/typo fixes, agent rule documentation updates that do not touch executable code or runtime config logic) may be modified and committed directly in the master working tree without a dedicated worktree.
+  - Mixed code + documentation changes always fall under the mandatory worktree rule.
 - **Commit after every implementation unit (MANDATORY)**: After each logically complete change (module added, bug fixed, refactor step done), commit immediately. Do not accumulate uncommitted changes. Commit messages should clearly state scope, validation, and compatibility notes.
 - **Push every 3–5 commits (MANDATORY)**: After accumulating 3 to 5 local commits on a feature branch, push the branch to the remote to prevent work loss. Use `git push -u origin <branch>` for the first push, then `git push` thereafter.
 - **Unit tests required (MANDATORY)**: Every behavior change must have corresponding unit tests added or updated near the touched path. If tests are deferred for a specific reason, explicitly state the no-test reason and residual risk, and create a follow-up task tracking the missing coverage.
@@ -25,6 +28,21 @@ evidence-driven, auditable, and easy to review.
 - Do not grow catch-all files. Split by domain, service, adapter, repository, or UI surface when a module starts mixing responsibilities.
 - Public contracts need compatibility thought before code: CLI arguments, API payloads, DB schema, parquet layout, and engine interfaces must document migration/default/fallback behavior.
 - For recommendation, causal, trust, backtest, or quality-gate work, expose input evidence, confidence/calibration state, and unknown/failure states. Do not present heuristic scaffolding as a validated model.
+
+## Intelligent Decision & Deep Thinking Mandate (MANDATORY)
+All changes must be classified first before any action is taken. No direct code edits are allowed until the change tier and required process are confirmed. You MUST apply deep, deliberate reasoning (extended chain of thought) for non-trivial changes instead of rushing to implementation.
+
+### Change Tier Classification (decide FIRST before any edits):
+| Tier | Definition | Required Process |
+|------|------------|------------------|
+| **Trivial (Doc-only)** | Pure documentation changes as defined in the worktree exemption rule: content in `docs/`/`openspec/`, README updates, comment fixes, Markdown adjustments, rule documentation updates with no executable code/config logic changes. | No worktree, no OpenSpec, no deep planning required. Modify directly on master. |
+| **Trivial (Code)** | Single-file, low-risk code changes that do not alter external behavior: <br>1. Typo/obvious one-line bugfix within a single function <br>2. Log/metric string adjustments, error message improvements <br>3. Adding/modifying test cases for existing logic without changing production code <br>4. Independent utility function/helper addition with no core logic invasion | Must use dedicated worktree. No OpenSpec required. Proceed after a brief (1-2 paragraph) impact assessment. |
+| **Non-trivial** | Any change that meets ANY of the following criteria: <br>1. Root cause of a bug is unclear / requires investigation <br>2. There are ≥2 viable implementation approaches with meaningful tradeoffs <br>3. Changes touch core trading logic, signal calculation, order execution, risk control paths <br>4. Cross-module changes (touch ≥2 top-level directories e.g. `trade_py` + `engine`, API + service layer) <br>5. Performance, concurrency, memory, or reliability-related changes <br>6. Public contract changes (API payloads, CLI args, DB schema, data formats) <br>7. Data migration, data format change, or changes affecting data consistency/capital safety <br>8. C++ engine core logic modifications | MUST enter planning/deep thinking mode first: explicitly outline problem analysis, alternative approaches, tradeoff comparison, selected solution rationale, impact surface, risk points, and rollback plan BEFORE writing any code or OpenSpec proposal. MUST use dedicated worktree. MUST create an OpenSpec proposal before implementation. |
+
+### Hard Rules:
+- If you are unsure which tier a change belongs to, **always default to the Non-trivial tier**: it is always safe to do more planning first, never skip deep thinking/OpenSpec for ambiguous changes.
+- Deep thinking output must be concrete, not vague: do not skip tradeoff analysis or risk assessment for non-trivial changes.
+- OpenSpec proposals for non-trivial changes must directly incorporate the deep thinking output (tradeoffs, risk, rollback plan) from the planning phase.
 
 ## Review Before Implementation (MANDATORY for medium/large changes)
 
@@ -45,8 +63,8 @@ evidence-driven, auditable, and easy to review.
 
 ## OpenSpec
 
-- Small local fixes may proceed directly after identifying target behavior and
-  focused validation.
+- **OpenSpec Mandatory Trigger Rule**: All Non-trivial tier changes (as defined in the Intelligent Decision & Deep Thinking Mandate section) MUST create an OpenSpec proposal before any code changes are written. This is a hard requirement, no exceptions. If you are unsure whether a change qualifies as Non-trivial, create an OpenSpec proposal.
+- Trivial code fixes may proceed directly after identifying target behavior and focused validation, no OpenSpec required.
 - Use OpenSpec before medium or large changes, especially DB/schema migrations,
   data storage changes, trading-decision semantics, Web API contracts, C++
   engine behavior, workflow orchestration, or cross-module refactors.
