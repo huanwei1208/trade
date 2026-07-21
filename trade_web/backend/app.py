@@ -1402,6 +1402,15 @@ def create_app():
             return FileResponse(str(index_path))
         return JSONResponse({"message": "Trade DAG API", "docs": "/docs"})
 
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi.json"):
+            raise HTTPException(status_code=404)
+        index_path = static_dir / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
+        raise HTTPException(status_code=404)
+
     # ── API: pipeline_dag ─────────────────────────────────────────────────────
 
     @app.get("/api/dag")
