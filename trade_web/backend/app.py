@@ -3184,11 +3184,35 @@ def create_app():
     # ── API: data observability (business-level) ────────────────────────────
 
     def _scan_parquet_dates(path: Path) -> tuple[int, str | None, str | None]:
-        """Return (row_count, min_date, max_date) for a parquet file using pandas/pyarrow.
-        Returns (0, None, None) on any failure or missing file.
+        """Return (row_count, min_date, max_date) for one parquet file.
+
+        Prefer parquet footer statistics so overview APIs do not read full
+        columns on the request path. Fall back to column reads only when the
+        footer does not carry date min/max statistics.
         """
         if not path.exists():
             return 0, None, None
+        try:
+            import pyarrow.parquet as pq
+
+            parquet_file = pq.ParquetFile(path)
+            metadata = parquet_file.metadata
+            row_count = int(metadata.num_rows or 0)
+            names = list(parquet_file.schema_arrow.names)
+            if "date" in names:
+                date_index = names.index("date")
+                mins: list[str] = []
+                maxs: list[str] = []
+                for group_idx in range(metadata.num_row_groups):
+                    stats = metadata.row_group(group_idx).column(date_index).statistics
+                    if stats is not None and stats.has_min_max:
+                        mins.append(str(stats.min)[:10])
+                        maxs.append(str(stats.max)[:10])
+                if mins and maxs:
+                    return row_count, min(mins), max(maxs)
+        except Exception:
+            pass
+
         try:
             import pandas as pd
 
@@ -3196,20 +3220,9 @@ def create_app():
             if df.empty:
                 return 0, None, None
             dates = df["date"].dropna().astype(str)
-            return int(len(dates)), str(dates.min()), str(dates.max())
+            return int(len(dates)), str(dates.min())[:10], str(dates.max())[:10]
         except Exception:
-            # Fallback: try pyarrow directly
-            try:
-                import pyarrow.parquet as pq
-
-                table = pq.read_table(path, columns=["date"])
-                dates = table.column("date").to_pylist()
-                dates = [str(d) for d in dates if d is not None]
-                if not dates:
-                    return 0, None, None
-                return len(dates), min(dates)[:10], max(dates)[:10]
-            except Exception:
-                return 0, None, None
+            return 0, None, None
 
     def _asset_health(
         lag_days: int | None, *, exists: bool = True, coverage_pct: float | None = None
@@ -3232,7 +3245,16 @@ def create_app():
         Layout: data/market/{asset_class}/{symbol}.parquet
         """
         safe_sym = symbol.replace("/", "_").replace(".", "_")
-        return Path(data_root) / "market" / asset_class / f"{safe_sym}.parquet"
+        asset_dir = Path(data_root) / "market" / asset_class
+        candidates = [
+            asset_dir / f"{safe_sym}.parquet",
+            asset_dir / f"{safe_sym.lower()}.parquet",
+            asset_dir / f"{safe_sym.upper()}.parquet",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0]
 
     def _resolve_kline_parquet_path(symbol: str) -> Path:
         """Resolve kline parquet path for A-share symbols.
@@ -3241,7 +3263,54 @@ def create_app():
         safe_sym = symbol.replace(".", "_")
         return Path(data_root) / "market" / "kline" / f"{safe_sym}.parquet"
 
-    def _detect_data_types_for_asset(asset_id: str, asset_class: str, symbol: str) -> list[str]:
+    def _asset_symbol_aliases(asset_id: str, symbol: str) -> set[str]:
+        aliases = {
+            str(asset_id or ""),
+            str(symbol or ""),
+            str(symbol or "").replace(".", "_"),
+            str(symbol or "").replace("_", "."),
+        }
+        return {alias.strip().upper() for alias in aliases if alias.strip()}
+
+    def _read_symbol_column_index(root: Path, *, max_files: int = 256) -> set[str]:
+        symbols: set[str] = set()
+        if not root.exists():
+            return symbols
+        try:
+            files = sorted(root.rglob("*.parquet"), reverse=True)[:max_files]
+        except OSError as exc:
+            logger.debug("symbol index scan failed for %s: %s", root, exc)
+            return symbols
+        for path in files:
+            try:
+                import pyarrow.parquet as pq
+
+                table = pq.read_table(path, columns=["symbol"])
+                for value in table.column("symbol").to_pylist():
+                    text = str(value or "").strip()
+                    if text:
+                        symbols.add(text.upper())
+            except Exception as exc:
+                logger.debug("symbol index read failed for %s: %s", path, exc)
+        return symbols
+
+    def _news_available() -> bool:
+        for root in (Path(data_root) / "news" / "silver", Path(data_root) / "news" / "bronze"):
+            try:
+                if root.exists() and next(root.rglob("*.parquet"), None) is not None:
+                    return True
+            except OSError as exc:
+                logger.debug("news availability scan failed for %s: %s", root, exc)
+        return False
+
+    def _detect_data_types_for_asset(
+        asset_id: str,
+        asset_class: str,
+        symbol: str,
+        *,
+        sentiment_symbols: set[str] | None = None,
+        news_available: bool = False,
+    ) -> list[str]:
         """Determine which data types are present for a given asset."""
         types: list[str] = []
         # Kline / price data
@@ -3253,40 +3322,60 @@ def create_app():
         if asset_class in ("stock", "equity", "a_share") and a_share_kline.exists():
             if "kline" not in types:
                 types.append("kline")
-        # Sentiment: check sentiment/silver
-        sent_silver_dir = Path(data_root) / "sentiment" / "silver"
-        if sent_silver_dir.exists():
-            for p in sent_silver_dir.rglob("*.parquet"):
-                try:
-                    import pandas as pd
-
-                    df = pd.read_parquet(p, columns=["symbol"])
-                    if symbol in df["symbol"].astype(str).values:
-                        types.append("sentiment")
-                        break
-                except Exception:
-                    pass
-        # News: check news/silver and news/bronze
-        news_silver_dir = Path(data_root) / "news" / "silver"
-        news_bronze_dir = Path(data_root) / "news" / "bronze"
-        for news_dir in (news_silver_dir, news_bronze_dir):
-            if news_dir.exists() and not any(t == "news" for t in types):
-                types.append("news")
-                break
+        if sentiment_symbols and _asset_symbol_aliases(asset_id, symbol) & sentiment_symbols:
+            types.append("sentiment")
+        if news_available:
+            types.append("news")
         return types
 
-    @app.get("/api/data/assets")
-    async def get_data_assets():
-        """Asset inventory with data status for observability."""
-        db = _db()
-        assets: list[dict[str, Any]] = []
+    def _load_kline_manifest_entries() -> dict[str, dict[str, Any]]:
+        manifest_path = Path(data_root) / "market" / "kline" / "_manifest.json"
+        if not manifest_path.exists():
+            return {}
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug("kline manifest read failed for asset inventory: %s", exc)
+            return {}
+        entries = payload.get("entries") if isinstance(payload, dict) else None
+        if not isinstance(entries, dict):
+            return {}
+        return {str(key): value for key, value in entries.items() if isinstance(value, dict)}
+
+    def _asset_inventory_signature(db) -> str:
+        parts = [_payload_signature("data-assets", db)]
+        for path in (
+            Path(data_root) / "market" / "kline" / "_manifest.json",
+            Path(data_root) / "sentiment" / "silver",
+            Path(data_root) / "news" / "silver",
+            Path(data_root) / "news" / "bronze",
+        ):
+            try:
+                stat = path.stat()
+                parts.append(f"{path.name}:{stat.st_mtime_ns}:{stat.st_size}")
+            except OSError:
+                parts.append(f"{path.name}:missing")
+        return "|".join(parts)
+
+    def _asset_summary(assets: list[dict[str, Any]]) -> dict[str, int]:
         summary: dict[str, int] = {
-            "total_assets": 0,
+            "total_assets": len(assets),
             "ok": 0,
             "stale": 0,
             "missing": 0,
             "error": 0,
         }
+        for asset in assets:
+            health = str(asset.get("health") or "error")
+            if health in summary:
+                summary[health] += 1
+        return summary
+
+    def _data_assets_payload() -> dict[str, Any]:
+        db = _db()
+        assets: list[dict[str, Any]] = []
+        sentiment_symbols = _read_symbol_column_index(Path(data_root) / "sentiment" / "silver")
+        has_news = _news_available()
 
         # Collect assets from asset_registry
         try:
@@ -3306,7 +3395,13 @@ def create_app():
             rows_count, first_dt, last_dt = _scan_parquet_dates(path)
             lag = _lag_days(last_dt)
             health = _asset_health(lag, exists=path.exists())
-            data_types = _detect_data_types_for_asset(asset_id, asset_class, symbol)
+            data_types = _detect_data_types_for_asset(
+                asset_id,
+                asset_class,
+                symbol,
+                sentiment_symbols=sentiment_symbols,
+                news_available=has_news,
+            )
             if "kline" not in data_types and path.exists():
                 data_types.insert(0, "kline")
             assets.append(
@@ -3324,60 +3419,74 @@ def create_app():
                 }
             )
 
-        # Also scan A-share kline directory for stocks not in asset_registry
+        # Also scan A-share kline directory for stocks not in asset_registry.
+        # Prefer manifest metadata; reading every parquet file here blocks the
+        # single web worker long enough to make unrelated routes appear down.
         try:
             kline_dir = Path(data_root) / "market" / "kline"
             if kline_dir.exists():
-                manifest_path = kline_dir / "_manifest.json"
-                manifest_symbols: set[str] = set()
-                if manifest_path.exists():
-                    try:
-                        manifest = json.loads(manifest_path.read_text())
-                        if isinstance(manifest, dict):
-                            for sym_key in manifest.keys():
-                                manifest_symbols.add(str(sym_key).replace("_", "."))
-                    except Exception:
-                        pass
-                # Scan parquet files
                 registered_symbols = {str(a.get("symbol") or "") for a in assets}
-                for p in sorted(kline_dir.glob("*.parquet")):
-                    sym = p.stem.replace("_", ".")
-                    if sym.startswith("_") or sym in registered_symbols:
+                manifest_entries = _load_kline_manifest_entries()
+                if manifest_entries:
+                    stock_items = [
+                        (key, value)
+                        for key, value in manifest_entries.items()
+                        if not key.startswith("_")
+                    ]
+                else:
+                    stock_items = [
+                        (path.stem, {})
+                        for path in sorted(kline_dir.glob("*.parquet"))
+                        if not path.stem.startswith("_")
+                    ]
+                for key, entry in stock_items:
+                    sym = str(key).replace("_", ".")
+                    if sym in registered_symbols:
                         continue
-                    if sym in manifest_symbols or True:  # include all kline files
-                        rows_count, first_dt, last_dt = _scan_parquet_dates(p)
-                        lag = _lag_days(last_dt)
-                        health = _asset_health(lag, exists=p.exists())
-                        data_types = ["kline"]
-                        # Check sentiment/news for this symbol
-                        sent_check = _detect_data_types_for_asset(f"stock.{sym}", "stock", sym)
-                        for dt in sent_check:
-                            if dt not in data_types:
-                                data_types.append(dt)
-                        assets.append(
-                            {
-                                "asset_id": f"stock.{sym}",
-                                "asset_class": "stock",
-                                "symbol": sym,
-                                "venue": "akshare/tushare",
-                                "data_types": data_types,
-                                "total_rows": rows_count,
-                                "first_date": first_dt,
-                                "last_date": last_dt,
-                                "lag_days": lag if lag is not None else -1,
-                                "health": health,
-                            }
-                        )
-        except Exception:
-            pass
+                    rows_count = int(entry.get("rows") or 0)
+                    first_dt = str(entry.get("date_min") or "")[:10] or None
+                    last_dt = str(entry.get("date_max") or "")[:10] or None
+                    lag = _lag_days(last_dt)
+                    data_types = ["kline"]
+                    extra_types = _detect_data_types_for_asset(
+                        f"stock.{sym}",
+                        "stock",
+                        sym,
+                        sentiment_symbols=sentiment_symbols,
+                        news_available=has_news,
+                    )
+                    for data_type in extra_types:
+                        if data_type not in data_types:
+                            data_types.append(data_type)
+                    assets.append(
+                        {
+                            "asset_id": f"stock.{sym}",
+                            "asset_class": "stock",
+                            "symbol": sym,
+                            "venue": "akshare/tushare",
+                            "data_types": data_types,
+                            "total_rows": rows_count,
+                            "first_date": first_dt,
+                            "last_date": last_dt,
+                            "lag_days": lag if lag is not None else -1,
+                            "health": _asset_health(lag, exists=True),
+                        }
+                    )
+        except OSError as exc:
+            logger.warning("data assets kline scan failed: %s", exc)
 
-        summary["total_assets"] = len(assets)
-        for a in assets:
-            h = str(a.get("health") or "error")
-            if h in summary:
-                summary[h] += 1
+        return {"assets": assets, "summary": _asset_summary(assets)}
 
-        return {"assets": assets, "summary": summary}
+    @app.get("/api/data/assets")
+    async def get_data_assets():
+        """Asset inventory with data status for observability."""
+        db = _db()
+        signature = _asset_inventory_signature(db)
+        cached = _cache_get("data-assets", signature=signature, ttl_seconds=30.0)
+        if cached is not None:
+            return cached
+        payload = await asyncio.to_thread(_data_assets_payload)
+        return _cache_set("data-assets", signature=signature, payload=payload)
 
     @app.get("/api/data/kline/{asset_id:path}")
     async def get_data_kline(asset_id: str, days: int = 30):

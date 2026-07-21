@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -140,3 +141,85 @@ def test_json_object_routes_keep_required_request_bodies(monkeypatch, tmp_path: 
         assert route.dependant.query_params == []
         assert [field.name for field in route.dependant.body_params] == ["req"]
         assert route.dependant.body_params[0].field_info.is_required() is True
+
+
+def test_data_assets_uses_kline_manifest_without_deep_parquet_scan(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("TRADE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("TRADE_OBSERVATORY_ENABLED", "0")
+
+    kline_root = tmp_path / "market" / "kline"
+    kline_root.mkdir(parents=True)
+    (kline_root / "_manifest.json").write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "000001_SZ": {
+                        "rows": 123,
+                        "date_min": "2026-07-01",
+                        "date_max": date.today().isoformat(),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (kline_root / "000001_SZ.parquet").write_bytes(b"not a real parquet file")
+
+    from trade_web import create_app
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/api/data/assets")
+
+    assert response.status_code == 200
+    payload = response.json()
+    stock_asset = next(
+        asset for asset in payload["assets"] if asset["asset_id"] == "stock.000001.SZ"
+    )
+    assert stock_asset == {
+        "asset_id": "stock.000001.SZ",
+        "asset_class": "stock",
+        "symbol": "000001.SZ",
+        "venue": "akshare/tushare",
+        "data_types": ["kline"],
+        "total_rows": 123,
+        "first_date": "2026-07-01",
+        "last_date": date.today().isoformat(),
+        "lag_days": 0,
+        "health": "ok",
+    }
+
+
+def test_data_assets_resolves_registered_crypto_lowercase_file(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("TRADE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("TRADE_OBSERVATORY_ENABLED", "0")
+
+    _write_kline(
+        tmp_path / "market" / "crypto" / "btc.parquet",
+        [("2026-07-21", 100.0)],
+    )
+
+    from trade_web import create_app
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/api/data/assets")
+
+    assert response.status_code == 200
+    payload = response.json()
+    btc_asset = next(asset for asset in payload["assets"] if asset["asset_id"] == "crypto.BTC")
+    assert btc_asset["data_types"] == ["kline"]
+    assert btc_asset["total_rows"] == 1
+    assert btc_asset["first_date"] == "2026-07-21"
+    assert btc_asset["last_date"] == "2026-07-21"
+    assert btc_asset["health"] in {"ok", "stale", "error"}
