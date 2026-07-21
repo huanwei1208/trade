@@ -96,3 +96,8 @@ reportUnnecessaryTypeIgnoreComment = "warning"
 package = true
 
 [tool.uv.sources]
+
+[dependency-groups]
+dev = [
+    "requests-html>=0.10.0",
+]
