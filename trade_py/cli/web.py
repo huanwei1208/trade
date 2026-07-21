@@ -109,6 +109,28 @@ def main(argv: list[str] | None = None) -> int:
             print("错误: 前端构建失败，退出。")
             return result.returncode
         print("前端构建完成。")
+    else:
+        # Auto-detect if frontend source is newer than dist build
+        frontend_dir = Path(__file__).resolve().parents[2] / "trade_web" / "frontend"
+        dist_dir = frontend_dir / "dist"
+        src_dir = frontend_dir / "src"
+        index_html = dist_dir / "index.html"
+        need_build = False
+        if not index_html.exists():
+            need_build = True
+        elif src_dir.exists():
+            dist_mtime = index_html.stat().st_mtime
+            for src_file in src_dir.rglob("*"):
+                if src_file.is_file() and src_file.stat().st_mtime > dist_mtime:
+                    need_build = True
+                    break
+        if need_build and frontend_dir.exists():
+            print("检测到前端代码更新，自动构建中...")
+            result = subprocess.run(["npm", "run", "build"], cwd=frontend_dir)
+            if result.returncode != 0:
+                print("警告: 前端自动构建失败，使用现有dist版本。")
+            else:
+                print("前端自动构建完成。")
 
     os.environ["TRADE_DATA_ROOT"] = args.data_root
     os.environ.setdefault("TRADE_OBSERVATORY_ENABLED", "1")
