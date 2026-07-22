@@ -28,7 +28,7 @@ function criticalOrSerious(results: Awaited<ReturnType<typeof analyze>>) {
 test("Overview lens has no critical/serious a11y violations", async ({ page }) => {
   await page.goto("/?obsLens=overview");
   await expect(page.getByTestId("observatory-page")).toBeVisible();
-  await expect(page.getByTestId("composite-svg")).toBeVisible();
+  await expect(page.getByTestId("exchange-kline-chart")).toBeVisible();
   const results = await analyze(page);
   expect(criticalOrSerious(results)).toEqual([]);
 });
@@ -48,7 +48,7 @@ test("Research lens has no critical/serious a11y violations", async ({ page }) =
 });
 
 test("status is conveyed by more than color (icons + text present)", async ({ page }) => {
-  await page.goto("/?obsLens=overview");
+  await page.goto("/?obsLens=overview&obsChart=compare");
   await expect(page.getByTestId("observatory-page")).toBeVisible();
   await page.getByTestId("chart-date-inspector").fill("2026-07-15");
   // Non-color markers carry a text label, not just a colored dot.

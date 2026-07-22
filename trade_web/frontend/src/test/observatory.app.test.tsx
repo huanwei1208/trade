@@ -177,14 +177,37 @@ describe("App Observatory capability gating (fail closed)", () => {
   it("keeps only safe Observatory selectors in a denied attempted link", async () => {
     control.capabilityBody = { enabled: false, state: "disabled", show_nav: false };
     installFetch();
-    setUrl("?obsLens=overview&obsDate=2026-07-15&access_token=not-safe");
+    setUrl("?obsLens=overview&obsChart=compare&obsDate=2026-07-15&access_token=not-safe");
     render(<App />);
 
     await waitFor(() => expect(screen.getByTestId("observatory-unavailable-notice")).toBeTruthy());
     const attemptedLink = (screen.getByLabelText("Attempted Observatory link") as HTMLInputElement)
       .value;
     expect(attemptedLink).toContain("obsLens=overview");
+    expect(attemptedLink).toContain("obsChart=compare");
     expect(attemptedLink).toContain("obsDate=2026-07-15");
     expect(attemptedLink).not.toContain("access_token");
+  });
+
+  it("normalizes legacy persisted Observatory state before URL serialization", async () => {
+    window.localStorage.setItem("trade-web:page", JSON.stringify("observatory"));
+    window.localStorage.setItem(
+      "trade-web:obs-state",
+      JSON.stringify({
+        lens: "overview",
+        channel: "observed",
+        knowledgeAsOf: "latest",
+        range: "90D",
+        runId: null,
+        compareRunId: null,
+        date: null,
+      }),
+    );
+    installFetch();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("observatory-page")).toBeTruthy());
+    await waitFor(() => expect(window.location.search).toContain("obsLens=overview"));
+    expect(new URLSearchParams(window.location.search).get("obsChart")).toBeNull();
   });
 });

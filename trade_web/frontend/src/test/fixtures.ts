@@ -79,8 +79,20 @@ export const CONTEXT_FIXTURE: ObsContext = {
   compatibility_state: "compatible",
   acquisition_state: "succeeded",
   purpose_fitness: [
-    { purpose: "manual_observation", allowed: true, status: "allowed", reason_codes: [], evidence_refs: [] },
-    { purpose: "exploratory_research", allowed: true, status: "allowed", reason_codes: [], evidence_refs: [] },
+    {
+      purpose: "manual_observation",
+      allowed: true,
+      status: "allowed",
+      reason_codes: [],
+      evidence_refs: [],
+    },
+    {
+      purpose: "exploratory_research",
+      allowed: true,
+      status: "allowed",
+      reason_codes: [],
+      evidence_refs: [],
+    },
     {
       purpose: "formal_system_consumption",
       allowed: false,
@@ -96,10 +108,22 @@ export const CONTEXT_FIXTURE: ObsContext = {
       evidence_refs: [],
     },
   ],
-  artifact_refs: [{ name: "canonical", sha256: "abc123def456", relative_path: "runs/run_observed/canonical.parquet" }],
+  artifact_refs: [
+    {
+      name: "canonical",
+      sha256: "abc123def456",
+      relative_path: "runs/run_observed/canonical.parquet",
+    },
+  ],
   findings_summary: { acquisition_stability: "3 / 29 real success days" },
   excluded_dates: [
-    { date: "2026-07-15", exclusion_reason: "quarantined", quality_flags: ["quarantined"], evidence_refs: [], marker_position: null },
+    {
+      date: "2026-07-15",
+      exclusion_reason: "quarantined",
+      quality_flags: ["quarantined"],
+      evidence_refs: [],
+      marker_position: "below",
+    },
   ],
   reason_codes: [],
   view_fingerprint: "vf_context_0001",
@@ -122,9 +146,22 @@ const FORMAL_ROWS: ObsSeriesRow[] = [
 // Candidate layer: overlaps formal + extends to 07-14, includes a MISSING date
 // (07-13) that MUST break the line (no interpolation), plus a revised overlap.
 const CANDIDATE_ROWS: ObsSeriesRow[] = [
-  row("2026-07-10", "59050", { source_run_id: "run_candidate", membership: ["evaluated_candidate"], render_role: "candidate_overlap", revision_state: "changed" }),
-  row("2026-07-11", "60000", { source_run_id: "run_candidate", membership: ["evaluated_candidate"], render_role: "candidate_overlap" }),
-  row("2026-07-12", "61000", { source_run_id: "run_candidate", membership: ["evaluated_candidate"], render_role: "candidate_only" }),
+  row("2026-07-10", "59050", {
+    source_run_id: "run_candidate",
+    membership: ["evaluated_candidate"],
+    render_role: "candidate_overlap",
+    revision_state: "changed",
+  }),
+  row("2026-07-11", "60000", {
+    source_run_id: "run_candidate",
+    membership: ["evaluated_candidate"],
+    render_role: "candidate_overlap",
+  }),
+  row("2026-07-12", "61000", {
+    source_run_id: "run_candidate",
+    membership: ["evaluated_candidate"],
+    render_role: "candidate_only",
+  }),
   row("2026-07-13", null, {
     source_run_id: "run_candidate",
     membership: ["evaluated_candidate"],
@@ -132,27 +169,44 @@ const CANDIDATE_ROWS: ObsSeriesRow[] = [
     availability_state: "missing",
     quality_flags: [],
   }),
-  row("2026-07-14", "62000", { source_run_id: "run_candidate", membership: ["evaluated_candidate"], render_role: "candidate_only" }),
+  row("2026-07-14", "62000", {
+    source_run_id: "run_candidate",
+    membership: ["evaluated_candidate"],
+    render_role: "candidate_only",
+  }),
 ];
 
+const QUARANTINED_OBSERVED_ROW = row("2026-07-15", "62500", {
+  source_run_id: "run_observed",
+  membership: ["latest_observed"],
+  render_role: "observed_only",
+  quality_flags: ["quarantined"],
+});
+
 // Observed layer: extends beyond candidate to 07-18 (observed-only tail),
-// with a quarantined date (07-15) and a revised date (07-17).
+// omits the Context-quarantined date (07-15), and includes a revised date (07-17).
 const OBSERVED_ROWS: ObsSeriesRow[] = [
-  row("2026-07-14", "62010", { source_run_id: "run_observed", membership: ["latest_observed"], render_role: "observed_overlap" }),
-  row("2026-07-15", "62500", {
+  row("2026-07-14", "62010", {
+    source_run_id: "run_observed",
+    membership: ["latest_observed"],
+    render_role: "observed_overlap",
+  }),
+  row("2026-07-16", "63000", {
     source_run_id: "run_observed",
     membership: ["latest_observed"],
     render_role: "observed_only",
-    quality_flags: ["quarantined"],
   }),
-  row("2026-07-16", "63000", { source_run_id: "run_observed", membership: ["latest_observed"], render_role: "observed_only" }),
   row("2026-07-17", "63500", {
     source_run_id: "run_observed",
     membership: ["latest_observed"],
     render_role: "observed_only",
     revision_state: "changed",
   }),
-  row("2026-07-18", "64000", { source_run_id: "run_observed", membership: ["latest_observed"], render_role: "observed_only" }),
+  row("2026-07-18", "64000", {
+    source_run_id: "run_observed",
+    membership: ["latest_observed"],
+    render_role: "observed_only",
+  }),
 ];
 
 export const COMPOSITE_FIXTURE: ObsCompositeSeries = {
@@ -161,8 +215,16 @@ export const COMPOSITE_FIXTURE: ObsCompositeSeries = {
   etag: "etag_composite_0001",
   fingerprint_basis: "fb_composite_0001",
   layers: {
-    formal: { channel: "formal", context: { ...CONTEXT_FIXTURE, resolved_channel: "formal", market_watermark: "2026-07-11" }, rows: FORMAL_ROWS },
-    evaluated_candidate: { channel: "evaluated_candidate", context: { ...CONTEXT_FIXTURE, resolved_channel: "evaluated_candidate" }, rows: CANDIDATE_ROWS },
+    formal: {
+      channel: "formal",
+      context: { ...CONTEXT_FIXTURE, resolved_channel: "formal", market_watermark: "2026-07-11" },
+      rows: FORMAL_ROWS,
+    },
+    evaluated_candidate: {
+      channel: "evaluated_candidate",
+      context: { ...CONTEXT_FIXTURE, resolved_channel: "evaluated_candidate" },
+      rows: CANDIDATE_ROWS,
+    },
     latest_observed: { channel: "latest_observed", context: CONTEXT_FIXTURE, rows: OBSERVED_ROWS },
   },
   reason_codes: [],
@@ -176,7 +238,13 @@ export const FORMAL_SERIES_FIXTURE: ObsSingleSeries = {
     ...r,
     metrics:
       i === FORMAL_ROWS.length - 1
-        ? { return_1d: "1.69", return_7d: "3.44", return_30d: "12.10", drawdown: "-4.20", rv20_percentile: "72" }
+        ? {
+            return_1d: "1.69",
+            return_7d: "3.44",
+            return_30d: "12.10",
+            drawdown: "-4.20",
+            rv20_percentile: "72",
+          }
         : {},
   })),
   pit_valid: true,
@@ -185,11 +253,24 @@ export const FORMAL_SERIES_FIXTURE: ObsSingleSeries = {
   etag: "etag_formal_0001",
 };
 
+// Mirrors the selected-series query output: one snapshot-pinned semantic channel,
+// primary-provider rows only, decimal strings preserved, and quarantine supplied
+// separately by Context.excluded_dates rather than inferred from a row marker.
+export const OBSERVED_SERIES_FIXTURE: ObsSingleSeries = {
+  view: "observed",
+  context: CONTEXT_FIXTURE,
+  rows: OBSERVED_ROWS,
+  pit_valid: true,
+  reason_codes: [],
+  view_fingerprint: "vf_observed_0001",
+  etag: "etag_observed_0001",
+};
+
 export const DATE_EVIDENCE_FIXTURE: ObsDateEvidence = {
   date: "2026-07-15",
   snapshot_id: "snapshot_observed_0001",
   run_id: "run_observed",
-  ohlcv: OBSERVED_ROWS[1],
+  ohlcv: QUARANTINED_OBSERVED_ROW,
   reconciliation: { basis_bps: "12.5", aligned: "true" },
   revision: { revision_state: "unchanged", old_close: null, new_close: null },
   run_lineage: ["run_observed"],
@@ -201,12 +282,42 @@ export const TRUST_FIXTURE: ObsTrust = {
   snapshot_id: "snapshot_observed_0001",
   run_id: "run_observed",
   gates: [
-    { gate: "contract", status: "pass", reason_code: null, detail: "identity verified", metrics: {} },
-    { gate: "acquisition", status: "warn", reason_code: "D1_INSUFFICIENT", detail: "3 / 29 real success days", metrics: { success_days: 3 } },
+    {
+      gate: "contract",
+      status: "pass",
+      reason_code: null,
+      detail: "identity verified",
+      metrics: {},
+    },
+    {
+      gate: "acquisition",
+      status: "warn",
+      reason_code: "D1_INSUFFICIENT",
+      detail: "3 / 29 real success days",
+      metrics: { success_days: 3 },
+    },
     { gate: "structure", status: "pass", reason_code: null, detail: "schema ok", metrics: {} },
-    { gate: "cross_source", status: "pass", reason_code: null, detail: "basis within band", metrics: {} },
-    { gate: "revision", status: "warn", reason_code: "REVISION_DETECTED", detail: "1 revised date", metrics: {} },
-    { gate: "publish", status: "block", reason_code: "CHANNEL_UNAVAILABLE", detail: "not published", metrics: {} },
+    {
+      gate: "cross_source",
+      status: "pass",
+      reason_code: null,
+      detail: "basis within band",
+      metrics: {},
+    },
+    {
+      gate: "revision",
+      status: "warn",
+      reason_code: "REVISION_DETECTED",
+      detail: "1 revised date",
+      metrics: {},
+    },
+    {
+      gate: "publish",
+      status: "block",
+      reason_code: "CHANNEL_UNAVAILABLE",
+      detail: "not published",
+      metrics: {},
+    },
   ],
   findings: [
     {
@@ -224,9 +335,33 @@ export const TRUST_FIXTURE: ObsTrust = {
 
 export const RUNS_FIXTURE: ObsRunsPayload = {
   runs: [
-    { run_id: "run_observed", created_at: "2026-07-18T01:00:00Z", market_watermark: "2026-07-18", data_readiness: "degraded", quality_state: "degraded", lifecycle_state: "staged", canonical_rows: 725 },
-    { run_id: "run_candidate", created_at: "2026-07-17T01:00:00Z", market_watermark: "2026-07-14", data_readiness: "degraded", quality_state: "degraded", lifecycle_state: "staged", canonical_rows: 720 },
-    { run_id: "run_formal", created_at: "2026-07-11T01:00:00Z", market_watermark: "2026-07-11", data_readiness: "ready", quality_state: "assured", lifecycle_state: "published", canonical_rows: 730 },
+    {
+      run_id: "run_observed",
+      created_at: "2026-07-18T01:00:00Z",
+      market_watermark: "2026-07-18",
+      data_readiness: "degraded",
+      quality_state: "degraded",
+      lifecycle_state: "staged",
+      canonical_rows: 725,
+    },
+    {
+      run_id: "run_candidate",
+      created_at: "2026-07-17T01:00:00Z",
+      market_watermark: "2026-07-14",
+      data_readiness: "degraded",
+      quality_state: "degraded",
+      lifecycle_state: "staged",
+      canonical_rows: 720,
+    },
+    {
+      run_id: "run_formal",
+      created_at: "2026-07-11T01:00:00Z",
+      market_watermark: "2026-07-11",
+      data_readiness: "ready",
+      quality_state: "assured",
+      lifecycle_state: "published",
+      canonical_rows: 730,
+    },
   ],
   next_cursor: null,
   catalog_fingerprint: "catalog_fp_0001",
@@ -247,8 +382,24 @@ export const RUN_DETAIL_FIXTURE = {
 };
 
 export const RUN_DIFF_FIXTURE: ObsRunDiff = {
-  base: { run_id: "run_formal", watermark: "2026-07-11", canonical_rows: 730, canonical_hash: "hf", code_revision: "aaa", config_hash: "c1", schema_hash: "s1" },
-  compare: { run_id: "run_observed", watermark: "2026-07-18", canonical_rows: 725, canonical_hash: "ho", code_revision: "bbb", config_hash: "c1", schema_hash: "s1" },
+  base: {
+    run_id: "run_formal",
+    watermark: "2026-07-11",
+    canonical_rows: 730,
+    canonical_hash: "hf",
+    code_revision: "aaa",
+    config_hash: "c1",
+    schema_hash: "s1",
+  },
+  compare: {
+    run_id: "run_observed",
+    watermark: "2026-07-18",
+    canonical_rows: 725,
+    canonical_hash: "ho",
+    code_revision: "bbb",
+    config_hash: "c1",
+    schema_hash: "s1",
+  },
   added_dates: ["2026-07-12", "2026-07-14", "2026-07-16", "2026-07-17", "2026-07-18"],
   removed_dates: ["2026-07-05"],
   changed_dates: [{ date: "2026-07-10", base_close: "59000", compare_close: "59050" }],

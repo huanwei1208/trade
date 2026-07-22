@@ -1,11 +1,25 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../components/observatory/ExchangeKlinePanel", () => ({
+  ExchangeKlinePanel: ({ onRequestCompare }: { onRequestCompare?: () => void }) => (
+    <div data-testid="exchange-kline-panel-stub">
+      Exchange-style daily chart
+      {onRequestCompare ? (
+        <button type="button" onClick={onRequestCompare}>
+          Open Compare
+        </button>
+      ) : null}
+    </div>
+  ),
+}));
 
 import type { ObservatoryUrlState } from "../lib/observatory";
 import { ObservatoryPage } from "../pages/observatory/ObservatoryPage";
 import {
   COMPOSITE_FIXTURE,
   CONTEXT_FIXTURE,
+  DATE_EVIDENCE_FIXTURE,
   HYPOTHESES_FIXTURE,
   RESEARCH_RUN_FIXTURE,
   RUN_DETAIL_FIXTURE,
@@ -18,6 +32,7 @@ import { clearObservatoryResourceMemoryCache } from "../pages/observatory/observ
 const DEFAULT_STATE: ObservatoryUrlState = {
   lens: "overview",
   channel: "observed",
+  chartMode: "market",
   knowledgeAsOf: "latest",
   range: "90D",
   runId: null,
@@ -83,7 +98,7 @@ function installObservatoryFetch(overrides: Partial<Record<string, unknown>> = {
       return jsonResponse(overrides.researchRun ?? RESEARCH_RUN_FIXTURE);
     }
     if (url.pathname.includes("/dates/")) {
-      return jsonResponse({});
+      return jsonResponse(overrides.dateEvidence ?? DATE_EVIDENCE_FIXTURE);
     }
     return jsonResponse({});
   });
@@ -112,11 +127,11 @@ afterEach(() => {
 });
 
 describe("ObservatoryPage request matrix", () => {
-  it("loads Context first, then snapshot-pinned Market series plus separate bounded composite only", async () => {
+  it("loads Context first, then only the snapshot-pinned Market series", async () => {
     const { paths } = installObservatoryFetch();
     renderPage({ range: "90D" });
 
-    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(2));
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(1));
     expect(paths.filter((path) => path.includes("/context"))).toHaveLength(1);
     expect(paths.some((path) => path.includes("/trust"))).toBe(false);
     expect(paths.some((path) => path.includes("/runs"))).toBe(false);
@@ -125,19 +140,216 @@ describe("ObservatoryPage request matrix", () => {
     const selectedPath = paths.find(
       (path) => new URL(path, "https://trade.invalid").searchParams.get("view") === "observed",
     );
-    const compositePath = paths.find(
-      (path) => new URL(path, "https://trade.invalid").searchParams.get("view") === "composite",
-    );
     expect(selectedPath).toBeTruthy();
-    expect(compositePath).toBeTruthy();
 
     const selectedParams = new URL(selectedPath!, "https://trade.invalid").searchParams;
     expect(selectedParams.get("snapshot_id")).toBe(CONTEXT_FIXTURE.snapshot_id);
     expect(selectedParams.get("from")).toBe("2026-04-20");
     expect(selectedParams.get("to")).toBe("2026-07-18");
     expect(
-      new URL(compositePath!, "https://trade.invalid").searchParams.get("snapshot_id"),
-    ).toBeNull();
+      paths.some(
+        (path) => new URL(path, "https://trade.invalid").searchParams.get("view") === "composite",
+      ),
+    ).toBe(false);
+    expect(await screen.findByTestId("exchange-kline-panel-stub")).toBeTruthy();
+    expect(screen.getByTestId("market-summary")).toBeTruthy();
+    expect(screen.queryByTestId("what-changed")).toBeNull();
+  });
+
+  it("loads only the bounded composite series in Compare mode", async () => {
+    const { paths } = installObservatoryFetch();
+    renderPage({ chartMode: "compare", range: "90D" });
+
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(1));
+    const compositePath = paths.find(
+      (path) => new URL(path, "https://trade.invalid").searchParams.get("view") === "composite",
+    );
+    expect(compositePath).toBeTruthy();
+    const params = new URL(compositePath!, "https://trade.invalid").searchParams;
+    expect(params.get("snapshot_id")).toBeNull();
+    expect(params.get("from")).toBe("2026-04-20");
+    expect(params.get("to")).toBe("2026-07-18");
+    expect(screen.getByTestId("composite-chart")).toBeTruthy();
+    expect(screen.getByTestId("what-changed")).toBeTruthy();
+    expect(screen.queryByTestId("market-summary")).toBeNull();
+  });
+
+  it("refetches the same composite URL when a channel switch resolves a new Context snapshot", async () => {
+    const nextSnapshotId = "snapshot_formal_0002";
+    const nextContext = {
+      ...CONTEXT_FIXTURE,
+      resolved_channel: "formal",
+      snapshot_id: nextSnapshotId,
+    };
+    const nextComposite = {
+      ...COMPOSITE_FIXTURE,
+      layers: {
+        ...COMPOSITE_FIXTURE.layers,
+        formal: {
+          ...COMPOSITE_FIXTURE.layers?.formal,
+          context: {
+            ...COMPOSITE_FIXTURE.layers?.formal?.context,
+            resolved_channel: "formal",
+            snapshot_id: nextSnapshotId,
+          },
+        },
+      },
+    };
+    const paths: string[] = [];
+    let compositeRequests = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = typeof input === "string" ? input : input.toString();
+      paths.push(path);
+      const url = new URL(path, "https://trade.invalid");
+      if (url.pathname.endsWith("/context")) {
+        return jsonResponse(
+          url.searchParams.get("channel") === "formal" ? nextContext : CONTEXT_FIXTURE,
+        );
+      }
+      if (url.pathname.endsWith("/series") && url.searchParams.get("view") === "composite") {
+        compositeRequests += 1;
+        return jsonResponse(compositeRequests === 1 ? COMPOSITE_FIXTURE : nextComposite);
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const page = render(
+      <ObservatoryPage
+        refreshToken={0}
+        urlState={{ ...DEFAULT_STATE, chartMode: "compare", range: "All" }}
+        onUrlStateChange={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(compositeRequests).toBe(1));
+    expect(await screen.findByTestId("composite-chart")).toBeTruthy();
+
+    page.rerender(
+      <ObservatoryPage
+        refreshToken={0}
+        urlState={{
+          ...DEFAULT_STATE,
+          chartMode: "compare",
+          channel: "formal",
+          range: "All",
+        }}
+        onUrlStateChange={() => {}}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(paths.some((path) => path.endsWith("/context?channel=formal"))).toBe(true),
+    );
+    await waitFor(() => expect(compositeRequests).toBe(2));
+    expect(screen.getByTestId("composite-chart")).toBeTruthy();
+    expect(screen.queryByText("Composite comparison unavailable")).toBeNull();
+  });
+
+  it("waits for refreshed Context before revalidating a still-mounted composite URL", async () => {
+    const nextSnapshotId = "snapshot_observed_0002";
+    const nextContext = { ...CONTEXT_FIXTURE, snapshot_id: nextSnapshotId };
+    const nextComposite = {
+      ...COMPOSITE_FIXTURE,
+      layers: {
+        ...COMPOSITE_FIXTURE.layers,
+        latest_observed: {
+          ...COMPOSITE_FIXTURE.layers?.latest_observed,
+          context: {
+            ...COMPOSITE_FIXTURE.layers?.latest_observed?.context,
+            snapshot_id: nextSnapshotId,
+          },
+        },
+      },
+    };
+    let contextRequests = 0;
+    let compositeRequests = 0;
+    let resolveRefreshContext: ((response: Response) => void) | null = null;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const path = typeof input === "string" ? input : input.toString();
+      const url = new URL(path, "https://trade.invalid");
+      if (url.pathname.endsWith("/context")) {
+        contextRequests += 1;
+        if (contextRequests === 1) return Promise.resolve(jsonResponse(CONTEXT_FIXTURE));
+        return new Promise<Response>((resolve) => {
+          resolveRefreshContext = resolve;
+        });
+      }
+      if (url.pathname.endsWith("/series") && url.searchParams.get("view") === "composite") {
+        compositeRequests += 1;
+        return Promise.resolve(
+          jsonResponse(compositeRequests === 1 ? COMPOSITE_FIXTURE : nextComposite),
+        );
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const page = render(
+      <ObservatoryPage
+        refreshToken={0}
+        urlState={{ ...DEFAULT_STATE, chartMode: "compare", range: "All" }}
+        onUrlStateChange={() => {}}
+      />,
+    );
+
+    expect(await screen.findByTestId("composite-chart")).toBeTruthy();
+    expect(contextRequests).toBe(1);
+    expect(compositeRequests).toBe(1);
+
+    page.rerender(
+      <ObservatoryPage
+        refreshToken={1}
+        urlState={{ ...DEFAULT_STATE, chartMode: "compare", range: "All" }}
+        onUrlStateChange={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(contextRequests).toBe(2));
+    expect(compositeRequests).toBe(1);
+    expect(screen.queryByTestId("composite-chart")).toBeNull();
+
+    await act(async () => {
+      resolveRefreshContext?.(jsonResponse(nextContext));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(compositeRequests).toBe(2));
+    expect(await screen.findByTestId("composite-chart")).toBeTruthy();
+    expect(screen.queryByText("Composite comparison unavailable")).toBeNull();
+  });
+
+  it("loads Compare date evidence directly from Context without a selected-series request", async () => {
+    const { paths } = installObservatoryFetch();
+    renderPage({ chartMode: "compare", date: "2026-07-15" });
+
+    await waitFor(() =>
+      expect(paths.some((path) => path.includes("/dates/2026-07-15"))).toBe(true),
+    );
+    expect(
+      paths.filter(
+        (path) =>
+          path.includes("/series") &&
+          new URL(path, "https://trade.invalid").searchParams.get("view") !== "composite",
+      ),
+    ).toHaveLength(0);
+    const datePath = paths.find((path) => path.includes("/dates/2026-07-15"));
+    expect(datePath).toContain(`snapshot_id=${CONTEXT_FIXTURE.snapshot_id}`);
+    expect(await screen.findByTestId("date-evidence")).toHaveTextContent("run_observed");
+  });
+
+  it("keeps the Market/Compare switch outside the lazy renderer boundary", async () => {
+    const onUrlStateChange = vi.fn();
+    installObservatoryFetch();
+    render(
+      <ObservatoryPage
+        refreshToken={0}
+        urlState={DEFAULT_STATE}
+        onUrlStateChange={onUrlStateChange}
+      />,
+    );
+
+    await screen.findByTestId("exchange-kline-panel-stub");
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    expect(onUrlStateChange).toHaveBeenCalledWith({ chartMode: "compare" });
   });
 
   it("reuses confirmed Market resources when returning to the Overview lens", async () => {
@@ -150,7 +362,7 @@ describe("ObservatoryPage request matrix", () => {
       />,
     );
 
-    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(2));
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(1));
     const initialCount = paths.length;
 
     page.rerender(
@@ -171,10 +383,10 @@ describe("ObservatoryPage request matrix", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByTestId("composite-chart")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("exchange-kline-panel-stub")).toBeTruthy());
     expect(paths).toHaveLength(afterRunsCount);
     expect(paths.filter((path) => path.includes("/context"))).toHaveLength(1);
-    expect(paths.filter((path) => path.includes("/series"))).toHaveLength(2);
+    expect(paths.filter((path) => path.includes("/series"))).toHaveLength(1);
     expect(afterRunsCount).toBe(initialCount + 1);
   });
 
@@ -188,7 +400,7 @@ describe("ObservatoryPage request matrix", () => {
       />,
     );
 
-    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(2));
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(1));
 
     page.rerender(
       <ObservatoryPage
@@ -199,7 +411,7 @@ describe("ObservatoryPage request matrix", () => {
     );
 
     await waitFor(() => expect(paths.filter((path) => path.includes("/context")).length).toBe(2));
-    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(4));
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(2));
   });
 
   it("accepts the backend null echo for the committed latest knowledge selector", async () => {
@@ -208,7 +420,7 @@ describe("ObservatoryPage request matrix", () => {
     });
     renderPage();
 
-    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(2));
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(1));
     expect(screen.queryByText("Market snapshot unavailable")).toBeNull();
   });
 
@@ -303,7 +515,7 @@ describe("ObservatoryPage request matrix", () => {
     const fetchMock = vi.fn().mockResolvedValue(unavailableContext);
     vi.stubGlobal("fetch", fetchMock);
 
-    renderPage();
+    renderPage({ chartMode: "compare" });
 
     await waitFor(() => expect(screen.getByText("Market snapshot unavailable")).toBeTruthy());
     expect(
@@ -342,7 +554,7 @@ describe("ObservatoryPage request matrix", () => {
       },
     };
     installObservatoryFetch({ composite });
-    renderPage();
+    renderPage({ chartMode: "compare" });
 
     await waitFor(() => expect(screen.getByText("Composite comparison unavailable")).toBeTruthy());
     expect(
@@ -360,7 +572,7 @@ describe("ObservatoryPage request matrix", () => {
         effective_knowledge_cut: "2026-07-11T00:00:00Z",
       },
     });
-    renderPage({ knowledgeAsOf: "2026-07-11T00:00:00Z" });
+    renderPage({ chartMode: "compare", knowledgeAsOf: "2026-07-11T00:00:00Z" });
 
     await waitFor(() => expect(screen.getByText("Composite comparison unavailable")).toBeTruthy());
     expect(screen.getByTestId("observatory-error-state")).toHaveTextContent(

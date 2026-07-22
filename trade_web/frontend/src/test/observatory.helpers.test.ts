@@ -11,6 +11,7 @@ import {
   isPlottable,
   layerTreatment,
   markersForRow,
+  normalizeObservatoryState,
   observedOnlyDates,
   observatoryWindowBounds,
   downsampleDisplayDates,
@@ -22,7 +23,7 @@ import {
   DEFAULT_OBS_URL_STATE,
   type ObservatoryUrlState,
 } from "../lib/observatory";
-import { COMPOSITE_FIXTURE } from "./fixtures";
+import { COMPOSITE_FIXTURE, CONTEXT_FIXTURE } from "./fixtures";
 import type { ObsSeriesRow } from "../lib/api";
 
 describe("parseDecimal", () => {
@@ -58,8 +59,10 @@ describe("composite layering", () => {
 
   it("renders the observed-only tail distinctly (observed_watermark > formal_watermark)", () => {
     const tail = observedOnlyDates(COMPOSITE_FIXTURE);
-    // 07-15..07-18 are observed-only (beyond formal 07-11 and candidate 07-14).
-    expect(tail).toContain("2026-07-15");
+    // 07-15 is quarantined out of selected values; 07-16..07-18 remain the
+    // observed-only row tail beyond formal 07-11 and candidate 07-14.
+    expect(tail).not.toContain("2026-07-15");
+    expect(tail).toContain("2026-07-16");
     expect(tail).toContain("2026-07-18");
     expect(tail).not.toContain("2026-07-14"); // overlaps candidate
     const formalWm = formalWatermarkDate(COMPOSITE_FIXTURE);
@@ -155,7 +158,7 @@ describe("non-color semantics", () => {
 
 describe("what changed (deterministic, rule-based)", () => {
   it("summarizes observed-only additions, revisions and quarantines from evidence", () => {
-    const entries = buildWhatChanged(COMPOSITE_FIXTURE);
+    const entries = buildWhatChanged(COMPOSITE_FIXTURE, CONTEXT_FIXTURE.excluded_dates);
     const kinds = entries.map((e) => e.kind);
     expect(kinds).toContain("added_dates");
     expect(kinds).toContain("revised_dates");
@@ -247,6 +250,7 @@ describe("URL state round-trips (fixed URL restore)", () => {
     const state: ObservatoryUrlState = {
       lens: "runs",
       channel: "evaluated_candidate",
+      chartMode: "compare",
       knowledgeAsOf: "2026-07-11",
       range: "1Y",
       runId: "run_observed",
@@ -263,16 +267,39 @@ describe("URL state round-trips (fixed URL restore)", () => {
     // knowledge=latest and default range are not serialized.
     expect(params.get("knowledgeAsOf")).toBeNull();
     expect(params.get("obsRange")).toBeNull();
+    expect(params.get("obsChart")).toBeNull();
     expect(params.get("obsLens")).toBe("overview");
     const restored = deserializeObservatoryState(params);
     expect(restored.knowledgeAsOf).toBe("latest");
     expect(restored.range).toBe(DEFAULT_OBS_URL_STATE.range);
+    expect(restored.chartMode).toBe("market");
   });
 
-  it("rejects unknown lens / channel and falls back to defaults", () => {
-    const params = new URLSearchParams("obsLens=bogus&obsChannel=bogus");
+  it("rejects unknown lens / channel / chart mode and falls back to defaults", () => {
+    const params = new URLSearchParams("obsLens=bogus&obsChannel=bogus&obsChart=bogus");
     const restored = deserializeObservatoryState(params);
     expect(restored.lens).toBe("overview");
     expect(restored.channel).toBe("observed");
+    expect(restored.chartMode).toBe("market");
+  });
+
+  it("round-trips Compare while keeping Market as the canonical default", () => {
+    const compare = serializeObservatoryState({
+      ...DEFAULT_OBS_URL_STATE,
+      chartMode: "compare",
+    });
+    expect(compare.get("obsChart")).toBe("compare");
+    expect(deserializeObservatoryState(compare).chartMode).toBe("compare");
+  });
+
+  it("normalizes legacy persisted state before render or serialization", () => {
+    const legacy = normalizeObservatoryState({
+      lens: "overview",
+      channel: "observed",
+      knowledgeAsOf: " latest ",
+      range: "90D",
+    });
+    expect(legacy).toEqual(DEFAULT_OBS_URL_STATE);
+    expect(serializeObservatoryState(legacy).get("obsChart")).toBeNull();
   });
 });

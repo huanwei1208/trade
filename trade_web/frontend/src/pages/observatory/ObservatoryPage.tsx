@@ -1,13 +1,6 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { CompositeChart } from "../../components/observatory/CompositeChart";
-import { DateEvidenceLens } from "../../components/observatory/DateEvidenceLens";
 import { ObservatoryErrorState } from "../../components/observatory/ObservatoryErrorState";
-import {
-  MarketSummary,
-  WhatChanged,
-  WhyNotFormal,
-} from "../../components/observatory/OverviewPanels";
 import { ResearchLens } from "../../components/observatory/ResearchLens";
 import { RunsLineageLens } from "../../components/observatory/RunsLineageLens";
 import { SnapshotContextBar } from "../../components/observatory/SnapshotContextBar";
@@ -39,11 +32,13 @@ import {
 import { observatoryContextPath, observatorySeriesPath } from "../../lib/api";
 import { classNames } from "../../lib/ui";
 import {
+  compositeLayerForChannel,
   observatoryWindowBounds,
   type ObservatorySafeError,
   type ObservatoryUrlState,
   type ObservatoryWindowBounds,
 } from "../../lib/observatory";
+import { MarketWorkspace } from "./MarketWorkspace";
 import {
   parseObservatoryError,
   useObservatoryResource,
@@ -70,15 +65,6 @@ const LENS_TABS: Array<{ key: ObsLens; label: string }> = [
 ];
 
 const RANGE_OPTIONS = ["30D", "90D", "1Y", "All"];
-
-const COMPOSITE_LAYER_FOR_CHANNEL: Record<
-  ObsChannel,
-  "formal" | "evaluated_candidate" | "latest_observed"
-> = {
-  formal: "formal",
-  evaluated_candidate: "evaluated_candidate",
-  observed: "latest_observed",
-};
 
 const RESEARCH_STATES = new Set([
   "exploratory",
@@ -218,7 +204,7 @@ function validateComposite(
   if (series.view !== "composite") {
     return identityMismatch();
   }
-  const layer = series.layers?.[COMPOSITE_LAYER_FOR_CHANNEL[channel]];
+  const layer = series.layers?.[compositeLayerForChannel(channel)];
   if (layer?.context?.snapshot_id !== snapshotId) {
     return identityMismatch(
       "The selected composite layer did not match the resolved market snapshot.",
@@ -250,6 +236,9 @@ export function ObservatoryPage({
   const committedKnowledgeAsOf = urlState.knowledgeAsOf.trim() || "latest";
   const knowledgeParam = committedKnowledgeAsOf === "latest" ? undefined : committedKnowledgeAsOf;
   const historicalCompositeUnavailable = committedKnowledgeAsOf !== "latest";
+  const marketOverview = urlState.lens === "overview" && urlState.chartMode === "market";
+  const compareOverview = urlState.lens === "overview" && urlState.chartMode === "compare";
+  const needsSelectedSeries = marketOverview || urlState.lens === "trust";
   const needsSnapshotContext = urlState.lens === "overview" || urlState.lens === "trust";
   const contextResource = useObservatoryResource<ObsContext>(
     needsSnapshotContext
@@ -269,7 +258,7 @@ export function ObservatoryPage({
   const windowError = windowUnavailableError(windowBounds);
 
   const selectedSeriesResource = useObservatoryResource<ObsSingleSeries>(
-    snapshotId && !windowError
+    needsSelectedSeries && snapshotId && !windowError
       ? observatorySeriesPath({
           view: urlState.channel,
           snapshotId,
@@ -278,6 +267,7 @@ export function ObservatoryPage({
       : null,
     {
       reloadKey: refreshToken,
+      validationKey: snapshotId ? `${urlState.channel}:${snapshotId}` : null,
       validateResponse: (series) =>
         snapshotId
           ? validateSelectedSeries(series, urlState.channel, snapshotId)
@@ -286,7 +276,7 @@ export function ObservatoryPage({
   );
   const selectedSeriesConfirmed = selectedSeriesResource.status === "confirmed";
   const compositeResource = useObservatoryResource<ObsCompositeSeries>(
-    urlState.lens === "overview" && context && !windowError && !historicalCompositeUnavailable
+    compareOverview && context && !windowError && !historicalCompositeUnavailable
       ? observatorySeriesPath({
           view: "composite",
           knowledgeAsOf: knowledgeParam,
@@ -295,6 +285,7 @@ export function ObservatoryPage({
       : null,
     {
       reloadKey: refreshToken,
+      validationKey: snapshotId ? `${urlState.channel}:${snapshotId}` : null,
       validateResponse: (series) =>
         snapshotId ? validateComposite(series, urlState.channel, snapshotId) : identityMismatch(),
     },
@@ -309,11 +300,7 @@ export function ObservatoryPage({
     },
   );
   const dateEvidenceResource = useObservatoryResource<ObsDateEvidence>(
-    urlState.lens === "overview" &&
-      snapshotId &&
-      urlState.date &&
-      !windowError &&
-      selectedSeriesConfirmed
+    urlState.lens === "overview" && snapshotId && urlState.date && !windowError
       ? observatoryDatePath(urlState.date, { channel: urlState.channel, snapshotId })
       : null,
     {
@@ -460,15 +447,18 @@ export function ObservatoryPage({
       {urlState.lens === "overview" && (
         <MarketWorkspace
           contextResource={contextResource}
+          chartMode={urlState.chartMode}
           selectedSeriesResource={selectedSeriesResource}
           compositeResource={compositeResource}
           dateEvidenceResource={dateEvidenceResource}
           range={urlState.range}
           selectedDate={urlState.date ?? null}
           channel={urlState.channel}
+          windowBounds={windowBounds}
           windowError={windowError}
           historicalCompositeUnavailable={historicalCompositeUnavailable}
           dateInspectorRef={dateInspectorRef}
+          onChartModeChange={(chartMode) => onUrlStateChange({ chartMode })}
           onSelectDate={(date) => onUrlStateChange({ date })}
           onCloseDate={closeDateEvidence}
         />
@@ -511,167 +501,6 @@ export function ObservatoryPage({
 
 function confirmedData<T>(resource: ObservatoryResourceState<T>): T | null {
   return resource.status === "confirmed" ? resource.data : null;
-}
-
-function MarketWorkspace({
-  contextResource,
-  selectedSeriesResource,
-  compositeResource,
-  dateEvidenceResource,
-  range,
-  selectedDate,
-  channel,
-  windowError,
-  historicalCompositeUnavailable,
-  dateInspectorRef,
-  onSelectDate,
-  onCloseDate,
-}: {
-  contextResource: ObservatoryPageResource<ObsContext>;
-  selectedSeriesResource: ObservatoryPageResource<ObsSingleSeries>;
-  compositeResource: ObservatoryPageResource<ObsCompositeSeries>;
-  dateEvidenceResource: ObservatoryPageResource<ObsDateEvidence>;
-  range: string;
-  selectedDate: string | null;
-  channel: ObsChannel;
-  windowError: ObservatorySafeError | null;
-  historicalCompositeUnavailable: boolean;
-  dateInspectorRef: RefObject<HTMLInputElement | null>;
-  onSelectDate: (date: string) => void;
-  onCloseDate: () => void;
-}) {
-  const context = confirmedData(contextResource);
-  const selectedSeries = confirmedData(selectedSeriesResource);
-  const composite = confirmedData(compositeResource);
-  const evidence = confirmedData(dateEvidenceResource);
-  const contextError = parseObservatoryError(contextResource.error);
-  const selectedSeriesError = parseObservatoryError(selectedSeriesResource.error);
-  const compositeError = parseObservatoryError(compositeResource.error);
-  const dateError = parseObservatoryError(dateEvidenceResource.error);
-  const selectedSeriesUnavailable =
-    Boolean(windowError) ||
-    selectedSeriesResource.status === "failed" ||
-    selectedSeriesResource.status === "unavailable";
-  const selectedSeriesPending =
-    selectedSeriesResource.status === "idle" || selectedSeriesResource.loading;
-  const historicalCompositeError: ObservatorySafeError | null = historicalCompositeUnavailable
-    ? {
-        message:
-          "Composite overlays are unavailable for this historical knowledge cut because the response does not provide per-layer point-in-time proof.",
-        reasonCodes: ["COMPOSITE_PIT_NOT_PROVEN"],
-        evidenceRefs: [],
-        retryable: false,
-      }
-    : null;
-  const compositeUnavailable =
-    Boolean(windowError) ||
-    historicalCompositeUnavailable ||
-    compositeResource.status === "failed" ||
-    compositeResource.status === "unavailable";
-
-  if (contextResource.status !== "confirmed") {
-    return (
-      <div className="obs-overview">
-        <SnapshotContextBar
-          context={context}
-          status={contextResource.status}
-          error={contextError}
-          onRetry={contextResource.retry}
-        />
-        <div className="obs-dependent-blocked" role="status">
-          Market series, comparison, and date evidence remain blocked until the selected snapshot is
-          confirmed.
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="obs-overview">
-      <SnapshotContextBar
-        context={context}
-        status={contextResource.status}
-        error={contextError}
-        onRetry={contextResource.retry}
-      />
-      <section className="obs-chart-section">
-        {windowError ? (
-          <ObservatoryErrorState
-            title="Selected market window unavailable"
-            error={windowError}
-            unavailable
-            onRetry={contextResource.retry}
-          />
-        ) : compositeUnavailable ? (
-          <ObservatoryErrorState
-            title="Composite comparison unavailable"
-            error={historicalCompositeError ?? compositeError}
-            unavailable={
-              historicalCompositeUnavailable || compositeResource.status === "unavailable"
-            }
-            onRetry={
-              historicalCompositeUnavailable ? contextResource.retry : compositeResource.retry
-            }
-          />
-        ) : compositeResource.loading ? (
-          <div className="obs-empty" role="status">
-            Loading separate composite comparison…
-          </div>
-        ) : composite ? (
-          <CompositeChart
-            composite={composite}
-            range={range}
-            selectedDate={selectedDate}
-            onSelectDate={onSelectDate}
-            dateInputRef={dateInspectorRef}
-            excludedDates={context?.excluded_dates}
-            quarantineBreakLayer={COMPOSITE_LAYER_FOR_CHANNEL[channel]}
-          />
-        ) : (
-          <div className="obs-empty" role="status">
-            Waiting for separate composite comparison…
-          </div>
-        )}
-      </section>
-
-      {selectedSeriesUnavailable ? (
-        <ObservatoryErrorState
-          title="Selected-channel market series unavailable"
-          error={windowError ?? selectedSeriesError}
-          unavailable={Boolean(windowError) || selectedSeriesResource.status === "unavailable"}
-          onRetry={windowError ? contextResource.retry : selectedSeriesResource.retry}
-        />
-      ) : null}
-      <div className="obs-overview__panels">
-        <MarketSummary
-          series={selectedSeries}
-          context={context}
-          loading={selectedSeriesPending}
-          unavailable={selectedSeriesUnavailable}
-        />
-        <WhyNotFormal context={context} />
-        {composite ? (
-          <WhatChanged composite={composite} excludedDates={context?.excluded_dates} />
-        ) : null}
-      </div>
-
-      <DateEvidenceLens
-        date={selectedDate}
-        channel={channel}
-        evidence={evidence}
-        loading={dateEvidenceResource.loading || selectedSeriesPending}
-        error={windowError ?? (selectedSeriesUnavailable ? selectedSeriesError : dateError)}
-        onRetry={
-          windowError
-            ? contextResource.retry
-            : selectedSeriesUnavailable
-              ? selectedSeriesResource.retry
-              : dateEvidenceResource.retry
-        }
-        onClose={onCloseDate}
-      />
-    </div>
-  );
 }
 
 function AssuranceGatesWorkspace({

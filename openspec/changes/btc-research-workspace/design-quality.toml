@@ -37,21 +37,21 @@ applies = true
 reason = "The workspace coordinates concurrent browser reads whose response ordering must not allow stale selected-date or research-run responses to replace current UI state."
 
 [evidence.contract]
-contract = "The retained public surface is the capability-gated observatory page, existing URL query state, and read-only /api/v1/observatory payload contract. The UI maps existing serialized lens values to Market, Assurance, and Research labels."
-consumers = "Human BTC researchers use the React workspace; existing browser bookmarks, App URL restoration, AppShell navigation, and frontend unit/E2E tests consume the unchanged page key and query parameters."
-compatibility = "All existing API paths, request parameters, response shapes, PageKey values, capability conditions, and serialized lens values remain unchanged. Formal, evaluated_candidate, and observed retain their frozen lifecycle meaning and visual treatment."
-migration = "No migration is needed. Existing URLs restore through the current deserializer, and old localStorage state remains valid because the internal lens values are preserved."
+contract = "The retained public surface is the capability-gated observatory page, existing URL query state, additive obsChart=market|compare presentation state, and read-only /api/v1/observatory payload contract. The UI maps existing serialized lens values to Market, Assurance, and Research labels."
+consumers = "Human BTC researchers use the React workspace; existing browser bookmarks, App URL restoration, normalized legacy localStorage, AppShell navigation, and frontend unit/E2E tests consume the unchanged page key and query parameters."
+compatibility = "All existing API paths, request parameters, response shapes, PageKey values, capability conditions, and serialized lens values remain unchanged. obsChart is additive; missing or unknown values restore market. Formal, evaluated_candidate, and observed retain their frozen lifecycle meaning and visual treatment."
+migration = "No migration is needed. Existing URLs without obsChart restore Market; existing selectors restore through the current deserializer; legacy localStorage objects are merged with canonical defaults before render or serialization."
 rollback = "Revert the frontend commit to restore the prior presentation. No data, catalog, browser cache schema, backend route, or generated asset requires restoration."
 
 [evidence.concurrency]
-ownership = "A page-level keyed Observatory resource hook owns every GET, ETag entry, AbortController, and render state; Market, Assurance, Lineage, and Research containers only choose request keys and pass typed state to presentational components."
-bound = "Market resolves one selected-channel Context, then one same-snapshot selected-channel series, one selector-equivalent composite comparison, and at most one Date Evidence; Assurance resolves one same-snapshot trust payload and one bounded selected-channel coverage series; Lineage requests one paginated run list plus user-selected detail/diff; Research requests one explicit H1 plus its referenced run."
+ownership = "A page-level keyed Observatory resource hook owns every GET, ETag entry, AbortController, and render state; Market, Assurance, Lineage, and Research containers only choose request keys and pass typed state to presentational components. The external chart loader/error boundary owns vendor module state; one chart wrapper owns renderer resources."
+bound = "Market resolves one selected-channel Context, then either one same-snapshot selected-channel series or one selector-equivalent composite comparison, plus at most one Date Evidence; Assurance resolves one same-snapshot trust payload and one bounded selected-channel coverage series; Lineage requests one paginated run list plus user-selected detail/diff; Research requests one explicit H1 plus its referenced run."
 ordering = "A canonical request identity includes the endpoint path, all semantic selectors, resolved snapshot or immutable run identifier, selected date, and refresh version. A selection or URL commit synchronously invalidates the old identity; only a response whose identity still equals the active identity may enter confirmed state."
 atomicity = "Market Context establishes the selected-channel snapshot_id before same-snapshot series, Trust, or Date Evidence begin. Composite remains an explicitly multi-snapshot comparison under the same knowledge selector and cannot populate selected-snapshot truth cards. Every panel commits one complete typed payload, unavailable state, or failure for its own identity."
-timeout_cancellation = "Every Observatory GET receives an AbortSignal; identity replacement, retry replacement, and unmount abort the old request. Aborted or superseded responses make no state transition, including detail/diff, date evidence, and research-run requests."
-backpressure = "Mode-gated fetching, commit-on-blur/Enter knowledge selection, one selected date, cursor-bounded runs, server from/to windows, bounded in-memory ETag entries, a 720-point SVG geometry budget, and a windowed coverage view prevent unbounded fan-out, storage, or DOM growth. The workspace starts no polling, retry loop, worker, queue, or mutation."
-partial_failure = "Each panel exposes confirmed, loading, unavailable, failed, or explicitly stale-previous state. A failed or selector-mismatched request cannot render an earlier payload as current truth; confirmed sibling panels retain their own snapshot or immutable-run labels."
-capacity_validation = "Focused Vitest fixtures assert request-window parameters, mode request matrices, cache-key isolation, 304 reuse only for the same identity, abort on rapid changes, bounded chart/calendar render structure, and error/PIT state handling; native typecheck/build validate the typed boundary."
+timeout_cancellation = "Every Observatory GET receives an AbortSignal; identity replacement, retry replacement, and unmount abort the old request. A newer explicit date pin aborts the prior Date Evidence request. Aborted or superseded responses make no state transition. Chart cleanup cancels queued animation work and uses a disposed identity guard for late resize/fullscreen/crosshair callbacks."
+backpressure = "Mode-gated fetching, commit-on-blur/Enter knowledge selection, one selected date, cursor-bounded runs, server from/to windows, bounded in-memory ETag entries, one lazy Canvas chart with one candlestick and one volume series for selected daily data, a 7,300-date explicit renderer envelope, a 720-point-per-layer Compare SVG budget, and a windowed coverage view prevent unbounded fan-out, storage, or DOM growth. Passive chart events make no request; crosshair work is rAF-coalesced and date-deduplicated; mode change/unmount detaches subscriptions/observers/listeners/chart. The workspace starts no polling, retry loop, worker, queue, or mutation."
+partial_failure = "Each panel exposes confirmed, loading, unavailable, failed, or explicitly stale-previous state. Renderer conversion additionally exposes ready, partial-invalid, empty, or invalid without changing backend quality. A failed/mismatched request or renderer cannot render an earlier payload as current; confirmed Context remains visible and Compare remains reachable."
+capacity_validation = "Focused fixtures assert request windows, Market/Compare topology, cache identity, 304 reuse, abort on rapid changes, strict daily/provenance validation, daily-lattice gaps, actual-output markers, one renderer create/remove lifecycle, rAF hover coalescing, no passive-event fetch, 730/7,300 structure, safe renderer recovery, and error/PIT states. Typecheck/build, raw+gzip asset deltas, and focused Chromium interaction/performance checks validate the boundary."
 
 [evidence.forecast]
 decision_time = { source = "decision_clock", fallback = "not_applicable", timezone = "UTC", confidence = "exact" }
@@ -91,7 +91,7 @@ paths = [
   "trade_web/frontend/src/lib/observatory.ts",
 ]
 contracts = [
-  "three independent formal/evaluated_candidate/observed layers",
+  "selected-channel Market series plus independent formal/evaluated_candidate/observed Compare layers",
   "read-only /api/v1/observatory client contract",
 ]
 failure_states = [
@@ -109,6 +109,54 @@ spec_requirements = [
   "btc-research-workspace:Explicit unknown and failed states",
 ]
 validation_tasks = ["2.1", "2.2", "2.4", "2.5", "3.1"]
+
+[[obligations]]
+id = "btc-workspace.exchange-kline"
+owner = "trade_web/frontend/src/components/observatory and trade_web/frontend/src/lib/observatoryChart.ts"
+paths = [
+  "trade_web/frontend/src/components/observatory/ExchangeKlineChart.tsx",
+  "trade_web/frontend/src/components/observatory/CompositeChart.tsx",
+  "trade_web/frontend/src/lib/observatoryChart.ts",
+  "trade_web/frontend/src/pages/observatory/",
+  "trade_web/frontend/src/App.tsx",
+  "trade_web/frontend/src/lib/observatory.ts",
+  "trade_web/frontend/src/lib/api.ts",
+  "trade_web/frontend/src/styles/observatory.css",
+  "trade_web/frontend/src/test/",
+  "trade_web/frontend/tests/e2e/",
+  "trade_web/frontend/package.json",
+  "trade_web/frontend/package-lock.json",
+]
+contracts = [
+  "snapshot-pinned selected daily OHLCV only",
+  "original API decimal strings remain the displayed and accessible readout authority",
+  "strict Gregorian date, decimal, OHLCV, unique-date, daily-lattice, and Context provenance validation",
+  "additive obsChart=market|compare URL state with Market fallback",
+  "legacy persisted Observatory state normalizes through the shared URL schema",
+  "TradingView Lightweight Charts attribution and repository-owned cleanup boundary",
+  "Candidate and Observed remain persistently unpublished",
+]
+failure_states = [
+  "loading",
+  "empty or invalid series",
+  "PIT_NOT_PROVEN",
+  "snapshot selector mismatch",
+  "renderer creation failure",
+  "renderer module load or data application failure",
+  "partial-invalid or invalid series",
+  "duplicate or malformed date",
+  "Context provenance mismatch",
+  "chart capacity exceeded",
+  "fullscreen unavailable",
+  "candidate or observed not formally published",
+  "missing or quarantined date",
+]
+spec_requirements = [
+  "btc-research-workspace:Lifecycle-aware market workspace",
+  "btc-research-workspace:Bounded and accessible evidence exploration",
+  "btc-research-workspace:URL compatibility",
+]
+validation_tasks = ["4.3", "4.4", "4.5", "4.6"]
 
 [[obligations]]
 id = "btc-workspace.snapshot-coherence"
@@ -153,9 +201,9 @@ contracts = [
 ]
 failure_states = [
   "capability loading",
+  "cached, revalidating, or stale capability response",
   "capability disabled",
   "catalog missing",
-  "catalog stale",
   "catalog corrupt",
   "route registration error",
 ]

@@ -42,6 +42,23 @@ function row(date: string, close: string | null, over: Record<string, unknown> =
   };
 }
 
+function generatedDailyRows(count: number) {
+  const end = Date.parse("2026-07-18T00:00:00.000Z");
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(end - (count - index - 1) * 86_400_000).toISOString().slice(0, 10);
+    const open = 30_000 + index * 2;
+    const close = open + (index % 2 === 0 ? 35 : -20);
+    return row(date, String(close), {
+      open: String(open),
+      high: String(Math.max(open, close) + 90),
+      low: String(Math.min(open, close) - 80),
+      volume: String(10_000 + index),
+      quality_flags: [],
+      revision_state: "unchanged",
+    });
+  });
+}
+
 const CONTEXT = {
   snapshot_id: "snapshot_observed_0001",
   resolved_channel: "observed",
@@ -99,7 +116,7 @@ const CONTEXT = {
       exclusion_reason: "quarantined",
       quality_flags: ["quarantined"],
       evidence_refs: [],
-      marker_position: null,
+      marker_position: "below",
     },
   ],
   reason_codes: [],
@@ -162,11 +179,38 @@ const CANDIDATE_ROWS = [
 ];
 
 const OBSERVED_ROWS = [
-  row("2026-07-14", "62010", { render_role: "observed_overlap" }),
-  row("2026-07-15", "62500", { render_role: "observed_only", quality_flags: ["quarantined"] }),
-  row("2026-07-16", "63000", { render_role: "observed_only" }),
-  row("2026-07-17", "63500", { render_role: "observed_only", revision_state: "changed" }),
-  row("2026-07-18", "64000", { render_role: "observed_only" }),
+  row("2026-07-14", "62010", {
+    open: "61680",
+    high: "62340",
+    low: "61420",
+    render_role: "observed_overlap",
+  }),
+  row("2026-07-15", "62500", {
+    open: "62010",
+    high: "62820",
+    low: "61870",
+    render_role: "observed_only",
+    quality_flags: ["quarantined"],
+  }),
+  row("2026-07-16", "63000", {
+    open: "62500",
+    high: "63310",
+    low: "62240",
+    render_role: "observed_only",
+  }),
+  row("2026-07-17", "63500", {
+    open: "63000",
+    high: "63880",
+    low: "62760",
+    render_role: "observed_only",
+    revision_state: "changed",
+  }),
+  row("2026-07-18", "64000", {
+    open: "63500",
+    high: "64220",
+    low: "63210",
+    render_role: "observed_only",
+  }),
 ];
 
 const COMPOSITE = {
@@ -400,7 +444,14 @@ function requireBoundedWindow(url: URL, route: Route) {
   return null;
 }
 
-export async function mockObservatoryApi(page: Page): Promise<void> {
+export async function mockObservatoryApi(
+  page: Page,
+  options: { selectedRowCount?: number } = {},
+): Promise<void> {
+  const selectedRows = options.selectedRowCount
+    ? generatedDailyRows(options.selectedRowCount)
+    : OBSERVED_ROWS;
+  const selectedContext = options.selectedRowCount ? { ...CONTEXT, excluded_dates: [] } : CONTEXT;
   // Non-observatory endpoints the shell may call (trust overview) — stub empty.
   await page.route("**/api/trust/overview", (route) =>
     json(route, { as_of: "2026-07-19", trust_scalar: null, coverage: null, trend: [] }),
@@ -426,13 +477,17 @@ export async function mockObservatoryApi(page: Page): Promise<void> {
       if (url.searchParams.get("channel") !== "observed") {
         return invalid(route, "Mock supports the observed channel only.");
       }
-      return json(route, CONTEXT);
+      return json(route, selectedContext);
     }
     if (path.endsWith("/series")) {
       const view = url.searchParams.get("view") || "composite";
-      const windowError = requireBoundedWindow(url, route);
-      if (windowError) {
-        return windowError;
+      if (!options.selectedRowCount) {
+        const windowError = requireBoundedWindow(url, route);
+        if (windowError) {
+          return windowError;
+        }
+      } else if (url.searchParams.has("from") || url.searchParams.has("to")) {
+        return invalid(route, "Performance fixtures require an unbounded All request.");
       }
       if (view === "composite") {
         if (url.searchParams.has("snapshot_id")) {
@@ -450,8 +505,8 @@ export async function mockObservatoryApi(page: Page): Promise<void> {
       return json(route, {
         ...FORMAL_SERIES,
         view: "observed",
-        context: CONTEXT,
-        rows: OBSERVED_ROWS,
+        context: selectedContext,
+        rows: selectedRows,
       });
     }
     if (path.includes("/dates/")) {
@@ -459,7 +514,12 @@ export async function mockObservatoryApi(page: Page): Promise<void> {
       if (snapshotError) {
         return snapshotError;
       }
-      return json(route, DATE_EVIDENCE);
+      const requestedDate = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1));
+      return json(route, {
+        ...DATE_EVIDENCE,
+        date: requestedDate,
+        ohlcv: OBSERVED_ROWS.find((candidate) => candidate.date === requestedDate) ?? null,
+      });
     }
     if (path.endsWith("/trust")) {
       const snapshotError = requireSnapshot(url, route);

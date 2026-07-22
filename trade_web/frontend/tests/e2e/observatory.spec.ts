@@ -15,20 +15,76 @@ async function gotoObservatory(page: import("@playwright/test").Page, query = "?
   await expect(page.getByTestId("observatory-page")).toBeVisible();
 }
 
-test("Overview shows the Truth Bar with all three watermarks and the composite chart", async ({
-  page,
-}) => {
+test("Market defaults to the exchange-style selected-channel daily chart", async ({ page }) => {
   await gotoObservatory(page);
   await expect(page.getByTestId("obs-truthbar")).toBeVisible();
   await expect(page.getByTestId("wm-observed")).toHaveText("2026-07-18");
   await expect(page.getByTestId("wm-candidate")).toHaveText("2026-07-18");
   await expect(page.getByTestId("wm-formal")).toHaveText("2026-07-11");
+  await expect(page.getByTestId("exchange-kline-chart")).toHaveAttribute(
+    "data-renderer-state",
+    "ready",
+  );
+  await expect(page.getByTestId("exchange-kline-lifecycle")).toHaveText(
+    "Latest observed · UNPUBLISHED",
+  );
+  const gapCanvas = page.getByTestId("exchange-kline-gap-markers");
+  await expect(gapCanvas).toHaveAttribute("data-marker-count", "1");
+  await expect
+    .poll(() =>
+      gapCanvas.evaluate((canvas: HTMLCanvasElement) => {
+        const context = canvas.getContext("2d");
+        if (!context || canvas.width === 0 || canvas.height === 0) return false;
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let index = 3; index < pixels.length; index += 4) {
+          if (pixels[index] > 0) return true;
+        }
+        return false;
+      }),
+    )
+    .toBe(true);
+  await expect(page.getByText("BTC/USDT")).toBeVisible();
+  await expect(page.getByText("Local daily Observatory snapshot · not live")).toBeVisible();
+  await expect(
+    page.getByRole("group", { name: "Market chart view" }).getByRole("button", { name: "Market" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("composite-svg")).toHaveCount(0);
+  await expect(page).not.toHaveURL(/obsChart=/);
+});
+
+test("Compare preserves the separate three-layer lifecycle chart and restores from URL", async ({
+  page,
+}) => {
+  await gotoObservatory(page, "?obsLens=overview&obsChart=compare");
   await expect(page.getByTestId("composite-svg")).toBeVisible();
   await expect(page.getByTestId("formal-watermark-divider")).toBeVisible();
-  // Three independent layers exist.
   await expect(page.getByTestId("layer-formal")).toBeVisible();
   await expect(page.getByTestId("layer-evaluated_candidate")).toBeVisible();
   await expect(page.getByTestId("layer-latest_observed")).toBeVisible();
+  await expect(page.getByTestId("exchange-kline-chart")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByTestId("composite-svg")).toBeVisible();
+  await expect(page).toHaveURL(/obsChart=compare/);
+});
+
+test("Market and Compare issue only their mode-owned series request", async ({ page }) => {
+  const seriesViews: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/series")) {
+      seriesViews.push(url.searchParams.get("view") ?? "");
+    }
+  });
+
+  await gotoObservatory(page);
+  await expect(page.getByTestId("exchange-kline-chart")).toBeVisible();
+  expect(seriesViews).toEqual(["observed"]);
+
+  seriesViews.length = 0;
+  await page.getByRole("button", { name: "Compare" }).click();
+  await expect(page.getByTestId("composite-svg")).toBeVisible();
+  expect(seriesViews).toEqual(["composite"]);
+  await expect(page).toHaveURL(/obsChart=compare/);
 });
 
 test("Observe/Investigate does NOT leak future-outcome labels", async ({ page }) => {
@@ -104,6 +160,20 @@ test("Fixed URL restores lens + selected date on reload", async ({ page }) => {
   await expect(page.getByTestId("observatory-page")).toBeVisible();
   await expect(page.getByTestId("date-evidence")).toBeVisible();
   await expect(page).toHaveURL(/obsDate=2026-07-16/);
+});
+
+test("Compare date pinning uses the Context snapshot without loading Market series", async ({
+  page,
+}) => {
+  const selectedViews: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/series")) selectedViews.push(url.searchParams.get("view") ?? "");
+  });
+  await gotoObservatory(page, "?obsLens=overview&obsChart=compare");
+  await page.getByTestId("chart-date-inspector").fill("2026-07-15");
+  await expect(page.getByTestId("date-evidence")).toContainText("run_observed");
+  expect(selectedViews).toEqual(["composite"]);
 });
 
 test("Switching lenses updates the URL and restores after reload", async ({ page }) => {

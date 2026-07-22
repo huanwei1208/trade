@@ -27,8 +27,13 @@ descriptive and non-directional.
 
 Acceptance requires:
 
-- Market opens as the default task flow and keeps the existing composite chart
-  as three independent lifecycle layers.
+- Market opens as the default task flow with one selected-channel exchange-style
+  daily K-line. The existing three-layer composite SVG remains an explicit
+  Compare mode and source-level rollback surface.
+- The Market chart provides a right price axis, UTC time axis, volume,
+  crosshair-backed exact-string OHLCV readout, drag pan, wheel/pinch zoom,
+  fit/reset, go-to-latest, fullscreen, responsive sizing, and keyboard date
+  navigation without claiming intraday or live data.
 - Formal, evaluated candidate, and observed are never merged or visually
   rebranded as equivalent published data.
 - Market and Assurance resolve one selected-channel `ObsContext` first. Its
@@ -58,13 +63,20 @@ reuse. Page code may select which already-owned presentational component to
 render, but it does not calculate market or research facts.
 
 `trade_web/frontend/src/components/observatory/` owns cohesive visual
-representations: context/state summary, composite chart, date evidence, trust
-and gate evidence, run lineage, and H1 research evidence. A new workspace
+representations: context/state summary, the repository-owned exchange-chart
+wrapper, composite comparison, date evidence, trust and gate evidence, run
+lineage, and H1 research evidence. A new workspace
 header or mode navigation component belongs there because both the page and
 future BTC deep links need the same vocabulary.
 
 `trade_web/frontend/src/lib/observatory.ts` owns URL-state-compatible labels,
-range bounds, selection, downsampling geometry, and pure display helpers.
+the `obsChart` schema/default/serialize/deserialize/legacy-normalize contract,
+range bounds, selection, comparison downsampling geometry, and pure display
+helpers. `App.tsx` owns browser URL cleanup/whitelisting and persisted-state
+normalization. `trade_web/frontend/src/lib/observatoryChart.ts` owns only the
+vendor-neutral daily-series conversion model, strict data validation, UTC daily
+lattice, marker/diagnostic mapping, and original-row lookup required by the
+exchange-chart wrapper.
 `trade_web/frontend/src/lib/api.ts` remains the typed same-origin API boundary.
 `App.tsx` and `AppShell.tsx` retain the fresh capability authorization and
 navigation ownership, including a non-sensitive unavailable notice that preserves
@@ -88,8 +100,10 @@ and makes every panel obey the same cancellation and truth-state contract.
   must request that exact `snapshot_id` and confirm that their returned identity
   matches it before rendering as current.
 - `formal`, `evaluated_candidate`, and `observed` are independent backend
-  channels. Formal is the only published baseline. Candidate and observed stay
-  unpublished overlays with persistent non-color differentiation.
+  channels. Formal is the only published baseline. Market renders exactly the
+  selected channel; Candidate and Observed retain persistent unpublished,
+  non-color framing. Compare renders the channels as independent layers and
+  never blends their values.
 - Composite is an intentional independent-layer comparison, not a
   selected-snapshot payload: the backend rejects `snapshot_id` for composite
   views. It uses the same committed `knowledge_as_of`, range, and revision
@@ -98,18 +112,45 @@ and makes every panel obey the same cancellation and truth-state contract.
   summary facts. If the layer that corresponds to the selected channel does not
   carry the selected Context `snapshot_id`, the chart is unavailable until a
   reload resolves a coherent comparison.
-- Prices, volumes, and derived values remain backend-provided decimal strings.
-  The chart may parse a finite decimal only for SVG geometry, never for a new
-  displayed or calculated result.
+- Prices and volumes remain backend-provided decimal strings. A chart renderer
+  may parse a finite decimal only for geometry; its external OHLCV readout and
+  accessible selected-candle summary use the original server strings. Invalid
+  or incomplete rows become omitted/marked evidence, never zero. The browser
+  does not calculate a return, indicator, signal, or recommendation.
+- A chart date is a real Gregorian UTC `YYYY-MM-DD`. Geometry accepts strict
+  decimal syntax only: all OHLC fields are required, finite, and positive;
+  supplied volume is finite and non-negative; `high`/`low` enclose open and
+  close. Missing volume remains unavailable. Malformed dates invalidate the
+  series. Duplicate dates are never resolved first/last: the duplicated date
+  has no candle and carries `DUPLICATE_DATE` renderer evidence.
+- The adapter consumes rows plus selected Context `excluded_dates`, sorts only
+  after validation, and emits a UTC daily lattice between the first and last
+  supplied/declared date. Omitted, missing, unobserved, quarantined, duplicate,
+  and client-invalid dates become whitespace with deterministic combined
+  reasons; no gap is extrapolated outside those bounds.
+- Adapter state is `ready`, `partial-invalid`, `empty`, or `invalid` with
+  supplied/rendered/invalid counts, affected dates, and safe renderer reason
+  codes. Partial-invalid is persistently visible and accessible; zero valid
+  candles is unavailable. These diagnostics never become backend quality or
+  purpose-fitness facts.
+- Contract/provider/instrument/quote/interval labels come only from active
+  `ObsContext.contract`; UTC is the frozen Observatory display policy and the
+  primary interval must be the supported UTC-daily contract. Populated row provenance must agree. Missing or
+  mixed identity is unavailable, Binance shadow remains an assurance reference,
+  and volume remains unitless. Per-row revision markers render only when the
+  selected-series payload actually supplies them; quarantine comes from Context.
 - Browser code may select a raw server row for display, map API states to labels,
-  window request dates, downsample SVG geometry, and describe layer structure.
+  window request dates, convert finite daily values to renderer geometry,
+  downsample comparison SVG geometry, and describe layer structure.
   It must not compute extrema, returns, confidence, quality, formal eligibility,
   research outcome, ranking, or recommendation. The client-calculated “Window
   peak close” is removed rather than preserved under a new label.
 - The page query state is the source for a deliberate deep link:
   `obsLens`, `obsChannel`, `knowledgeAsOf`, `obsRange`, `obsRun`, `obsCompare`,
-  and `obsDate`. The internal lens serialization remains stable while human
-  labels change to Market, Assurance, Run lineage, and Research. The visible
+  `obsDate`, and additive `obsChart`. `obsChart` accepts `market` or `compare`;
+  missing/unknown values restore `market`. The internal lens serialization
+  remains stable while human labels change to Market, Assurance, Run lineage,
+  and Research. The visible
   mapping is:
 
   | Serialized lens | Visible location | Semantic scope |
@@ -135,14 +176,24 @@ The public contract is presentation-level. The existing `PageKey` remains
 `show_nav === true` response, and all API route builders/typed payloads remain
 unchanged. Existing saved URLs retain their exact serialized values:
 `overview`, `trust`, `runs`, and `research`; the UI maps them to task labels
-rather than introducing a new URL version.
+rather than introducing a new URL version. `obsChart` is an additive
+presentation selector; it does not alter channel, snapshot, knowledge, range,
+run, compare-run, or selected-date identity.
+
+Legacy localStorage objects are merged through the canonical Observatory
+normalizer before page render or URL serialization. `App.tsx` adds `obsChart` to
+both the URL cleanup set and denied-link safe whitelist. Future interval/source
+selectors require independent validated parameters; they cannot overload
+`obsChart` or silently select another provider/data family.
 
 No backend response field becomes required beyond the current optional typed
 models. When a field is absent, the UI renders a labeled unknown/unavailable
 state instead of synthesizing a number. Existing navigation stays hidden for
-disabled, missing, stale, corrupt, error, loading, cached, or revalidating
-capability results. Rollback is a frontend source revert because no state
-migration or durable artifact is created.
+disabled, missing, corrupt, error, loading, stale-response, cached, or
+revalidating capability results. A fresh successful backend `catalog_stale`
+state remains visible under its existing `enabled/show_nav` contract. Rollback
+is a frontend source revert because no state migration or durable artifact is
+created.
 
 `knowledgeAsOf` remains a committed URL selector rather than a request per
 keystroke: the visible input keeps a draft and writes the URL on Enter or blur.
@@ -165,11 +216,13 @@ Market identity exists in retained URL state.
 
 The workspace must preserve existing fail-closed availability:
 
-- While capability is loading, stale, revalidating, cached, disabled, missing,
-  corrupt, or failed, `App.tsx` routes a direct Observatory request to Today and
-  hides its navigation link. A denied direct link retains a copyable attempted
-  URL and a non-sensitive unavailable notice; it never mounts an Observatory
-  component or exposes catalog internals.
+- While capability transport/cache state is loading, stale-response,
+  revalidating, cached, disabled, missing, corrupt, failed, or unregistered,
+  `App.tsx` routes a direct Observatory request to Today and hides its navigation
+  link. A denied direct link retains a copyable attempted URL and a
+  non-sensitive unavailable notice. A backend `catalog_stale` state remains
+  mountable only from a fresh successful payload with `enabled=true` and
+  `show_nav=true`, so the page can expose explicit stale evidence.
 - A selected-channel Context failure blocks its dependent selected-series, Trust,
   and Date Evidence requests. Context absence is rendered as unavailable/error,
   never as a BTC header filled with em dashes.
@@ -193,6 +246,13 @@ The workspace must preserve existing fail-closed availability:
   requests for the active mode, including selected Date Evidence, run detail,
   run diff, and research run; it does not start sync, catalog rebuild, research
   execution, or any provider network call.
+- Module-load, chart-create, series-create/data-apply, resize, and unexpected
+  renderer callback failures are contained below the external Market/Compare
+  switch. They preserve Context/lifecycle warnings, render only safe codes
+  (`CHART_MODULE_LOAD_FAILED`, `CHART_CREATE_FAILED`, `CHART_DATA_REJECTED`,
+  `CHART_RUNTIME_FAILED`), expose manual Retry and Compare, and never show raw
+  errors, stacks, paths, or payloads. Retry has no loop. Partial construction and
+  queued callbacks use an identity/disposed guard and idempotent cleanup.
 
 Recovery for an unavailable backend is operational: restore or verify the
 backend Catalog using its existing tools, then refresh. The UI offers no false
@@ -204,10 +264,19 @@ The request matrix is mode-gated:
 
 | Visible mode | Initial reads | Deferred reads |
 | --- | --- | --- |
-| Market | selected-channel Context; selected-channel bounded series; bounded composite comparison | one selected Date Evidence |
+| Market / selected K-line | selected-channel Context; selected-channel bounded series | one selected Date Evidence |
+| Market / Compare | selected-channel Context; bounded composite comparison | one selected Date Evidence |
 | Assurance / Gates | selected-channel Context; selected-channel bounded coverage series; same-snapshot Trust | one selected Date Evidence after entering Market |
 | Assurance / Run lineage | paginated runs only | selected run detail and explicit base/compare diff |
 | Research | H1 hypothesis list and its explicit H1 research run | none unless the user refreshes |
+
+Market never requests composite; Compare never requests selected series.
+Compare date pinning uses selected Context `snapshot_id` directly and validates
+the returned date/snapshot without gating on selected-series confirmation.
+Composite OHLC cannot populate selected-channel summary or Date Evidence. In
+Market, selected-series summary panels render; in Compare, lifecycle comparison
+and selector-independent “what changed” render while selected-series metrics do
+not. Their errors and retries remain mode-local.
 
 Market and Assurance issue Context first, then derive server `from`/`to`
 parameters from its market watermark plus `30D`, `90D`, or `1Y`. `All` is an
@@ -224,14 +293,31 @@ large-payload parsing and semantic cache collisions across channel, as-of,
 snapshot, date, or run selectors.
 
 At 10x historical range, chart request windows bound transport except for
-explicit `All`; SVG geometry has a 720-point-per-layer budget through
-deterministic display-only downsampling. Chart interaction uses one pointer
-overlay plus an adjacent keyboard-operable date input/list, not one transparent
-SVG rectangle per date. Coverage renders a bounded recent window and a concise
-count/continuation affordance rather than a button per catalog date. Runs remain
+explicit `All`. The selected daily series uses one Canvas chart instance, one
+candlestick series, and one volume series; crosshair movement performs no fetch
+and does not recreate the chart or series. Compare keeps a 720-point-per-layer
+SVG geometry budget through deterministic display-only downsampling. Chart
+interaction uses library subscriptions plus an adjacent keyboard-operable date
+input/summary, not one interactive DOM node per date. Mode change and unmount
+detach crosshair/range/fullscreen subscriptions, disconnect the
+`ResizeObserver`, and remove the chart exactly once. Coverage renders a bounded
+recent window and a concise count/continuation affordance rather than a button
+per catalog date. Runs remain
 cursor-bounded; no detail, diff, research, polling, animation loop, client-side
 research calculation, or default all-run expansion is added. Structural budget
 tests, not unstable wall-clock benchmarks, verify those limits.
+
+The vendor library is a Market-only lazy Vite chunk. Main-entry gzip growth is
+limited to 8 KiB and the chart chunk to 60 KiB gzip; exceeding either requires
+design review before closeout. Crosshair callbacks retain model/lookup in refs,
+coalesce with one `requestAnimationFrame`, and commit only when the business date
+changes. Hover is non-live; only click/keyboard/date-input pinning writes URL
+state and may start one keyed Date Evidence request. A newer pin aborts the old
+request. At 730 and 7,300 supplied/declared dates, tests retain one chart, two
+series, at most one Canvas marker per date, constant non-evidence DOM, and exact
+cleanup. Beyond 7,300 dates the chart fails explicitly with
+`CHART_CAPACITY_EXCEEDED`; it never silently truncates. Bundle deltas and a
+Chromium 730/7,300 adapter/readiness/crosshair smoke are recorded in the plan.
 
 ### Observability and operations
 
@@ -245,13 +331,24 @@ An `ObservatoryErrorState` presentation component converts safe
 `ApiError.detail` fields into status, reason code(s), evidence references, and
 retry guidance without displaying local paths or raw exceptions. Every async
 state uses `aria-busy`, a status or alert live region, and non-color text.
-Date inspection is keyboard operable; selecting a date announces the selected
-date and moves focus to the evidence panel, while Close returns focus to the
-date control. Existing browser tests cover fail-closed navigation and
+Date inspection is keyboard operable; a Canvas-accessibility layer exposes a
+named chart, left/right candle navigation, an adjacent exact-string OHLCV live
+summary, named native controls, focus states, and non-color lifecycle meaning.
+Passive hover uses a separate non-live visual readout. The polite live region
+announces only an explicitly pinned or keyboard-committed date once. Keyboard
+navigation covers the union of candle and Context-excluded dates.
+Selecting or pinning a date announces the selected date and moves focus to the
+evidence panel, while Close returns focus to the date control. Existing browser tests cover fail-closed navigation and
 label/DOM invariants; new tests cover keyboard access and failed/unavailable
 fixtures. Operators continue to use the existing capability endpoint and CLI
 for catalog diagnosis; this frontend change adds no telemetry, logs,
 operational command, or alert.
+
+Local renderer diagnostics expose only asset, channel, sanitized snapshot ID,
+knowledge cut, range, chart mode, counts, affected dates, and safe reason codes.
+They never expose raw exceptions, paths, or payloads. Backend/catalog codes point
+to the existing read-only catalog status/verify workflow; renderer codes point
+to manual Retry or Compare; fullscreen unavailability retains in-page mode.
 
 ### Validation strategy
 
@@ -275,8 +372,11 @@ Request-spy tests prove:
 - `PIT_NOT_PROVEN`, quality/catalog/integrity errors, absent channels, missing
   OHLCV, quarantined/revised rows, and unavailable H1 all remain explicit
   non-success states;
-- chart/calendar render structure obeys its display budgets and date inspection
-  is keyboard accessible.
+- chart/calendar render structure obeys its display budgets, creates and removes
+  one renderer/subscription set, and keeps date inspection keyboard accessible;
+- Market/Compare state restores additively without changing existing URL
+  selectors; crosshair, resize, fit/latest, scale, and fullscreen fallback have
+  deterministic component tests.
 
 Existing tests remain responsible for three-layer semantics, missing-date chart
 gaps, non-color markers, date-evidence clocks, and capability fail-closed
@@ -358,21 +458,33 @@ does not create decision, feature, label, outcome, or promotion facts.
    because cache collision or failed revalidation can make an older selected
    snapshot appear current. Bounded same-identity memory/ETag reuse is the only
    allowed optimization.
+7. **Extend the current SVG into an exchange chart engine.** Rejected because it
+   would add custom axes, hit testing, gesture transforms, density management,
+   accessibility synchronization, and cleanup behavior to product code.
+8. **Embed a hosted TradingView widget or add intraday/live data.** Rejected
+   because a hosted feed would not represent the snapshot-pinned local series,
+   while intraday/live requires new bar-finality, pagination, streaming, and
+   volume-unit contracts.
 
-The chosen approach changes the visual hierarchy and component composition
-while keeping one backend truth source and the existing chart/evidence
-components as stable building blocks.
+The chosen approach uses TradingView Lightweight Charts behind a
+repository-owned React wrapper for the selected daily series. It adds no hosted
+script, CDN, telemetry, provider call, or backend contract. The package and
+generated lock remain pinned, required attribution is preserved, and the
+existing composite stays available for comparison and source rollback. The page
+shows the NOTICE attribution and TradingView link as “charting library,” separate
+from the local selected-series provider and “not live” data provenance.
 
 ### Rollout and rollback
 
 Rollout is an ordinary frontend deployment behind the existing capability gate.
-The workspace is only reachable when the backend reports a fresh ready
-capability. It can be released with the existing backend because no route or
-payload version changes.
+The workspace is reachable only from a fresh successful capability payload with
+`enabled=true` and `show_nav=true`; that includes the existing inspectable
+`catalog_stale` state as well as ready. It can be released with the existing
+backend because no route or payload version changes.
 
-Before release, validate the capability-gated route with mock fixtures and the
-frontend build. A production installation without a ready Catalog remains
-unaffected because the navigation entry stays absent. Rollback reverts the
+Before release, validate ready, fresh `catalog_stale`, and every fail-closed
+transport/cache fixture plus the frontend build. A disabled/missing/corrupt
+installation remains unaffected because the navigation entry stays absent. Rollback reverts the
 frontend source; it does not roll back or alter data, Catalog generations,
 research receipts, browser storage, or API routes.
 
@@ -397,3 +509,11 @@ research receipts, browser storage, or API routes.
 5. Extend focused frontend tests before/with each behavior change. Preserve
    capability/navigation, chart integrity, PIT propagation, request budget,
    race/error, URL compatibility, and accessibility assertions.
+6. Add the selected-channel exchange K-line through a pure adapter and
+   repository-owned chart wrapper; mode-gate the retained composite as Compare,
+   preserve exact strings and publication framing, and validate resize/event
+   cleanup, keyboard access, responsive layout, and the additive `obsChart`
+   contract.
+7. Correct the frontend `marker_position` type to the existing backend string
+   contract, add an actual-query-output-shaped fixture, and keep revision
+   markers conditional on supplied row evidence without expanding the backend.

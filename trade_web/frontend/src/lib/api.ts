@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 
 export type Locale = "zh-CN" | "en-US";
-export type PageKey = "today" | "candidates" | "symbol" | "ops" | "research" | "data" | "observatory";
+export type PageKey =
+  "today" | "candidates" | "symbol" | "ops" | "research" | "data" | "observatory";
 export type ActionType = "ADD" | "PROBE" | "WATCH" | "REDUCE" | "NO_ACTION" | string;
 
 export type TrustGate = {
@@ -79,7 +80,12 @@ export type TodayPageData = {
   gate_reason?: string;
   trust_gate?: TrustGate;
   error_nodes?: Array<{ job_name?: string; status?: string; error_detail?: string }>;
-  recent_runs?: Array<{ job_name?: string; status?: string; started_at?: string; result_summary?: string }>;
+  recent_runs?: Array<{
+    job_name?: string;
+    status?: string;
+    started_at?: string;
+    result_summary?: string;
+  }>;
 };
 
 export type SignalsPageData = {
@@ -504,7 +510,12 @@ export type StatusPayload = {
     status?: string;
     reason_codes?: string[];
     components?: Record<string, unknown>;
-    recovery_plan?: Array<{ component?: string; command?: string[]; mode?: string; detail?: string }>;
+    recovery_plan?: Array<{
+      component?: string;
+      command?: string[];
+      mode?: string;
+      detail?: string;
+    }>;
   };
   data_status?: Record<string, unknown>;
   due_agenda?: Array<Record<string, unknown>>;
@@ -544,7 +555,10 @@ export type AutomationOverviewPayload = {
 export type DagRuntime = {
   nodes?: Array<Record<string, unknown>>;
   edges?: Array<Record<string, unknown>>;
-  stage_summary?: Record<string, { total?: number; running?: number; error?: number; ok?: number; disabled?: number }>;
+  stage_summary?: Record<
+    string,
+    { total?: number; running?: number; error?: number; ok?: number; disabled?: number }
+  >;
 };
 
 export type DataHealthPayload = {
@@ -713,7 +727,8 @@ export type OpsReplayExecuteResponse = {
   preview: OpsReplayPreviewPayload;
 };
 
-export type ReadinessStatus = "READY" | "LATE_READY" | "PARTIAL" | "MISSING" | "CHANGED" | "REPLAYING" | "REPLAYED" | "UNKNOWN";
+export type ReadinessStatus =
+  "READY" | "LATE_READY" | "PARTIAL" | "MISSING" | "CHANGED" | "REPLAYING" | "REPLAYED" | "UNKNOWN";
 
 export type ReadinessHistoryItem = {
   ts?: string;
@@ -778,11 +793,22 @@ export type ReadinessGridPayload = {
     today_impact?: {
       date?: string;
       affected_outputs?: string[];
-      datasets?: Array<{ dataset: string; label: string; status: ReadinessStatus; affected_outputs?: string[] }>;
+      datasets?: Array<{
+        dataset: string;
+        label: string;
+        status: ReadinessStatus;
+        affected_outputs?: string[];
+      }>;
       constrained?: boolean;
     };
   };
-  datasets: Array<{ key: string; label: string; critical: boolean; job_name?: string | null; affected_outputs?: string[] }>;
+  datasets: Array<{
+    key: string;
+    label: string;
+    critical: boolean;
+    job_name?: string | null;
+    affected_outputs?: string[];
+  }>;
   rows: ReadinessRow[];
   recovery_history?: Record<string, ReadinessHistoryItem[]>;
 };
@@ -793,8 +819,18 @@ export type ReplayPlanPayload = {
   job_name?: string | null;
   recommended_mode: "data_only" | "data_plus_downstream" | "full_replay";
   affected_outputs?: string[];
-  downstream_nodes?: Array<{ job_name?: string; stage?: string; enabled?: boolean; avg_duration_ms?: number | null }>;
-  full_chain?: Array<{ job_name?: string; stage?: string; enabled?: boolean; avg_duration_ms?: number | null }>;
+  downstream_nodes?: Array<{
+    job_name?: string;
+    stage?: string;
+    enabled?: boolean;
+    avg_duration_ms?: number | null;
+  }>;
+  full_chain?: Array<{
+    job_name?: string;
+    stage?: string;
+    enabled?: boolean;
+    avg_duration_ms?: number | null;
+  }>;
   date_from: string;
   date_to: string;
   estimated_duration_ms?: number | null;
@@ -965,7 +1001,11 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
 
   if (!response.ok) {
     const message =
-      (typeof payload === "object" && payload && "detail" in payload && typeof payload.detail === "string" && payload.detail) ||
+      (typeof payload === "object" &&
+        payload &&
+        "detail" in payload &&
+        typeof payload.detail === "string" &&
+        payload.detail) ||
       response.statusText ||
       "Request failed";
     throw new ApiError(message, response.status, payload);
@@ -1149,7 +1189,9 @@ export function getOpsNodeResult(nodeId: string, date?: string) {
     query.set("date", date);
   }
   const suffix = query.toString();
-  return fetchJson<OpsNodeResultPayload>(`/api/ops/node/${encodeURIComponent(nodeId)}${suffix ? `?${suffix}` : ""}`);
+  return fetchJson<OpsNodeResultPayload>(
+    `/api/ops/node/${encodeURIComponent(nodeId)}${suffix ? `?${suffix}` : ""}`,
+  );
 }
 
 export function getOpsDependencyPath(nodeIds: string[]) {
@@ -1203,7 +1245,12 @@ export function getReadinessHistory(dataset?: string, date?: string) {
   return fetchJson<ReadinessHistoryPayload>(`/api/readiness/history?${query.toString()}`);
 }
 
-export function postReadinessBackfill(payload: { dataset: string; date_from: string; date_to: string; mode: "data_only" | "data_plus_downstream" | "full_replay" }) {
+export function postReadinessBackfill(payload: {
+  dataset: string;
+  date_from: string;
+  date_to: string;
+  mode: "data_only" | "data_plus_downstream" | "full_replay";
+}) {
   return fetchJson<ReadinessActionResponse>("/api/readiness/backfill", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1211,7 +1258,12 @@ export function postReadinessBackfill(payload: { dataset: string; date_from: str
   });
 }
 
-export function postReadinessReplay(payload: { dataset: string; date_from: string; date_to: string; mode: "data_only" | "data_plus_downstream" | "full_replay" }) {
+export function postReadinessReplay(payload: {
+  dataset: string;
+  date_from: string;
+  date_to: string;
+  mode: "data_only" | "data_plus_downstream" | "full_replay";
+}) {
   return fetchJson<ReadinessActionResponse>("/api/readiness/replay", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1219,7 +1271,11 @@ export function postReadinessReplay(payload: { dataset: string; date_from: strin
   });
 }
 
-export function postReadinessDetectChanges(payload: { dataset: string; date_from: string; date_to: string }) {
+export function postReadinessDetectChanges(payload: {
+  dataset: string;
+  date_from: string;
+  date_to: string;
+}) {
   return fetchJson<ReadinessChangePayload>("/api/readiness/detect-changes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1228,7 +1284,9 @@ export function postReadinessDetectChanges(payload: { dataset: string; date_from
 }
 
 export function isTerminalRecoveryStatus(status?: string | null) {
-  const normalized = String(status || "").trim().toLowerCase();
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
   return normalized === "ok" || normalized === "error";
 }
 
@@ -1244,8 +1302,12 @@ export function getRecoveryProgress(action?: ReadinessActionDetail | null): Reco
   const steps = extractRecoverySteps(action);
   const plannedSteps = (action?.job_names || []).filter(Boolean);
   const totalSteps = Math.max(plannedSteps.length, steps.length);
-  const completedSteps = steps.filter((step) => String(step.status || "").toLowerCase() === "ok").length;
-  const failedSteps = steps.filter((step) => String(step.status || "").toLowerCase() === "error").length;
+  const completedSteps = steps.filter(
+    (step) => String(step.status || "").toLowerCase() === "ok",
+  ).length;
+  const failedSteps = steps.filter(
+    (step) => String(step.status || "").toLowerCase() === "error",
+  ).length;
 
   let activeStep =
     steps.find((step) => {
@@ -1253,7 +1315,12 @@ export function getRecoveryProgress(action?: ReadinessActionDetail | null): Reco
       return status === "queued" || status === "running";
     }) || null;
 
-  if (!activeStep && action && !isTerminalRecoveryStatus(action.status) && plannedSteps.length > completedSteps) {
+  if (
+    !activeStep &&
+    action &&
+    !isTerminalRecoveryStatus(action.status) &&
+    plannedSteps.length > completedSteps
+  ) {
     activeStep = {
       job_name: plannedSteps[completedSteps],
       status: String(action.status || "running").toLowerCase(),
@@ -1369,7 +1436,9 @@ export function getDataAssets() {
 
 export function getDataKline(assetId: string, days = 30) {
   const query = new URLSearchParams({ days: String(days) });
-  return fetchJson<DataKlinePayload>(`/api/data/kline/${encodeURIComponent(assetId)}?${query.toString()}`);
+  return fetchJson<DataKlinePayload>(
+    `/api/data/kline/${encodeURIComponent(assetId)}?${query.toString()}`,
+  );
 }
 
 export function getDataGaps(assetId: string) {
@@ -1401,12 +1470,7 @@ const OBS_BASE = `/api/v1/observatory/assets/${OBS_ASSET_PATH}`;
 // read-only probe to decide whether to advertise Observatory navigation. It is
 // reachable even when the feature is disabled so nav and routes stay consistent.
 export type ObsCapabilityState =
-  | "disabled"
-  | "catalog_missing"
-  | "catalog_stale"
-  | "catalog_corrupt"
-  | "ready"
-  | "error";
+  "disabled" | "catalog_missing" | "catalog_stale" | "catalog_corrupt" | "ready" | "error";
 
 export type ObsCapability = {
   enabled: boolean;
@@ -1464,7 +1528,7 @@ export type ObsExcludedDate = {
   exclusion_reason?: string;
   quality_flags?: string[];
   evidence_refs?: string[];
-  marker_position?: number | null;
+  marker_position?: string | null;
 };
 
 export type ObsSemanticChannelRef = {
@@ -1726,14 +1790,19 @@ export function observatorySeriesPath(opts: {
   })}`;
 }
 
-export function observatoryDatePath(marketDate: string, opts: { channel?: ObsChannel; snapshotId?: string } = {}): string {
+export function observatoryDatePath(
+  marketDate: string,
+  opts: { channel?: ObsChannel; snapshotId?: string } = {},
+): string {
   return `${OBS_BASE}/dates/${encodeURIComponent(marketDate)}${obsQuery({
     channel: opts.channel,
     snapshot_id: opts.snapshotId,
   })}`;
 }
 
-export function observatoryTrustPath(opts: { channel?: ObsChannel; snapshotId?: string } = {}): string {
+export function observatoryTrustPath(
+  opts: { channel?: ObsChannel; snapshotId?: string } = {},
+): string {
   return `${OBS_BASE}/trust${obsQuery({ channel: opts.channel, snapshot_id: opts.snapshotId })}`;
 }
 

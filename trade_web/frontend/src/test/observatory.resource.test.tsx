@@ -110,14 +110,17 @@ describe("useObservatoryResource", () => {
 
     const firstPath = "/api/series?channel=observed&snapshot_id=snap-a";
     const canonicalEquivalentPath = "/api/series?snapshot_id=snap-a&channel=observed";
-    const { result, rerender } = renderHook(({ path }) => useObservatoryResource<Fixture>(path), {
-      initialProps: { path: firstPath },
-    });
+    const { result, rerender } = renderHook(
+      ({ path, reloadKey }) => useObservatoryResource<Fixture>(path, { reloadKey }),
+      {
+        initialProps: { path: firstPath, reloadKey: 0 },
+      },
+    );
 
     await waitFor(() => expect(result.current.status).toBe("confirmed"));
     expect(result.current.data).toEqual({ snapshot_id: "snap-a", value: "first" });
 
-    rerender({ path: canonicalEquivalentPath });
+    rerender({ path: canonicalEquivalentPath, reloadKey: 1 });
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(result.current.status).toBe("confirmed"));
@@ -127,6 +130,138 @@ describe("useObservatoryResource", () => {
       "If-None-Match": "etag-snap-a",
     });
     expect(window.localStorage.length).toBe(0);
+  });
+
+  it("refetches an exact-identity cache entry that fails the current semantic validator", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { snapshot_id: "snap-a", value: "first" },
+          { headers: { ETag: "etag-snap-a" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { snapshot_id: "snap-b", value: "current" },
+          { headers: { ETag: "etag-snap-b" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const path = "/api/series?view=composite&from=2026-07-01&to=2026-07-31";
+
+    const first = renderHook(() =>
+      useObservatoryResource<Fixture>(path, {
+        validateResponse: (data) => data.snapshot_id === "snap-a",
+      }),
+    );
+    await waitFor(() => expect(first.result.current.status).toBe("confirmed"));
+    first.unmount();
+
+    const second = renderHook(() =>
+      useObservatoryResource<Fixture>(path, {
+        validateResponse: (data) => data.snapshot_id === "snap-b",
+      }),
+    );
+
+    await waitFor(() => expect(second.result.current.status).toBe("confirmed"));
+    expect(second.result.current.data).toEqual({ snapshot_id: "snap-b", value: "current" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((fetchMock.mock.calls[1][1] as RequestInit | undefined)?.headers).toEqual({
+      Accept: "application/json",
+    });
+  });
+
+  it("clears mounted truth and refetches when the semantic validation key changes", async () => {
+    const { requests } = deferredFetch();
+    const path = "/api/series?view=composite&from=2026-07-01&to=2026-07-31";
+    const { result, rerender } = renderHook(
+      ({ expectedSnapshot }) =>
+        useObservatoryResource<Fixture>(path, {
+          validationKey: expectedSnapshot,
+          validateResponse: (data) => data.snapshot_id === expectedSnapshot,
+        }),
+      { initialProps: { expectedSnapshot: "snap-a" } },
+    );
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    await act(async () => {
+      requests[0].resolve(jsonResponse({ snapshot_id: "snap-a", value: "first" }));
+    });
+    await waitFor(() => expect(result.current.status).toBe("confirmed"));
+
+    rerender({ expectedSnapshot: "snap-b" });
+
+    expect(result.current.data).toBeNull();
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect((requests[1].init?.headers as Record<string, string> | undefined) ?? {}).toEqual({
+      Accept: "application/json",
+    });
+    await act(async () => {
+      requests[1].resolve(jsonResponse({ snapshot_id: "snap-b", value: "current" }));
+    });
+    await waitFor(() => expect(result.current.status).toBe("confirmed"));
+    expect(result.current.data).toEqual({ snapshot_id: "snap-b", value: "current" });
+  });
+
+  it("evicts a semantically rejected 304 payload so Retry requests a complete response", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { snapshot_id: "snap-a", value: "first" },
+          { headers: { ETag: "etag-snap-a" } },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { snapshot_id: "snap-b", value: "current" },
+          { headers: { ETag: "etag-snap-b" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const path = "/api/series?view=composite&from=2026-07-01&to=2026-07-31";
+
+    const first = renderHook(() =>
+      useObservatoryResource<Fixture>(path, {
+        reloadKey: 0,
+        validateResponse: (data) => data.snapshot_id === "snap-a",
+      }),
+    );
+    await waitFor(() => expect(first.result.current.status).toBe("confirmed"));
+    first.unmount();
+
+    const second = renderHook(() =>
+      useObservatoryResource<Fixture>(path, {
+        reloadKey: 1,
+        validateResponse: (data) =>
+          data.snapshot_id === "snap-b"
+            ? true
+            : {
+                message: "The cached series belongs to a previous Context snapshot.",
+                reasonCodes: ["RESPONSE_IDENTITY_MISMATCH"],
+              },
+      }),
+    );
+
+    await waitFor(() => expect(second.result.current.status).toBe("unavailable"));
+    expect(second.result.current.data).toBeNull();
+    expect(parseObservatoryError(second.result.current.error)?.reasonCodes).toEqual([
+      "RESPONSE_IDENTITY_MISMATCH",
+    ]);
+    expect((fetchMock.mock.calls[1][1] as RequestInit | undefined)?.headers).toEqual({
+      Accept: "application/json",
+      "If-None-Match": "etag-snap-a",
+    });
+
+    act(() => second.result.current.retry());
+
+    await waitFor(() => expect(second.result.current.status).toBe("confirmed"));
+    expect(second.result.current.data).toEqual({ snapshot_id: "snap-b", value: "current" });
+    expect((fetchMock.mock.calls[2][1] as RequestInit | undefined)?.headers).toEqual({
+      Accept: "application/json",
+    });
   });
 
   it("does not treat a 304 without exact cached data as current truth", async () => {

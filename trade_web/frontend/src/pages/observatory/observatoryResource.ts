@@ -23,14 +23,25 @@ export type ObservatoryValidationFailure = {
 export type ObservatoryResourceOptions<T> = {
   enabled?: boolean;
   reloadKey?: unknown;
+  /** Stable semantic identity when response validity depends on state outside the request URL. */
+  validationKey?: string | number | null;
   validateResponse?: (data: T) => boolean | ObservatoryValidationFailure;
 };
+
+type ObservatoryResponseValidation =
+  { accepted: true } | { accepted: false; failure?: ObservatoryValidationFailure };
 
 type MemoryCacheEntry = {
   etag: string | null;
   data: unknown;
   reloadKey: unknown | null;
+  validationKey: string | number | null;
   bytes: number;
+};
+
+type ObservatoryResourceInternalState<T> = ObservatoryResourceState<T> & {
+  requestReloadKey: unknown | null;
+  validationKey: string | number | null;
 };
 
 type FetchResult<T> = {
@@ -96,15 +107,27 @@ function serializedSize(value: unknown): number | null {
   }
 }
 
-function storeCacheEntry(identity: string, etag: string | null, data: unknown, reloadKey: unknown) {
-  const bytes = serializedSize({ identity, etag, data });
+function storeCacheEntry(
+  identity: string,
+  etag: string | null,
+  data: unknown,
+  reloadKey: unknown,
+  validationKey: string | number | null,
+) {
+  const bytes = serializedSize({ identity, etag, data, validationKey });
   if (bytes === null || bytes > MAX_MEMORY_CACHE_BYTES) {
     deleteCacheEntry(identity);
     return;
   }
 
   deleteCacheEntry(identity);
-  memoryCache.set(identity, { etag, data, reloadKey: reloadKey ?? null, bytes });
+  memoryCache.set(identity, {
+    etag,
+    data,
+    reloadKey: reloadKey ?? null,
+    validationKey,
+    bytes,
+  });
   memoryCacheBytes += bytes;
 
   while (memoryCacheBytes > MAX_MEMORY_CACHE_BYTES) {
@@ -119,12 +142,31 @@ function storeCacheEntry(identity: string, etag: string | null, data: unknown, r
 function reusableCacheEntry<T>(
   identity: string,
   reloadKey: unknown | null,
+  validationKey: string | number | null,
 ): { data: T; etag: string | null } | null {
   const entry = cacheEntry(identity);
-  if (!entry || !Object.is(entry.reloadKey, reloadKey)) {
+  if (
+    !entry ||
+    !Object.is(entry.reloadKey, reloadKey) ||
+    !Object.is(entry.validationKey, validationKey)
+  ) {
     return null;
   }
   return { data: entry.data as T, etag: entry.etag };
+}
+
+function validateResourceResponse<T>(
+  data: T,
+  validateResponse?: ObservatoryResourceOptions<T>["validateResponse"],
+): ObservatoryResponseValidation {
+  const validation = validateResponse?.(data);
+  if (validation === false) {
+    return { accepted: false };
+  }
+  if (validation && validation !== true) {
+    return { accepted: false, failure: validation };
+  }
+  return { accepted: true };
 }
 
 function readResponsePayload(text: string): unknown {
@@ -154,8 +196,13 @@ async function fetchObservatoryResource<T>(
   path: string,
   identity: string,
   signal: AbortSignal,
+  validationKey: string | number | null,
 ): Promise<FetchResult<T>> {
-  const cached = cacheEntry(identity);
+  let cached = cacheEntry(identity);
+  if (cached && !Object.is(cached.validationKey, validationKey)) {
+    deleteCacheEntry(identity);
+    cached = null;
+  }
   const headers: Record<string, string> = { Accept: "application/json" };
   if (cached?.etag) {
     headers["If-None-Match"] = cached.etag;
@@ -287,17 +334,20 @@ export function useObservatoryResource<T>(
   path: string | null,
   options: ObservatoryResourceOptions<T> = {},
 ) {
-  const { enabled = true, reloadKey, validateResponse } = options;
+  const { enabled = true, reloadKey, validationKey, validateResponse } = options;
   const validateResponseRef = useRef(validateResponse);
   validateResponseRef.current = validateResponse;
   const identity = useMemo(() => (path ? observatoryRequestIdentity(path) : null), [path]);
   const cacheReloadKey = reloadKey ?? null;
-  const [state, setState] = useState<ObservatoryResourceState<T>>({
+  const cacheValidationKey = validationKey ?? null;
+  const [state, setState] = useState<ObservatoryResourceInternalState<T>>({
     identity: null,
     status: "idle",
     data: null,
     error: null,
     confirmedReloadKey: null,
+    requestReloadKey: null,
+    validationKey: null,
   });
   const [attempt, setAttempt] = useState(0);
 
@@ -309,21 +359,34 @@ export function useObservatoryResource<T>(
         data: null,
         error: null,
         confirmedReloadKey: null,
+        requestReloadKey: cacheReloadKey,
+        validationKey: cacheValidationKey,
       });
       return;
     }
 
     if (attempt === 0) {
-      const cached = reusableCacheEntry<T>(identity, cacheReloadKey);
+      const cached = reusableCacheEntry<T>(identity, cacheReloadKey, cacheValidationKey);
       if (cached) {
-        setState({
-          identity,
-          status: "confirmed",
-          data: cached.data,
-          error: null,
-          confirmedReloadKey: cacheReloadKey,
-        });
-        return;
+        try {
+          const validation = validateResourceResponse(cached.data, validateResponseRef.current);
+          if (validation.accepted) {
+            setState({
+              identity,
+              status: "confirmed",
+              data: cached.data,
+              error: null,
+              confirmedReloadKey: cacheReloadKey,
+              requestReloadKey: cacheReloadKey,
+              validationKey: cacheValidationKey,
+            });
+            return;
+          }
+        } catch {
+          // A cached payload that the current validator cannot inspect is not
+          // current truth. Evict it and request a complete response below.
+        }
+        deleteCacheEntry(identity);
       }
     }
 
@@ -334,24 +397,35 @@ export function useObservatoryResource<T>(
       data: null,
       error: null,
       confirmedReloadKey: null,
+      requestReloadKey: cacheReloadKey,
+      validationKey: cacheValidationKey,
     });
 
-    fetchObservatoryResource<T>(path, identity, controller.signal)
+    fetchObservatoryResource<T>(path, identity, controller.signal, cacheValidationKey)
       .then((result) => {
         if (controller.signal.aborted) {
           return;
         }
-        const validation = validateResponseRef.current?.(result.data);
-        if (validation === false || (validation && validation !== true)) {
-          throw responseIdentityError(validation === false ? undefined : validation);
+        let validation: ObservatoryResponseValidation;
+        try {
+          validation = validateResourceResponse(result.data, validateResponseRef.current);
+        } catch (error) {
+          deleteCacheEntry(identity);
+          throw error;
         }
-        storeCacheEntry(identity, result.etag, result.data, cacheReloadKey);
+        if (!validation.accepted) {
+          deleteCacheEntry(identity);
+          throw responseIdentityError(validation.failure);
+        }
+        storeCacheEntry(identity, result.etag, result.data, cacheReloadKey, cacheValidationKey);
         setState({
           identity,
           status: "confirmed",
           data: result.data,
           error: null,
           confirmedReloadKey: cacheReloadKey,
+          requestReloadKey: cacheReloadKey,
+          validationKey: cacheValidationKey,
         });
       })
       .catch((error: unknown) => {
@@ -365,16 +439,20 @@ export function useObservatoryResource<T>(
           data: null,
           error: apiError,
           confirmedReloadKey: null,
+          requestReloadKey: cacheReloadKey,
+          validationKey: cacheValidationKey,
         });
       });
 
     return () => {
       controller.abort();
     };
-  }, [attempt, cacheReloadKey, enabled, identity, path]);
+  }, [attempt, cacheReloadKey, cacheValidationKey, enabled, identity, path]);
 
   const current =
-    state.identity === identity
+    state.identity === identity &&
+    Object.is(state.requestReloadKey, cacheReloadKey) &&
+    Object.is(state.validationKey, cacheValidationKey)
       ? state
       : {
           identity,
@@ -382,10 +460,16 @@ export function useObservatoryResource<T>(
           data: null,
           error: null,
           confirmedReloadKey: null,
+          requestReloadKey: cacheReloadKey,
+          validationKey: cacheValidationKey,
         };
 
   return {
-    ...current,
+    identity: current.identity,
+    status: current.status,
+    data: current.data,
+    error: current.error,
+    confirmedReloadKey: current.confirmedReloadKey,
     loading: current.status === "loading",
     retry: useCallback(() => setAttempt((currentAttempt) => currentAttempt + 1), []),
   };

@@ -117,3 +117,319 @@
   color: var(--text-1);
   background: var(--panel);
 }
+
+.obs-kline,
+.obs-kline-state {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: #071321;
+  color: var(--text-1);
+  overflow: hidden;
+}
+
+.obs-kline-panel {
+  width: 100%;
+}
+
+.obs-kline--unpublished {
+  border-style: dashed;
+}
+
+.obs-kline--unpublished .obs-kline__header {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(255, 180, 50, 0.06) 0,
+      rgba(255, 180, 50, 0.06) 8px,
+      transparent 8px,
+      transparent 16px
+    ),
+    rgba(12, 28, 50, 0.92);
+}
+
+.obs-chart-mode {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel-soft);
+}
+
+.obs-chart-mode button {
+  min-height: 34px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-button);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.obs-chart-mode button:hover,
+.obs-chart-mode button.is-active {
+  border-color: var(--accent-blue);
+  background: rgba(74, 163, 255, 0.12);
+  color: var(--text-0);
+}
+
+.obs-chart-mode span {
+  margin-left: var(--space-2);
+  color: var(--text-2);
+  font-size: 0.75rem;
+}
+
+.obs-kline:fullscreen {
+  padding: var(--space-4);
+  overflow: auto;
+}
+
+.obs-kline--expanded {
+  position: relative;
+  z-index: 4;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.obs-kline__header,
+.obs-kline__toolbar,
+.obs-kline__readout,
+.obs-kline__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+}
+
+.obs-kline__header {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  background: rgba(12, 28, 50, 0.92);
+}
+
+.obs-kline__symbol {
+  color: var(--text-0);
+  font-size: 1.05rem;
+  font-weight: 750;
+}
+
+.obs-kline__provenance,
+.obs-kline__scope,
+.obs-kline__footer {
+  color: var(--text-2);
+  font-size: 0.72rem;
+}
+
+.obs-kline__lifecycle,
+.obs-kline__readout-lifecycle {
+  width: fit-content;
+  margin-top: 4px;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.obs-kline--unpublished .obs-kline__lifecycle,
+.obs-kline--unpublished .obs-kline__readout-lifecycle {
+  border-style: dashed;
+  color: var(--warn);
+}
+
+.obs-kline__readout-lifecycle {
+  margin-top: 0;
+}
+
+.obs-kline__scope {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.obs-kline__toolbar {
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+  background: rgba(8, 24, 43, 0.95);
+}
+
+.obs-kline__toolbar button,
+.obs-kline-state button,
+.obs-kline__renderer-warning button {
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-button);
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.obs-kline__toolbar button:hover,
+.obs-kline__toolbar button.is-active,
+.obs-kline-state button:hover,
+.obs-kline__renderer-warning button:hover {
+  border-color: var(--accent-blue);
+  color: var(--text-0);
+  background: rgba(74, 163, 255, 0.12);
+}
+
+.obs-kline__toolbar-group {
+  display: inline-flex;
+  gap: 2px;
+  padding-right: var(--space-2);
+  border-right: 1px solid var(--line);
+}
+
+.obs-kline__readout {
+  min-height: 38px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  background: rgba(6, 17, 31, 0.96);
+}
+
+.obs-kline__readout-date {
+  color: var(--text-0);
+  font-weight: 700;
+}
+
+.obs-kline__readout-gap {
+  color: var(--warn);
+}
+
+.obs-kline__canvas-shell {
+  position: relative;
+  height: clamp(340px, 54vh, 520px);
+  min-height: 340px;
+  outline: none;
+  touch-action: pan-y pinch-zoom;
+}
+
+.obs-kline__canvas-shell:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent-blue);
+}
+
+.obs-kline__canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.obs-kline__gap-markers {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.obs-kline__pinned {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.obs-kline__diagnostics,
+.obs-kline__renderer-warning {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-top: 1px solid rgba(255, 180, 50, 0.35);
+  background: rgba(255, 180, 50, 0.08);
+  color: var(--text-1);
+  font-size: 0.76rem;
+}
+
+.obs-kline__renderer-warning {
+  border-top-color: rgba(255, 91, 110, 0.4);
+  background: rgba(255, 91, 110, 0.08);
+}
+
+.obs-kline__diagnostics-summary,
+.obs-kline__diagnostics-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+.obs-kline__diagnostics-preview span {
+  font-family: var(--font-mono);
+}
+
+.obs-kline__diagnostics details ul {
+  max-height: 180px;
+  margin: var(--space-2) 0;
+  overflow: auto;
+}
+
+.obs-kline__footer {
+  justify-content: space-between;
+  border-top: 1px solid var(--line);
+}
+
+.obs-kline__footer a {
+  color: var(--accent-blue);
+}
+
+.obs-kline-state {
+  display: grid;
+  gap: var(--space-2);
+  min-height: 180px;
+  place-content: center;
+  padding: var(--space-5);
+  text-align: center;
+}
+
+.obs-kline-state > div {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.obs-kline-state--error {
+  border-color: rgba(255, 91, 110, 0.35);
+  background: var(--err-soft);
+}
+
+@media (max-width: 720px) {
+  .obs-chart-mode {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .obs-chart-mode span {
+    width: 100%;
+    margin: var(--space-1) 0 0;
+  }
+
+  .obs-kline__header,
+  .obs-kline__footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .obs-kline__scope {
+    white-space: normal;
+  }
+
+  .obs-kline__toolbar {
+    gap: var(--space-2);
+  }
+
+  .obs-kline__canvas-shell {
+    height: 380px;
+    min-height: 320px;
+  }
+}

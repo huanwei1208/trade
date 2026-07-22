@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "./components/AppShell";
 import {
@@ -14,6 +14,7 @@ import { I18nProvider } from "./lib/i18n";
 import {
   DEFAULT_OBS_URL_STATE,
   deserializeObservatoryState,
+  normalizeObservatoryState,
   serializeObservatoryState,
   urlHasObservatory,
   type ObservatoryUrlState,
@@ -106,6 +107,7 @@ function initialObservatoryAttempt(): string | null {
   for (const key of [
     "obsLens",
     "obsChannel",
+    "obsChart",
     "knowledgeAsOf",
     "obsRange",
     "obsRun",
@@ -146,6 +148,7 @@ export default function App() {
     "trade-web:obs-state",
     initialQuery.obsState || DEFAULT_OBS_URL_STATE,
   );
+  const normalizedObsState = useMemo(() => normalizeObservatoryState(obsState), [obsState]);
 
   const trustOverview = useApiResource<TrustOverview>("/api/trust/overview", {
     deps: [refreshToken],
@@ -198,6 +201,7 @@ export default function App() {
       "dataset",
       "obsLens",
       "obsChannel",
+      "obsChart",
       "knowledgeAsOf",
       "obsRange",
       "obsRun",
@@ -207,7 +211,7 @@ export default function App() {
       params.delete(key);
     }
     if (resolvedPage === "observatory") {
-      const obsParams = serializeObservatoryState(obsState);
+      const obsParams = serializeObservatoryState(normalizedObsState);
       obsParams.forEach((value, key) => params.set(key, value));
     } else if (resolvedPage === "ops" && opsFocus.tab) {
       params.set("opsTab", opsFocus.tab);
@@ -220,7 +224,7 @@ export default function App() {
     }
     const query = params.toString();
     window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
-  }, [resolvedPage, opsFocus, obsState]);
+  }, [resolvedPage, opsFocus, normalizedObsState]);
 
   function navigate(nextPage: PageKey) {
     if (nextPage === "symbol" && !selectedSymbol) {
@@ -249,7 +253,7 @@ export default function App() {
   }
 
   function updateObsState(next: Partial<ObservatoryUrlState>) {
-    setObsState((current) => ({ ...current, ...next }));
+    setObsState((current) => normalizeObservatoryState({ ...current, ...next }));
   }
 
   return (
@@ -317,7 +321,7 @@ export default function App() {
         {resolvedPage === "observatory" && (
           <ObservatoryPage
             refreshToken={refreshToken}
-            urlState={obsState}
+            urlState={normalizedObsState}
             onUrlStateChange={updateObsState}
           />
         )}
