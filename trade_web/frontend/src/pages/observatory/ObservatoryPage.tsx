@@ -452,6 +452,7 @@ export function ObservatoryPage({
           compositeResource={compositeResource}
           dateEvidenceResource={dateEvidenceResource}
           range={urlState.range}
+          timeframe={urlState.timeframe}
           selectedDate={urlState.date ?? null}
           channel={urlState.channel}
           windowBounds={windowBounds}
@@ -459,6 +460,7 @@ export function ObservatoryPage({
           historicalCompositeUnavailable={historicalCompositeUnavailable}
           dateInspectorRef={dateInspectorRef}
           onChartModeChange={(chartMode) => onUrlStateChange({ chartMode })}
+          onTimeframeChange={(timeframe) => onUrlStateChange({ timeframe })}
           onSelectDate={(date) => onUrlStateChange({ date })}
           onCloseDate={closeDateEvidence}
         />

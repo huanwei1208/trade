@@ -214,6 +214,36 @@ spec_requirements = [
 validation_tasks = ["2.4", "2.5", "3.1"]
 
 [[obligations]]
+id = "btc-workspace.kline-interaction"
+owner = "trade_web/frontend/src/components/observatory and trade_web/frontend/src/lib/observatoryChart.ts"
+paths = [
+  "trade_web/frontend/src/components/observatory/ExchangeKlineChart.tsx",
+  "trade_web/frontend/src/components/observatory/ExchangeKlinePanel.tsx",
+  "trade_web/frontend/src/lib/observatory.ts",
+  "trade_web/frontend/src/lib/observatoryChart.ts",
+  "trade_web/frontend/src/App.tsx",
+  "trade_web/frontend/src/test/",
+  "trade_web/frontend/tests/e2e/",
+]
+contracts = [
+  "additive obsTimeframe=1D|1W|1M|1Y URL state with 1D fallback",
+  "daily API remains the authoritative source and higher timeframes are display-only aggregates",
+  "ordinary chart click is local inspection; explicit inspect actions alone pin Date Evidence",
+  "repository footer/NOTICE attribution remains while in-canvas outbound navigation is disabled",
+]
+failure_states = [
+  "invalid or empty aggregate bucket",
+  "partial timeframe bucket",
+  "unknown timeframe URL value",
+  "chart click without an explicit evidence pin",
+  "Date Evidence unavailable after explicit pin",
+]
+spec_requirements = [
+  "btc-research-workspace:Exchange timeframe selection and click isolation",
+]
+validation_tasks = ["4.7"]
+
+[[obligations]]
 id = "btc-workspace.research-boundary"
 owner = "trade_web/frontend/src/components/observatory/ResearchLens.tsx"
 paths = [

@@ -33,6 +33,7 @@ const DEFAULT_STATE: ObservatoryUrlState = {
   lens: "overview",
   channel: "observed",
   chartMode: "market",
+  timeframe: "1D",
   knowledgeAsOf: "latest",
   range: "90D",
   runId: null,

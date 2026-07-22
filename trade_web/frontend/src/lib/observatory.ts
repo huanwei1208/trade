@@ -430,11 +430,13 @@ export function readMetricString(
 // must serialize into query params and restore on refresh (docs/26 §14.2).
 
 export type ObservatoryChartMode = "market" | "compare";
+export type ObservatoryTimeframe = "1D" | "1W" | "1M" | "1Y";
 
 export type ObservatoryUrlState = {
   lens: ObsLens;
   channel: ObsChannel;
   chartMode: ObservatoryChartMode;
+  timeframe: ObservatoryTimeframe;
   knowledgeAsOf: string; // "latest" or an RFC3339 / date string
   range: string; // "30D" | "90D" | "1Y" | "All"
   runId?: string | null;
@@ -446,6 +448,7 @@ export const DEFAULT_OBS_URL_STATE: ObservatoryUrlState = {
   lens: "overview",
   channel: "observed",
   chartMode: "market",
+  timeframe: "1D",
   knowledgeAsOf: "latest",
   range: "90D",
   runId: null,
@@ -456,6 +459,7 @@ export const DEFAULT_OBS_URL_STATE: ObservatoryUrlState = {
 const OBS_LENSES: ObsLens[] = ["overview", "trust", "runs", "research"];
 const OBS_CHANNELS: ObsChannel[] = ["formal", "evaluated_candidate", "observed"];
 const OBS_CHART_MODES: ObservatoryChartMode[] = ["market", "compare"];
+const OBS_TIMEFRAMES: ObservatoryTimeframe[] = ["1D", "1W", "1M", "1Y"];
 const OBS_RANGES = ["30D", "90D", "1Y", "All"];
 
 export function normalizeObservatoryState(
@@ -464,6 +468,7 @@ export function normalizeObservatoryState(
   const lens = state?.lens;
   const channel = state?.channel;
   const chartMode = state?.chartMode;
+  const timeframe = state?.timeframe;
   const range = state?.range;
   return {
     lens: lens && OBS_LENSES.includes(lens) ? lens : DEFAULT_OBS_URL_STATE.lens,
@@ -472,6 +477,8 @@ export function normalizeObservatoryState(
       chartMode && OBS_CHART_MODES.includes(chartMode)
         ? chartMode
         : DEFAULT_OBS_URL_STATE.chartMode,
+    timeframe:
+      timeframe && OBS_TIMEFRAMES.includes(timeframe) ? timeframe : DEFAULT_OBS_URL_STATE.timeframe,
     knowledgeAsOf:
       typeof state?.knowledgeAsOf === "string" && state.knowledgeAsOf.trim()
         ? state.knowledgeAsOf.trim()
@@ -490,6 +497,9 @@ export function serializeObservatoryState(state: ObservatoryUrlState): URLSearch
   params.set("obsChannel", normalized.channel);
   if (normalized.chartMode !== DEFAULT_OBS_URL_STATE.chartMode) {
     params.set("obsChart", normalized.chartMode);
+  }
+  if (normalized.timeframe !== DEFAULT_OBS_URL_STATE.timeframe) {
+    params.set("obsTimeframe", normalized.timeframe);
   }
   if (normalized.knowledgeAsOf && normalized.knowledgeAsOf !== "latest") {
     params.set("knowledgeAsOf", normalized.knowledgeAsOf);
@@ -513,6 +523,7 @@ export function deserializeObservatoryState(params: URLSearchParams): Observator
   const lens = params.get("obsLens");
   const channel = params.get("obsChannel");
   const chartMode = params.get("obsChart");
+  const timeframe = params.get("obsTimeframe");
   const range = params.get("obsRange");
   return normalizeObservatoryState({
     lens:
@@ -525,6 +536,10 @@ export function deserializeObservatoryState(params: URLSearchParams): Observator
       chartMode && OBS_CHART_MODES.includes(chartMode as ObservatoryChartMode)
         ? (chartMode as ObservatoryChartMode)
         : DEFAULT_OBS_URL_STATE.chartMode,
+    timeframe:
+      timeframe && OBS_TIMEFRAMES.includes(timeframe as ObservatoryTimeframe)
+        ? (timeframe as ObservatoryTimeframe)
+        : DEFAULT_OBS_URL_STATE.timeframe,
     knowledgeAsOf: params.get("knowledgeAsOf") || "latest",
     range: range && OBS_RANGES.includes(range) ? range : DEFAULT_OBS_URL_STATE.range,
     runId: params.get("obsRun"),

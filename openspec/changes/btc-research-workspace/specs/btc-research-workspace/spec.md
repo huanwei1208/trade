@@ -253,9 +253,11 @@ The selected K-line SHALL own one bounded Canvas chart instance and SHALL remove
 all chart subscriptions, resize observation, and fullscreen listeners on mode
 change or unmount. Pointer interaction SHALL have an equivalent keyboard and
 text-summary path. Passive crosshair, hover, pan, zoom, resize, scale, and
-fullscreen events SHALL NOT start network requests. Only an explicit click,
-Enter/Space, or date-input pin may set `obsDate` and start one keyed,
-snapshot-pinned Date Evidence request; a later pin SHALL abort the prior one.
+fullscreen events SHALL NOT start network requests. An ordinary chart click
+SHALL update only local inspection state and SHALL NOT set `obsDate`, navigate,
+or start a request. Only an explicit Inspect-date action, Enter/Space, or
+date-input pin may set `obsDate` and start one keyed, snapshot-pinned Date
+Evidence request; a later pin SHALL abort the prior one.
 
 #### Scenario: Extended history is rendered
 
@@ -303,3 +305,55 @@ snapshot-pinned Date Evidence request; a later pin SHALL abort the prior one.
   stack, path, or payload
 - **AND THEN** queued animation/fullscreen/observer callbacks after replacement
   or unmount are ignored by the disposed identity and cannot recreate state
+
+### Requirement: Exchange timeframe selection and click isolation
+
+The Market chart SHALL expose `1D`, `1W`, `1M`, and `1Y` display timeframes.
+The browser SHALL derive these bars only from the validated UTC-daily selected
+series, using exact decimal-string OHLCV aggregation and explicit partial/empty
+bucket diagnostics. The additive `obsTimeframe` URL value SHALL default to `1D`
+for missing or unknown values. The API contract SHALL remain daily-only. The
+aggregation SHALL use bounded fixed-point `BigInt` arithmetic with a 128-digit
+limit and explicit `AGGREGATE_DECIMAL_OVERFLOW` failure; it SHALL never round
+or use JavaScript `Number` for extrema or sums. Each aggregate SHALL expose
+bounded bucket start/end, covered/valid counts, source snapshot/channel
+identity, and capped reason/evidence metadata. The latest valid constituent
+daily row is the only canonical `obsDate` that an explicit aggregate inspection
+may pin. If any valid contributor lacks volume, aggregate volume SHALL be
+unavailable and the bucket SHALL be partial. Range-edge truncation alone SHALL
+not make a bucket partial; covered dates are the active bounded daily lattice.
+
+#### Scenario: A user switches timeframe
+
+- **WHEN** a user selects `1W`, `1M`, or `1Y`
+- **THEN** the chart stays on the Market workspace and renders UTC-bucketed bars
+  from the already confirmed daily source without a provider or interval request
+- **AND THEN** the URL records the additive timeframe and can restore it after
+  reload while the selected lifecycle channel and snapshot remain unchanged
+- **AND THEN** no Context, selected-series, or Date Evidence request is issued
+  solely because the display timeframe changed
+
+#### Scenario: An aggregate bucket is incomplete
+
+- **WHEN** a timeframe bucket contains some valid daily bars and some missing,
+  excluded, or invalid daily evidence
+- **THEN** the aggregate candle uses only validated source values and carries a
+  visible partial diagnostic marker
+- **AND THEN** an empty bucket remains whitespace rather than a fabricated zero
+- **AND THEN** the bucket is labelled as a partial derived display, not an
+  authoritative server interval
+
+#### Scenario: A user clicks a candle normally
+
+- **WHEN** a user clicks inside the chart canvas or on its plotted candle
+- **THEN** the local readout/crosshair changes without changing the URL, opening
+  Date Evidence, issuing a request, or navigating away from Observatory
+
+#### Scenario: A user explicitly pins inspected evidence
+
+- **WHEN** a user presses the chart's Inspect-date action, Enter/Space, or uses
+  the date input
+- **THEN** the selected date is committed to `obsDate` and the existing
+  snapshot-pinned Date Evidence request starts
+- **AND THEN** the evidence panel remains on the Observatory page and the chart
+  can still be used without an outbound vendor navigation

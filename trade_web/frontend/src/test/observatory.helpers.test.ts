@@ -251,6 +251,7 @@ describe("URL state round-trips (fixed URL restore)", () => {
       lens: "runs",
       channel: "evaluated_candidate",
       chartMode: "compare",
+      timeframe: "1Y",
       knowledgeAsOf: "2026-07-11",
       range: "1Y",
       runId: "run_observed",
@@ -268,19 +269,24 @@ describe("URL state round-trips (fixed URL restore)", () => {
     expect(params.get("knowledgeAsOf")).toBeNull();
     expect(params.get("obsRange")).toBeNull();
     expect(params.get("obsChart")).toBeNull();
+    expect(params.get("obsTimeframe")).toBeNull();
     expect(params.get("obsLens")).toBe("overview");
     const restored = deserializeObservatoryState(params);
     expect(restored.knowledgeAsOf).toBe("latest");
     expect(restored.range).toBe(DEFAULT_OBS_URL_STATE.range);
     expect(restored.chartMode).toBe("market");
+    expect(restored.timeframe).toBe("1D");
   });
 
   it("rejects unknown lens / channel / chart mode and falls back to defaults", () => {
-    const params = new URLSearchParams("obsLens=bogus&obsChannel=bogus&obsChart=bogus");
+    const params = new URLSearchParams(
+      "obsLens=bogus&obsChannel=bogus&obsChart=bogus&obsTimeframe=5m",
+    );
     const restored = deserializeObservatoryState(params);
     expect(restored.lens).toBe("overview");
     expect(restored.channel).toBe("observed");
     expect(restored.chartMode).toBe("market");
+    expect(restored.timeframe).toBe("1D");
   });
 
   it("round-trips Compare while keeping Market as the canonical default", () => {

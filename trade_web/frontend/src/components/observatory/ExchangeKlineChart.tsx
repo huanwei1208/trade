@@ -30,6 +30,7 @@ import type {
   ObservatoryKlineLifecycle,
   ObservatoryKlineReadout,
 } from "../../lib/observatoryChart";
+import type { ObservatoryTimeframe } from "../../lib/observatory";
 
 type ExchangeKlineChartProps = {
   model: ObservatoryKlineModel;
@@ -37,6 +38,7 @@ type ExchangeKlineChartProps = {
   onSelectDate?: (date: string) => void;
   onRequestCompare?: () => void;
   dateInputRef?: RefObject<HTMLInputElement | null>;
+  onTimeframeChange?: (timeframe: ObservatoryTimeframe) => void;
 };
 
 type ScaleMode = "linear" | "log";
@@ -209,7 +211,7 @@ function KlineReadout({
 }) {
   return (
     <div className="obs-kline__readout" data-testid="exchange-kline-readout">
-      <span className="obs-kline__readout-date">{date ?? "No date"}</span>
+      <span className="obs-kline__readout-date">{readout?.date ?? date ?? "No date"}</span>
       {lifecycle ? (
         <span className="obs-kline__readout-lifecycle">
           {lifecycle.channelLabel}
@@ -284,6 +286,7 @@ export function ExchangeKlineChart({
   onSelectDate,
   onRequestCompare,
   dateInputRef,
+  onTimeframeChange,
 }: ExchangeKlineChartProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -300,6 +303,7 @@ export function ExchangeKlineChart({
   const pendingHoverDateRef = useRef<string | null>(null);
   const lastHoverDateRef = useRef<string | null>(null);
   const [hoveredDate, setHoveredDate] = useState<string | null>(null);
+  const [inspectedDate, setInspectedDate] = useState<string | null>(null);
   const [scaleMode, setScaleMode] = useState<ScaleMode>("linear");
   const [rendererState, setRendererState] = useState<RendererState>("initializing");
   const [rendererFailure, setRendererFailure] = useState<RendererFailure | null>(null);
@@ -331,22 +335,44 @@ export function ExchangeKlineChart({
     }
     return null;
   }, [model]);
-  const activeDate = hoveredDate ?? selectedDate ?? latestDate;
+  const selectedDisplayDate = selectedDate
+    ? (model.dates.find(
+        (date) => date === selectedDate || model.canonicalDates?.[date] === selectedDate,
+      ) ?? null)
+    : null;
+  const activeDate = inspectedDate ?? hoveredDate ?? selectedDisplayDate ?? latestDate;
   const activeReadout = activeDate ? model.readouts[activeDate] : undefined;
   const activeReasons = activeDate
     ? (model.diagnostics.find((diagnostic) => diagnostic.date === activeDate)?.reasonCodes ?? [])
     : [];
+  const sourceDates = model.dates
+    .map((date) => model.canonicalDates?.[date] ?? date)
+    .filter((date): date is string => date !== null);
+  const inspectDate = inspectedDate ?? hoveredDate ?? selectedDisplayDate;
+  const timeframe = model.timeframe ?? "1D";
 
-  const pinDate = useCallback((date: string | null) => {
-    if (!date || !modelRef.current.dates.includes(date) || !onSelectDateRef.current) {
-      return;
-    }
-    try {
-      onSelectDateRef.current(date);
-    } catch {
-      setRendererFailure({ code: "CHART_RUNTIME_FAILED", retryable: true });
-    }
+  const canonicalSourceDate = useCallback((date: string | null): string | null => {
+    if (!date) return null;
+    const model = modelRef.current;
+    if (model.dates.includes(date)) return model.canonicalDates?.[date] ?? date;
+    const displayDate = model.dates.find((candidate) => model.canonicalDates?.[candidate] === date);
+    return displayDate ? (model.canonicalDates?.[displayDate] ?? displayDate) : null;
   }, []);
+
+  const pinDate = useCallback(
+    (date: string | null) => {
+      const sourceDate = canonicalSourceDate(date);
+      if (!sourceDate || !onSelectDateRef.current) {
+        return;
+      }
+      try {
+        onSelectDateRef.current(sourceDate);
+      } catch {
+        setRendererFailure({ code: "CHART_RUNTIME_FAILED", retryable: true });
+      }
+    },
+    [canonicalSourceDate],
+  );
 
   const moveProgrammaticCrosshair = useCallback((date: string | null) => {
     const runtime = runtimeRef.current;
@@ -395,7 +421,19 @@ export function ExchangeKlineChart({
     const handleClick = (params: MouseEventParams<Time>) => {
       if (disposed) return;
       const eventDate = normalizeEventDate(params.time);
-      pinDate(eventDate);
+      if (eventDate && modelRef.current.dates.includes(eventDate)) {
+        setInspectedDate(eventDate);
+        setHoveredDate(eventDate);
+        setKeyboardAnnouncement(
+          formatKeyboardInspectionSummary(
+            eventDate,
+            modelRef.current.readouts[eventDate],
+            modelRef.current.diagnostics.find((diagnostic) => diagnostic.date === eventDate)
+              ?.reasonCodes ?? [],
+            modelRef.current.lifecycle,
+          ),
+        );
+      }
     };
     const modelGapMarkers = gapMarkers(model);
     const scheduleGapMarkerDraw = () => {
@@ -450,7 +488,7 @@ export function ExchangeKlineChart({
         layout: {
           background: { type: ColorType.Solid, color: "#071321" },
           textColor: "#9eb0c8",
-          attributionLogo: true,
+          attributionLogo: false,
         },
         grid: {
           vertLines: { color: "rgba(89, 112, 143, 0.16)" },
@@ -559,10 +597,10 @@ export function ExchangeKlineChart({
   }, [model, pinDate, retryVersion]);
 
   useEffect(() => {
-    if (selectedDate) {
-      moveProgrammaticCrosshair(selectedDate);
+    if (selectedDisplayDate) {
+      moveProgrammaticCrosshair(selectedDisplayDate);
     }
-  }, [moveProgrammaticCrosshair, selectedDate]);
+  }, [moveProgrammaticCrosshair, selectedDisplayDate]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -615,7 +653,8 @@ export function ExchangeKlineChart({
       return;
     }
     event.preventDefault();
-    const current = hoveredDate ?? selectedDate ?? latestDate ?? model.dates[0];
+    const current =
+      hoveredDate ?? inspectedDate ?? selectedDisplayDate ?? latestDate ?? model.dates[0];
     let next = current;
     if (event.key === "Home") next = model.dates[0];
     if (event.key === "End") next = model.dates[model.dates.length - 1];
@@ -692,7 +731,8 @@ export function ExchangeKlineChart({
             {model.identity?.displaySymbol}/{model.identity?.quote}
           </div>
           <div className="obs-kline__provenance">
-            {model.identity?.provider} · {model.identity?.instrument} · 1D UTC
+            {model.identity?.provider} · {model.identity?.instrument} · {timeframe} display · UTC
+            daily source
           </div>
           <div className="obs-kline__lifecycle" data-testid="exchange-kline-lifecycle">
             {lifecycleTitle}
@@ -701,7 +741,21 @@ export function ExchangeKlineChart({
         <div className="obs-kline__scope">Local daily Observatory snapshot · not live</div>
       </header>
 
-      <div className="obs-kline__toolbar" role="toolbar" aria-label="Daily chart controls">
+      <div className="obs-kline__toolbar" role="toolbar" aria-label="Market chart controls">
+        <div className="obs-kline__toolbar-group" aria-label="Chart timeframe">
+          {(["1D", "1W", "1M", "1Y"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={timeframe === option ? "is-active" : ""}
+              aria-pressed={timeframe === option}
+              onClick={() => onTimeframeChange?.(option)}
+              data-testid={`exchange-kline-timeframe-${option}`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
         <div className="obs-kline__toolbar-group" aria-label="Price scale">
           <button
             type="button"
@@ -740,14 +794,22 @@ export function ExchangeKlineChart({
         >
           {fullscreenActive || expandedFallback ? "Exit expanded" : "Fullscreen"}
         </button>
+        <button
+          type="button"
+          onClick={() => pinDate(inspectDate)}
+          disabled={!inspectDate}
+          data-testid="exchange-kline-inspect-date"
+        >
+          Inspect this date
+        </button>
         <label className="obs-chart__date-inspector">
           <span>Inspect date</span>
           <input
             ref={dateInputRef}
             type="date"
             value={selectedDate ?? ""}
-            min={model.dates[0]}
-            max={model.dates[model.dates.length - 1]}
+            min={sourceDates[0]}
+            max={sourceDates[sourceDates.length - 1]}
             aria-label="Inspect a daily market date"
             onChange={(event) => pinDate(event.target.value)}
             data-testid="chart-date-inspector"
@@ -763,6 +825,7 @@ export function ExchangeKlineChart({
       />
       <div
         className="obs-kline__canvas-shell"
+        data-testid="exchange-kline-canvas-shell"
         tabIndex={0}
         role="group"
         aria-label="Interactive BTC daily candlestick chart. Use left and right arrows to inspect dates; press Enter or Space to pin a date."
@@ -781,7 +844,7 @@ export function ExchangeKlineChart({
       <div className="obs-kline__pinned" aria-live="polite" aria-atomic="true">
         {formatPinnedSummary(
           selectedDate,
-          selectedDate ? model.readouts[selectedDate] : undefined,
+          selectedDisplayDate ? model.readouts[selectedDisplayDate] : undefined,
           model.lifecycle,
         )}
       </div>

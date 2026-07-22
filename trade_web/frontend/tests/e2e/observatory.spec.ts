@@ -52,6 +52,23 @@ test("Market defaults to the exchange-style selected-channel daily chart", async
   await expect(page).not.toHaveURL(/obsChart=/);
 });
 
+test("Market timeframe switches stay local and ordinary chart clicks do not pin or navigate", async ({
+  page,
+}) => {
+  await gotoObservatory(page);
+  await page.getByTestId("exchange-kline-timeframe-1W").click();
+  await expect(page.getByTestId("exchange-kline-timeframe-1W")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page).toHaveURL(/obsTimeframe=1W/);
+  await page.getByTestId("exchange-kline-canvas-shell").click({ position: { x: 120, y: 90 } });
+  await expect(page).not.toHaveURL(/obsDate=/);
+  await expect(page.getByTestId("date-evidence")).toHaveCount(0);
+  await page.getByTestId("exchange-kline-inspect-date").click();
+  await expect(page).toHaveURL(/obsDate=/);
+});
+
 test("Compare preserves the separate three-layer lifecycle chart and restores from URL", async ({
   page,
 }) => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ObsContext, ObsSeriesRow, ObsSingleSeries } from "../lib/api";
 import {
+  aggregateObservatoryKlineModel,
   buildObservatoryKlineModel,
   OBSERVATORY_DIAGNOSTIC_EVIDENCE_LIMIT,
   OBSERVATORY_DIAGNOSTIC_REASON_LIMIT,
@@ -428,6 +429,69 @@ describe("buildObservatoryKlineModel", () => {
 
     expect(model.state).toBe("invalid");
     expect(model.fatalReasonCodes).toContain("SERIES_ROWS_UNAVAILABLE");
+  });
+
+  it("aggregates weekly buckets with exact decimal values across a year boundary", () => {
+    const daily = buildObservatoryKlineModel(
+      selectedSeries([
+        presentRow("2026-12-31", {
+          open: "10.10",
+          high: "12.20",
+          low: "9.90",
+          close: "11.10",
+          volume: "1.25",
+        }),
+        presentRow("2027-01-01", {
+          open: "11.10",
+          high: "13.30",
+          low: "10.80",
+          close: "12.20",
+          volume: "2.75",
+        }),
+      ]),
+      context(),
+    );
+    const weekly = aggregateObservatoryKlineModel(daily, "1W");
+
+    expect(weekly.state).toBe("ready");
+    expect(weekly.canonicalDates).toEqual({ "2026-12-28": "2027-01-01" });
+    expect(weekly.readouts["2026-12-28"]).toMatchObject({
+      open: "10.1",
+      high: "13.3",
+      low: "9.9",
+      close: "12.2",
+      volume: "4",
+    });
+  });
+
+  it("marks missing daily coverage and volume as partial without changing the lattice", () => {
+    const daily = buildObservatoryKlineModel(
+      selectedSeries([presentRow("2026-01-01", { volume: null }), presentRow("2026-01-03")]),
+      context(),
+    );
+    const monthly = aggregateObservatoryKlineModel(daily, "1M");
+
+    expect(monthly.state).toBe("partial-invalid");
+    expect(monthly.bucketMetadata?.["2026-01-01"]).toMatchObject({
+      partial: true,
+      coveredDateCount: 3,
+      validDateCount: 2,
+    });
+    expect(monthly.readouts["2026-01-01"]?.volume).toBeNull();
+  });
+
+  it("fails explicitly when exact aggregate precision exceeds the fixed-point bound", () => {
+    const huge = "1" + "0".repeat(128);
+    const daily = buildObservatoryKlineModel(
+      selectedSeries([
+        presentRow("2026-01-01", { open: huge, high: huge, low: huge, close: huge, volume: huge }),
+      ]),
+      context(),
+    );
+    const monthly = aggregateObservatoryKlineModel(daily, "1M");
+
+    expect(monthly.state).toBe("invalid");
+    expect(monthly.fatalReasonCodes).toContain("AGGREGATE_DECIMAL_OVERFLOW");
   });
 
   it.each([

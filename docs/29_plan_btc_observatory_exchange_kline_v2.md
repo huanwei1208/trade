@@ -547,3 +547,68 @@ are completed in this same section rather than in a separate plan.
   `MarketSummary` still derives presentation separately from the strict chart
   adapter; and two bounded diagnostic accounting details remain accepted P2s
   because they do not alter rendered truth or fail-closed behavior.
+
+## 12. Follow-up optimization: timeframe controls and non-navigating chart clicks
+
+User feedback identified two interaction problems in the completed chart:
+
+1. The chart only exposed a daily view, while exchange users expect selectable
+   weekly, monthly, and yearly bars.
+2. A normal chart click felt like a page redirect because it committed the
+   URL-backed Date Evidence state and the vendor attribution logo could navigate
+   away from the workspace.
+
+### Scope and chosen behavior
+
+- Add `1D`, `1W`, `1M`, and `1Y` display timeframes. The backend remains the
+  authoritative UTC-daily source; higher timeframes are deterministic client
+  display aggregation only and never change the API interval contract.
+- Aggregate OHLCV with exact decimal-string arithmetic: first open, maximum
+  high, minimum low, last close, and summed volume when supplied. Partial
+  buckets retain a visible diagnostic marker and bounded bucket metadata
+  (start/end, covered/valid counts, reason/evidence references); empty buckets
+  remain whitespace. The browser uses bounded fixed-point `BigInt` arithmetic
+  (maximum 128 decimal digits, explicit `AGGREGATE_DECIMAL_OVERFLOW` failure),
+  never JavaScript `Number` for aggregate extrema or sums.
+- A timeframe bucket's canonical evidence date is its latest valid constituent
+  UTC daily row. Explicit inspection pins that daily date; the aggregate bucket
+  itself is never presented as a server-provided Date Evidence date. If a valid
+  row lacks volume, aggregate volume is unavailable and the bucket is marked
+  partial; invalid-volume rows remain excluded by the existing strict adapter.
+- Range-edge truncation is not itself partial: covered dates are the bounded
+  daily lattice dates in the active request window. A bucket is partial only
+  when covered dates are missing, excluded, invalid, or lack required volume.
+- Add additive `obsTimeframe` URL state with `1D` as the safe default. Existing
+  URLs and saved state remain valid and restore the daily view.
+- A normal chart click becomes local inspection only. It updates the readout and
+  crosshair without changing the URL, opening Date Evidence, or navigating.
+  Explicit `Inspect this date`, Enter/Space, and date-input actions remain the
+  only evidence-pinning actions.
+- Timeframe is controlled page state passed down to the panel/chart; changing it
+  derives a memoized display model from the confirmed daily model and never
+  changes request keys, Context identity, or Date Evidence state.
+- Remove the in-canvas outbound attribution logo that can intercept chart
+  clicks; retain the repository-owned footer attribution link and NOTICE.
+
+### Acceptance and validation
+
+- Unit tests cover exact weekly/monthly/yearly aggregation, month/year boundary
+  buckets, partial and empty buckets, timeframe URL round trips, and click-versus
+  explicit-pin request behavior.
+- Chromium coverage verifies timeframe switching stays on the Observatory page,
+  ordinary chart clicks issue no Date Evidence request, and explicit inspection
+  still opens the correctly pinned evidence.
+- Existing daily lifecycle, provenance, gap, cache, Compare, a11y, build-budget,
+  and performance contracts remain green.
+
+### Implementation closeout (2026-07-22)
+
+- Implemented in `5a33780` with metadata/provenance hardening in `862df07`.
+- Added URL-safe `1D/1W/1M/1Y` controls, exact bounded fixed-point aggregation,
+  canonical latest-valid daily evidence mapping, and local-only ordinary clicks.
+- Explicit Inspect/Enter/Space/date-input actions still pin Date Evidence; the
+  in-canvas attribution logo is disabled while the footer attribution remains.
+- Validation: 177/177 frontend unit tests, TypeScript typecheck, production
+  build, bundle-budget check, and diff hygiene pass. Implemented-diff review had
+  no P0 findings; an unbounded reason-code and provenance gap were fixed in
+  `862df07` before closeout.

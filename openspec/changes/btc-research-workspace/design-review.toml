@@ -2,8 +2,8 @@ schema_version = 1
 policy_version = "v1"
 policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
 artifact_digest_algorithm = "sha256-path-content-v1"
-artifact_digest = "sha256:782be3d78e052a77aa09fcf0c8b2f9d53de0f881175f96ba4f6da671eb75f2e8"
-reviewed_commit = "0d55f5bb23f7df9ed11e0ad3560a758220d4cd51"
+artifact_digest = "sha256:5d56a8889a93be6d4ec24d5b66772981f7823404d1a287c5a30167ab1331447a"
+reviewed_commit = "47cdc8fed61ed7ccb5aad301a82fca9b642d395e"
 reviewed_at = "2026-07-22"
 status = "approved"
 bootstrap = false
@@ -12,31 +12,31 @@ bootstrap = false
 role = "reliability"
 status = "approved"
 score_before = 6
-score_after = 9.8
+score_after = 8.0
 
 [[judges]]
 role = "performance"
 status = "approved"
 score_before = 7
-score_after = 9.8
+score_after = 9.5
 
 [[judges]]
 role = "architecture"
 status = "approved"
 score_before = 6
-score_after = 9.9
+score_after = 9.0
 
 [[judges]]
 role = "data_quality"
 status = "approved"
 score_before = 6
-score_after = 9.6
+score_after = 9.0
 
 [[judges]]
 role = "observability"
 status = "approved"
 score_before = 6
-score_after = 9.8
+score_after = 8.0
 
 [[judges]]
 role = "news_future"
@@ -235,4 +235,29 @@ resolution = "Diagnostic omission totals count overflow occurrences rather than 
 evidence = [
   "trade_web/frontend/src/lib/observatoryChart.ts:diagnostic accounting",
   "trade_web/frontend/src/lib/observatoryChart.ts:excluded-date lattice precedence",
+]
+
+[[findings]]
+id = "KLINE-TF-001"
+priority = "P2"
+severity = "MED"
+consensus_count = 2
+status = "accepted"
+resolution = "Implementation must prove fixed-point carry/scale alignment, the 128-digit overflow boundary, UTC week/month/year transitions, partial-volume semantics, and aggregate-to-daily Date Evidence mapping with focused tests; the design now defines the required invariants."
+evidence = [
+  "design.md:Follow-up amendment: timeframe and click interaction",
+  "specs/btc-research-workspace/spec.md:Exchange timeframe selection and click isolation",
+  "tasks.md:4.7",
+]
+
+[[findings]]
+id = "KLINE-TF-002"
+priority = "P2"
+severity = "LOW"
+consensus_count = 1
+status = "accepted"
+resolution = "Aggregate metadata and reason/evidence references remain bounded in the implementation and accessible summary; exact cap values are enforced by the existing chart envelope plus focused tests."
+evidence = [
+  "design.md:Follow-up amendment: timeframe and click interaction",
+  "proposal.md:Validation",
 ]

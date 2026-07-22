@@ -50,6 +50,14 @@ underlying assurance semantics.
   the selected daily series. Preserve original API decimal strings for readout,
   required attribution, bounded Canvas rendering, complete subscription cleanup,
   and the ability to revert to the retained composite renderer.
+- Add repository-owned `1D`, `1W`, `1M`, and `1Y` display timeframe controls by
+  aggregating the validated daily source in the browser with exact decimal
+  arithmetic. Add additive `obsTimeframe` URL state with a safe `1D` default;
+  the backend remains daily-only and no provider or interval selector is added.
+- Make ordinary chart clicks local inspection only. Only explicit Inspect-date,
+  Enter/Space, or date-input actions pin Date Evidence and update URL state. Keep
+  attribution in the repository footer/NOTICE and remove the in-canvas outbound
+  logo so chart interaction cannot unexpectedly navigate away.
 - Load the vendor chart as a Market-only lazy chunk behind a local safe-error
   boundary. Module/create/series/data/callback failures retain Context warnings
   and the external mode switch, expose only sanitized renderer codes, and offer
@@ -73,6 +81,9 @@ underlying assurance semantics.
   client-side calculation of formal market/research metrics.
 - No intraday interval, exchange-source selector, live candle, hosted chart
   widget, drawing suite, order book, or inferred volume unit.
+- No browser-side change to the authoritative daily API interval or lifecycle
+  channel; timeframe aggregation is presentation-only and remains visibly
+  derived from daily snapshot evidence.
 - No client-side cross-scope join: Research and global Lineage do not acquire a
   market snapshot selector merely to make a historical Market screen look more
   complete.
@@ -86,8 +97,9 @@ underlying assurance semantics.
 - **Web navigation and URL:** the existing `observatory` page key and
   `obsLens`, `obsChannel`, `knowledgeAsOf`, `obsRange`, `obsRun`, `obsCompare`,
   and `obsDate` query parameters remain compatible. The additive `obsChart`
-  parameter accepts `market` and `compare`; missing/unknown values mean
-  `market`. `obsLens` values stay `overview`, `trust`, `runs`, and `research`;
+  parameter accepts `market` and `compare`; the additive `obsTimeframe`
+  parameter accepts `1D`, `1W`, `1M`, and `1Y`; missing/unknown values mean
+  `market` and `1D` respectively. `obsLens` values stay `overview`, `trust`, `runs`, and `research`;
   they map to the renamed workspace labels rather than changing serialized
   values.
 - **Web API:** all `/api/v1/observatory/*` payloads and capability behavior are
@@ -124,7 +136,9 @@ data migration or cleanup.
 - Add adapter and component coverage for daily ordering, invalid decimals,
   exact-string readout, gaps/markers, chart cleanup, crosshair selection,
   keyboard navigation, pan/zoom controls, responsive resize, Market/Compare URL
-  restoration, and persistent unpublished state.
+  restoration, and persistent unpublished state. Add exact timeframe aggregation,
+  partial-bucket diagnostics, URL timeframe compatibility, and ordinary-click
+  versus explicit-pin behavior coverage.
 - Include strict real-date/decimal/OHLCV, duplicate-conflict, daily-lattice,
   Context-exclusion, actual-output-shaped marker/provenance, partial/fatal
   diagnostics, lazy-load/create/update recovery, rAF hover coalescing,

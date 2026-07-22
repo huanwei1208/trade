@@ -6,10 +6,14 @@ import type {
   ObsSeriesRow,
   ObsSingleSeries,
 } from "./api";
+import type { ObservatoryTimeframe } from "./observatory";
 
 export const OBSERVATORY_KLINE_MAX_DAYS = 7_300;
 export const OBSERVATORY_DIAGNOSTIC_REASON_LIMIT = 16;
 export const OBSERVATORY_DIAGNOSTIC_EVIDENCE_LIMIT = 8;
+export const OBSERVATORY_AGGREGATE_DECIMAL_DIGIT_LIMIT = 128;
+export const OBSERVATORY_AGGREGATE_METADATA_LIMIT = OBSERVATORY_KLINE_MAX_DAYS;
+export const OBSERVATORY_AGGREGATE_REASON_LIMIT = OBSERVATORY_DIAGNOSTIC_REASON_LIMIT;
 
 const DAY_MS = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -95,6 +99,25 @@ export type ObservatoryKlineModel = {
   spanDays: number;
   fatalReasonCodes: string[];
   omittedFatalReasonCodeCount: number;
+  timeframe?: ObservatoryTimeframe;
+  canonicalDates?: Record<string, string | null>;
+  bucketMetadata?: Record<string, ObservatoryKlineBucketMetadata>;
+};
+
+export type ObservatoryKlineBucketMetadata = {
+  start: string;
+  end: string;
+  canonicalDate: string | null;
+  coveredDateCount: number;
+  validDateCount: number;
+  partial: boolean;
+  reasonCodes: string[];
+  evidenceRefs: string[];
+  omittedEvidenceRefCount: number;
+  omittedReasonCodeCount: number;
+  sourceInterval: string;
+  snapshotId: string;
+  channel: string;
 };
 
 export type ObservatoryKlineWindow = {
@@ -815,6 +838,412 @@ function buildObservatoryKlineModelUnchecked(
     invalidRowCount,
     affectedDateCount,
     spanDays,
+    fatalReasonCodes: [],
+    omittedFatalReasonCodeCount: 0,
+  };
+}
+
+type ExactAggregateDecimal = {
+  coefficient: bigint;
+  scale: number;
+};
+
+function parseExactAggregateDecimal(value: string): ExactAggregateDecimal | null {
+  if (!STRICT_DECIMAL.test(value)) return null;
+  const negative = value.startsWith("-");
+  const unsigned = value.replace(/^[+-]/, "");
+  const [integer = "0", fraction = ""] = unsigned.split(".", 2);
+  const digits = `${integer}${fraction}`.replace(/^0+(?=\d)/, "") || "0";
+  if (digits.length > OBSERVATORY_AGGREGATE_DECIMAL_DIGIT_LIMIT) return null;
+  let coefficient = BigInt(digits);
+  let scale = fraction.length;
+  while (scale > 0 && coefficient % 10n === 0n) {
+    coefficient /= 10n;
+    scale -= 1;
+  }
+  if (negative) coefficient = -coefficient;
+  return { coefficient, scale };
+}
+
+function alignExactAggregateDecimals(
+  left: ExactAggregateDecimal,
+  right: ExactAggregateDecimal,
+): [bigint, bigint, number] {
+  const scale = Math.max(left.scale, right.scale);
+  return [
+    left.coefficient * 10n ** BigInt(scale - left.scale),
+    right.coefficient * 10n ** BigInt(scale - right.scale),
+    scale,
+  ];
+}
+
+function compareExactAggregateDecimals(
+  left: ExactAggregateDecimal,
+  right: ExactAggregateDecimal,
+): number {
+  const [leftCoefficient, rightCoefficient] = alignExactAggregateDecimals(left, right);
+  return leftCoefficient < rightCoefficient ? -1 : leftCoefficient > rightCoefficient ? 1 : 0;
+}
+
+function addExactAggregateDecimals(
+  left: ExactAggregateDecimal,
+  right: ExactAggregateDecimal,
+): ExactAggregateDecimal | null {
+  const [leftCoefficient, rightCoefficient, scale] = alignExactAggregateDecimals(left, right);
+  const coefficient = leftCoefficient + rightCoefficient;
+  const digits =
+    coefficient < 0n ? (-coefficient).toString().length : coefficient.toString().length;
+  if (digits > OBSERVATORY_AGGREGATE_DECIMAL_DIGIT_LIMIT) return null;
+  return { coefficient, scale };
+}
+
+function formatExactAggregateDecimal(value: ExactAggregateDecimal): string {
+  const negative = value.coefficient < 0n;
+  const digits = (negative ? -value.coefficient : value.coefficient).toString();
+  if (value.scale === 0) return `${negative ? "-" : ""}${digits}`;
+  const padded = digits.padStart(value.scale + 1, "0");
+  const integer = padded.slice(0, -value.scale) || "0";
+  const fraction = padded.slice(-value.scale).replace(/0+$/, "");
+  return `${negative ? "-" : ""}${integer}${fraction ? `.${fraction}` : ""}`;
+}
+
+function aggregateBucketStart(date: string, timeframe: ObservatoryTimeframe): string {
+  if (timeframe === "1D") return date;
+  if (timeframe === "1M") return `${date.slice(0, 7)}-01`;
+  if (timeframe === "1Y") return `${date.slice(0, 4)}-01-01`;
+  const epoch = parseIsoDate(date);
+  if (epoch === null) return date;
+  const weekday = new Date(epoch).getUTCDay();
+  const mondayOffset = (weekday + 6) % 7;
+  return new Date(epoch - mondayOffset * DAY_MS).toISOString().slice(0, 10);
+}
+
+function aggregateBucketEnd(start: string, timeframe: ObservatoryTimeframe): string {
+  if (timeframe === "1D") return start;
+  const epoch = parseIsoDate(start);
+  if (epoch === null) return start;
+  const next = new Date(epoch);
+  if (timeframe === "1W") next.setUTCDate(next.getUTCDate() + 7);
+  if (timeframe === "1M") next.setUTCMonth(next.getUTCMonth() + 1);
+  if (timeframe === "1Y") next.setUTCFullYear(next.getUTCFullYear() + 1);
+  return new Date(next.getTime() - DAY_MS).toISOString().slice(0, 10);
+}
+
+type AggregateBucket = {
+  start: string;
+  end: string;
+  dates: string[];
+  validDates: string[];
+  readouts: ObservatoryKlineReadout[];
+  reasons: Set<string>;
+  omittedReasonCodeCount: number;
+  evidenceRefs: Set<string>;
+  omittedEvidenceRefCount: number;
+  partialVolume: boolean;
+  overflow: boolean;
+};
+
+function boundedSetAdd(target: Set<string>, values: string[], limit: number): number {
+  let omitted = 0;
+  for (const value of values) {
+    if (target.has(value)) continue;
+    if (target.size < limit) target.add(value);
+    else omitted += 1;
+  }
+  return omitted;
+}
+
+function aggregateBucketReadout(bucket: AggregateBucket): {
+  readout: ObservatoryKlineReadout;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number | null;
+} | null {
+  const first = bucket.readouts[0];
+  const last = bucket.readouts[bucket.readouts.length - 1];
+  if (!first || !last) return null;
+  const open = parseExactAggregateDecimal(first.open);
+  const high = bucket.readouts.reduce<ExactAggregateDecimal | null>((current, readout) => {
+    const candidate = parseExactAggregateDecimal(readout.high);
+    if (!candidate) {
+      bucket.overflow = true;
+      return null;
+    }
+    return current === null || compareExactAggregateDecimals(candidate, current) > 0
+      ? candidate
+      : current;
+  }, null);
+  const low = bucket.readouts.reduce<ExactAggregateDecimal | null>((current, readout) => {
+    const candidate = parseExactAggregateDecimal(readout.low);
+    if (!candidate) return null;
+    return current === null || compareExactAggregateDecimals(candidate, current) < 0
+      ? candidate
+      : current;
+  }, null);
+  const close = parseExactAggregateDecimal(last.close);
+  if (!open || !high || !low || !close) {
+    bucket.overflow = true;
+    return null;
+  }
+  let exactVolume: ExactAggregateDecimal | null = null;
+  for (const readout of bucket.readouts) {
+    if (readout.volume === null) {
+      bucket.partialVolume = true;
+      continue;
+    }
+    const volume = parseExactAggregateDecimal(readout.volume);
+    if (!volume) {
+      bucket.overflow = true;
+      return null;
+    }
+    exactVolume = exactVolume === null ? volume : addExactAggregateDecimals(exactVolume, volume);
+    if (exactVolume === null) {
+      bucket.overflow = true;
+      return null;
+    }
+  }
+  const openString = formatExactAggregateDecimal(open);
+  const highString = formatExactAggregateDecimal(high);
+  const lowString = formatExactAggregateDecimal(low);
+  const closeString = formatExactAggregateDecimal(close);
+  const volumeString =
+    bucket.partialVolume || exactVolume === null ? null : formatExactAggregateDecimal(exactVolume);
+  const readout: ObservatoryKlineReadout = {
+    date: last.date,
+    open: openString,
+    high: highString,
+    low: lowString,
+    close: closeString,
+    volume: volumeString,
+    availabilityState: "present",
+    revisionState: last.revisionState,
+    qualityFlags: [...new Set(bucket.readouts.flatMap((item) => item.qualityFlags))].slice(0, 16),
+  };
+  const openGeometry = parseDecimal(openString, false);
+  const highGeometry = parseDecimal(highString, false);
+  const lowGeometry = parseDecimal(lowString, false);
+  const closeGeometry = parseDecimal(closeString, false);
+  const volumeGeometry = volumeString === null ? null : parseDecimal(volumeString, true);
+  if (
+    openGeometry === null ||
+    highGeometry === null ||
+    lowGeometry === null ||
+    closeGeometry === null
+  ) {
+    bucket.overflow = true;
+    return null;
+  }
+  return {
+    readout,
+    open: openGeometry,
+    high: highGeometry,
+    low: lowGeometry,
+    close: closeGeometry,
+    volume: volumeGeometry,
+  };
+}
+
+export function aggregateObservatoryKlineModel(
+  model: ObservatoryKlineModel,
+  timeframe: ObservatoryTimeframe,
+): ObservatoryKlineModel {
+  const canonicalDates = Object.fromEntries(
+    model.dates.map((date) => [date, model.readouts[date]?.date ?? null]),
+  );
+  if (timeframe === "1D" || model.state === "invalid" || model.state === "empty") {
+    return { ...model, timeframe, canonicalDates };
+  }
+
+  const bucketMap = new Map<string, AggregateBucket>();
+  const diagnosticsByDate = new Map(
+    model.diagnostics
+      .filter(
+        (diagnostic): diagnostic is ObservatoryKlineDiagnostic & { date: string } =>
+          diagnostic.date !== null,
+      )
+      .map((diagnostic) => [diagnostic.date, diagnostic]),
+  );
+  for (const date of model.dates) {
+    const start = aggregateBucketStart(date, timeframe);
+    let bucket = bucketMap.get(start);
+    if (!bucket) {
+      bucket = {
+        start,
+        end: aggregateBucketEnd(start, timeframe),
+        dates: [],
+        validDates: [],
+        readouts: [],
+        reasons: new Set<string>(),
+        omittedReasonCodeCount: 0,
+        evidenceRefs: new Set<string>(),
+        omittedEvidenceRefCount: 0,
+        partialVolume: false,
+        overflow: false,
+      };
+      bucketMap.set(start, bucket);
+    }
+    bucket.dates.push(date);
+    const diagnostic = diagnosticsByDate.get(date);
+    if (diagnostic) {
+      bucket.omittedReasonCodeCount += boundedSetAdd(
+        bucket.reasons,
+        diagnostic.reasonCodes,
+        OBSERVATORY_AGGREGATE_REASON_LIMIT,
+      );
+      bucket.omittedEvidenceRefCount += boundedSetAdd(
+        bucket.evidenceRefs,
+        diagnostic.evidenceRefs,
+        OBSERVATORY_DIAGNOSTIC_EVIDENCE_LIMIT,
+      );
+      bucket.omittedEvidenceRefCount += diagnostic.omittedEvidenceRefCount;
+    }
+    const readout = model.readouts[date];
+    if (readout) {
+      bucket.validDates.push(date);
+      bucket.readouts.push(readout);
+    }
+  }
+
+  if (bucketMap.size > OBSERVATORY_AGGREGATE_METADATA_LIMIT) {
+    return {
+      ...model,
+      state: "invalid",
+      timeframe,
+      canonicalDates,
+      candles: [],
+      volumes: [],
+      markers: [],
+      dates: [],
+      readouts: {},
+      bucketMetadata: {},
+      fatalReasonCodes: ["CHART_CAPACITY_EXCEEDED"],
+      omittedFatalReasonCodeCount: 0,
+      renderedCandleCount: 0,
+    };
+  }
+
+  const dates = [...bucketMap.keys()].sort();
+  const candles: ObservatoryCandleDatum[] = [];
+  const volumes: ObservatoryVolumeDatum[] = [];
+  const readouts: Record<string, ObservatoryKlineReadout> = {};
+  const bucketMetadata: Record<string, ObservatoryKlineBucketMetadata> = {};
+  const diagnostics: ObservatoryKlineDiagnostic[] = [];
+  let renderedCandleCount = 0;
+  let invalidRowCount = model.invalidRowCount;
+  let partial = model.state === "partial-invalid";
+  let aggregateOverflow = false;
+
+  for (const date of dates) {
+    const bucket = bucketMap.get(date) as AggregateBucket;
+    const aggregated = aggregateBucketReadout(bucket);
+    aggregateOverflow ||= bucket.overflow;
+    const partialBucket = bucket.validDates.length < bucket.dates.length || bucket.partialVolume;
+    const reasons = [...bucket.reasons];
+    if (partialBucket) reasons.push("PARTIAL_TIMEFRAME_BUCKET");
+    if (bucket.partialVolume) reasons.push("MISSING_VOLUME");
+    const reasonCodes = [...new Set(reasons)].sort();
+    const evidenceRefs = [...bucket.evidenceRefs].sort();
+    const metadata: ObservatoryKlineBucketMetadata = {
+      start: bucket.start,
+      end: bucket.end,
+      canonicalDate: bucket.validDates.at(-1) ?? null,
+      coveredDateCount: bucket.dates.length,
+      validDateCount: bucket.validDates.length,
+      partial: partialBucket,
+      reasonCodes,
+      evidenceRefs,
+      omittedEvidenceRefCount: bucket.omittedEvidenceRefCount,
+      omittedReasonCodeCount: bucket.omittedReasonCodeCount,
+      sourceInterval: model.identity?.interval ?? "1Dutc",
+      snapshotId: "context-bound",
+      channel: model.lifecycle?.channel ?? "unknown",
+    };
+    bucketMetadata[date] = metadata;
+    if (!aggregated) {
+      candles.push({ time: date });
+      volumes.push({ time: date });
+      invalidRowCount += 1;
+      partial = true;
+    } else {
+      candles.push({
+        time: date,
+        open: aggregated.open,
+        high: aggregated.high,
+        low: aggregated.low,
+        close: aggregated.close,
+      });
+      volumes.push(
+        aggregated.volume === null
+          ? { time: date }
+          : {
+              time: date,
+              value: aggregated.volume,
+              color:
+                aggregated.close >= aggregated.open
+                  ? "rgba(38, 166, 154, 0.45)"
+                  : "rgba(239, 83, 80, 0.45)",
+            },
+      );
+      readouts[date] = aggregated.readout;
+      renderedCandleCount += 1;
+      invalidRowCount += Math.max(0, bucket.dates.length - bucket.validDates.length);
+    }
+    if (partialBucket || !aggregated) {
+      partial = true;
+      diagnostics.push({
+        date,
+        reasonCodes: reasonCodes.length ? reasonCodes : ["EMPTY_TIMEFRAME_BUCKET"],
+        evidenceRefs,
+        markerPosition: "above",
+        omittedReasonCodeCount: 0,
+        omittedEvidenceRefCount: bucket.omittedEvidenceRefCount,
+      });
+    }
+  }
+
+  const markers = diagnostics.map((diagnostic) => ({
+    time: diagnostic.date as string,
+    reasonCodes: diagnostic.reasonCodes,
+    evidenceRefs: diagnostic.evidenceRefs,
+    position: diagnostic.markerPosition,
+    tone: markerTone(diagnostic.reasonCodes),
+  }));
+  if (aggregateOverflow) {
+    return {
+      ...model,
+      state: "invalid",
+      timeframe,
+      candles: [],
+      volumes: [],
+      markers: [],
+      dates: [],
+      readouts: {},
+      diagnostics,
+      bucketMetadata,
+      renderedCandleCount: 0,
+      fatalReasonCodes: ["AGGREGATE_DECIMAL_OVERFLOW"],
+      omittedFatalReasonCodeCount: 0,
+    };
+  }
+  return {
+    ...model,
+    state: partial ? "partial-invalid" : "ready",
+    timeframe,
+    candles,
+    volumes,
+    markers,
+    dates,
+    readouts,
+    diagnostics,
+    bucketMetadata,
+    canonicalDates: Object.fromEntries(
+      dates.map((date) => [date, bucketMetadata[date]?.canonicalDate ?? null]),
+    ),
+    renderedCandleCount,
+    invalidRowCount,
+    affectedDateCount: diagnostics.length,
     fatalReasonCodes: [],
     omittedFatalReasonCodeCount: 0,
   };

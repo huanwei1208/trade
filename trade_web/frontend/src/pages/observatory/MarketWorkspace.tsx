@@ -19,6 +19,7 @@ import type {
 } from "../../lib/api";
 import {
   compositeLayerForChannel,
+  type ObservatoryTimeframe,
   type ObservatoryChartMode,
   type ObservatorySafeError,
   type ObservatoryWindowBounds,
@@ -37,6 +38,7 @@ type MarketWorkspaceProps = {
   compositeResource: MarketResource<ObsCompositeSeries>;
   dateEvidenceResource: MarketResource<ObsDateEvidence>;
   range: string;
+  timeframe: ObservatoryTimeframe;
   selectedDate: string | null;
   channel: ObsChannel;
   windowBounds: ObservatoryWindowBounds;
@@ -44,6 +46,7 @@ type MarketWorkspaceProps = {
   historicalCompositeUnavailable: boolean;
   dateInspectorRef: RefObject<HTMLInputElement | null>;
   onChartModeChange: (mode: ObservatoryChartMode) => void;
+  onTimeframeChange: (timeframe: ObservatoryTimeframe) => void;
   onSelectDate: (date: string) => void;
   onCloseDate: () => void;
 };
@@ -59,6 +62,7 @@ export function MarketWorkspace({
   compositeResource,
   dateEvidenceResource,
   range,
+  timeframe,
   selectedDate,
   channel,
   windowBounds,
@@ -66,6 +70,7 @@ export function MarketWorkspace({
   historicalCompositeUnavailable,
   dateInspectorRef,
   onChartModeChange,
+  onTimeframeChange,
   onSelectDate,
   onCloseDate,
 }: MarketWorkspaceProps) {
@@ -172,6 +177,7 @@ export function MarketWorkspace({
             <ExchangeKlinePanel
               series={selectedSeries}
               context={context}
+              timeframe={timeframe}
               window={
                 windowBounds.kind === "bounded"
                   ? { from: windowBounds.from, to: windowBounds.to }
@@ -180,6 +186,7 @@ export function MarketWorkspace({
               selectedDate={selectedDate}
               onSelectDate={onSelectDate}
               onRequestCompare={() => onChartModeChange("compare")}
+              onTimeframeChange={onTimeframeChange}
               onRetrySeries={selectedSeriesResource.retry}
               dateInputRef={dateInspectorRef}
             />

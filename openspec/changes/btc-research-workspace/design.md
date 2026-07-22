@@ -517,3 +517,73 @@ research receipts, browser storage, or API routes.
 7. Correct the frontend `marker_position` type to the existing backend string
    contract, add an actual-query-output-shaped fixture, and keep revision
    markers conditional on supplied row evidence without expanding the backend.
+
+## Follow-up amendment: timeframe and click interaction
+
+### Requirements and acceptance
+
+The Market chart adds `1D`, `1W`, `1M`, and `1Y` display controls. Daily API
+rows remain the only authoritative input. Aggregated bars use the first valid
+open, exact maximum high, exact minimum low, last valid close, and exact summed
+volume when all contributing volume values are supplied. A bucket with some
+missing/invalid daily evidence remains visibly partial; a bucket with no valid
+daily bar remains whitespace. The additive `obsTimeframe` URL value defaults to
+`1D` for missing or unknown input.
+
+Ordinary chart clicks update only local inspection state. They do not call the
+page URL-state writer, do not mount Date Evidence, and do not navigate to the
+chart vendor. Evidence pinning remains explicit through the Inspect button,
+Enter/Space, or date input. The in-canvas outbound attribution logo is disabled;
+the repository footer link and NOTICE remain the attribution authority.
+
+### Ownership and boundaries
+
+`observatoryChart.ts` owns pure exact-decimal bucket aggregation and diagnostic
+mapping. `ExchangeKlinePanel` derives the display model from the validated daily
+model. `ExchangeKlineChart` owns timeframe controls, local inspected date, and
+explicit pin affordances; `ObservatoryPage` continues to own URL state and Date
+Evidence requests. `App.tsx` only serializes the additive `obsTimeframe` value.
+No backend, API payload, provider, or lifecycle-channel owner changes.
+
+### Data and state invariants
+
+The source interval remains `1Dutc` and all aggregation uses UTC calendar
+boundaries: ISO weeks begin Monday, months begin on day one, and years begin on
+January one. Aggregation never combines lifecycle channels or changes the
+selected snapshot identity. Exact decimal strings are retained for aggregate
+readouts; numeric conversion is geometry-only. Local inspection is not a
+committed evidence selection, so it cannot start a Date Evidence request.
+
+The aggregation representation is bounded fixed-point `BigInt`: decimal strings
+are parsed into signed integer/fraction parts, aligned by scale for extrema and
+sum, and formatted deterministically with trailing fractional zeroes removed.
+Inputs exceeding 128 total decimal digits produce an explicit
+`AGGREGATE_DECIMAL_OVERFLOW` renderer failure rather than rounding. A bucket's
+canonical evidence date is the latest valid daily constituent. Its metadata
+retains bounded bucket start/end, covered/valid counts, source interval,
+selected snapshot/channel identity, and capped reason/evidence references. A
+missing volume in any otherwise valid contributor makes aggregate volume
+unavailable and marks the bucket partial; an invalid-volume row follows the
+existing strict adapter and contributes no OHLCV.
+
+The active request window defines the covered daily lattice, so a bucket clipped
+by the requested range edge is not partial solely because the full calendar
+week/month/year is outside the window. Partial means a covered date is missing,
+excluded, invalid, or lacks required volume. `timeframe` is controlled page
+state passed to the panel/chart; its memoized display derivation does not enter
+API request keys and does not invalidate Context or Date Evidence.
+
+### Failure, performance, and validation
+
+Invalid/empty/partial buckets use explicit renderer diagnostics and never become
+zero-valued candles. The aggregation pass is O(n) over the already bounded daily
+model and does not add DOM nodes, requests, polling, or persistent cache state.
+Unit tests cover decimal extrema/sums, UTC week/month/year boundaries, partial
+and empty buckets, URL normalization, click isolation, and explicit pinning.
+Chromium tests cover timeframe switching, no-navigation clicks, explicit Date
+Evidence pinning, a11y, and the existing 730/7,300 performance envelope.
+
+### Rollout and rollback
+
+This remains a frontend-only additive presentation change. Existing URLs restore
+`1D`; reverting the frontend removes the controls without data or API migration.

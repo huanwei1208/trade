@@ -118,7 +118,7 @@ describe("ExchangeKlineChart", () => {
     expect(chartMock.createChart).toHaveBeenCalledTimes(1);
     expect(chartMock.createChart.mock.calls[0]?.[1]).toMatchObject({
       autoSize: true,
-      layout: { attributionLogo: true },
+      layout: { attributionLogo: false },
       handleScroll: { horzTouchDrag: true, vertTouchDrag: false },
       handleScale: { mouseWheel: true, pinch: true },
     });
@@ -225,7 +225,7 @@ describe("ExchangeKlineChart", () => {
     );
   });
 
-  it("coalesces hover updates by animation frame and pins only on explicit click", () => {
+  it("coalesces hover updates and keeps ordinary clicks local until explicit inspection", () => {
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal(
       "requestAnimationFrame",
@@ -254,6 +254,9 @@ describe("ExchangeKlineChart", () => {
     expect(chartMock.chart.addSeries).toHaveBeenCalledTimes(2);
 
     act(() => click({ time: "2026-07-17" }));
+    expect(onSelectDate).not.toHaveBeenCalled();
+    expect(screen.getByTestId("exchange-kline-readout")).toHaveTextContent("2026-07-17");
+    fireEvent.click(screen.getByTestId("exchange-kline-inspect-date"));
     expect(onSelectDate).toHaveBeenCalledOnce();
     expect(onSelectDate).toHaveBeenCalledWith("2026-07-17");
   });
@@ -432,6 +435,8 @@ describe("ExchangeKlineChart", () => {
     const click = chartMock.chart.subscribeClick.mock.calls[0]?.[0];
 
     act(() => click({ time: "2026-07-17" }));
+    expect(onSelectDate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("exchange-kline-inspect-date"));
     expect(screen.getByText("Reason code: CHART_RUNTIME_FAILED")).toBeTruthy();
     expect(screen.queryByText(/sensitive callback detail/)).toBeNull();
     expect(screen.getByRole("button", { name: "Retry chart" })).toBeTruthy();

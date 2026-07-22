@@ -10,10 +10,12 @@ import {
 
 import type { ObsContext, ObsSingleSeries } from "../../lib/api";
 import {
+  aggregateObservatoryKlineModel,
   buildObservatoryKlineModel,
   type ObservatoryKlineModel,
   type ObservatoryKlineWindow,
 } from "../../lib/observatoryChart";
+import type { ObservatoryTimeframe } from "../../lib/observatory";
 
 type LoadedChartProps = {
   model: ObservatoryKlineModel;
@@ -21,6 +23,7 @@ type LoadedChartProps = {
   onSelectDate?: (date: string) => void;
   onRequestCompare?: () => void;
   dateInputRef?: RefObject<HTMLInputElement | null>;
+  onTimeframeChange?: (timeframe: ObservatoryTimeframe) => void;
 };
 
 type ExchangeKlineModule = {
@@ -86,6 +89,8 @@ type ExchangeKlinePanelProps = {
   dateInputRef?: RefObject<HTMLInputElement | null>;
   loadChart?: () => Promise<ExchangeKlineModule>;
   window?: ObservatoryKlineWindow | null;
+  timeframe?: ObservatoryTimeframe;
+  onTimeframeChange?: (timeframe: ObservatoryTimeframe) => void;
 };
 
 export function ExchangeKlinePanel({
@@ -96,8 +101,10 @@ export function ExchangeKlinePanel({
   onRequestCompare,
   onRetrySeries,
   dateInputRef,
+  onTimeframeChange,
   loadChart = loadExchangeKlineChart,
   window,
+  timeframe = "1D",
 }: ExchangeKlinePanelProps) {
   const windowFrom = window?.from ?? null;
   const windowTo = window?.to ?? null;
@@ -108,7 +115,10 @@ export function ExchangeKlinePanel({
     const model = buildObservatoryKlineModel(series, context, undefined, adapterWindow);
     return { model, durationMs: performance.now() - startedAt };
   }, [context, series, windowFrom, windowTo]);
-  const { model } = adaptation;
+  const model = useMemo(
+    () => aggregateObservatoryKlineModel(adaptation.model, timeframe),
+    [adaptation.model, timeframe],
+  );
   const [ChartComponent, setChartComponent] = useState<ComponentType<LoadedChartProps> | null>(
     null,
   );
@@ -236,6 +246,7 @@ export function ExchangeKlinePanel({
           onSelectDate={onSelectDate}
           onRequestCompare={onRequestCompare}
           dateInputRef={dateInputRef}
+          onTimeframeChange={onTimeframeChange}
         />
       </KlineRuntimeBoundary>
     </div>
