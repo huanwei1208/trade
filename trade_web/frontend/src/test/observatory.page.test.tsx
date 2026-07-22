@@ -140,6 +140,68 @@ describe("ObservatoryPage request matrix", () => {
     ).toBeNull();
   });
 
+  it("reuses confirmed Market resources when returning to the Overview lens", async () => {
+    const { paths } = installObservatoryFetch();
+    const page = render(
+      <ObservatoryPage
+        refreshToken={0}
+        urlState={{ ...DEFAULT_STATE, lens: "overview" }}
+        onUrlStateChange={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(2));
+    const initialCount = paths.length;
+
+    page.rerender(
+      <ObservatoryPage
+        refreshToken={0}
+        urlState={{ ...DEFAULT_STATE, lens: "runs" }}
+        onUrlStateChange={() => {}}
+      />,
+    );
+    await waitFor(() => expect(paths.some((path) => path.includes("/runs"))).toBe(true));
+    const afterRunsCount = paths.length;
+
+    page.rerender(
+      <ObservatoryPage
+        refreshToken={0}
+        urlState={{ ...DEFAULT_STATE, lens: "overview" }}
+        onUrlStateChange={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("composite-chart")).toBeTruthy());
+    expect(paths).toHaveLength(afterRunsCount);
+    expect(paths.filter((path) => path.includes("/context"))).toHaveLength(1);
+    expect(paths.filter((path) => path.includes("/series"))).toHaveLength(2);
+    expect(afterRunsCount).toBe(initialCount + 1);
+  });
+
+  it("reloads cached Market resources after an explicit refresh", async () => {
+    const { paths } = installObservatoryFetch();
+    const page = render(
+      <ObservatoryPage
+        refreshToken={0}
+        urlState={{ ...DEFAULT_STATE, lens: "overview" }}
+        onUrlStateChange={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(2));
+
+    page.rerender(
+      <ObservatoryPage
+        refreshToken={1}
+        urlState={{ ...DEFAULT_STATE, lens: "overview" }}
+        onUrlStateChange={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(paths.filter((path) => path.includes("/context")).length).toBe(2));
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series")).length).toBe(4));
+  });
+
   it("accepts the backend null echo for the committed latest knowledge selector", async () => {
     const { paths } = installObservatoryFetch({
       context: { ...CONTEXT_FIXTURE, requested_knowledge_as_of: null },

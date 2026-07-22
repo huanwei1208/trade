@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, type ObsErrorPayload } from "../../lib/api";
 import type { ObservatoryResourceStatus, ObservatorySafeError } from "../../lib/observatory";
 
-const MAX_MEMORY_CACHE_BYTES = 1_000_000;
+const MAX_MEMORY_CACHE_BYTES = 4_000_000;
 
 export type ObservatoryResourceState<T> = {
   identity: string | null;
@@ -27,8 +27,9 @@ export type ObservatoryResourceOptions<T> = {
 };
 
 type MemoryCacheEntry = {
-  etag: string;
+  etag: string | null;
   data: unknown;
+  reloadKey: unknown | null;
   bytes: number;
 };
 
@@ -95,7 +96,7 @@ function serializedSize(value: unknown): number | null {
   }
 }
 
-function storeCacheEntry(identity: string, etag: string, data: unknown) {
+function storeCacheEntry(identity: string, etag: string | null, data: unknown, reloadKey: unknown) {
   const bytes = serializedSize({ identity, etag, data });
   if (bytes === null || bytes > MAX_MEMORY_CACHE_BYTES) {
     deleteCacheEntry(identity);
@@ -103,7 +104,7 @@ function storeCacheEntry(identity: string, etag: string, data: unknown) {
   }
 
   deleteCacheEntry(identity);
-  memoryCache.set(identity, { etag, data, bytes });
+  memoryCache.set(identity, { etag, data, reloadKey: reloadKey ?? null, bytes });
   memoryCacheBytes += bytes;
 
   while (memoryCacheBytes > MAX_MEMORY_CACHE_BYTES) {
@@ -113,6 +114,17 @@ function storeCacheEntry(identity: string, etag: string, data: unknown) {
     }
     deleteCacheEntry(oldestIdentity);
   }
+}
+
+function reusableCacheEntry<T>(
+  identity: string,
+  reloadKey: unknown | null,
+): { data: T; etag: string | null } | null {
+  const entry = cacheEntry(identity);
+  if (!entry || !Object.is(entry.reloadKey, reloadKey)) {
+    return null;
+  }
+  return { data: entry.data as T, etag: entry.etag };
 }
 
 function readResponsePayload(text: string): unknown {
@@ -145,7 +157,7 @@ async function fetchObservatoryResource<T>(
 ): Promise<FetchResult<T>> {
   const cached = cacheEntry(identity);
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (cached) {
+  if (cached?.etag) {
     headers["If-None-Match"] = cached.etag;
   }
 
@@ -279,6 +291,7 @@ export function useObservatoryResource<T>(
   const validateResponseRef = useRef(validateResponse);
   validateResponseRef.current = validateResponse;
   const identity = useMemo(() => (path ? observatoryRequestIdentity(path) : null), [path]);
+  const cacheReloadKey = reloadKey ?? null;
   const [state, setState] = useState<ObservatoryResourceState<T>>({
     identity: null,
     status: "idle",
@@ -300,6 +313,20 @@ export function useObservatoryResource<T>(
       return;
     }
 
+    if (attempt === 0) {
+      const cached = reusableCacheEntry<T>(identity, cacheReloadKey);
+      if (cached) {
+        setState({
+          identity,
+          status: "confirmed",
+          data: cached.data,
+          error: null,
+          confirmedReloadKey: cacheReloadKey,
+        });
+        return;
+      }
+    }
+
     const controller = new AbortController();
     setState({
       identity,
@@ -318,19 +345,13 @@ export function useObservatoryResource<T>(
         if (validation === false || (validation && validation !== true)) {
           throw responseIdentityError(validation === false ? undefined : validation);
         }
-        if (!result.fromMemory) {
-          if (result.etag) {
-            storeCacheEntry(identity, result.etag, result.data);
-          } else {
-            deleteCacheEntry(identity);
-          }
-        }
+        storeCacheEntry(identity, result.etag, result.data, cacheReloadKey);
         setState({
           identity,
           status: "confirmed",
           data: result.data,
           error: null,
-          confirmedReloadKey: reloadKey ?? null,
+          confirmedReloadKey: cacheReloadKey,
         });
       })
       .catch((error: unknown) => {
@@ -350,7 +371,7 @@ export function useObservatoryResource<T>(
     return () => {
       controller.abort();
     };
-  }, [attempt, enabled, identity, path, reloadKey]);
+  }, [attempt, cacheReloadKey, enabled, identity, path]);
 
   const current =
     state.identity === identity
