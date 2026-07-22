@@ -10,9 +10,9 @@ import type { ObservatorySafeError, ObservatoryResourceStatus } from "../../lib/
 // The Snapshot Context Bar (aka Truth Bar). Persistent across every lens.
 // Requirement (docs/26 §11.2): it must show asset/instrument/quote/interval/
 // timezone, expected latest bar, all three watermarks (Latest Observed /
-// Evaluated Candidate / Formal), knowledge_as_of + rendered_at, freshness /
-// compatibility / integrity, and purpose fitness chips. It must NOT be reduced
-// to a single "updated time".
+// Evaluated Candidate / Published Baseline), knowledge_as_of + rendered_at,
+// freshness / compatibility / integrity, and purpose fitness chips. It must NOT
+// be reduced to a single "updated time".
 
 type SnapshotContextBarProps = {
   context: ObsContext | null | undefined;
@@ -59,6 +59,23 @@ function Field({ label, value, title }: { label: string; value: ReactNode; title
       <div className="obs-truthbar__value">{value ?? "—"}</div>
     </div>
   );
+}
+
+function purposeLabel(purpose: string | undefined): string {
+  switch (purpose) {
+    case "manual_observation":
+      return "Manual Observation";
+    case "exploratory_research":
+      return "Exploratory Research";
+    case "formal_system_consumption":
+      return "Published Baseline Use";
+    case "strict_research":
+      return "Strict Research";
+    case "automated_decision":
+      return "Automated Decision";
+    default:
+      return humanizeEnum(purpose);
+  }
 }
 
 export function SnapshotContextBar({
@@ -170,7 +187,7 @@ export function SnapshotContextBar({
           }
         />
         <Field
-          label="Formal baseline"
+          label="Published baseline"
           value={
             <span data-testid="wm-formal">
               {formalWm || (isHistoricalCut ? "unavailable" : "—")}
@@ -223,7 +240,7 @@ export function SnapshotContextBar({
             <span className="obs-purpose__icon" aria-hidden="true">
               {pf.allowed ? "✓" : "✕"}
             </span>
-            <span className="obs-purpose__name">{humanizeEnum(pf.purpose)}</span>
+            <span className="obs-purpose__name">{purposeLabel(pf.purpose)}</span>
             <span className="obs-purpose__status">
               {pf.allowed ? "allowed" : humanizeEnum(pf.status) || "blocked"}
             </span>

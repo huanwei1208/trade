@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CompositeChart } from "../components/observatory/CompositeChart";
 import { DateEvidenceLens } from "../components/observatory/DateEvidenceLens";
+import { WhyNotFormal } from "../components/observatory/OverviewPanels";
 import { ResearchLens } from "../components/observatory/ResearchLens";
 import { RunsLineageLens } from "../components/observatory/RunsLineageLens";
 import { SnapshotContextBar } from "../components/observatory/SnapshotContextBar";
@@ -37,7 +38,7 @@ describe("SnapshotContextBar (Truth Bar)", () => {
     render(<SnapshotContextBar context={CONTEXT_FIXTURE} />);
     const chips = screen.getByTestId("obs-purpose-fitness");
     expect(chips.textContent).toContain("Manual Observation");
-    expect(chips.textContent).toContain("Formal System Consumption");
+    expect(chips.textContent).toContain("Published Baseline Use");
     // Blocked purpose is shown as not allowed.
     expect(chips.textContent?.toLowerCase()).toContain("blocked");
   });
@@ -82,31 +83,33 @@ describe("CompositeChart", () => {
     expect(screen.getByTestId("scale-current")).toBeTruthy();
   });
 
-  it("never presents candidate/observed paths as published (data attribute)", () => {
+  it("renders OHLC candles and never presents candidate/observed candles as published", () => {
     const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
-    const candidatePaths = container.querySelectorAll(
-      '[data-testid="layer-evaluated_candidate"] path[data-presented-as-published]',
+    const formalCandles = container.querySelectorAll('[data-testid="candle-formal"]');
+    const candidateCandles = container.querySelectorAll(
+      '[data-testid="candle-evaluated_candidate"]',
     );
-    candidatePaths.forEach((p) =>
-      expect(p.getAttribute("data-presented-as-published")).toBe("false"),
+    const observedCandles = container.querySelectorAll('[data-testid="candle-latest_observed"]');
+    expect(formalCandles.length).toBeGreaterThan(0);
+    expect(candidateCandles.length).toBeGreaterThan(0);
+    expect(observedCandles.length).toBeGreaterThan(0);
+    candidateCandles.forEach((candle) =>
+      expect(candle.getAttribute("data-presented-as-published")).toBe("false"),
     );
-    const observedPaths = container.querySelectorAll(
-      '[data-testid="layer-latest_observed"] path[data-presented-as-published]',
+    observedCandles.forEach((candle) =>
+      expect(candle.getAttribute("data-presented-as-published")).toBe("false"),
     );
-    observedPaths.forEach((p) =>
-      expect(p.getAttribute("data-presented-as-published")).toBe("false"),
+    candidateCandles.forEach((candle) =>
+      expect(candle.getAttribute("data-texture")).not.toBe("none"),
     );
-    // The candidate layer carries a persistent texture attribute (not just color).
-    candidatePaths.forEach((p) => expect(p.getAttribute("data-texture")).not.toBe("none"));
   });
 
-  it("breaks the candidate line into >=2 path segments at the missing date (no interpolation)", () => {
+  it("does not draw a candidate candle for a missing date", () => {
     const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
-    const candidatePaths = container.querySelectorAll(
-      '[data-testid="layer-evaluated_candidate"] path',
+    const missingDateCandle = container.querySelector(
+      '[data-testid="candle-evaluated_candidate"][data-date="2026-07-13"]',
     );
-    // 07-10..07-12 and 07-14 => two separate <path> elements.
-    expect(candidatePaths.length).toBeGreaterThanOrEqual(2);
+    expect(missingDateCandle).toBeNull();
   });
 
   it("renders non-color markers with a shape glyph for quarantine/revision", () => {
@@ -168,9 +171,10 @@ describe("CompositeChart", () => {
       .getAllByTestId("chart-marker")
       .find((marker) => marker.getAttribute("data-marker-kind") === "quarantine");
     expect(quarantineMarker).toHaveTextContent("◇");
-    expect(container.querySelectorAll('[data-testid="layer-latest_observed"] path')).toHaveLength(
-      2,
-    );
+    expect(
+      container.querySelectorAll('[data-testid="candle-latest_observed"][data-date="2026-07-15"]'),
+    ).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid="candle-latest_observed"]')).toHaveLength(4);
   });
 
   it("breaks each composite layer at that layer's own Context quarantine date", () => {
@@ -194,9 +198,30 @@ describe("CompositeChart", () => {
                 ],
               },
               rows: [
-                { date: "2026-01-01", close: "60000", availability_state: "present" },
-                { date: "2026-01-02", close: "61000", availability_state: "present" },
-                { date: "2026-01-03", close: "62000", availability_state: "present" },
+                {
+                  date: "2026-01-01",
+                  open: "59900",
+                  high: "60200",
+                  low: "59800",
+                  close: "60000",
+                  availability_state: "present",
+                },
+                {
+                  date: "2026-01-02",
+                  open: "60000",
+                  high: "61200",
+                  low: "59900",
+                  close: "61000",
+                  availability_state: "present",
+                },
+                {
+                  date: "2026-01-03",
+                  open: "61000",
+                  high: "62300",
+                  low: "60900",
+                  close: "62000",
+                  availability_state: "present",
+                },
               ],
             },
             latest_observed: null,
@@ -207,8 +232,13 @@ describe("CompositeChart", () => {
     );
 
     expect(
-      container.querySelectorAll('[data-testid="layer-evaluated_candidate"] path'),
-    ).toHaveLength(2);
+      container.querySelectorAll(
+        '[data-testid="candle-evaluated_candidate"][data-date="2026-01-02"]',
+      ),
+    ).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid="candle-evaluated_candidate"]')).toHaveLength(
+      2,
+    );
     expect(
       screen
         .getAllByTestId("chart-marker")
@@ -385,6 +415,18 @@ describe("CompositeChart", () => {
         .getAllByTestId("chart-marker")
         .some((marker) => marker.getAttribute("data-marker-kind") === "revision"),
     ).toBe(true);
+  });
+});
+
+describe("WhyNotFormal", () => {
+  it("explains published baseline versus staged candidate in user-facing terms", () => {
+    render(<WhyNotFormal context={CONTEXT_FIXTURE} />);
+
+    expect(screen.getByTestId("published-baseline-explain")).toHaveTextContent(
+      "Published baseline means the run passed the stricter gates",
+    );
+    expect(screen.getByTestId("why-not-formal")).toHaveTextContent("staged candidate");
+    expect(screen.getByTestId("why-not-formal")).toHaveTextContent("CHANNEL_UNAVAILABLE");
   });
 });
 

@@ -417,7 +417,7 @@ export function ObservatoryPage({
               >
                 <option value="observed">Latest observed</option>
                 <option value="evaluated_candidate">Evaluated candidate</option>
-                <option value="formal">Formal</option>
+                <option value="formal">Published baseline</option>
               </select>
             </label>
             <label className="obs-select">

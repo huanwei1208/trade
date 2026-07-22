@@ -1,16 +1,9 @@
 import { useMemo, useState, type RefObject } from "react";
 
 import type { ObsChannel, ObsCompositeSeries, ObsExcludedDate, ObsSeriesRow } from "../../lib/api";
-import {
-  makeIndexScale,
-  makeValueScale,
-  paddedDomain,
-  segmentedLinePaths,
-  type ScaleMode,
-} from "../../lib/chart";
+import { makeIndexScale, makeValueScale, paddedDomain, type ScaleMode } from "../../lib/chart";
 import {
   applyRangeWindow,
-  buildSegments,
   downsampleSeriesRows,
   extractLayers,
   formalWatermarkDate,
@@ -25,14 +18,14 @@ import {
 
 // Three-layer composite chart (docs/26 §7.8, §11.1, §12.1). The three lifecycle
 // layers (formal / evaluated_candidate / latest_observed) are drawn as
-// INDEPENDENT overlays on one shared axis:
-//   - formal   : solid baseline stroke, no texture, IS the published baseline
-//   - candidate: dashed stroke + persistent hatch texture (never "published")
-//   - observed : dashed stroke + distinct outline texture (never "published")
-// A vertical divider marks the formal watermark; everything to its right is
-// candidate/observed-only tail. Missing dates BREAK the line (no interpolation).
-// Quarantine/revision markers use shape+icon (non-color) so status never relies
-// on hue alone.
+// INDEPENDENT OHLC candlestick overlays on one shared axis:
+//   - formal   : published baseline outline, no texture
+//   - candidate: staged overlay with persistent hatch texture (never "published")
+//   - observed : latest overlay with distinct outline texture (never "published")
+// A vertical divider marks the published-baseline watermark; everything to its
+// right is candidate/observed-only tail. Missing dates render no candle (no
+// interpolation). Quarantine/revision markers use shape+icon (non-color) so
+// status never relies on hue alone.
 
 type CompositeChartProps = {
   composite: ObsCompositeSeries | null | undefined;
@@ -70,6 +63,13 @@ type ChartMarkerNode = {
 type ChartMarkerSelection = {
   nodes: ChartMarkerNode[];
   sampled: boolean;
+};
+
+type CandleValue = {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
 };
 
 const RETAINED_MARKER_KINDS: NonColorMarkerKind[] = [
@@ -188,6 +188,30 @@ function mergeQuarantineBreakRows(
   });
 }
 
+function candleValue(row: ObsSeriesRow): CandleValue | null {
+  if (!isPlottable(row)) {
+    return null;
+  }
+  const open = parseDecimal(row.open);
+  const high = parseDecimal(row.high);
+  const low = parseDecimal(row.low);
+  const close = parseDecimal(row.close);
+  if (open === null || high === null || low === null || close === null) {
+    return null;
+  }
+  return { open, high, low, close };
+}
+
+function candleTone(value: CandleValue): "up" | "down" | "flat" {
+  if (value.close > value.open) {
+    return "up";
+  }
+  if (value.close < value.open) {
+    return "down";
+  }
+  return "flat";
+}
+
 export function CompositeChart({
   composite,
   range,
@@ -269,10 +293,10 @@ export function CompositeChart({
     const values: number[] = [];
     for (const layer of layersWithQuarantineGaps) {
       for (const row of layer.rows) {
-        if (row.date && dateIndex.has(row.date) && isPlottable(row)) {
-          const v = parseDecimal(row.close);
-          if (v !== null) {
-            values.push(v);
+        if (row.date && dateIndex.has(row.date)) {
+          const candle = candleValue(row);
+          if (candle) {
+            values.push(candle.open, candle.high, candle.low, candle.close);
           }
         }
       }
@@ -298,6 +322,14 @@ export function CompositeChart({
   }
 
   const enabled = (key: LayerKey) => (visibleLayers ? visibleLayers[key] : true);
+  const activeLayerKeys = layersWithQuarantineGaps
+    .map((layer) => layer.key)
+    .filter((key) => enabled(key));
+  const activeLayerCount = Math.max(1, activeLayerKeys.length);
+  const xStep =
+    windowDates.length > 1 ? Math.abs(xScale(1) - xScale(0)) : WIDTH - PAD_LEFT - PAD_RIGHT;
+  const candleSlot = Math.max(1.6, Math.min(12, (xStep * 0.78) / activeLayerCount));
+  const candleWidth = Math.max(1.2, Math.min(8, candleSlot * 0.72));
   const excludedDateByValue = new Map(
     allExcludedDates
       .filter(
@@ -411,7 +443,7 @@ export function CompositeChart({
           );
         })}
 
-        {/* Formal watermark divider — right of it is candidate/observed-only. */}
+        {/* Published-baseline watermark divider — right of it is candidate/observed-only. */}
         {formalWatermark && dateIndex.has(formalWatermark) && (
           <g data-testid="formal-watermark-divider">
             <line
@@ -429,12 +461,12 @@ export function CompositeChart({
               fontSize="9"
               fill="var(--accent-blue)"
             >
-              formal watermark
+              published baseline watermark
             </text>
           </g>
         )}
 
-        {/* Layers — draw formal first (baseline), then candidate, then observed. */}
+        {/* Layers — draw published baseline first, then candidate, then observed. */}
         {layersWithQuarantineGaps.map((layer) => {
           if (!enabled(layer.key)) {
             return null;
@@ -442,13 +474,8 @@ export function CompositeChart({
           const treatment = layerTreatment(layer.key);
           const rowsInWindow = layer.rows.filter((r) => r.date && dateIndex.has(r.date));
           const displayedRows = downsampleSeriesRows(rowsInWindow);
-          const segments = buildSegments(displayedRows).map((seg) =>
-            seg.map((point) => ({
-              index: dateIndex.get(point.date) as number,
-              value: point.value,
-            })),
-          );
-          const paths = segmentedLinePaths(segments, xScale, yScale);
+          const layerIndex = Math.max(0, activeLayerKeys.indexOf(layer.key));
+          const layerOffset = (layerIndex - (activeLayerCount - 1) / 2) * candleSlot;
 
           // Collect markers for this layer.
           for (const row of rowsInWindow) {
@@ -477,18 +504,72 @@ export function CompositeChart({
               data-testid={`layer-${layer.key}`}
               data-render-role={treatment.isBaseline ? "baseline" : "overlay"}
             >
-              {paths.map((d, i) => (
-                <path
-                  key={i}
-                  d={d}
-                  fill="none"
-                  stroke={LAYER_COLOR[layer.key]}
-                  strokeWidth={treatment.isBaseline ? 2 : 1.6}
-                  strokeDasharray={treatment.stroke === "dashed" ? "5 3" : undefined}
-                  data-texture={treatment.texture ?? "none"}
-                  data-presented-as-published={treatment.presentedAsPublished ? "true" : "false"}
-                />
-              ))}
+              {displayedRows.map((row) => {
+                if (!row.date) {
+                  return null;
+                }
+                const candle = candleValue(row);
+                if (!candle) {
+                  return null;
+                }
+                const index = dateIndex.get(row.date);
+                if (index === undefined) {
+                  return null;
+                }
+                const centerX = xScale(index) + layerOffset;
+                const openY = yScale(candle.open);
+                const closeY = yScale(candle.close);
+                const highY = yScale(candle.high);
+                const lowY = yScale(candle.low);
+                const bodyY = Math.min(openY, closeY);
+                const bodyHeight = Math.max(2, Math.abs(closeY - openY));
+                const tone = candleTone(candle);
+                const fill =
+                  tone === "up" ? "var(--ok)" : tone === "down" ? "var(--err)" : "var(--text-2)";
+
+                return (
+                  <g
+                    key={`${layer.key}-${row.date}`}
+                    data-testid={`candle-${layer.key}`}
+                    data-date={row.date}
+                    data-price-direction={tone}
+                    data-texture={treatment.texture ?? "none"}
+                    data-presented-as-published={treatment.presentedAsPublished ? "true" : "false"}
+                  >
+                    <line
+                      x1={centerX}
+                      y1={highY}
+                      x2={centerX}
+                      y2={lowY}
+                      stroke={LAYER_COLOR[layer.key]}
+                      strokeWidth={treatment.isBaseline ? 1.5 : 1.2}
+                    />
+                    <rect
+                      x={centerX - candleWidth / 2}
+                      y={bodyY}
+                      width={candleWidth}
+                      height={bodyHeight}
+                      rx="1"
+                      fill={fill}
+                      fillOpacity={treatment.isBaseline ? 0.32 : 0.2}
+                      stroke={LAYER_COLOR[layer.key]}
+                      strokeWidth={treatment.isBaseline ? 1.4 : 1.1}
+                    />
+                    {treatment.texture ? (
+                      <rect
+                        x={centerX - candleWidth / 2}
+                        y={bodyY}
+                        width={candleWidth}
+                        height={bodyHeight}
+                        rx="1"
+                        fill={`url(#${treatment.texture})`}
+                        opacity="0.72"
+                        pointerEvents="none"
+                      />
+                    ) : null}
+                  </g>
+                );
+              })}
             </g>
           );
         })}
@@ -621,7 +702,7 @@ export function CompositeLegend() {
 }
 
 export const CHANNEL_LABEL: Record<ObsChannel, string> = {
-  formal: "Formal",
+  formal: "Published baseline",
   evaluated_candidate: "Evaluated candidate",
   observed: "Latest observed",
 };

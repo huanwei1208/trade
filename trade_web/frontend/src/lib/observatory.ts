@@ -172,7 +172,7 @@ export type LayerTreatment = {
   key: LayerKey;
   stroke: "solid" | "dashed";
   texture: string | null; // non-null => persistent texture overlay
-  isBaseline: boolean; // only Formal is the solid baseline
+  isBaseline: boolean; // only the published baseline is solid
   presentedAsPublished: boolean; // MUST be false for candidate/observed
   legendLabel: string;
 };
@@ -186,7 +186,7 @@ export function layerTreatment(key: LayerKey): LayerTreatment {
         texture: null,
         isBaseline: true,
         presentedAsPublished: true,
-        legendLabel: "Formal baseline",
+        legendLabel: "Published baseline",
       };
     case "evaluated_candidate":
       return {
@@ -543,7 +543,7 @@ export function buildWhatChanged(
     entries.push({
       kind: "added_dates",
       label: `${observedOnly.length} newly observed date(s)`,
-      detail: `${observedOnly[0]} … ${observedOnly[observedOnly.length - 1]} present in observed but not in formal baseline`,
+      detail: `${observedOnly[0]} … ${observedOnly[observedOnly.length - 1]} present in observed but not in the published baseline`,
       evidenceRefs: observed?.channel ? [`channel:${observed.channel}`] : [],
     });
   }
@@ -592,7 +592,7 @@ export function buildWhatChanged(
     entries.push({
       kind: "watermark",
       label: "Observed ahead of formal",
-      detail: `observed watermark ${observedWatermark} > formal watermark ${formalWatermark}`,
+      detail: `observed watermark ${observedWatermark} > published baseline watermark ${formalWatermark}`,
       evidenceRefs: [],
     });
   }

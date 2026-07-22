@@ -119,15 +119,15 @@ export function MarketSummary({ series, context, loading, unavailable }: MarketS
   );
 }
 
-// ── Why-not-formal ───────────────────────────────────────────────────────────
+// ── Published baseline status ────────────────────────────────────────────────
 
 type WhyNotFormalProps = {
   context: ObsContext | null | undefined;
 };
 
 export function WhyNotFormal({ context }: WhyNotFormalProps) {
-  // Read purpose fitness + findings to explain the current formal gap. Rule
-  // based, no LLM: we surface the blockers the backend already returned.
+  // Read purpose fitness + findings to explain why a visible staged BTC run is
+  // not the published baseline. Rule based, no LLM: we surface backend blockers.
   const formalPurpose = (context?.purpose_fitness ?? []).find(
     (p) => p.purpose === "formal_system_consumption",
   );
@@ -138,10 +138,15 @@ export function WhyNotFormal({ context }: WhyNotFormalProps) {
   const findings = context?.findings_summary || {};
 
   return (
-    <PanelCard title="Why not formal" subdued className="obs-why-not">
+    <PanelCard title="Published baseline status" subdued className="obs-why-not">
       <div className="obs-why-not__body" data-testid="why-not-formal">
+        <div className="obs-why-not__explain" data-testid="published-baseline-explain">
+          Published baseline means the run passed the stricter gates and can be used by the formal
+          system. A staged candidate is still visible for manual observation, but it is not treated
+          as canonical output.
+        </div>
         <div className="obs-why-not__row">
-          <span className="obs-why-not__label">Formal system consumption</span>
+          <span className="obs-why-not__label">Published baseline use</span>
           <StatusPill
             label={
               formalPurpose?.allowed ? "allowed" : `blocked: ${humanizeEnum(formalPurpose?.status)}`
