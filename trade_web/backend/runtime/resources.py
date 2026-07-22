@@ -168,7 +168,22 @@ class WebResourceContainer:
                     self._lifecycle = ResourceLifecycle.STOPPING
                 raise
             self._lifecycle = ResourceLifecycle.STARTED
+            self._start_runtime_automation(self._db, self._bus)
             return self
+
+    def _start_runtime_automation(self, db: TradeDB, bus: EventBus) -> None:
+        try:
+            from trade_py.bus import bootstrap_from_dag
+            from trade_web.backend.runtime.startup_autofill import (
+                publish_btc_startup_gap_check,
+                register_btc_startup_autofill_handlers,
+            )
+
+            bootstrap_from_dag(db, self.data_root, bus=bus)
+            register_btc_startup_autofill_handlers(db, bus, self.data_root)
+            publish_btc_startup_gap_check(db, bus, self.data_root)
+        except Exception as exc:
+            logger.warning("Web startup automation registration failed: %s", exc, exc_info=True)
 
     def stop(self, *, wait: bool = False) -> None:
         """Stop admission and drain DB-writing handlers before closing the owned DB.
