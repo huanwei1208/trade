@@ -2,6 +2,7 @@ import type {
   ObsCompositeSeries,
   ObsContext,
   ObsExcludedDate,
+  ObsSeriesRow,
   ObsSingleSeries,
 } from "../../lib/api";
 import { humanizeEnum } from "../../lib/format";
@@ -11,12 +12,14 @@ import {
   buildWhatChanged,
   extractLayers,
   isPlottable,
+  parseDecimal,
   readMetricString,
 } from "../../lib/observatory";
 
-// Overview panels (docs/26 §11.3, §11.4). The browser NEVER recomputes formal
-// metrics — it only displays decimal strings the backend already produced. When
-// a metric is absent we show "—" (honest unknown), not a fabricated 0.
+// Overview panels (docs/26 §11.3, §11.4). Backend metrics remain authoritative.
+// When a selected market series has no metrics, this panel can show explicitly
+// labeled display estimates from the visible OHLCV rows. Missing windows remain
+// unavailable with a reason instead of being coerced to zero.
 
 // ── Market summary ───────────────────────────────────────────────────────────
 
@@ -27,21 +30,200 @@ type MarketSummaryProps = {
   unavailable?: boolean;
 };
 
+type SummaryMetricSource = "backend" | "display_estimate" | "unavailable";
+
+type SummaryMetric = {
+  value: string | null;
+  unit?: string;
+  note?: string;
+  source: SummaryMetricSource;
+};
+
+type ReturnWindow = 1 | 7 | 30;
+
+function metricValue(metrics: Record<string, unknown> | undefined, key: string): string | null {
+  const value = readMetricString(metrics, key);
+  if (value === null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function formatPercent(value: number): string {
+  const rounded = Number(value.toFixed(2));
+  return Object.is(rounded, -0) ? "0.00" : rounded.toFixed(2);
+}
+
+function utcDateOffset(date: string | null | undefined, offsetDays: number): string | null {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return null;
+  }
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    return null;
+  }
+  parsed.setUTCDate(parsed.getUTCDate() + offsetDays);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function sortedPlottableRows(series: ObsSingleSeries | null | undefined): ObsSeriesRow[] {
+  return (series?.rows ?? [])
+    .filter(isPlottable)
+    .slice()
+    .sort((left, right) => String(left.date ?? "").localeCompare(String(right.date ?? "")));
+}
+
+function closeForRow(row: ObsSeriesRow | null | undefined): number | null {
+  const close = parseDecimal(row?.close);
+  return close !== null && close > 0 ? close : null;
+}
+
+function displayEstimateNote(rowCount: number): string {
+  return `Display estimate · ${rowCount} visible bar${rowCount === 1 ? "" : "s"}`;
+}
+
+function returnMetric(
+  latestMetrics: Record<string, unknown> | undefined,
+  rows: ObsSeriesRow[],
+  days: ReturnWindow,
+): SummaryMetric {
+  const backend = metricValue(latestMetrics, `return_${days}d`);
+  if (backend !== null) {
+    return { value: backend, unit: "%", source: "backend", note: "Backend metric" };
+  }
+
+  const latest = rows[rows.length - 1];
+  const latestClose = closeForRow(latest);
+  const targetDate = utcDateOffset(latest?.date, -days);
+  const prior = targetDate ? rows.find((row) => row.date === targetDate) : null;
+  const priorClose = closeForRow(prior);
+
+  if (latestClose === null || priorClose === null) {
+    return {
+      value: "Unavailable",
+      source: "unavailable",
+      note: targetDate ? `Need ${targetDate} close` : "Need valid market dates",
+    };
+  }
+
+  return {
+    value: formatPercent((latestClose / priorClose - 1) * 100),
+    unit: "%",
+    source: "display_estimate",
+    note: displayEstimateNote(rows.length),
+  };
+}
+
+function drawdownMetric(
+  latestMetrics: Record<string, unknown> | undefined,
+  rows: ObsSeriesRow[],
+): SummaryMetric {
+  const backend = metricValue(latestMetrics, "drawdown");
+  if (backend !== null) {
+    return { value: backend, unit: "%", source: "backend", note: "Backend metric" };
+  }
+
+  const closes = rows.map(closeForRow).filter((close): close is number => close !== null);
+  if (closes.length < 2) {
+    return {
+      value: "Unavailable",
+      source: "unavailable",
+      note: "Need at least 2 valid closes",
+    };
+  }
+
+  let peak = closes[0];
+  let worstDrawdown = 0;
+  for (const close of closes) {
+    if (close > peak) {
+      peak = close;
+    }
+    worstDrawdown = Math.min(worstDrawdown, (close / peak - 1) * 100);
+  }
+
+  return {
+    value: formatPercent(worstDrawdown),
+    unit: "%",
+    source: "display_estimate",
+    note: displayEstimateNote(closes.length),
+  };
+}
+
+function standardDeviation(values: number[]): number {
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance =
+    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, values.length - 1);
+  return Math.sqrt(variance);
+}
+
+function rv20PercentileMetric(
+  latestMetrics: Record<string, unknown> | undefined,
+  rows: ObsSeriesRow[],
+): SummaryMetric {
+  const backend = metricValue(latestMetrics, "rv20_percentile");
+  if (backend !== null) {
+    return { value: backend, unit: "pct", source: "backend", note: "Backend metric" };
+  }
+
+  const closes = rows.map(closeForRow).filter((close): close is number => close !== null);
+  if (closes.length < 22) {
+    return {
+      value: "Unavailable",
+      source: "unavailable",
+      note: "Need at least 22 daily closes",
+    };
+  }
+
+  const returns: number[] = [];
+  for (let index = 1; index < closes.length; index += 1) {
+    returns.push(closes[index] / closes[index - 1] - 1);
+  }
+
+  const realizedVols: number[] = [];
+  for (let end = 20; end <= returns.length; end += 1) {
+    realizedVols.push(standardDeviation(returns.slice(end - 20, end)) * Math.sqrt(365));
+  }
+
+  const latestVol = realizedVols[realizedVols.length - 1];
+  if (latestVol === undefined || realizedVols.length < 2) {
+    return {
+      value: "Unavailable",
+      source: "unavailable",
+      note: "Need enough RV20 history",
+    };
+  }
+
+  const percentile =
+    (realizedVols.filter((volatility) => volatility <= latestVol).length / realizedVols.length) *
+    100;
+  return {
+    value: formatPercent(percentile),
+    unit: "pct",
+    source: "display_estimate",
+    note: displayEstimateNote(closes.length),
+  };
+}
+
 function Metric({
   label,
   value,
   unit,
   window,
   note,
+  source = "backend",
+  testId,
 }: {
   label: string;
   value: string | null;
   unit?: string;
   window?: string;
   note?: string;
+  source?: SummaryMetricSource;
+  testId?: string;
 }) {
   return (
-    <div className="obs-metric">
+    <div className="obs-metric" data-metric-source={source} data-testid={testId}>
       <div className="obs-metric__label">{label}</div>
       <div className="obs-metric__value">
         {value ?? "—"}
@@ -54,9 +236,14 @@ function Metric({
 }
 
 export function MarketSummary({ series, context, loading, unavailable }: MarketSummaryProps) {
-  const rows = (series?.rows ?? []).filter(isPlottable);
+  const rows = sortedPlottableRows(series);
   const latest = rows.length ? rows[rows.length - 1] : null;
   const latestMetrics = latest?.metrics;
+  const return1d = returnMetric(latestMetrics, rows, 1);
+  const return7d = returnMetric(latestMetrics, rows, 7);
+  const return30d = returnMetric(latestMetrics, rows, 30);
+  const drawdown = drawdownMetric(latestMetrics, rows);
+  const rv20Percentile = rv20PercentileMetric(latestMetrics, rows);
 
   const snapshotId = context?.snapshot_id;
 
@@ -77,42 +264,60 @@ export function MarketSummary({ series, context, loading, unavailable }: MarketS
             value={latest?.close ?? null}
             unit={latest?.quote ?? ""}
             note={latest?.date ? `bar ${latest.date}` : undefined}
+            source={latest ? "backend" : "unavailable"}
+            testId="metric-latest-close"
           />
           <Metric
             label="1D return"
-            value={readMetricString(latestMetrics, "return_1d")}
-            unit="%"
+            value={return1d.value}
+            unit={return1d.unit}
             window="1 day"
+            note={return1d.note}
+            source={return1d.source}
+            testId="metric-return-1d"
           />
           <Metric
             label="7D return"
-            value={readMetricString(latestMetrics, "return_7d")}
-            unit="%"
+            value={return7d.value}
+            unit={return7d.unit}
             window="7 days"
+            note={return7d.note}
+            source={return7d.source}
+            testId="metric-return-7d"
           />
           <Metric
             label="30D return"
-            value={readMetricString(latestMetrics, "return_30d")}
-            unit="%"
+            value={return30d.value}
+            unit={return30d.unit}
             window="30 days"
+            note={return30d.note}
+            source={return30d.source}
+            testId="metric-return-30d"
           />
           <Metric
             label="Peak drawdown"
-            value={readMetricString(latestMetrics, "drawdown")}
-            unit="%"
+            value={drawdown.value}
+            unit={drawdown.unit}
             window="within window"
+            note={drawdown.note}
+            source={drawdown.source}
+            testId="metric-drawdown"
           />
           <Metric
             label="RV20 percentile"
-            value={readMetricString(latestMetrics, "rv20_percentile")}
-            unit="pct"
+            value={rv20Percentile.value}
+            unit={rv20Percentile.unit}
             window="trailing window"
+            note={rv20Percentile.note}
+            source={rv20Percentile.source}
+            testId="metric-rv20-percentile"
           />
         </div>
       )}
       <div className="obs-market-summary__footer">
         <span className="obs-market-summary__snapshot" data-testid="market-summary-snapshot">
-          snapshot {snapshotId ? snapshotId.slice(0, 12) : "—"} · metric contract v1 (display only)
+          snapshot {snapshotId ? snapshotId.slice(0, 12) : "—"} · backend metrics first; display
+          estimates marked
         </span>
       </div>
     </PanelCard>

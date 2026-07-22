@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CompositeChart } from "../components/observatory/CompositeChart";
 import { DateEvidenceLens } from "../components/observatory/DateEvidenceLens";
-import { WhyNotFormal } from "../components/observatory/OverviewPanels";
+import { MarketSummary, WhyNotFormal } from "../components/observatory/OverviewPanels";
 import { ResearchLens } from "../components/observatory/ResearchLens";
 import { RunsLineageLens } from "../components/observatory/RunsLineageLens";
 import { SnapshotContextBar } from "../components/observatory/SnapshotContextBar";
@@ -13,7 +13,9 @@ import {
   COMPOSITE_FIXTURE,
   CONTEXT_FIXTURE,
   DATE_EVIDENCE_FIXTURE,
+  FORMAL_SERIES_FIXTURE,
   HYPOTHESES_FIXTURE,
+  OBSERVED_SERIES_FIXTURE,
   RESEARCH_RUN_FIXTURE,
   RUNS_FIXTURE,
 } from "./fixtures";
@@ -441,6 +443,86 @@ describe("CompositeChart", () => {
         .getAllByTestId("chart-marker")
         .some((marker) => marker.getAttribute("data-marker-kind") === "revision"),
     ).toBe(true);
+  });
+});
+
+describe("MarketSummary", () => {
+  it("keeps backend-provided market metrics authoritative", () => {
+    render(
+      <MarketSummary series={FORMAL_SERIES_FIXTURE} context={FORMAL_SERIES_FIXTURE.context} />,
+    );
+
+    expect(screen.getByTestId("metric-return-1d")).toHaveTextContent("1.69 %");
+    expect(screen.getByTestId("metric-return-7d")).toHaveTextContent("3.44 %");
+    expect(screen.getByTestId("metric-return-30d")).toHaveTextContent("12.10 %");
+    expect(screen.getByTestId("metric-drawdown")).toHaveTextContent("-4.20 %");
+    expect(screen.getByTestId("metric-rv20-percentile")).toHaveTextContent("72 pct");
+    expect(screen.getByTestId("metric-return-1d")).toHaveAttribute("data-metric-source", "backend");
+  });
+
+  it("fills staged BTC summary gaps with explicitly marked display estimates", () => {
+    const rows = Array.from({ length: 31 }, (_, index) => {
+      const day = index + 1;
+      const close = String(100 + index);
+      return {
+        date: `2026-01-${String(day).padStart(2, "0")}`,
+        open: close,
+        high: close,
+        low: close,
+        close,
+        volume: "1000",
+        quote: "USDT",
+        availability_state: "present" as const,
+        metrics: {},
+      };
+    });
+
+    render(
+      <MarketSummary
+        series={{ ...OBSERVED_SERIES_FIXTURE, rows }}
+        context={OBSERVED_SERIES_FIXTURE.context}
+      />,
+    );
+
+    expect(screen.getByTestId("metric-latest-close")).toHaveTextContent("130 USDT");
+    expect(screen.getByTestId("metric-return-1d")).toHaveTextContent("0.78 %");
+    expect(screen.getByTestId("metric-return-7d")).toHaveTextContent("5.69 %");
+    expect(screen.getByTestId("metric-return-30d")).toHaveTextContent("30.00 %");
+    expect(screen.getByTestId("metric-drawdown")).toHaveTextContent("0.00 %");
+    expect(screen.getByTestId("metric-rv20-percentile")).toHaveTextContent("9.09 pct");
+
+    expect(screen.getByTestId("metric-return-1d")).toHaveAttribute(
+      "data-metric-source",
+      "display_estimate",
+    );
+    expect(screen.getByTestId("metric-rv20-percentile")).toHaveTextContent(
+      "Display estimate · 31 visible bars",
+    );
+    expect(screen.getByTestId("market-summary-snapshot")).toHaveTextContent(
+      "backend metrics first; display estimates marked",
+    );
+  });
+
+  it("shows a concrete unavailable reason when a metric window cannot be estimated", () => {
+    render(
+      <MarketSummary series={OBSERVED_SERIES_FIXTURE} context={OBSERVED_SERIES_FIXTURE.context} />,
+    );
+
+    expect(screen.getByTestId("metric-return-1d")).toHaveTextContent("0.79 %");
+    expect(screen.getByTestId("metric-return-1d")).toHaveAttribute(
+      "data-metric-source",
+      "display_estimate",
+    );
+    expect(screen.getByTestId("metric-return-7d")).toHaveTextContent("Unavailable");
+    expect(screen.getByTestId("metric-return-7d")).toHaveTextContent("Need 2026-07-11 close");
+    expect(screen.getByTestId("metric-drawdown")).toHaveTextContent("0.00 %");
+    expect(screen.getByTestId("metric-drawdown")).toHaveAttribute(
+      "data-metric-source",
+      "display_estimate",
+    );
+    expect(screen.getByTestId("metric-rv20-percentile")).toHaveTextContent(
+      "Need at least 22 daily closes",
+    );
   });
 });
 
