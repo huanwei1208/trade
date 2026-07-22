@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "./components/AppShell";
 import {
@@ -22,11 +22,16 @@ import {
 import { getPageMeta, useLocalStorageState } from "./lib/ui";
 import { CandidatesPage } from "./pages/CandidatesPage";
 import { DataPage } from "./pages/DataPage";
-import { ObservatoryPage } from "./pages/observatory/ObservatoryPage";
 import { OpsPage } from "./pages/OpsPage";
 import { ResearchPage } from "./pages/ResearchPage";
 import { SymbolPage } from "./pages/SymbolPage";
 import { TodayPage } from "./pages/TodayPage";
+
+const ObservatoryPage = lazy(() =>
+  import("./pages/observatory/ObservatoryPage").then((module) => ({
+    default: module.ObservatoryPage,
+  })),
+);
 
 function isObservatoryNavState(state: ObsCapability["state"] | undefined): boolean {
   return state === "ready" || state === "catalog_stale";
@@ -127,7 +132,7 @@ function initialObservatoryAttempt(): string | null {
 export default function App() {
   const initialQuery = readInitialQuery();
   const [attemptedObservatoryLink] = useState(initialObservatoryAttempt);
-  const [locale, setLocale] = useLocalStorageState<Locale>("trade-web:locale", "zh-CN");
+  const [locale, setLocale] = useLocalStorageState<Locale>("trade-web:locale", "en-US");
   const [page, setPage] = useLocalStorageState<PageKey>(
     "trade-web:page",
     initialQuery.page || "today",
@@ -188,7 +193,7 @@ export default function App() {
   const resolvedPage: PageKey =
     requestedPage === "observatory" && !observatoryAuthorized ? "today" : requestedPage;
   const meta = getPageMeta(resolvedPage, locale, selectedSymbol);
-  const asOf = formatDateTime(new Date().toISOString(), locale === "zh-CN" ? "zh-CN" : "en-US");
+  const asOf = formatDateTime(new Date().toISOString(), locale);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -321,11 +326,13 @@ export default function App() {
           />
         )}
         {resolvedPage === "observatory" && (
-          <ObservatoryPage
-            refreshToken={refreshToken}
-            urlState={normalizedObsState}
-            onUrlStateChange={updateObsState}
-          />
+          <Suspense fallback={null}>
+            <ObservatoryPage
+              refreshToken={refreshToken}
+              urlState={normalizedObsState}
+              onUrlStateChange={updateObsState}
+            />
+          </Suspense>
         )}
         {resolvedPage === "research" && <ResearchPage refreshToken={refreshToken} />}
         {resolvedPage === "ops" && (

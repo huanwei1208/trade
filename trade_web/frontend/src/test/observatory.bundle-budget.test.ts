@@ -12,14 +12,16 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture({ lazy = true, linked = true, chartBytes = 128 } = {}) {
+function fixture({ lazy = true, linked = true, nested = false, chartBytes = 128 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "observatory-bundle-budget-"));
   roots.push(root);
   const distDir = join(root, "dist");
   mkdirSync(join(distDir, ".vite"), { recursive: true });
   mkdirSync(join(distDir, "assets"), { recursive: true });
   const chartKey = "src/components/observatory/ExchangeKlineChart.tsx";
+  const observatoryKey = "src/pages/observatory/ObservatoryPage.tsx";
   writeFileSync(join(distDir, "assets", "index-HASH.js"), "export const main = true;");
+  writeFileSync(join(distDir, "assets", "observatory-HASH.js"), "export const page = true;");
   writeFileSync(join(distDir, "assets", "chart-HASH.js"), randomBytes(chartBytes));
   writeFileSync(
     join(distDir, ".vite", "manifest.json"),
@@ -27,7 +29,13 @@ function fixture({ lazy = true, linked = true, chartBytes = 128 } = {}) {
       "index.html": {
         file: "assets/index-HASH.js",
         isEntry: true,
-        dynamicImports: linked ? [chartKey] : [],
+        dynamicImports: linked ? [nested ? observatoryKey : chartKey] : [],
+      },
+      [observatoryKey]: {
+        file: "assets/observatory-HASH.js",
+        src: observatoryKey,
+        isDynamicEntry: true,
+        dynamicImports: [chartKey],
       },
       [chartKey]: {
         file: "assets/chart-HASH.js",
@@ -43,6 +51,16 @@ describe("Observatory bundle budget", () => {
   it("uses manifest source identity rather than hashed asset names", () => {
     const result = checkObservatoryBundleBudgets({
       distDir: fixture(),
+      mainMaxBytes: 1_024,
+      chartMaxBytes: 1_024,
+    });
+    expect(result.mainGzipBytes).toBeGreaterThan(0);
+    expect(result.chartGzipBytes).toBeGreaterThan(0);
+  });
+
+  it("accepts a chart chunk reached through the lazy Observatory page", () => {
+    const result = checkObservatoryBundleBudgets({
+      distDir: fixture({ nested: true }),
       mainMaxBytes: 1_024,
       chartMaxBytes: 1_024,
     });

@@ -72,6 +72,31 @@ afterEach(() => {
 });
 
 describe("App Observatory capability gating (fail closed)", () => {
+  it("defaults first-time sessions to English", async () => {
+    installFetch();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("nav-today")).toBeTruthy());
+    expect(screen.getByText("Premium decision workspace")).toBeTruthy();
+    expect(screen.getByText("TradeDB Decision Workspace")).toBeTruthy();
+    expect(
+      screen.getByText("Start with whether action is possible, then explain why."),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Lang")).toHaveValue("en-US");
+  });
+
+  it("keeps a saved Chinese locale instead of overwriting user preference", async () => {
+    window.localStorage.setItem("trade-web:locale", JSON.stringify("zh-CN"));
+    installFetch();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("nav-today")).toBeTruthy());
+    expect(screen.getByText("高级交易决策工作台")).toBeTruthy();
+    expect(screen.getByText("TradeDB 决策工作台")).toBeTruthy();
+    expect(screen.getByText("先回答今天能不能行动，再看为什么。")).toBeTruthy();
+    expect(screen.getByLabelText("语言")).toHaveValue("zh-CN");
+  });
+
   it("shows nav and mounts Observatory only after a fresh ready response", async () => {
     control.capabilityBody = { enabled: true, state: "ready", show_nav: true };
     installFetch();
