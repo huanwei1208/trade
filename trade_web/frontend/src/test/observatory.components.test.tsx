@@ -104,6 +104,32 @@ describe("CompositeChart", () => {
     );
   });
 
+  it("renders volume bars and date ticks as part of the K-line visualization", () => {
+    const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
+
+    expect(container.querySelectorAll('[data-testid="volume-formal"]').length).toBeGreaterThan(0);
+    expect(
+      container.querySelectorAll('[data-testid="volume-evaluated_candidate"]').length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("chart-date-tick").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("shows selected-date OHLC and volume readout inside the chart", () => {
+    render(
+      <CompositeChart
+        composite={COMPOSITE_FIXTURE}
+        range="All"
+        selectedDate="2026-07-14"
+        onSelectDate={() => {}}
+      />,
+    );
+
+    expect(screen.getByTestId("chart-selected-readout")).toHaveTextContent("2026-07-14");
+    expect(screen.getByTestId("readout-evaluated_candidate")).toHaveTextContent("O 62,000");
+    expect(screen.getByTestId("readout-latest_observed")).toHaveTextContent("C 62,010");
+    expect(screen.getByTestId("readout-latest_observed")).toHaveTextContent("V 1,000");
+  });
+
   it("does not draw a candidate candle for a missing date", () => {
     const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
     const missingDateCandle = container.querySelector(

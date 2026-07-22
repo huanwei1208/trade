@@ -44,6 +44,8 @@ const PAD_LEFT = 56;
 const PAD_RIGHT = 18;
 const PAD_TOP = 16;
 const PAD_BOTTOM = 30;
+const VOLUME_HEIGHT = 48;
+const VOLUME_GAP = 12;
 
 const LAYER_COLOR: Record<LayerKey, string> = {
   formal: "var(--accent-blue)",
@@ -70,6 +72,13 @@ type CandleValue = {
   high: number;
   low: number;
   close: number;
+  volume: number | null;
+};
+
+type ReadoutLayer = {
+  key: LayerKey;
+  row: ObsSeriesRow;
+  candle: CandleValue;
 };
 
 const RETAINED_MARKER_KINDS: NonColorMarkerKind[] = [
@@ -199,7 +208,7 @@ function candleValue(row: ObsSeriesRow): CandleValue | null {
   if (open === null || high === null || low === null || close === null) {
     return null;
   }
-  return { open, high, low, close };
+  return { open, high, low, close, volume: parseDecimal(row.volume) };
 }
 
 function candleTone(value: CandleValue): "up" | "down" | "flat" {
@@ -210,6 +219,13 @@ function candleTone(value: CandleValue): "up" | "down" | "flat" {
     return "down";
   }
   return "flat";
+}
+
+function formatChartNumber(value: number | null | undefined, digits = 2): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "—";
+  }
+  return value.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
 export function CompositeChart({
@@ -304,14 +320,60 @@ export function CompositeChart({
     return paddedDomain(values);
   }, [layersWithQuarantineGaps, dateIndex]);
 
+  const priceBottom = Math.max(PAD_TOP + 40, height - PAD_BOTTOM - VOLUME_HEIGHT - VOLUME_GAP);
+  const volumeTop = priceBottom + VOLUME_GAP;
+  const volumeBottom = height - PAD_BOTTOM;
+  const maxVolume = useMemo(() => {
+    let value = 0;
+    for (const layer of layersWithQuarantineGaps) {
+      for (const row of layer.rows) {
+        if (row.date && dateIndex.has(row.date)) {
+          const volume = candleValue(row)?.volume;
+          if (volume !== null && volume !== undefined && volume > value) {
+            value = volume;
+          }
+        }
+      }
+    }
+    return value;
+  }, [layersWithQuarantineGaps, dateIndex]);
+
   const xScale = useMemo(
     () => makeIndexScale(windowDates.length, WIDTH, PAD_LEFT, PAD_RIGHT),
     [windowDates.length],
   );
   const yScale = useMemo(
-    () => makeValueScale(domain.min, domain.max, height, scaleMode, PAD_TOP, PAD_BOTTOM),
-    [domain.min, domain.max, height, scaleMode],
+    () =>
+      makeValueScale(
+        domain.min,
+        domain.max,
+        priceBottom + PAD_BOTTOM,
+        scaleMode,
+        PAD_TOP,
+        PAD_BOTTOM,
+      ),
+    [domain.min, domain.max, priceBottom, scaleMode],
   );
+  const dateTicks = useMemo(() => {
+    if (windowDates.length <= 3) {
+      return windowDates;
+    }
+    const indexes = new Set([0, Math.round((windowDates.length - 1) / 2), windowDates.length - 1]);
+    return [...indexes]
+      .sort((left, right) => left - right)
+      .map((index) => windowDates[index])
+      .filter((date): date is string => Boolean(date));
+  }, [windowDates]);
+  const selectedReadout = useMemo<ReadoutLayer[]>(() => {
+    if (!selectedDate) {
+      return [];
+    }
+    return layersWithQuarantineGaps.flatMap((layer) => {
+      const row = layer.rows.find((candidate) => candidate.date === selectedDate);
+      const candle = row ? candleValue(row) : null;
+      return row && candle ? [{ key: layer.key, row, candle }] : [];
+    });
+  }, [layersWithQuarantineGaps, selectedDate]);
 
   if (!composite || !windowDates.length) {
     return (
@@ -442,6 +504,25 @@ export function CompositeChart({
             </g>
           );
         })}
+        <line
+          x1={PAD_LEFT}
+          y1={priceBottom}
+          x2={WIDTH - PAD_RIGHT}
+          y2={priceBottom}
+          stroke="var(--line)"
+          strokeWidth="1.2"
+        />
+        <text x={4} y={volumeTop + 10} fontSize="9" fill="var(--text-3)">
+          Vol
+        </text>
+        <line
+          x1={PAD_LEFT}
+          y1={volumeBottom}
+          x2={WIDTH - PAD_RIGHT}
+          y2={volumeBottom}
+          stroke="var(--line)"
+          strokeWidth="1"
+        />
 
         {/* Published-baseline watermark divider — right of it is candidate/observed-only. */}
         {formalWatermark && dateIndex.has(formalWatermark) && (
@@ -450,7 +531,7 @@ export function CompositeChart({
               x1={xScale(dateIndex.get(formalWatermark) as number)}
               y1={PAD_TOP}
               x2={xScale(dateIndex.get(formalWatermark) as number)}
-              y2={height - PAD_BOTTOM}
+              y2={volumeBottom}
               stroke="var(--accent-blue)"
               strokeWidth="1.4"
               strokeDasharray="2 3"
@@ -567,6 +648,19 @@ export function CompositeChart({
                         pointerEvents="none"
                       />
                     ) : null}
+                    {candle.volume !== null && maxVolume > 0 ? (
+                      <rect
+                        x={centerX - candleWidth / 2}
+                        y={volumeBottom - (candle.volume / maxVolume) * VOLUME_HEIGHT}
+                        width={candleWidth}
+                        height={Math.max(1, (candle.volume / maxVolume) * VOLUME_HEIGHT)}
+                        rx="1"
+                        fill={LAYER_COLOR[layer.key]}
+                        opacity={treatment.isBaseline ? "0.34" : "0.24"}
+                        data-testid={`volume-${layer.key}`}
+                        data-date={row.date}
+                      />
+                    ) : null}
                   </g>
                 );
               })}
@@ -640,19 +734,67 @@ export function CompositeChart({
             x1={xScale(dateIndex.get(selectedDate) as number)}
             y1={PAD_TOP}
             x2={xScale(dateIndex.get(selectedDate) as number)}
-            y2={height - PAD_BOTTOM}
+            y2={volumeBottom}
             stroke="var(--text-2)"
             strokeWidth="1"
             data-testid="crosshair"
           />
         )}
 
+        {dateTicks.map((date) => {
+          const index = dateIndex.get(date);
+          if (index === undefined) {
+            return null;
+          }
+          const x = xScale(index);
+          return (
+            <g key={date} data-testid="chart-date-tick">
+              <line x1={x} y1={volumeBottom} x2={x} y2={volumeBottom + 4} stroke="var(--line)" />
+              <text x={x} y={height - 8} fontSize="9" textAnchor="middle" fill="var(--text-3)">
+                {date.slice(5)}
+              </text>
+            </g>
+          );
+        })}
+
+        {selectedDate && selectedReadout.length > 0 ? (
+          <g data-testid="chart-selected-readout">
+            <rect
+              x={PAD_LEFT + 6}
+              y={PAD_TOP + 6}
+              width="300"
+              height={18 + selectedReadout.length * 15}
+              rx="4"
+              fill="rgba(6, 17, 31, 0.88)"
+              stroke="var(--line)"
+            />
+            <text x={PAD_LEFT + 14} y={PAD_TOP + 21} fontSize="10" fill="var(--text-1)">
+              {selectedDate}
+            </text>
+            {selectedReadout.map(({ key, candle }, index) => {
+              const y = PAD_TOP + 36 + index * 15;
+              return (
+                <text
+                  key={key}
+                  x={PAD_LEFT + 14}
+                  y={y}
+                  fontSize="9"
+                  fill={LAYER_COLOR[key]}
+                  data-testid={`readout-${key}`}
+                >
+                  {`${layerTreatment(key).legendLabel}: O ${formatChartNumber(candle.open)} H ${formatChartNumber(candle.high)} L ${formatChartNumber(candle.low)} C ${formatChartNumber(candle.close)} V ${formatChartNumber(candle.volume, 0)}`}
+                </text>
+              );
+            })}
+          </g>
+        ) : null}
+
         {onSelectDate ? (
           <rect
             x={PAD_LEFT}
             y={PAD_TOP}
             width={WIDTH - PAD_LEFT - PAD_RIGHT}
-            height={height - PAD_TOP - PAD_BOTTOM}
+            height={volumeBottom - PAD_TOP}
             fill="transparent"
             style={{ cursor: "pointer" }}
             onPointerUp={(event) => {
