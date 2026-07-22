@@ -513,8 +513,8 @@ are completed in this same section rather than in a separate plan.
 - E2E/a11y: PASS, 18 Chromium scenarios, including three axe surfaces, Market
   and Compare request ownership, URL restore, capability fail-closed behavior,
   explicit date pinning, refresh/cache coherence, and recovery boundaries.
-- Performance smoke classification: **added**. The final exact-target Chromium
-  run measured 9.0 ms / 439 ms at 730 rows and 37.6 ms / 405 ms at 7,300 rows
+- Performance smoke classification: **added**. The current `master` Chromium
+  run measured 10.0 ms / 483 ms at 730 rows and 37.6 ms / 393 ms at 7,300 rows
   (adapter / chart-ready).
   Both are within the 100/500 ms adapter and 1.5/3.0 second readiness budgets;
   100 passive crosshair events issue no Date Evidence request.
