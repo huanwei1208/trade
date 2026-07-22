@@ -216,8 +216,21 @@ def test_btc_autofill_records_quality_warning_without_downstream_sync(
             "BTC 候选已暂存，等待采集稳定性门禁: run_id=abc qualified_days=3/29"
         )
 
+    catalog_updates: list[str] = []
+
+    def update_catalog(data_root: str, *, dry_run: bool = False) -> dict[str, Any]:
+        assert dry_run is False
+        catalog_updates.append(data_root)
+        return {
+            "action": "update",
+            "changed": True,
+            "generation_id": "gen-staged",
+            "run_count": 10,
+        }
+
     monkeypatch.setattr("trade_py.data.market.crypto.store.inspect_btc_status", inspect_btc_status)
     monkeypatch.setattr("trade_py.jobs.run_job", run_job)
+    monkeypatch.setattr("trade_py.observatory.catalog.store.update", update_catalog)
 
     db = TradeDB(tmp_path)
     bus = _bus(db)
@@ -246,6 +259,73 @@ def test_btc_autofill_records_quality_warning_without_downstream_sync(
     assert runs[0]["job_name"] == BTC_AUTOFILL_JOB_NAME
     assert runs[0]["status"] == "warn"
     assert "qualified_days=3/29" in runs[0]["result_summary"]
+    assert "observatory_catalog_update=changed" in runs[0]["result_summary"]
+    assert "generation_id=gen-staged" in runs[0]["result_summary"]
+    assert catalog_updates == [str(tmp_path)]
+
+
+def test_btc_autofill_warning_records_catalog_update_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from trade_py.jobs import JobQualityWarning
+
+    _write_current_pointer(tmp_path)
+
+    def inspect_btc_status(_data_root: str, *, as_of: Any | None = None) -> dict[str, Any]:
+        del as_of
+        return {
+            "data_readiness": "degraded",
+            "reason_code": "CANONICAL_STALE",
+            "reason_codes": ["CANONICAL_STALE"],
+            "operational_freshness": {
+                "watermark": "2026-07-18",
+                "expected_latest_open": "2026-07-21",
+                "staleness_days": 3,
+                "maximum_staleness_days": 1,
+                "fresh": False,
+            },
+        }
+
+    def run_job(_name: str, _data_root: str, config: dict[str, Any] | None = None) -> str:
+        del config
+        raise JobQualityWarning(
+            "BTC 候选已暂存，等待采集稳定性门禁: run_id=abc qualified_days=3/29"
+        )
+
+    def update_catalog(_data_root: str, *, dry_run: bool = False) -> dict[str, Any]:
+        del dry_run
+        raise RuntimeError("simulated catalog update failure")
+
+    monkeypatch.setattr("trade_py.data.market.crypto.store.inspect_btc_status", inspect_btc_status)
+    monkeypatch.setattr("trade_py.jobs.run_job", run_job)
+    monkeypatch.setattr("trade_py.observatory.catalog.store.update", update_catalog)
+
+    db = TradeDB(tmp_path)
+    bus = _bus(db)
+    try:
+        register_btc_startup_autofill_handlers(db, bus, str(tmp_path))
+
+        publish_btc_startup_gap_check(
+            db,
+            bus,
+            str(tmp_path),
+            now=datetime(2026, 7, 22, tzinfo=timezone.utc),
+        )
+        assert bus.wait_for_idle(timeout_sec=2)
+
+        synced_rows = db.event_log_recent(limit=10, topic="data.crypto.synced")
+        runs = db.job_runs_recent(limit=10, stage="fetch")
+    finally:
+        bus.shutdown()
+        db.close()
+
+    assert synced_rows == []
+    assert len(runs) == 1
+    assert runs[0]["status"] == "warn"
+    assert "qualified_days=3/29" in runs[0]["result_summary"]
+    assert "observatory_catalog_update=failed" in runs[0]["result_summary"]
+    assert "error_type=RuntimeError" in runs[0]["result_summary"]
 
 
 def test_btc_startup_gap_check_is_idempotent_per_watermark(

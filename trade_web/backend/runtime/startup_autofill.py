@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 BTC_STARTUP_CHECK_TOPIC = "gate.btc_startup_gap_check"
 BTC_AUTOFILL_TOPIC = "gate.btc_autofill"
 BTC_AUTOFILL_JOB_NAME = "crypto_btc_fetch"
+BTC_STAGED_WARNING_TOKEN = "候选已暂存"
 
 
 @dataclass(frozen=True)
@@ -260,6 +261,8 @@ def _btc_autofill_handler(db: TradeDB, data_root: str) -> Callable[[Event], None
         except JobQualityWarning as exc:
             elapsed_ms = int((time.monotonic() - started) * 1000)
             summary = str(exc)
+            if BTC_STAGED_WARNING_TOKEN in summary:
+                summary = _refresh_observatory_catalog_after_staged_btc(data_root, summary)
             db.job_run_finish(
                 run_id,
                 "warn",
@@ -301,6 +304,44 @@ def _btc_autofill_handler(db: TradeDB, data_root: str) -> Callable[[Event], None
     handler.__name__ = BTC_AUTOFILL_JOB_NAME
     handler.__qualname__ = "runtime.btc_autofill.crypto_btc_fetch"
     return handler
+
+
+def _refresh_observatory_catalog_after_staged_btc(data_root: str, summary: str) -> str:
+    """Refresh the read projection so staged BTC runs are visible in Observatory.
+
+    A D1 stability warning means the run was staged but not promoted to Formal.
+    Updating the read-only Catalog projection is safe and useful: Observatory can
+    render the staged/evaluated candidate with explicit degraded evidence, while
+    downstream formal sync still remains blocked.
+    """
+
+    from trade_py.observatory.catalog import store as catalog_store
+
+    try:
+        report = catalog_store.update(data_root)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning(
+            "BTC staged candidate catalog update failed: error_type=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
+        return f"{summary}; observatory_catalog_update=failed error_type={type(exc).__name__}"
+
+    changed = bool(report.get("changed", report.get("committed", False)))
+    generation_id = str(report.get("generation_id") or "")
+    run_count = report.get("run_count")
+    logger.info(
+        "BTC staged candidate catalog update completed: changed=%s generation_id=%s run_count=%s",
+        changed,
+        generation_id or None,
+        run_count,
+    )
+    details = f"observatory_catalog_update={'changed' if changed else 'unchanged'}"
+    if generation_id:
+        details += f" generation_id={generation_id}"
+    if run_count is not None:
+        details += f" run_count={run_count}"
+    return f"{summary}; {details}"
 
 
 def register_btc_startup_autofill_handlers(db: TradeDB, bus: EventBus, data_root: str) -> None:
