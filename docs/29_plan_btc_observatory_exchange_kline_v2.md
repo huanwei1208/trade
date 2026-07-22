@@ -2,10 +2,10 @@
 
 Date: 2026-07-22
 
-Status: Implementation complete - final implemented-diff review, digest-bound
-approval, and squash integration pending
+Status: Complete - implemented-diff review, digest-bound approval, and squash
+integration passed
 
-Branch: `wt/btc-observatory-exchange-kline-20260722`
+Integrated commit: `566c5587fe216df4563fcc555437486c88de7a2a` on local `master`
 
 Owning OpenSpec change: `btc-research-workspace` (amendment; not a competing
 parallel change)
