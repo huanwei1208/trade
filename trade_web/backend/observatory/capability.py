@@ -13,9 +13,11 @@ whether to advertise Observatory navigation. It distinguishes these states:
 
 `disabled`/`error` are owned here (the Web layer); the catalog_* / ready states come
 from the read-only `store.capability()` classifier, which never builds or writes the
-projection. Startup and GET paths call this without side effects. Only `ready`
-authorizes navigation (`show_nav`); every other state hides Observatory.
+projection. Startup and GET paths call this without side effects. `ready` and
+`catalog_stale` authorize navigation (`show_nav`): a stale catalog should still let
+operators open Observatory and see the explicit stale/unavailable resource states.
 """
+
 from __future__ import annotations
 
 import os
@@ -27,6 +29,7 @@ from trade_py.observatory.catalog import store
 ENABLED_ENV = "TRADE_OBSERVATORY_ENABLED"
 _CAPABILITY_CACHE_TTL_SEC = 2.0
 _capability_cache: dict[tuple[str, bool], tuple[float, dict[str, Any]]] = {}
+_NAV_VISIBLE_STATES = frozenset({"ready", "catalog_stale"})
 
 
 def observatory_enabled() -> bool:
@@ -45,9 +48,9 @@ def observatory_enabled() -> bool:
 def capability_payload(data_root: str, *, enabled: bool | None = None) -> dict[str, Any]:
     """Build the read-only capability payload for a data root.
 
-    Never builds the Catalog. ``show_nav`` is True only for the fully ``ready``
-    state so the frontend hides Observatory navigation for every unready/disabled
-    installation.
+    Never builds the Catalog. ``show_nav`` is True for states where the Observatory
+    shell is useful and honest: fully ``ready`` data, or ``catalog_stale`` where
+    data routes return explicit stale/unavailable evidence.
     """
 
     if enabled is None:
@@ -64,7 +67,7 @@ def capability_payload(data_root: str, *, enabled: bool | None = None) -> dict[s
     payload: dict[str, Any] = {
         "enabled": True,
         "state": state,
-        "show_nav": state == "ready",
+        "show_nav": state in _NAV_VISIBLE_STATES,
     }
     if cap.get("generation_id"):
         payload["generation_id"] = cap["generation_id"]

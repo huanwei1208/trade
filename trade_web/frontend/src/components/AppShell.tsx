@@ -39,14 +39,18 @@ export function AppShell({
   const { t } = useI18n();
   // RA.1 (F14): the Observatory nav entry is shown only when the App has computed a
   // FRESH, successful capability authorization (see App.tsx `observatoryAuthorized`).
-  // Cached/previous ready, loading, stale, revalidating, error, unknown, disabled,
-  // missing, catalog_stale and catalog_corrupt all leave it hidden so an unprepared
-  // or in-flight installation never advertises a broken page.
+  // `catalog_stale` is allowed so operators can open Observatory and see explicit
+  // stale states; cached/previous ready, loading, stale, revalidating, error,
+  // unknown, disabled, missing and catalog_corrupt all leave it hidden.
   const observatoryReady = observatoryAuthorized === true;
   const navItems: Array<{ key: PageKey; label: string; symbolOnly?: boolean }> = [
     { key: "today", label: t("nav.today") },
     { key: "candidates", label: t("nav.candidates") },
-    { key: "symbol", label: selectedSymbol ? t("nav.symbolWithCode", { symbol: selectedSymbol }) : t("nav.symbol"), symbolOnly: true },
+    {
+      key: "symbol",
+      label: selectedSymbol ? t("nav.symbolWithCode", { symbol: selectedSymbol }) : t("nav.symbol"),
+      symbolOnly: true,
+    },
     ...(observatoryReady ? [{ key: "observatory" as PageKey, label: t("nav.observatory") }] : []),
     { key: "research", label: t("nav.research") },
     { key: "data", label: t("nav.data") },
@@ -76,7 +80,21 @@ export function AppShell({
                 onClick={() => !disabled && onNavigate(item.key)}
                 disabled={disabled}
               >
-                <span className="app-sidebar__icon">{item.key === "ops" ? "⌘" : item.key === "research" ? "◇" : item.key === "observatory" ? "◉" : item.key === "symbol" ? "◎" : item.key === "candidates" ? "▤" : item.key === "data" ? "▣" : "◢"}</span>
+                <span className="app-sidebar__icon">
+                  {item.key === "ops"
+                    ? "⌘"
+                    : item.key === "research"
+                      ? "◇"
+                      : item.key === "observatory"
+                        ? "◉"
+                        : item.key === "symbol"
+                          ? "◎"
+                          : item.key === "candidates"
+                            ? "▤"
+                            : item.key === "data"
+                              ? "▣"
+                              : "◢"}
+                </span>
                 <span>{item.label}</span>
               </button>
             );
@@ -85,11 +103,23 @@ export function AppShell({
 
         <div className="app-sidebar__footer">
           <div className="app-sidebar__footer-label">{t("shell.portfolioTrust")}</div>
-          <div className="app-sidebar__footer-value">{formatPercent(trustOverview?.trust_scalar, 0)}</div>
-          <div className="app-sidebar__footer-subtle">{t("shell.coverage")} {formatPercent(trustOverview?.coverage, 0)}</div>
+          <div className="app-sidebar__footer-value">
+            {formatPercent(trustOverview?.trust_scalar, 0)}
+          </div>
+          <div className="app-sidebar__footer-subtle">
+            {t("shell.coverage")} {formatPercent(trustOverview?.coverage, 0)}
+          </div>
           <div className="app-sidebar__footer-pills">
-            <StatusPill label={selectedSymbol ? t("shell.symbolReady") : t("shell.pickSymbol")} tone={selectedSymbol ? "ok" : "muted"} subtle />
-            <StatusPill label={t("shell.asOf", { date: trustOverview?.as_of || "—" })} tone="info" subtle />
+            <StatusPill
+              label={selectedSymbol ? t("shell.symbolReady") : t("shell.pickSymbol")}
+              tone={selectedSymbol ? "ok" : "muted"}
+              subtle
+            />
+            <StatusPill
+              label={t("shell.asOf", { date: trustOverview?.as_of || "—" })}
+              tone="info"
+              subtle
+            />
           </div>
         </div>
       </aside>

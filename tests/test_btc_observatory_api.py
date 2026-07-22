@@ -190,6 +190,25 @@ def test_catalog_stale_returns_503(tmp_path):
     assert resp.headers.get("retry-after")
 
 
+def test_capability_route_reports_catalog_stale_as_navigable(tmp_path):
+    fx = build_observatory_fixture(tmp_path / "data")
+    catalog_store.rebuild(fx["data_root"])
+    # Mutate immutable facts without rebuilding the catalog. The page should
+    # remain discoverable, while data routes report explicit stale evidence.
+    from tests.observatory.fixtures import build_legacy_run
+
+    build_legacy_run(fx["data_root"], run_id="legacy_run_4444444444444444")
+    app = FastAPI()
+    register_observatory_routes(app, str(fx["data_root"]))
+    c = TestClient(app)
+    resp = c.get("/api/v1/observatory/capability")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["state"] == "catalog_stale"
+    assert body["show_nav"] is True
+
+
 def test_invalid_channel_pit_not_proven(client):
     c, fx = client
     resp = c.get(
@@ -224,7 +243,7 @@ def test_capability_route_reports_catalog_missing_without_build(tmp_path):
     assert resp.status_code == 200
     body = resp.json()
     assert body["state"] == "catalog_missing"
-    # F14: an unready installation must not advertise Observatory navigation.
+    # Missing catalog has no resource state to inspect, so do not advertise navigation.
     assert body["show_nav"] is False
 
 

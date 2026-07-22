@@ -27,6 +27,10 @@ import { ResearchPage } from "./pages/ResearchPage";
 import { SymbolPage } from "./pages/SymbolPage";
 import { TodayPage } from "./pages/TodayPage";
 
+function isObservatoryNavState(state: ObsCapability["state"] | undefined): boolean {
+  return state === "ready" || state === "catalog_stale";
+}
+
 type OpsFocus = {
   tab?:
     | "overview"
@@ -150,20 +154,22 @@ export default function App() {
 
   // RA.1 (F14): read-only Observatory rollout capability. Nav visibility and the
   // Observatory page render are gated on a FRESH, successful capability response so
-  // an unprepared/disabled installation never advertises or opens a broken page.
+  // disabled/broken installations never advertise or open a broken page.
   //
   // Fail closed on freshness (docs/27 Phase A): the capability is deliberately NOT
   // given a localStorage cacheKey — it must never be persisted as an authorization
   // cache. Only a fresh success (not loading, not revalidating, not stale, not
-  // served from cache, no error) with show_nav===true authorizes. Every other state
-  // — cached/previous ready, loading, stale, revalidating, error, unknown, disabled,
-  // missing, catalog_stale, catalog_corrupt — denies nav and never mounts Observatory.
+  // served from cache, no error) with show_nav===true and a nav-visible state
+  // authorizes. `catalog_stale` stays navigable so operators can see the explicit
+  // stale/unavailable resource states inside Observatory. Every other state —
+  // cached/previous ready, loading, stale, revalidating, error, unknown, disabled,
+  // missing, catalog_corrupt — denies nav and never mounts Observatory.
   const observatoryCapability = useApiResource<ObsCapability>(observatoryCapabilityPath(), {
     deps: [refreshToken],
   });
   const observatoryAuthorized =
     observatoryCapability.data?.enabled === true &&
-    observatoryCapability.data?.state === "ready" &&
+    isObservatoryNavState(observatoryCapability.data?.state) &&
     observatoryCapability.data?.show_nav === true &&
     observatoryCapability.loading === false &&
     observatoryCapability.revalidating === false &&

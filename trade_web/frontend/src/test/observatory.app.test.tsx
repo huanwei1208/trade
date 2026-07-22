@@ -5,10 +5,11 @@ import App from "../App";
 
 // RA.1 (docs/27 Phase A, F14): App-level fail-closed behavior for the Observatory
 // rollout capability. Only a FRESH, successful capability response with show_nav
-// may authorize the nav entry and mount the Observatory page. Cached/previous
-// ready, loading, error, and direct ?obsLens URLs on an unready backend must all
-// deny. AppShell-injection tests (observatory.nav.test.tsx) are insufficient for
-// this because they bypass the App's capability request/freshness logic.
+// and a nav-visible state may authorize the nav entry and mount the Observatory
+// page. Cached/previous ready, loading, error, and direct ?obsLens URLs on denied
+// states must all deny. AppShell-injection tests (observatory.nav.test.tsx) are
+// insufficient for this because they bypass the App's capability request/freshness
+// logic.
 
 type FetchController = {
   // Resolves the capability request with the given JSON body.
@@ -82,6 +83,17 @@ describe("App Observatory capability gating (fail closed)", () => {
     await waitFor(() => expect(screen.getByTestId("observatory-page")).toBeTruthy());
   });
 
+  it("shows nav and mounts Observatory for a fresh catalog_stale response", async () => {
+    control.capabilityBody = { enabled: true, state: "catalog_stale", show_nav: true };
+    installFetch();
+    setUrl("?obsLens=overview");
+    render(<App />);
+
+    // Stale data is an in-page resource state, not a reason to hide the BTC entry.
+    await waitFor(() => expect(screen.getByTestId("nav-observatory")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("observatory-page")).toBeTruthy());
+  });
+
   it("denies when a previous ready page is remembered but the capability request fails", async () => {
     // Simulate a prior session that had Observatory open (localStorage remembers
     // the page). A capability cache must NOT authorize: with the request failing,
@@ -128,6 +140,7 @@ describe("App Observatory capability gating (fail closed)", () => {
   it.each([
     { enabled: false, state: "ready", show_nav: true },
     { enabled: true, state: "catalog_missing", show_nav: true },
+    { enabled: true, state: "catalog_stale", show_nav: false },
   ])("denies contradictory capability payload %o", async (capability) => {
     control.capabilityBody = capability;
     installFetch();
@@ -143,7 +156,6 @@ describe("App Observatory capability gating (fail closed)", () => {
   it.each([
     { state: "disabled", enabled: false },
     { state: "catalog_missing", enabled: true },
-    { state: "catalog_stale", enabled: true },
     { state: "catalog_corrupt", enabled: true },
   ])("denies a direct ?obsLens URL when capability is %o", async ({ state, enabled }) => {
     control.capabilityBody = { enabled, state, show_nav: false };
@@ -152,7 +164,7 @@ describe("App Observatory capability gating (fail closed)", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByTestId("nav-today")).toBeTruthy());
-    // Direct-open must fail closed: unready backend never mounts Observatory.
+    // Direct-open must fail closed for denied states.
     expect(screen.queryByTestId("observatory-page")).toBeNull();
     expect(screen.queryByTestId("nav-observatory")).toBeNull();
     const notice = screen.getByTestId("observatory-unavailable-notice");
