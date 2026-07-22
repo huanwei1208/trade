@@ -8,9 +8,8 @@ import { KlineViewer } from "../components/KlineViewer";
 import { LoadingSkeleton } from "../components/LoadingSkeleton";
 import { NewsFeed } from "../components/NewsFeed";
 import { PanelCard } from "../components/PanelCard";
-import { StatusPill } from "../components/StatusPill";
-import type { DataAsset, DataAssetsPayload } from "../lib/api";
-import { getDataAssets } from "../lib/api";
+import type { DataAsset, DataAssetObservability, DataAssetsPayload } from "../lib/api";
+import { getBtcDataObservability, getDataAssets } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { classNames, useLocalStorageState } from "../lib/ui";
 
@@ -33,6 +32,9 @@ export function DataPage({ refreshToken }: DataPageProps) {
   const [tab, setTab] = useLocalStorageState<DataTab>("trade-web:data-tab", "assets");
   const [selectedAsset, setSelectedAsset] = useState<DataAsset | null>(null);
   const [assetsPayload, setAssetsPayload] = useState<DataAssetsPayload | null>(null);
+  const [observabilityByAsset, setObservabilityByAsset] = useState<
+    Record<string, DataAssetObservability | undefined>
+  >({});
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assetsError, setAssetsError] = useState<string | null>(null);
   const [assetsVersion, setAssetsVersion] = useState(0);
@@ -42,17 +44,29 @@ export function DataPage({ refreshToken }: DataPageProps) {
     let cancelled = false;
     setAssetsLoading(true);
     setAssetsError(null);
-    getDataAssets()
-      .then((data) => { if (!cancelled) setAssetsPayload(data); })
-      .catch((err) => { if (!cancelled) setAssetsError(err instanceof Error ? err.message : String(err)); })
-      .finally(() => { if (!cancelled) setAssetsLoading(false); });
-    return () => { cancelled = true; };
+    Promise.all([getDataAssets(), getBtcDataObservability()])
+      .then(([data, btc]) => {
+        if (!cancelled) {
+          setAssetsPayload(data);
+          setObservabilityByAsset({ [btc.asset_id]: btc });
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setAssetsError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setAssetsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [refreshToken, assetsVersion]);
 
   // Auto-select first non-missing asset when payload arrives and nothing is selected
   useEffect(() => {
     if (!assetsPayload || selectedAsset) return;
-    const first = assetsPayload.assets.find((a) => a.health !== "missing") || assetsPayload.assets[0];
+    const first =
+      assetsPayload.assets.find((a) => a.health !== "missing") || assetsPayload.assets[0];
     if (first) setSelectedAsset(first);
   }, [assetsPayload, selectedAsset]);
 
@@ -71,7 +85,15 @@ export function DataPage({ refreshToken }: DataPageProps) {
   return (
     <div className="data-page">
       {/* Summary strip */}
-      <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          marginBottom: 16,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
         <PanelCard subdued className="data-summary-card">
           <div style={{ display: "flex", gap: 16, alignItems: "center", padding: "4px 0" }}>
             <SummaryMetric label="Total" value={summary?.total_assets ?? "—"} />
@@ -81,7 +103,12 @@ export function DataPage({ refreshToken }: DataPageProps) {
             {summary?.error !== undefined && summary.error > 0 && (
               <SummaryMetric label="Error" value={summary.error} tone="err" />
             )}
-            <button type="button" className="button" onClick={() => setAssetsVersion((v) => v + 1)} style={{ marginLeft: "auto" }}>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setAssetsVersion((v) => v + 1)}
+              style={{ marginLeft: "auto" }}
+            >
               {t("common.refresh")}
             </button>
           </div>
@@ -110,11 +137,24 @@ export function DataPage({ refreshToken }: DataPageProps) {
           {assetsLoading && !assetsPayload ? (
             <LoadingSkeleton variant="panel" />
           ) : assetsError ? (
-            <ErrorState title="Failed to load assets" body={assetsError} action={<button type="button" className="button button--primary" onClick={() => setAssetsVersion((v) => v + 1)}>{t("common.retry")}</button>} />
+            <ErrorState
+              title="Failed to load assets"
+              body={assetsError}
+              action={
+                <button
+                  type="button"
+                  className="button button--primary"
+                  onClick={() => setAssetsVersion((v) => v + 1)}
+                >
+                  {t("common.retry")}
+                </button>
+              }
+            />
           ) : (
             <AssetInventoryTable
               assets={assets}
               selectedAssetId={selectedAsset?.asset_id}
+              observabilityByAsset={observabilityByAsset}
               onSelectAsset={(a) => setSelectedAsset(a)}
             />
           )}
@@ -122,9 +162,17 @@ export function DataPage({ refreshToken }: DataPageProps) {
       )}
 
       {tab === "kline" && (
-        <PanelCard title="K-Line Viewer" subdued actions={
-          <AssetQuickSelector assets={assets} selected={selectedAsset} onSelect={setSelectedAsset} />
-        }>
+        <PanelCard
+          title="K-Line Viewer"
+          subdued
+          actions={
+            <AssetQuickSelector
+              assets={assets}
+              selected={selectedAsset}
+              onSelect={setSelectedAsset}
+            />
+          }
+        >
           {assetsLoading && !assetsPayload ? (
             <LoadingSkeleton variant="panel" />
           ) : (
@@ -134,9 +182,17 @@ export function DataPage({ refreshToken }: DataPageProps) {
       )}
 
       {tab === "gaps" && (
-        <PanelCard title="Data Gap Detection" subdued actions={
-          <AssetQuickSelector assets={assets} selected={selectedAsset} onSelect={setSelectedAsset} />
-        }>
+        <PanelCard
+          title="Data Gap Detection"
+          subdued
+          actions={
+            <AssetQuickSelector
+              assets={assets}
+              selected={selectedAsset}
+              onSelect={setSelectedAsset}
+            />
+          }
+        >
           {assetsLoading && !assetsPayload ? (
             <LoadingSkeleton variant="panel" />
           ) : (
@@ -160,30 +216,86 @@ export function DataPage({ refreshToken }: DataPageProps) {
   );
 }
 
-function SummaryMetric({ label, value, tone }: { label: string; value: number | string; tone?: "ok" | "warn" | "err" }) {
+function SummaryMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number | string;
+  tone?: "ok" | "warn" | "err";
+}) {
   return (
     <div>
-      <div style={{ fontSize: "0.7rem", color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
-      <div style={{ fontSize: "1.1rem", fontWeight: 700, color: tone ? `var(--${tone})` : undefined }}>{value}</div>
+      <div
+        style={{
+          fontSize: "0.7rem",
+          color: "var(--muted)",
+          textTransform: "uppercase",
+          letterSpacing: "0.05em",
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{ fontSize: "1.1rem", fontWeight: 700, color: tone ? `var(--${tone})` : undefined }}
+      >
+        {value}
+      </div>
     </div>
   );
 }
 
-function AssetQuickSelector({ assets, selected, onSelect }: { assets: DataAsset[]; selected: DataAsset | null; onSelect: (a: DataAsset) => void }) {
+function AssetQuickSelector({
+  assets,
+  selected,
+  onSelect,
+}: {
+  assets: DataAsset[];
+  selected: DataAsset | null;
+  onSelect: (a: DataAsset) => void;
+}) {
+  const [query, setQuery] = useState(selected?.symbol || "");
+  const normalized = query.trim().toLowerCase();
+  const filtered = assets
+    .filter((asset) => {
+      if (!normalized) {
+        return asset.asset_class === "crypto" || asset.asset_id === selected?.asset_id;
+      }
+      return `${asset.symbol} ${asset.asset_id} ${asset.asset_class}`
+        .toLowerCase()
+        .includes(normalized);
+    })
+    .slice(0, 120);
+  const options =
+    selected && !filtered.some((asset) => asset.asset_id === selected.asset_id)
+      ? [selected, ...filtered]
+      : filtered;
+
   return (
-    <select
-      value={selected?.asset_id || ""}
-      onChange={(e) => {
-        const a = assets.find((x) => x.asset_id === e.target.value);
-        if (a) onSelect(a);
-      }}
-      style={{ maxWidth: 260 }}
-    >
-      {assets.map((a) => (
-        <option key={a.asset_id} value={a.asset_id}>
-          {a.symbol} ({a.asset_class})
-        </option>
-      ))}
-    </select>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+      <input
+        aria-label="Filter assets"
+        placeholder="Filter assets"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        style={{ minWidth: 160 }}
+      />
+      <select
+        aria-label="Select data asset"
+        value={selected?.asset_id || ""}
+        onChange={(e) => {
+          const a = assets.find((x) => x.asset_id === e.target.value);
+          if (a) onSelect(a);
+        }}
+        style={{ minWidth: 220, maxWidth: 320 }}
+      >
+        {options.map((a) => (
+          <option key={a.asset_id} value={a.asset_id}>
+            {a.symbol} ({a.asset_class})
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }

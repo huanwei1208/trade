@@ -1376,11 +1376,39 @@ export type KlineRow = {
   volume: number | null;
 };
 
+export type DataKlineSource = {
+  channel: "published" | "observed";
+  label: string;
+  last_date?: string | null;
+  published_last_date?: string | null;
+  lifecycle_state?: string | null;
+  quality_state?: string | null;
+  freshness_state?: string | null;
+  run_id?: string | null;
+  reason_codes?: string[];
+};
+
 export type DataKlinePayload = {
   asset_id: string;
   symbol: string;
   interval: string;
   rows: KlineRow[];
+  source?: DataKlineSource;
+};
+
+export type DataAssetObservability = {
+  asset_id: string;
+  status: "confirmed" | "unavailable";
+  channel: "observed";
+  last_date: string | null;
+  published_last_date: string | null;
+  lag_days: number | null;
+  lifecycle_state: string | null;
+  quality_state: string | null;
+  freshness_state: string | null;
+  run_id: string | null;
+  reason_codes: string[];
+  message?: string;
 };
 
 export type DataGap = {
@@ -1788,6 +1816,136 @@ export function observatorySeriesPath(opts: {
     snapshot_id: opts.snapshotId,
     run_id: opts.runId,
   })}`;
+}
+
+function dateLagDays(value: string | null | undefined): number | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    return null;
+  }
+  const today = new Date();
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  return Math.floor((todayUtc - parsed.getTime()) / 86_400_000);
+}
+
+function decimalStringToNumber(value: string | null | undefined): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function observedRowToKline(row: ObsSeriesRow): KlineRow | null {
+  const date = String(row.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || row.availability_state !== "present") {
+    return null;
+  }
+  return {
+    date,
+    open: decimalStringToNumber(row.open),
+    high: decimalStringToNumber(row.high),
+    low: decimalStringToNumber(row.low),
+    close: decimalStringToNumber(row.close),
+    volume: decimalStringToNumber(row.volume),
+  };
+}
+
+function klineWindowStart(days: number): string {
+  const safeDays = Math.max(1, Math.min(intLike(days, 30), 3650));
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - safeDays * 2);
+  return start.toISOString().slice(0, 10);
+}
+
+function intLike(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.trunc(value);
+}
+
+export async function getBtcDataObservability(): Promise<DataAssetObservability> {
+  try {
+    const context = await fetchJson<ObsContext>(
+      observatoryContextPath({ channel: "observed", knowledgeAsOf: "latest" }),
+    );
+    const lastDate =
+      context.market_watermark ||
+      context.output_watermark ||
+      context.semantic_channels?.observed?.watermark ||
+      null;
+    return {
+      asset_id: OBS_ASSET_PATH,
+      status: "confirmed",
+      channel: "observed",
+      last_date: lastDate,
+      published_last_date: context.semantic_channels?.formal?.watermark || null,
+      lag_days: dateLagDays(lastDate),
+      lifecycle_state: context.lifecycle_state || null,
+      quality_state: context.quality_state || null,
+      freshness_state: context.freshness_state || null,
+      run_id: context.run_id || null,
+      reason_codes: context.reason_codes || [],
+    };
+  } catch (error) {
+    return {
+      asset_id: OBS_ASSET_PATH,
+      status: "unavailable",
+      channel: "observed",
+      last_date: null,
+      published_last_date: null,
+      lag_days: null,
+      lifecycle_state: null,
+      quality_state: null,
+      freshness_state: null,
+      run_id: null,
+      reason_codes: [],
+      message: error instanceof Error ? error.message : "BTC observed status is unavailable.",
+    };
+  }
+}
+
+export async function getBtcObservedKline(days = 30): Promise<DataKlinePayload> {
+  const safeDays = Math.max(1, Math.min(intLike(days, 30), 3650));
+  const series = await fetchJson<ObsSingleSeries>(
+    observatorySeriesPath({
+      view: "observed",
+      knowledgeAsOf: "latest",
+      from: klineWindowStart(safeDays),
+    }),
+  );
+  const rows = (series.rows || [])
+    .map(observedRowToKline)
+    .filter((row): row is KlineRow => row !== null)
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .slice(-safeDays);
+  const context = series.context;
+  const lastDate = rows[rows.length - 1]?.date || context?.market_watermark || null;
+  return {
+    asset_id: OBS_ASSET_PATH,
+    symbol: context?.contract?.display_symbol || "BTC",
+    interval: context?.contract?.primary_interval || "1d",
+    rows,
+    source: {
+      channel: "observed",
+      label: "Observed BTC",
+      last_date: lastDate,
+      published_last_date: context?.semantic_channels?.formal?.watermark || null,
+      lifecycle_state: context?.lifecycle_state || null,
+      quality_state: context?.quality_state || null,
+      freshness_state: context?.freshness_state || null,
+      run_id: context?.run_id || null,
+      reason_codes: series.reason_codes || context?.reason_codes || [],
+    },
+  };
+}
+
+export function getDataKlineForAsset(assetId: string, days = 30): Promise<DataKlinePayload> {
+  return assetId === OBS_ASSET_PATH ? getBtcObservedKline(days) : getDataKline(assetId, days);
 }
 
 export function observatoryDatePath(

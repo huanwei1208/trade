@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 
-import type { DataAsset, DataAssetHealth } from "../lib/api";
+import type { DataAsset, DataAssetHealth, DataAssetObservability } from "../lib/api";
 import { classNames } from "../lib/ui";
 
 type SortKey = "symbol" | "asset_class" | "health" | "lag_days" | "total_rows" | "last_date";
@@ -10,6 +10,7 @@ type AssetInventoryTableProps = {
   assets: DataAsset[];
   onSelectAsset?: (asset: DataAsset) => void;
   selectedAssetId?: string;
+  observabilityByAsset?: Record<string, DataAssetObservability | undefined>;
 };
 
 function HealthBadge({ health }: { health: DataAssetHealth }) {
@@ -28,7 +29,36 @@ function HealthBadge({ health }: { health: DataAssetHealth }) {
   return <span className={toneMap[health]}>{label[health]}</span>;
 }
 
-export function AssetInventoryTable({ assets, onSelectAsset, selectedAssetId }: AssetInventoryTableProps) {
+function observedHealth(asset: DataAsset, observed?: DataAssetObservability): DataAssetHealth {
+  if (!observed || observed.status !== "confirmed") {
+    return asset.health;
+  }
+  if (observed.quality_state === "degraded" || observed.lifecycle_state === "staged") {
+    return "stale";
+  }
+  if (observed.lag_days !== null && observed.lag_days > 2) {
+    return "stale";
+  }
+  return "ok";
+}
+
+function observedLastDate(asset: DataAsset, observed?: DataAssetObservability): string | null {
+  return observed?.status === "confirmed" ? observed.last_date : asset.last_date;
+}
+
+function observedLagDays(asset: DataAsset, observed?: DataAssetObservability): number {
+  if (observed?.status === "confirmed" && observed.lag_days !== null) {
+    return observed.lag_days;
+  }
+  return asset.lag_days;
+}
+
+export function AssetInventoryTable({
+  assets,
+  onSelectAsset,
+  selectedAssetId,
+  observabilityByAsset = {},
+}: AssetInventoryTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("health");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [classFilter, setClassFilter] = useState<string>("all");
@@ -64,23 +94,29 @@ export function AssetInventoryTable({ assets, onSelectAsset, selectedAssetId }: 
           break;
         case "health": {
           const order: Record<DataAssetHealth, number> = { error: 0, missing: 1, stale: 2, ok: 3 };
-          diff = (order[a.health] ?? 9) - (order[b.health] ?? 9);
+          diff =
+            (order[observedHealth(a, observabilityByAsset[a.asset_id])] ?? 9) -
+            (order[observedHealth(b, observabilityByAsset[b.asset_id])] ?? 9);
           break;
         }
         case "lag_days":
-          diff = (a.lag_days ?? -1) - (b.lag_days ?? -1);
+          diff =
+            observedLagDays(a, observabilityByAsset[a.asset_id]) -
+            observedLagDays(b, observabilityByAsset[b.asset_id]);
           break;
         case "total_rows":
           diff = (a.total_rows ?? 0) - (b.total_rows ?? 0);
           break;
         case "last_date":
-          diff = (a.last_date || "").localeCompare(b.last_date || "");
+          diff = (observedLastDate(a, observabilityByAsset[a.asset_id]) || "").localeCompare(
+            observedLastDate(b, observabilityByAsset[b.asset_id]) || "",
+          );
           break;
       }
       return sign * diff;
     });
     return copy;
-  }, [filtered, sortKey, sortDir]);
+  }, [filtered, sortKey, sortDir, observabilityByAsset]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -105,7 +141,9 @@ export function AssetInventoryTable({ assets, onSelectAsset, selectedAssetId }: 
         <select value={classFilter} onChange={(e) => setClassFilter(e.target.value)}>
           <option value="all">All classes</option>
           {classes.map((c) => (
-            <option key={c} value={c}>{c}</option>
+            <option key={c} value={c}>
+              {c}
+            </option>
           ))}
         </select>
         <select value={healthFilter} onChange={(e) => setHealthFilter(e.target.value)}>
@@ -134,34 +172,78 @@ export function AssetInventoryTable({ assets, onSelectAsset, selectedAssetId }: 
             </tr>
           </thead>
           <tbody>
-            {sorted.map((a) => (
-              <tr
-                key={a.asset_id}
-                className={classNames(selectedAssetId === a.asset_id && "selected")}
-                onClick={() => onSelectAsset?.(a)}
-                style={{ cursor: onSelectAsset ? "pointer" : "default" }}
-              >
-                <td><strong>{a.symbol}</strong><div style={{ fontSize: "0.72rem", color: "var(--muted)" }}>{a.asset_id}</div></td>
-                <td>{a.asset_class}</td>
-                <td>{a.venue || "—"}</td>
-                <td>
-                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                    {(a.data_types || []).map((dt) => (
-                      <span key={dt} className="pill" style={{ fontSize: "0.68rem", padding: "1px 6px" }}>{dt}</span>
-                    ))}
-                    {(!a.data_types || a.data_types.length === 0) && <span style={{ color: "var(--muted)" }}>—</span>}
-                  </div>
-                </td>
-                <td>{a.total_rows?.toLocaleString() ?? 0}</td>
-                <td>{a.last_date || "—"}</td>
-                <td style={{ color: (a.lag_days ?? 0) > 2 ? "var(--warn)" : (a.lag_days ?? 0) > 7 ? "var(--err)" : undefined }}>
-                  {a.lag_days != null && a.lag_days >= 0 ? a.lag_days : "—"}
-                </td>
-                <td><HealthBadge health={a.health} /></td>
-              </tr>
-            ))}
+            {sorted.map((a) => {
+              const observed = observabilityByAsset[a.asset_id];
+              const latestDate = observedLastDate(a, observed);
+              const lagDays = observedLagDays(a, observed);
+              const health = observedHealth(a, observed);
+              return (
+                <tr
+                  key={a.asset_id}
+                  className={classNames(selectedAssetId === a.asset_id && "selected")}
+                  onClick={() => onSelectAsset?.(a)}
+                  style={{ cursor: onSelectAsset ? "pointer" : "default" }}
+                >
+                  <td>
+                    <strong>{a.symbol}</strong>
+                    <div style={{ fontSize: "0.72rem", color: "var(--muted)" }}>{a.asset_id}</div>
+                  </td>
+                  <td>{a.asset_class}</td>
+                  <td>{a.venue || "—"}</td>
+                  <td>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      {(a.data_types || []).map((dt) => (
+                        <span
+                          key={dt}
+                          className="pill"
+                          style={{ fontSize: "0.68rem", padding: "1px 6px" }}
+                        >
+                          {dt}
+                        </span>
+                      ))}
+                      {observed?.status === "confirmed" ? (
+                        <span
+                          className="pill partial"
+                          style={{ fontSize: "0.68rem", padding: "1px 6px" }}
+                        >
+                          observed
+                        </span>
+                      ) : null}
+                      {(!a.data_types || a.data_types.length === 0) && (
+                        <span style={{ color: "var(--muted)" }}>—</span>
+                      )}
+                    </div>
+                  </td>
+                  <td>{a.total_rows?.toLocaleString() ?? 0}</td>
+                  <td>
+                    {latestDate || "—"}
+                    {observed?.status === "confirmed" &&
+                    observed.published_last_date &&
+                    observed.published_last_date !== latestDate ? (
+                      <div style={{ fontSize: "0.72rem", color: "var(--muted)" }}>
+                        published {observed.published_last_date}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td
+                    style={{
+                      color: lagDays > 7 ? "var(--err)" : lagDays > 2 ? "var(--warn)" : undefined,
+                    }}
+                  >
+                    {lagDays != null && lagDays >= 0 ? lagDays : "—"}
+                  </td>
+                  <td>
+                    <HealthBadge health={health} />
+                  </td>
+                </tr>
+              );
+            })}
             {sorted.length === 0 && (
-              <tr><td colSpan={8} style={{ textAlign: "center", color: "var(--muted)", padding: 24 }}>No assets match the current filter.</td></tr>
+              <tr>
+                <td colSpan={8} style={{ textAlign: "center", color: "var(--muted)", padding: 24 }}>
+                  No assets match the current filter.
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
