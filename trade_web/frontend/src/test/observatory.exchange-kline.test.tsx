@@ -261,6 +261,50 @@ describe("ExchangeKlineChart", () => {
     expect(onSelectDate).toHaveBeenCalledWith("2026-07-17");
   });
 
+  it("shows a mouse-attached OHLC readout and locks it locally on chart click", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        frames.push(callback);
+        return frames.length;
+      }),
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 800,
+      height: 420,
+      top: 0,
+      left: 0,
+      right: 800,
+      bottom: 420,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    const onSelectDate = vi.fn();
+    render(<ExchangeKlineChart model={readyModel()} onSelectDate={onSelectDate} />);
+    const hover = chartMock.chart.subscribeCrosshairMove.mock.calls[0]?.[0];
+    const click = chartMock.chart.subscribeClick.mock.calls[0]?.[0];
+
+    act(() => hover({ time: "2026-07-17", point: { x: 760, y: 120 } }));
+    act(() => frames[0]?.(0));
+    const card = screen.getByTestId("exchange-kline-cursor-readout");
+    expect(card).toHaveClass("obs-kline__cursor--left");
+    expect(card).toHaveTextContent("2026-07-17");
+    expect(card).toHaveTextContent("O");
+    expect(card).toHaveTextContent("H");
+    expect(card).toHaveTextContent("L");
+    expect(card).toHaveTextContent("C");
+    expect(card).toHaveTextContent("Vol");
+
+    act(() => click({ time: "2026-07-17", point: { x: 760, y: 120 } }));
+
+    expect(screen.getByTestId("exchange-kline-cursor-readout")).toHaveTextContent("2026-07-17");
+    expect(onSelectDate).not.toHaveBeenCalled();
+  });
+
   it("supports keyboard date navigation and explicit Enter pinning", () => {
     const onSelectDate = vi.fn();
     render(<ExchangeKlineChart model={readyModel()} onSelectDate={onSelectDate} />);

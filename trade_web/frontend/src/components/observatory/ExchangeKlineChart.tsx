@@ -47,6 +47,13 @@ type RendererFailure = {
   code: "CHART_CREATE_FAILED" | "CHART_DATA_REJECTED" | "CHART_RUNTIME_FAILED";
   retryable: boolean;
 };
+type CursorPlacement = "left" | "right";
+type CursorReadoutState = {
+  date: string;
+  x: number;
+  y: number;
+  placement: CursorPlacement;
+};
 
 type ChartRuntime = {
   chart: IChartApi;
@@ -70,6 +77,26 @@ function normalizeEventDate(time: Time | undefined): string | null {
     return `${String(time.year).padStart(4, "0")}-${month}-${day}`;
   }
   return null;
+}
+
+function cursorReadoutState(
+  params: MouseEventParams<Time>,
+  model: ObservatoryKlineModel,
+  container: HTMLElement,
+): CursorReadoutState | null {
+  const date = normalizeEventDate(params.time);
+  if (!date || !model.dates.includes(date) || !params.point) return null;
+  const bounds = container.getBoundingClientRect();
+  const width = bounds.width > 0 ? bounds.width : 800;
+  const height = bounds.height > 0 ? bounds.height : 440;
+  const x = Math.min(Math.max(params.point.x, 12), Math.max(12, width - 12));
+  const y = Math.min(Math.max(params.point.y, 42), Math.max(42, height - 42));
+  return {
+    date,
+    x,
+    y,
+    placement: x > width - 260 ? "left" : "right",
+  };
 }
 
 function markerColor(marker: ObservatoryKlineMarker): string {
@@ -235,6 +262,45 @@ function KlineReadout({
   );
 }
 
+function KlineCursorReadout({
+  cursor,
+  readout,
+}: {
+  cursor: CursorReadoutState | null;
+  readout: ObservatoryKlineReadout | undefined;
+}) {
+  if (!cursor) return null;
+  return (
+    <div
+      className={`obs-kline__cursor obs-kline__cursor--${cursor.placement}`}
+      style={{ left: `${cursor.x}px`, top: `${cursor.y}px` }}
+      data-testid="exchange-kline-cursor-readout"
+      aria-hidden="true"
+    >
+      <div>
+        <strong>{readout?.date ?? cursor.date}</strong>
+      </div>
+      {readout ? (
+        <>
+          <dl>
+            <dt>O</dt>
+            <dd>{readout.open}</dd>
+            <dt>H</dt>
+            <dd>{readout.high}</dd>
+            <dt>L</dt>
+            <dd>{readout.low}</dd>
+            <dt>C</dt>
+            <dd>{readout.close}</dd>
+          </dl>
+          <small>Vol {readout.volume ?? "—"}</small>
+        </>
+      ) : (
+        <small>No plotted candle</small>
+      )}
+    </div>
+  );
+}
+
 function KlineDiagnostics({ model }: { model: ObservatoryKlineModel }) {
   if (model.state !== "partial-invalid") {
     return null;
@@ -301,9 +367,11 @@ export function ExchangeKlineChart({
   const ownedFullscreenRef = useRef(false);
   const hoverFrameRef = useRef<number | null>(null);
   const pendingHoverDateRef = useRef<string | null>(null);
+  const pendingCursorRef = useRef<CursorReadoutState | null>(null);
   const lastHoverDateRef = useRef<string | null>(null);
   const [hoveredDate, setHoveredDate] = useState<string | null>(null);
   const [inspectedDate, setInspectedDate] = useState<string | null>(null);
+  const [cursorReadout, setCursorReadout] = useState<CursorReadoutState | null>(null);
   const [scaleMode, setScaleMode] = useState<ScaleMode>("linear");
   const [rendererState, setRendererState] = useState<RendererState>("initializing");
   const [rendererFailure, setRendererFailure] = useState<RendererFailure | null>(null);
@@ -350,6 +418,7 @@ export function ExchangeKlineChart({
     .filter((date): date is string => date !== null);
   const inspectDate = inspectedDate ?? hoveredDate ?? selectedDisplayDate;
   const timeframe = model.timeframe ?? "1D";
+  const cursorReadoutData = cursorReadout ? model.readouts[cursorReadout.date] : undefined;
 
   const canonicalSourceDate = useCallback((date: string | null): string | null => {
     if (!date) return null;
@@ -401,12 +470,15 @@ export function ExchangeKlineChart({
     setRendererFailure(null);
     setRendererState("initializing");
     setKeyboardAnnouncement("");
+    pendingCursorRef.current = null;
+    setCursorReadout(null);
 
     const scheduleHover = (params: MouseEventParams<Time>) => {
       if (disposed) return;
       const eventDate = normalizeEventDate(params.time);
       pendingHoverDateRef.current =
         eventDate && modelRef.current.dates.includes(eventDate) ? eventDate : null;
+      pendingCursorRef.current = cursorReadoutState(params, modelRef.current, container);
       if (hoverFrameRef.current !== null) return;
       hoverFrameRef.current = window.requestAnimationFrame(() => {
         hoverFrameRef.current = null;
@@ -416,6 +488,7 @@ export function ExchangeKlineChart({
           lastHoverDateRef.current = nextDate;
           setHoveredDate(nextDate);
         }
+        setCursorReadout(pendingCursorRef.current);
       });
     };
     const handleClick = (params: MouseEventParams<Time>) => {
@@ -424,6 +497,9 @@ export function ExchangeKlineChart({
       if (eventDate && modelRef.current.dates.includes(eventDate)) {
         setInspectedDate(eventDate);
         setHoveredDate(eventDate);
+        const lockedCursor = cursorReadoutState(params, modelRef.current, container);
+        pendingCursorRef.current = lockedCursor;
+        setCursorReadout(lockedCursor);
         setKeyboardAnnouncement(
           formatKeyboardInspectionSummary(
             eventDate,
@@ -839,6 +915,7 @@ export function ExchangeKlineChart({
           data-marker-count={gapMarkers(model).length}
           aria-hidden="true"
         />
+        <KlineCursorReadout cursor={cursorReadout} readout={cursorReadoutData} />
       </div>
 
       <div className="obs-kline__pinned" aria-live="polite" aria-atomic="true">
