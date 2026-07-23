@@ -204,6 +204,7 @@ class _NativeExecutor(BoundedProcessExecutor):
         validation_names: tuple[str, ...] | None = None,
         omit_zero_spec_summary: bool = False,
         status_padding_bytes: int = 0,
+        invalid_status: tuple[str, bytes] | None = None,
     ) -> None:
         super().__init__()
         self.names = names
@@ -215,6 +216,7 @@ class _NativeExecutor(BoundedProcessExecutor):
         self.validation_names = validation_names
         self.omit_zero_spec_summary = omit_zero_spec_summary
         self.status_padding_bytes = status_padding_bytes
+        self.invalid_status = invalid_status
         self._lock = threading.Lock()
         self.active_status = 0
         self.max_active_status = 0
@@ -294,6 +296,14 @@ class _NativeExecutor(BoundedProcessExecutor):
                 self.max_active_status = max(self.max_active_status, self.active_status)
             try:
                 time.sleep(0.02)
+                if self.invalid_status is not None and name == self.invalid_status[0]:
+                    return ProcessResult(
+                        argv=argv,
+                        returncode=0,
+                        stdout=self.invalid_status[1],
+                        stderr=b"",
+                        duration_ms=1,
+                    )
                 if name == self.failed_status:
                     raise WorkflowCollectionError(
                         WorkflowError(
@@ -412,6 +422,28 @@ def test_native_partial_status_failure_preserves_sibling(tmp_path: Path) -> None
 
     assert set(collection.changes) == {"change-a"}
     assert collection.errors["change-b"].code == "workflow.process.exit"
+
+
+@pytest.mark.parametrize("payload", (b"\xff", b"{", b"[]"))
+def test_native_malformed_status_preserves_sibling(
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    names = ("change-a", "change-b")
+    executor = _NativeExecutor(names, invalid_status=("change-b", payload))
+
+    collection = collect_native_evidence(
+        tmp_path,
+        expected_names=names,
+        requested_change=None,
+        executor=executor,
+        deadline=time.monotonic() + 10,
+        limits=WorkflowLimits(),
+    )
+
+    assert set(collection.changes) == {"change-a"}
+    assert collection.errors["change-b"].code == "workflow.openspec.shape"
+    assert collection.errors["change-b"].change == "change-b"
 
 
 def test_native_malformed_validation_preserves_sibling(tmp_path: Path) -> None:
@@ -570,6 +602,69 @@ def test_design_malformed_report_preserves_sibling(
     assert collection.evidence["change-a"].report["change"] == "change-a"
     assert collection.errors["change-b"].code == "workflow.design_quality.invalid"
     assert collection.errors["change-b"].change == "change-b"
+
+
+def test_design_binding_failure_preserves_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    names = ("change-a", "change-b")
+    requirements = GovernanceResolution(
+        tuple(
+            GovernanceRequirement(
+                change=name,
+                required=True,
+                source=GovernanceRequirementSource.NEW_CHANGE,
+                live=True,
+            )
+            for name in names
+        )
+    )
+    binding = ReportBinding(
+        governance_status="GOVERNED",
+        artifact_digest=f"sha256:{'1' * 64}",
+        profiles=("core",),
+        artifacts=(),
+        total_bytes=0,
+    )
+
+    def load_binding(
+        _repo_root: Path,
+        selected: tuple[str, ...],
+        *_args: object,
+        **_kwargs: object,
+    ) -> dict[str, ReportBinding]:
+        name = selected[0]
+        if name == "change-b":
+            raise design_adapter.DesignQualityError("artifact changed while reading")
+        return {name: binding}
+
+    monkeypatch.setattr(design_adapter, "load_report_bindings", load_binding)
+    monkeypatch.setattr(
+        design_adapter,
+        "validate_design_batch_payload",
+        lambda *_args, **_kwargs: DesignBatchValidation(
+            envelope_error=None,
+            report_errors={},
+        ),
+    )
+
+    collection = design_adapter.collect_design_evidence(
+        tmp_path,
+        names,
+        requirements,
+        evaluation_date=date(2026, 7, 23),
+        executor=_DesignExecutor(("change-a",)),
+        deadline=time.monotonic() + 10,
+        policy=load_policy(REPO_ROOT),
+        limits=WorkflowLimits(),
+    )
+
+    assert set(collection.evidence) == {"change-a"}
+    error = collection.errors["change-b"]
+    assert error.code == "workflow.snapshot.changed"
+    assert error.source == "snapshot"
+    assert error.change == "change-b"
 
 
 def test_unsupported_schema_preserves_only_schema_and_payload_digest(

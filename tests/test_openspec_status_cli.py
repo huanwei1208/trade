@@ -376,6 +376,29 @@ def test_unsupported_schema_error_requires_exact_contract_details() -> None:
     }
 
 
+def test_workflow_error_details_are_immutable_defensive_copy() -> None:
+    details = {
+        "schema_name": "custom",
+        "payload_digest": f"sha256:{'a' * 64}",
+    }
+    error = WorkflowError(
+        code="workflow.openspec.unsupported_schema",
+        source="openspec",
+        message="unsupported",
+        remediation="add a schema strategy",
+        details=details,
+    )
+
+    details["schema_name"] = "mutated"
+    with pytest.raises(TypeError):
+        error.details["schema_name"] = "mutated"  # type: ignore[index]
+
+    assert error.to_dict()["details"] == {
+        "payload_digest": f"sha256:{'a' * 64}",
+        "schema_name": "custom",
+    }
+
+
 def test_shell_openspec_route_is_frozen_no_sync_and_forwards_arguments(
     tmp_path: Path,
 ) -> None:

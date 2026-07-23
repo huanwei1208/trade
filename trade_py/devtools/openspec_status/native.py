@@ -207,7 +207,11 @@ def _collect_statuses(
             change=name,
         )
         output_budget.consume(result)
-        payload = _json_object(result, command="openspec status --json")
+        payload = _json_object(
+            result,
+            command="openspec status --json",
+            change=name,
+        )
         schema_name = _status_identity(payload, expected_name=name)
         payload_digest = _digest(result.stdout)
         if schema_name != "spec-driven":
@@ -509,14 +513,19 @@ def _validation_counts(payload: dict[str, Any]) -> tuple[int, int, int]:
     return items, passed, failed
 
 
-def _json_object(result: ProcessResult, *, command: str) -> dict[str, Any]:
+def _json_object(
+    result: ProcessResult,
+    *,
+    command: str,
+    change: str | None = None,
+) -> dict[str, Any]:
     try:
         payload = json.loads(result.stdout)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        _raise_shape(f"{command} did not emit valid JSON.")
+        _raise_shape(f"{command} did not emit valid JSON.", change)
         raise AssertionError("unreachable") from exc
     if not isinstance(payload, dict):
-        _raise_shape(f"{command} did not emit a JSON object.")
+        _raise_shape(f"{command} did not emit a JSON object.", change)
     return payload
 
 

@@ -10,9 +10,13 @@ from datetime import date
 from pathlib import Path
 from typing import NoReturn
 
+from trade_py.devtools.design_quality.errors import DesignQualityError
 from trade_py.devtools.design_quality.governance import GovernanceResolution
 from trade_py.devtools.design_quality.models import Policy
-from trade_py.devtools.design_quality.report_binding import load_report_bindings
+from trade_py.devtools.design_quality.report_binding import (
+    ReportBinding,
+    load_report_bindings,
+)
 from trade_py.devtools.openspec_status.errors import (
     WorkflowCollectionError,
     WorkflowError,
@@ -45,13 +49,17 @@ def collect_design_evidence(
     if set(requirements) != set(names):
         _raise("Governance provenance does not match the selected active changes.")
     required = frozenset(item.change for item in governance.requirements if item.required)
-    bindings = load_report_bindings(
+    bindings, binding_errors = _collect_report_bindings(
         repo_root,
         names,
         policy,
-        require_governance=required,
+        required=required,
     )
-    expected_governance = {name: bindings[name].governance_status for name in names}
+    healthy_names = tuple(name for name in names if name in bindings)
+    if not healthy_names:
+        return DesignCollection(evidence={}, errors=binding_errors)
+    healthy_required = required.intersection(healthy_names)
+    expected_governance = {name: bindings[name].governance_status for name in healthy_names}
     argv: list[str] = [
         sys.executable,
         "-m",
@@ -61,9 +69,9 @@ def collect_design_evidence(
         evaluation_date.isoformat(),
         "--parent-managed-process-group",
     ]
-    for name in names:
+    for name in healthy_names:
         argv.extend(("--change", name))
-    for name in sorted(required):
+    for name in sorted(healthy_required):
         argv.extend(("--require-governance", name))
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -88,7 +96,7 @@ def collect_design_evidence(
         payload,
         result.returncode,
         policy=policy,
-        expected_changes=names,
+        expected_changes=healthy_names,
         expected_governance=expected_governance,
         bindings=bindings,
         evaluation_date=evaluation_date,
@@ -99,7 +107,7 @@ def collect_design_evidence(
     if not isinstance(reports, list):
         _raise("Design-quality batch omitted its report list.")
     evidence: dict[str, GovernanceEvidence] = {}
-    errors: dict[str, WorkflowError] = {}
+    errors = dict(binding_errors)
     for raw in reports:
         if not isinstance(raw, dict) or not isinstance(raw.get("change"), str):
             _raise("Design-quality batch contains a malformed report.")
@@ -123,6 +131,42 @@ def collect_design_evidence(
     if set(evidence) | set(errors) != set(names):
         _raise("Design-quality batch did not return every selected active change.")
     return DesignCollection(evidence=evidence, errors=errors)
+
+
+def _collect_report_bindings(
+    repo_root: Path,
+    names: tuple[str, ...],
+    policy: Policy,
+    *,
+    required: frozenset[str],
+) -> tuple[dict[str, ReportBinding], dict[str, WorkflowError]]:
+    bindings: dict[str, ReportBinding] = {}
+    errors: dict[str, WorkflowError] = {}
+    total_bytes = 0
+    for name in names:
+        try:
+            binding = load_report_bindings(
+                repo_root,
+                (name,),
+                policy,
+                require_governance=required.intersection({name}),
+            )[name]
+        except DesignQualityError as exc:
+            errors[name] = WorkflowError(
+                code="workflow.snapshot.changed",
+                source="snapshot",
+                change=name,
+                message=str(exc),
+                remediation=(
+                    f"Stop concurrent edits, repair the OpenSpec artifacts for {name}, and rerun."
+                ),
+            )
+            continue
+        bindings[name] = binding
+        total_bytes += binding.total_bytes
+    if total_bytes > policy.limits.max_total_bytes_per_batch:
+        _raise("Design-quality binding artifacts exceed the policy batch byte limit.")
+    return bindings, errors
 
 
 def _report_error(name: str, message: str) -> WorkflowError:

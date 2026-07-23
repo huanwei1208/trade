@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Literal
 
 ErrorSource = Literal["request", "git", "openspec", "design_quality", "snapshot"]
@@ -16,20 +18,22 @@ class WorkflowError:
     message: str
     remediation: str
     change: str | None = None
-    details: dict[str, str] = field(default_factory=dict)
+    details: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.source not in _ERROR_SOURCES:
             raise ValueError(f"Unsupported workflow error source: {self.source}")
         if not self.code or not self.message or not self.remediation:
             raise ValueError("Workflow errors require code, message, and remediation")
+        details = dict(self.details)
         expected_details = (
             {"schema_name", "payload_digest"}
             if self.code == "workflow.openspec.unsupported_schema"
             else set()
         )
-        if set(self.details) != expected_details or not all(self.details.values()):
+        if set(details) != expected_details or not all(details.values()):
             raise ValueError(f"Workflow error details do not match the v1 contract: {self.code}")
+        object.__setattr__(self, "details", MappingProxyType(details))
 
     def to_dict(self) -> dict[str, object]:
         return {
