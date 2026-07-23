@@ -37,9 +37,9 @@ applies = false
 reason = "The change adds synchronous browser viewport state handling and no runtime worker, queue, polling loop, task execution, or concurrent orchestration."
 
 [evidence.contract]
-contract = "The public Web behavior is that the BTC selected-channel K-line opens on a recent visible range, keeps full loaded history reachable, and restores a compatible browser-local viewport."
+contract = "The public Web behavior is that the BTC selected-channel K-line opens on a recent rendered-candle visible range, keeps full loaded history reachable, and restores only a compatible browser-local market K-line viewport."
 consumers = "Human BTC Observatory users consume the React Market chart, its Fit and Newest controls, mouse wheel zoom, drag pan, and display timeframe controls."
-compatibility = "Existing Observatory API paths, payloads, URL parameters, selected date behavior, Date Evidence requests, lifecycle labels, and timeframe URL state remain unchanged. Invalid browser viewport cache values fall back to the recent default."
+compatibility = "Existing Observatory API paths, payloads, URL parameters, selected date behavior, Date Evidence requests, lifecycle labels, and timeframe URL state remain unchanged. Invalid, mismatched, whitespace-only, or out-of-series browser viewport cache values fall back to the recent default."
 migration = "No migration is required. The localStorage value is versioned and identity-bound; old or incompatible values are ignored by behavior."
 rollback = "Revert the frontend source change. Browser cache entries may remain but become unused when the key or version is removed, with no backend or data rollback."
 
@@ -53,15 +53,18 @@ paths = [
 ]
 contracts = [
   "selected-channel K-line loads full available series while applying only a visible logical range",
-  "browser-local viewport cache is versioned and bound to asset identity plus display timeframe",
-  "Fit shows all loaded history and Newest restores the recent viewport",
+  "browser-local viewport cache is versioned and bound to market source, lifecycle, knowledge, revision, and display timeframe identity",
+  "Fit shows all loaded history and Newest restores the deterministic latest recent viewport",
 ]
 failure_states = [
   "missing cache",
   "malformed cache",
   "stale cache version",
   "asset or timeframe mismatch",
+  "source or lifecycle mismatch",
+  "knowledge or revision mismatch",
   "range dates missing from current series",
+  "range contains no rendered candles",
   "localStorage unavailable",
   "chart runtime range application failure",
 ]

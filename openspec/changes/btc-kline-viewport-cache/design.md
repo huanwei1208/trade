@@ -16,16 +16,21 @@ or research contract.
 
 The BTC selected-channel K-line opens on the most recent available context when
 there is no compatible saved viewport. For daily data the default window is
-roughly one month; display aggregates use similarly small recent windows so the
-same control remains useful after timeframe changes. Older candles remain in
-the loaded chart model and are reachable through ordinary wheel zoom, drag pan,
+the last 31 rendered daily candles when available; weekly, monthly, and yearly
+display aggregates use the last 5, 2, and 2 rendered display candles
+respectively. Short or sparse series fall back to the widest safe chart view
+when fewer than two rendered candles are available. Older candles remain in the
+loaded chart model and are reachable through ordinary wheel zoom, drag pan,
 touch pan, Fit, and Newest controls.
 
 Acceptance requires a valid localStorage viewport to restore only when it
-matches the current asset identity and display timeframe, maps to dates present
-in the current aggregated series, and has an ordered date range. Invalid,
-malformed, stale-versioned, incompatible, or out-of-series records fall back to
-the deterministic recent-window default without an error surface.
+matches the current market K-line data family, asset identity, provider,
+instrument, quote, source interval, lifecycle channel, publication state,
+knowledge mode, revision policy, and display timeframe. Both cached endpoints
+must map exactly to rendered display candles in the current model and the range
+must contain at least one rendered candle. Invalid, malformed, stale-versioned,
+incompatible, whitespace-only, or out-of-series records fall back to the
+deterministic recent-window default without an error surface.
 
 ### Ownership and boundaries
 
@@ -37,17 +42,21 @@ storage concerns from leaking into the chart runtime.
 
 `ExchangeKlineChart.tsx` owns only chart-runtime application of a logical
 visible range and emits logical range changes through a typed callback. It does
-not read localStorage, choose date policy, or filter the loaded model.
+not read localStorage, choose date policy, or filter the loaded model. The
+viewport type remains distinct from `ObservatoryKlineWindow`, which is an
+adapter/request-window concept and must not be used for visible chart position.
 
 ### Data and state invariants
 
 The full selected-channel series remains the model authority. The viewport is a
 pair of logical indexes derived from existing model dates; it never deletes
 candles, changes adapter diagnostics, mutates selected date, or changes Date
-Evidence requests. The cache identity is bound to asset id or symbol plus the
-display timeframe, and the cache payload stores date strings rather than raw
-logical indexes so stale chart geometry cannot silently select a different
-history range after aggregation changes.
+Evidence requests. The cache identity is bound to the market K-line data
+family, asset id, display symbol, provider, instrument, quote, source interval,
+lifecycle channel, publication state, requested knowledge mode, revision
+policy, and display timeframe. The cache payload stores date strings rather
+than raw logical indexes so stale chart geometry cannot silently select a
+different history range after aggregation changes.
 
 All storage access is best-effort. Browser storage failures, denied access, or
 bad records return `null` and the chart continues with a normal visible range.
@@ -60,8 +69,9 @@ date, channel, knowledge, and Date Evidence behavior remain compatible.
 
 The new browser-local cache key is internal UI state. It is versioned and
 identity-bound, so rollback can leave old values unused without migration. Fit
-continues to show all loaded history, while Newest applies the recent cached or
-default viewport ending at the latest candle.
+continues to show all loaded history, while Newest always applies the
+deterministic latest recent viewport ending at the latest rendered candle,
+independent of any restored historical cache.
 
 ### Failure and recovery
 
@@ -69,7 +79,9 @@ Malformed cache values, reversed ranges, missing dates, incompatible asset or
 timeframe records, and localStorage exceptions are handled by ignoring the cache
 and using the recent default. If the chart runtime fails while applying a range,
 the existing renderer failure state is used and the user can retry or open the
-Compare view.
+Compare view. Initial programmatic range application suppresses its own
+visible-range callback so it cannot overwrite a restored cache before the user
+interacts.
 
 The chart must never render an empty or misleading viewport because of storage.
 If no recent or cached range can be derived, the chart falls back to the
@@ -79,9 +91,11 @@ existing fit-all behavior.
 
 The data volume does not grow. The chart still receives the same in-memory model
 and Lightweight Charts handles pan and zoom against loaded series data. Cache
-parsing is one small localStorage read per model/timeframe identity and one
-small write per visible range callback. Moving cache logic to the panel keeps
-the lazy chart bundle within the existing gzip budget.
+parsing is one small localStorage read per model/timeframe identity. Persistence
+is coalesced through animation-frame scheduling, skips unchanged normalized
+ranges, and stops further write attempts for the current panel session after a
+storage exception. Moving cache logic to the panel keeps the lazy chart bundle
+within the existing gzip budget.
 
 ### Observability and operations
 
@@ -93,10 +107,12 @@ remain the observable state in tests and UI.
 ### Validation strategy
 
 Focused Vitest coverage exercises the default recent window, valid cache
-restore, incompatible cache fallback, logical visible range application, owner
-callback wiring, and persistence. Frontend typecheck and build validate the
-typed React boundary and the Observatory bundle budget. Repository checks and
-`git diff --check` cover shared quality gates.
+restore, incompatible cache fallback, knowledge/source mismatch fallback,
+out-of-series fallback, malformed-cache fallback, localStorage write failure,
+logical visible range application, owner callback wiring, callback coalescing,
+and persistence. Frontend typecheck and build validate the typed React boundary
+and the Observatory bundle budget. Repository checks and `git diff --check`
+cover shared quality gates.
 
 ### Alternatives and trade-offs
 
