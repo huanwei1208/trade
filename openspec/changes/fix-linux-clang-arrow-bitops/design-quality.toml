@@ -1,0 +1,73 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The user-facing developer contract is the stable linux-clang configure/build/test command surface, and this change restores that contract without renaming presets or commands."
+
+[[impacts]]
+id = "persistent_write"
+applies = false
+reason = "The implementation is limited to owned CMake/OpenSpec source and generated build output; application data, models, runtime records, and market artifacts are outside the touched surface."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "The change does not alter API payloads, database tables, parquet layouts, catalog schemas, model formats, or any persisted data schema."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "The change does not compute, backtest, label, rank, recommend, or reinterpret historical market knowledge."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "The change does not train, score, calibrate, promote, or serve any model and produces no prediction, recommendation, ranking, or trading decision."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "The change does not ingest, fetch, transform, cache, or license any news, social, macro, on-chain, exchange, or third-party event feed."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = false
+reason = "The change does not add workers, queues, runtime orchestration, shared mutable state, task scheduling, or concurrent execution behavior."
+
+[evidence.contract]
+contract = "The linux-clang preset remains the stable developer command surface for configure, build, and test. The fix restores compilation of vendored Arrow/Parquet under Clang 13 plus libc++ while preserving preset name, compiler selection, C++ standard, standard-library flags, and generated artifact layout."
+consumers = "Developers and agents running ./trade configure linux-clang, ./trade build linux-clang, and ./trade test linux-clang consume this contract. The engine CMake graph and first-party engine storage targets consume the vendored Arrow and Parquet targets."
+compatibility = "Existing commands, preset variables, target names, source includes, vendor submodule revisions, and engine runtime behavior remain compatible. Non-Clang or non-libc++ configurations skip the shim, and Clang libc++ configurations apply the macro only after std::bit_width compiles and libc++ lacks __cpp_lib_bitops."
+migration = "No data or command migration is required. Generated build trees may be reconfigured normally, and existing source consumers continue to include Arrow headers through the same CMake targets."
+rollback = "Revert the owned CMake helper and OpenSpec artifacts, then re-run ./trade configure linux-clang to regenerate the local build tree. No durable data cleanup or schema rollback is required."
+
+[[obligations]]
+id = "linux-clang.arrow-bitops"
+owner = "engine/cmake"
+paths = [
+  "engine/CMakeLists.txt",
+  "engine/cmake/deps.cmake",
+  "openspec/changes/fix-linux-clang-arrow-bitops/",
+]
+contracts = [
+  "linux-clang configure/build/test commands remain stable",
+  "vendored Arrow and Parquet targets receive private bitops compatibility only for Clang plus libc++ when std::bit_width compiles and libc++ lacks __cpp_lib_bitops",
+  "project-owned trade_arrow_libcxx_bitops_compat propagates the compatibility definition to first-party consumers when required",
+  "configure diagnostics report patched target count or an explicit skip/failure reason",
+  "engine/vendor source files remain unmodified",
+]
+failure_states = [
+  "std_bit_width_probe_fails",
+  "libcxx_bitops_macro_already_available",
+  "non_clang_compiler",
+  "non_libcxx_standard_library",
+  "vendored_arrow_targets_absent",
+  "missing_llvm13_libcxx_or_openmp_packages",
+  "first_party_arrow_header_consumer_without_definition",
+]
+spec_requirements = [
+  "linux-clang-build:Linux Clang builds vendored Arrow with libc++ bit operations",
+]
+validation_tasks = ["2.1", "2.2", "3.1", "3.2", "3.3", "3.4"]

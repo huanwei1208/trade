@@ -52,6 +52,10 @@ if(HAVE_LIGHTGBM)
     target_link_libraries(trade_deps INTERFACE LightGBM::lightgbm)
 endif()
 
+if(TARGET trade_arrow_libcxx_bitops_compat)
+    target_link_libraries(trade_deps INTERFACE trade_arrow_libcxx_bitops_compat)
+endif()
+
 if(HAVE_ONNXRUNTIME)
     target_link_libraries(trade_deps INTERFACE onnxruntime::onnxruntime)
 endif()

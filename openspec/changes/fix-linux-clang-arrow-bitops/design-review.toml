@@ -1,0 +1,114 @@
+schema_version = 1
+policy_version = "v1"
+policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
+artifact_digest_algorithm = "sha256-path-content-v1"
+artifact_digest = "sha256:3262d64913d3dce934e75a3537d3fe4f22c082027209cbdc45a95a6ae81cc290"
+reviewed_commit = "1111111111111111111111111111111111111111"
+reviewed_at = "2026-07-23"
+status = "approved"
+bootstrap = false
+
+[[judges]]
+role = "reliability"
+status = "approved"
+score_after = 8
+
+[[judges]]
+role = "performance"
+status = "approved"
+score_after = 8
+
+[[judges]]
+role = "architecture"
+status = "approved"
+score_after = 8
+
+[[judges]]
+role = "data_quality"
+status = "approved"
+score_after = 8
+
+[[judges]]
+role = "observability"
+status = "approved"
+score_after = 8
+
+[[judges]]
+role = "news_future"
+status = "approved"
+score_after = 8
+
+[[findings]]
+id = "LCB-001"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 5
+status = "resolved"
+resolution = "The CMake helper now counts patched Arrow/Parquet targets, reports target names in configure output, and fails configure when the active compatibility path patches zero targets."
+evidence = [
+  "engine/cmake/deps.cmake:_trade_patched_arrow_targets",
+  "design.md:Failure and recovery",
+  "tasks.md:Validation Evidence",
+]
+
+[[findings]]
+id = "LCB-002"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 4
+status = "resolved"
+resolution = "The compatibility probes are now keyed to compiler path, compiler id, compiler version, C++ standard, and CMAKE_CXX_FLAGS; stale cached probe results are cleared when those inputs change."
+evidence = [
+  "engine/cmake/deps.cmake:TRADE_CXX_LIBCXX_BITOPS_PROBE_KEY",
+  "design.md:Data and state invariants",
+]
+
+[[findings]]
+id = "LCB-003"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 3
+status = "resolved"
+resolution = "The shim now probes whether libc++ already exposes __cpp_lib_bitops and only synthesizes the feature-test macro when std::bit_width compiles but the macro is missing or too old."
+evidence = [
+  "engine/cmake/deps.cmake:TRADE_CXX_HAS_LIBCXX_BITOPS_MACRO",
+  "design.md:Contracts and compatibility",
+  "tasks.md:Validation Evidence",
+]
+
+[[findings]]
+id = "LCB-004"
+priority = "P1"
+severity = "MED"
+consensus_count = 4
+status = "resolved"
+resolution = "Vendored Arrow/Parquet compile targets now receive private compile definitions, while first-party propagation is explicit through the project-owned trade_arrow_libcxx_bitops_compat interface."
+evidence = [
+  "engine/cmake/deps.cmake:trade_arrow_libcxx_bitops_compat",
+  "engine/CMakeLists.txt:trade_deps",
+  "design.md:Ownership and boundaries",
+]
+
+[[findings]]
+id = "LCB-005"
+priority = "P1"
+severity = "MED"
+consensus_count = 4
+status = "resolved"
+resolution = "Validation evidence now records configure probe outcomes, the patched target count and target names, build/test outcomes, CTest zero-test status, diff check status, and the consensus review resolution."
+evidence = [
+  "tasks.md:Validation Evidence",
+  "design.md:Validation strategy",
+]
+
+[[findings]]
+id = "LCB-006"
+priority = "P2"
+severity = "LOW"
+consensus_count = 3
+status = "accepted"
+resolution = "The broad trade_deps propagation remains accepted for this build fix because public storage headers expose Arrow types; splitting storage dependencies or removing Arrow public-header exposure is a separate API/header refactor."
+evidence = [
+  "tasks.md:Validation Evidence",
+  "design.md:Alternatives and trade-offs",
+]
