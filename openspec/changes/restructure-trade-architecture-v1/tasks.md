@@ -33,7 +33,7 @@
   zero blocker report saved in the design review record. [validates:architecture.boundaries]
   [validates:migration.governance] [validation:test]
 
-- [ ] 1.4 Run the required six-role design review from an isolated review
+- [x] 1.4 Run the required six-role design review from an isolated review
   worktree and synthesize architecture, reliability, performance, data-quality,
   observability and news/future findings. Objective: challenge the design
   before strict approval. Inputs: frozen design artifact generation and real
@@ -44,7 +44,7 @@
   changed. Completion evidence: six judge reports and a synthesized finding
   list. [validation:review]
 
-- [ ] 1.5 Resolve every P0 and material P1 design finding, refresh the
+- [x] 1.5 Resolve every P0 and material P1 design finding, refresh the
   non-strict design check, record digest-bound review approval and run strict
   design-check. Objective: make the architecture implementable but still
   design-only. Inputs: review consensus and current artifact digest. Outputs:
@@ -271,7 +271,7 @@
 
 ## 5. Final Design Approval and Handoff
 
-- [ ] 5.1 Reconcile the approved architecture with all compatibility and [validates:interfaces.compatibility] [validates:dependency.guardrails] [validates:platform.foundation] [validation:test]
+- [x] 5.1 Reconcile the approved architecture with all compatibility and [validates:interfaces.compatibility] [validates:dependency.guardrails] [validates:platform.foundation] [validation:test]
   dependency baselines. Objective: ensure the child-change order has no hidden
   import, table-owner or interface dependency. Inputs: completed design review,
   contract inventories and task graph. Outputs: final child-change ordering and
@@ -287,7 +287,7 @@
   [validates:dependency.guardrails] [validates:platform.foundation]
   [validation:test]
 
-- [ ] 5.2 Record digest-bound six-role design consensus and strict approval. [validates:migration.governance] [validates:platform.foundation] [validation:review]
+- [x] 5.2 Record digest-bound six-role design consensus and strict approval. [validates:migration.governance] [validates:platform.foundation] [validation:review]
   Objective: formally gate implementation until the current design is
   approved. Inputs: current artifact digest, non-strict report and six judges'
   file/line evidence. Outputs: `design-review.toml`, strict gate report and
