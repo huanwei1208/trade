@@ -131,6 +131,70 @@ def test_source_generation_detects_artifact_drift(tmp_path: Path) -> None:
         generation.verify(policy)
 
 
+def test_source_generation_detects_active_scope_drift(tmp_path: Path) -> None:
+    repo = _snapshot_repo(tmp_path)
+    policy = load_policy(repo)
+    generation = capture_source_generation(
+        repo,
+        executor=BoundedProcessExecutor(),
+        deadline=time.monotonic() + 10,
+        policy=policy,
+        limits=WorkflowLimits(),
+    )
+    _write_change(repo, "added-during-collection", governed=True)
+
+    with pytest.raises(WorkflowCollectionError) as raised:
+        generation.verify(policy)
+
+    assert raised.value.error.code == "workflow.snapshot.scope_changed"
+
+
+def test_source_generation_detects_git_head_drift(tmp_path: Path) -> None:
+    repo = _snapshot_repo(tmp_path)
+    policy = load_policy(repo)
+    generation = capture_source_generation(
+        repo,
+        executor=BoundedProcessExecutor(),
+        deadline=time.monotonic() + 10,
+        policy=policy,
+        limits=WorkflowLimits(),
+    )
+    unrelated = repo / "unrelated.txt"
+    unrelated.write_text("changed Git generation\n", encoding="utf-8")
+    _git(repo, "add", "unrelated.txt")
+    _git(repo, "commit", "-m", "move head without openspec changes")
+
+    with pytest.raises(WorkflowCollectionError) as raised:
+        generation.verify(policy)
+
+    assert raised.value.error.code == "workflow.git.provenance"
+
+
+def test_source_generation_rejects_temporary_snapshot_mutation(tmp_path: Path) -> None:
+    repo = _snapshot_repo(tmp_path)
+    policy = load_policy(repo)
+    generation = capture_source_generation(
+        repo,
+        executor=BoundedProcessExecutor(),
+        deadline=time.monotonic() + 10,
+        policy=policy,
+        limits=WorkflowLimits(),
+    )
+
+    with pytest.raises(WorkflowCollectionError) as raised:
+        with generation.materialize() as materialized:
+            proposal = (
+                materialized
+                / "openspec"
+                / "changes"
+                / "new-change"
+                / "proposal.md"
+            )
+            proposal.write_text("native mutation\n", encoding="utf-8")
+
+    assert raised.value.error.code == "workflow.snapshot.temporary_changed"
+
+
 class _NativeExecutor(BoundedProcessExecutor):
     def __init__(
         self,

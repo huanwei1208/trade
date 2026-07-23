@@ -143,3 +143,37 @@ def test_cancel_all_terminates_active_process_group(tmp_path: Path) -> None:
     assert not thread.is_alive()
     assert errors
     assert not _pid_exists(pid)
+
+
+def test_executor_reaps_process_group_on_unexpected_reader_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    child_pid = tmp_path / "unexpected.pid"
+    script = (
+        "import pathlib,subprocess,sys,time;"
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']);"
+        f"pathlib.Path({str(child_pid)!r}).write_text(str(child.pid));"
+        "time.sleep(60)"
+    )
+
+    def fail_after_child_started(
+        _process: object,
+        *,
+        deadline: float,
+        output_limit_bytes: int,
+    ) -> tuple[bytes, bytes]:
+        del deadline, output_limit_bytes
+        _wait_for_pid(child_pid)
+        raise RuntimeError("unexpected selector failure")
+
+    monkeypatch.setattr(
+        BoundedProcessExecutor,
+        "_communicate",
+        staticmethod(fail_after_child_started),
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected selector failure"):
+        _run(BoundedProcessExecutor(), tmp_path, script)
+
+    assert not _pid_exists(_wait_for_pid(child_pid))

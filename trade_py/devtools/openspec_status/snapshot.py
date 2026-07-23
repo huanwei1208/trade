@@ -42,14 +42,28 @@ class SourceGeneration:
     snapshots: tuple[ChangeSnapshot, ...]
     config_payload: bytes
     config_signature: tuple[int, int, int]
+    base_ref_sha: str
     source: WorkflowSource
     governance: GovernanceResolution
+    executor: BoundedProcessExecutor
+    deadline: float
+    limits: WorkflowLimits
 
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(item.name for item in self.snapshots)
 
     def verify(self, policy: Policy) -> None:
+        names = _active_change_names(self.repo_root, self.limits.max_changes)
+        if names != self.names:
+            raise WorkflowCollectionError(
+                WorkflowError(
+                    code="workflow.snapshot.scope_changed",
+                    source="snapshot",
+                    message="Active OpenSpec change scope changed during collection.",
+                    remediation="Stop concurrent edits and rerun the workflow status command.",
+                )
+            )
         for snapshot in self.snapshots:
             try:
                 verify_snapshot(snapshot, policy)
@@ -78,6 +92,22 @@ class SourceGeneration:
                     remediation="Stop concurrent edits and rerun the workflow status command.",
                 )
             )
+        head = _git_commit(
+            self.executor,
+            self.repo_root,
+            self.deadline,
+            self.limits,
+            "HEAD",
+        )
+        base_ref_sha = _git_commit(
+            self.executor,
+            self.repo_root,
+            self.deadline,
+            self.limits,
+            self.source.base_ref,
+        )
+        if head != self.source.git_head or base_ref_sha != self.base_ref_sha:
+            _raise_git("Git HEAD or base ref changed during workflow collection.")
 
     @contextmanager
     def materialize(self) -> Iterator[Path]:
@@ -98,7 +128,29 @@ class SourceGeneration:
                     destination.write_text(artifact.content, encoding="utf-8")
                     mtime_ns = artifact.stat_signature[2]
                     os.utime(destination, ns=(mtime_ns, mtime_ns))
-            yield root
+            manifest = _materialized_manifest(
+                root,
+                byte_limit=self.limits.report_output_bytes + _CONFIG_LIMIT,
+            )
+            try:
+                yield root
+            except BaseException:
+                raise
+            else:
+                if _materialized_manifest(
+                    root,
+                    byte_limit=self.limits.report_output_bytes + _CONFIG_LIMIT,
+                ) != manifest:
+                    raise WorkflowCollectionError(
+                        WorkflowError(
+                            code="workflow.snapshot.temporary_changed",
+                            source="snapshot",
+                            message="Native OpenSpec modified its temporary evidence snapshot.",
+                            remediation=(
+                                "Repair the native read command so it is non-mutating, then rerun."
+                            ),
+                        )
+                    )
 
 
 def capture_source_generation(
@@ -110,22 +162,21 @@ def capture_source_generation(
     limits: WorkflowLimits,
 ) -> SourceGeneration:
     root = repo_root.resolve()
-    names = _active_change_names(root, limits.max_changes)
-    snapshots = load_snapshots(root, names, policy) if names else ()
-    config_payload, config_signature = _read_config(root)
-    head = _git_text(executor, root, deadline, limits, ("rev-parse", "HEAD")).strip()
-    if not _COMMIT_RE.fullmatch(head):
-        _raise_git("Git HEAD is not a full commit SHA.")
+    head = _git_commit(executor, root, deadline, limits, "HEAD")
     base_ref = _resolve_base_ref(executor, root, deadline, limits)
+    base_ref_sha = _git_commit(executor, root, deadline, limits, base_ref)
     base_sha = _git_text(
         executor,
         root,
         deadline,
         limits,
-        ("merge-base", base_ref, "HEAD"),
+        ("merge-base", base_ref_sha, head),
     ).strip()
     if not _COMMIT_RE.fullmatch(base_sha):
         _raise_git("Git merge base is not a full commit SHA.")
+    names = _active_change_names(root, limits.max_changes)
+    snapshots = load_snapshots(root, names, policy) if names else ()
+    config_payload, config_signature = _read_config(root)
     base_paths = _base_openspec_paths(executor, root, deadline, limits, base_sha)
     base_names = {
         parts[2]
@@ -160,6 +211,7 @@ def capture_source_generation(
         snapshots=snapshots,
         config_payload=config_payload,
         config_signature=config_signature,
+        base_ref_sha=base_ref_sha,
         source=WorkflowSource(
             git_head=head,
             base_ref=base_ref,
@@ -167,6 +219,9 @@ def capture_source_generation(
             snapshot_digest=snapshot_digest,
         ),
         governance=governance,
+        executor=executor,
+        deadline=deadline,
+        limits=limits,
     )
 
 
@@ -320,6 +375,25 @@ def _git_text(
     return _git_bytes(executor, repo_root, deadline, limits, args).decode("utf-8", "strict")
 
 
+def _git_commit(
+    executor: BoundedProcessExecutor,
+    repo_root: Path,
+    deadline: float,
+    limits: WorkflowLimits,
+    ref: str,
+) -> str:
+    commit = _git_text(
+        executor,
+        repo_root,
+        deadline,
+        limits,
+        ("rev-parse", "--verify", f"{ref}^{{commit}}"),
+    ).strip()
+    if not _COMMIT_RE.fullmatch(commit):
+        _raise_git(f"Git ref does not resolve to a full commit SHA: {ref}")
+    return commit
+
+
 def _git_bytes(
     executor: BoundedProcessExecutor,
     repo_root: Path,
@@ -335,6 +409,55 @@ def _git_bytes(
         output_limit_bytes=limits.native_output_bytes,
         source="git",
     ).stdout
+
+
+def _materialized_manifest(
+    root: Path,
+    *,
+    byte_limit: int,
+) -> tuple[tuple[str, int, int, int, str], ...]:
+    rows: list[tuple[str, int, int, int, str]] = []
+    total = 0
+    try:
+        paths = sorted(root.rglob("*"))
+        for path in paths:
+            relative = path.relative_to(root).as_posix()
+            metadata = path.lstat()
+            if stat.S_ISDIR(metadata.st_mode):
+                rows.append(
+                    (
+                        f"{relative}/",
+                        stat.S_IMODE(metadata.st_mode),
+                        metadata.st_mtime_ns,
+                        0,
+                        "directory",
+                    )
+                )
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise OSError(f"temporary snapshot contains a non-regular entry: {relative}")
+            total += metadata.st_size
+            if total > byte_limit:
+                raise OSError("temporary snapshot exceeds its byte limit")
+            rows.append(
+                (
+                    relative,
+                    stat.S_IMODE(metadata.st_mode),
+                    metadata.st_mtime_ns,
+                    metadata.st_size,
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                )
+            )
+    except OSError as exc:
+        raise WorkflowCollectionError(
+            WorkflowError(
+                code="workflow.snapshot.temporary_changed",
+                source="snapshot",
+                message=f"Cannot verify the temporary OpenSpec snapshot: {exc}",
+                remediation="Repair the native read command so it is non-mutating, then rerun.",
+            )
+        ) from exc
+    return tuple(rows)
 
 
 def _snapshot_digest(

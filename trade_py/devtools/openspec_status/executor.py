@@ -86,9 +86,6 @@ class BoundedProcessExecutor:
                     deadline=local_deadline,
                     output_limit_bytes=output_limit_bytes,
                 )
-            except KeyboardInterrupt:
-                _terminate_group(process)
-                raise
             except _ProcessBoundError as exc:
                 _terminate_group(process)
                 self._raise(
@@ -98,6 +95,9 @@ class BoundedProcessExecutor:
                     exc.message,
                     "Fix the named dependency or reduce its output, then rerun.",
                 )
+            except BaseException:
+                _terminate_group(process)
+                raise
             if _group_exists(process.pid):
                 _terminate_group(process)
                 self._raise(
