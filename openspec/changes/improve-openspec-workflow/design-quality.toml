@@ -1,0 +1,79 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "Adds an additive public developer CLI command and a versioned JSON report contract."
+
+[[impacts]]
+id = "persistent_write"
+applies = false
+reason = "The workflow status command is repository read-only and owns no persistent writer."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "No database, parquet, API payload, or runtime schema is added or migrated."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "The command reports repository workflow evidence and computes no historical market knowledge."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "No forecast, recommendation, ranking, calibration, or model output is produced."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "No news, social, macro, on-chain, exchange, or third-party event feed is ingested."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = false
+reason = "Collection is a sequential developer command with bounded local subprocesses and no concurrent runtime workflow."
+
+[evidence.contract]
+contract = "The additive public contract is ./trade dev openspec [change] [--format text|json] with schema trade.openspec.workflow.v1."
+consumers = "Repository contributors, implementation agents, reviewers, and maintainers consume the text and JSON status reports."
+compatibility = "Existing native OpenSpec commands, trade dev commands, design-check behavior, runtime APIs, and data contracts remain unchanged."
+migration = "No migration is required because the command is additive and stores no state."
+rollback = "Reverting the command route, owner package, and tests restores the previous workflow without changing OpenSpec artifacts."
+
+[[obligations]]
+id = "openspec.status-service"
+owner = "trade_py/devtools/openspec_status"
+paths = ["trade_py/devtools/openspec_status/", "tests/test_openspec_status.py"]
+contracts = ["active change lifecycle derivation", "read-only native OpenSpec aggregation"]
+failure_states = ["artifact_task_ambiguity", "native_validation_failure", "governance_failure", "dependency_unavailable", "partial_change_failure"]
+spec_requirements = [
+  "openspec-workflow-status:Active OpenSpec workflow status is aggregated read-only",
+  "openspec-workflow-status:Artifact completion and implementation completion remain distinct",
+  "openspec-workflow-status:Governance and validation block unsafe progression",
+  "openspec-workflow-status:Machine-readable reporting and failures are stable",
+]
+validation_tasks = ["1.3", "2.4", "2.5", "4.1"]
+
+[[obligations]]
+id = "openspec.public-cli"
+owner = "trade_py/cli/dev.py"
+paths = ["trade_py/cli/dev.py", "trade_py/devtools/openspec_status/cli.py", "tests/test_openspec_status_cli.py"]
+contracts = ["./trade dev openspec [change] [--format text|json]", "trade.openspec.workflow.v1"]
+failure_states = ["invalid_argument", "unknown_change", "repository_discovery_failure", "malformed_native_json", "subprocess_timeout", "output_limit"]
+spec_requirements = [
+  "openspec-workflow-status:Active OpenSpec workflow status is aggregated read-only",
+  "openspec-workflow-status:Machine-readable reporting and failures are stable",
+]
+validation_tasks = ["1.3", "3.3", "3.4", "4.1"]
+
+[[obligations]]
+id = "openspec.review-evidence"
+owner = "openspec governance"
+paths = ["openspec/changes/improve-openspec-workflow/design-review.toml", "openspec/changes/improve-openspec-workflow/design.md"]
+contracts = ["digest-bound six-role review", "current-date strict implementation approval"]
+failure_states = ["missing_review", "stale_artifact_digest", "incomplete_panel", "unresolved_p0"]
+spec_requirements = ["openspec-workflow-status:Governance and validation block unsafe progression"]
+validation_tasks = ["1.4", "4.2"]
