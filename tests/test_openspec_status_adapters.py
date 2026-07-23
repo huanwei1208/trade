@@ -203,12 +203,18 @@ class _NativeExecutor(BoundedProcessExecutor):
         failed_status: str | None = None,
         unsupported_schema: str | None = None,
         malformed_validation: str | None = None,
+        validation_returncode: int | None = None,
+        validation_summary: object | None = None,
+        status_padding_bytes: int = 0,
     ) -> None:
         super().__init__()
         self.names = names
         self.failed_status = failed_status
         self.unsupported_schema = unsupported_schema
         self.malformed_validation = malformed_validation
+        self.validation_returncode = validation_returncode
+        self.validation_summary = validation_summary
+        self.status_padding_bytes = status_padding_bytes
         self._lock = threading.Lock()
         self.active_status = 0
         self.max_active_status = 0
@@ -241,6 +247,8 @@ class _NativeExecutor(BoundedProcessExecutor):
             }
             return _result(argv, payload)
         if argv[:2] == ("openspec", "validate"):
+            selected = (change,) if change else self.names
+            failed = int(self.malformed_validation in selected)
             payload = {
                 "items": [
                     {
@@ -250,12 +258,31 @@ class _NativeExecutor(BoundedProcessExecutor):
                         "issues": [],
                         "durationMs": 1,
                     }
-                    for name in ((change,) if change else self.names)
+                    for name in selected
                 ],
-                "summary": {},
+                "summary": (
+                    self.validation_summary
+                    if self.validation_summary is not None
+                    else _validation_summary(
+                        items=len(selected),
+                        passed=len(selected) - failed,
+                        failed=failed,
+                    )
+                ),
                 "version": "1.0",
             }
-            return _result(argv, payload)
+            result = _result(argv, payload)
+            return ProcessResult(
+                argv=result.argv,
+                returncode=(
+                    self.validation_returncode
+                    if self.validation_returncode is not None
+                    else int(failed > 0)
+                ),
+                stdout=result.stdout,
+                stderr=result.stderr,
+                duration_ms=result.duration_ms,
+            )
         if argv[:3] == ("openspec", "status", "--change"):
             name = argv[3]
             with self._lock:
@@ -288,6 +315,11 @@ class _NativeExecutor(BoundedProcessExecutor):
                                 "status": "done",
                             }
                         ],
+                        **(
+                            {"padding": "x" * self.status_padding_bytes}
+                            if self.status_padding_bytes
+                            else {}
+                        ),
                     },
                 )
             finally:
@@ -304,6 +336,17 @@ def _result(argv: tuple[str, ...], payload: object) -> ProcessResult:
         stderr=b"",
         duration_ms=1,
     )
+
+
+def _validation_summary(*, items: int, passed: int, failed: int) -> dict[str, object]:
+    counts = {"items": items, "passed": passed, "failed": failed}
+    return {
+        "totals": counts,
+        "byType": {
+            "change": counts,
+            "spec": {"items": 0, "passed": 0, "failed": 0},
+        },
+    }
 
 
 @pytest.mark.parametrize("count", (10, 100))
@@ -358,6 +401,62 @@ def test_native_malformed_validation_preserves_sibling(tmp_path: Path) -> None:
     assert set(collection.changes) == {"change-a"}
     assert collection.errors["change-b"].code == "workflow.openspec.shape"
     assert collection.errors["change-b"].change == "change-b"
+
+
+@pytest.mark.parametrize(
+    ("summary", "returncode"),
+    (
+        (_validation_summary(items=2, passed=1, failed=1), 0),
+        (_validation_summary(items=2, passed=2, failed=0), 1),
+        (_validation_summary(items=1, passed=1, failed=0), 0),
+        ({}, 0),
+    ),
+)
+def test_native_validation_rejects_summary_or_returncode_contradiction(
+    tmp_path: Path,
+    summary: object,
+    returncode: int,
+) -> None:
+    names = ("change-a", "change-b")
+    executor = _NativeExecutor(
+        names,
+        validation_returncode=returncode,
+        validation_summary=summary,
+    )
+
+    with pytest.raises(WorkflowCollectionError) as raised:
+        collect_native_evidence(
+            tmp_path,
+            expected_names=names,
+            requested_change=None,
+            executor=executor,
+            deadline=time.monotonic() + 10,
+            limits=WorkflowLimits(),
+        )
+
+    assert raised.value.error.code == "workflow.openspec.shape"
+    assert raised.value.error.change is None
+
+
+def test_native_aggregate_output_budget_fails_closed(tmp_path: Path) -> None:
+    names = tuple(f"change-{index:03d}" for index in range(10))
+    executor = _NativeExecutor(names, status_padding_bytes=512)
+
+    with pytest.raises(WorkflowCollectionError) as raised:
+        collect_native_evidence(
+            tmp_path,
+            expected_names=names,
+            requested_change=None,
+            executor=executor,
+            deadline=time.monotonic() + 10,
+            limits=WorkflowLimits(
+                native_output_bytes=2048,
+                report_output_bytes=4096,
+            ),
+        )
+
+    assert raised.value.error.code == "workflow.openspec.aggregate_output_limit"
+    assert raised.value.error.change is None
 
 
 def test_design_malformed_report_preserves_sibling(

@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any, NoReturn
 
 from trade_py.devtools.openspec_status.errors import (
@@ -44,6 +45,37 @@ class NativeCollection:
     list_digest: str
 
 
+@dataclass(frozen=True)
+class _ParsedStatus:
+    schema_name: str
+    is_complete: bool
+    apply_requires: tuple[str, ...]
+    artifacts: tuple[ArtifactEvidence, ...]
+    payload_digest: str
+
+
+class _OutputBudget:
+    def __init__(self, limit_bytes: int) -> None:
+        self._limit_bytes = limit_bytes
+        self._consumed_bytes = 0
+        self._lock = Lock()
+
+    def consume(self, result: ProcessResult) -> None:
+        size = len(result.stdout) + len(result.stderr)
+        with self._lock:
+            self._consumed_bytes += size
+            if self._consumed_bytes > self._limit_bytes:
+                _raise(
+                    "workflow.openspec.aggregate_output_limit",
+                    None,
+                    (
+                        "Combined native OpenSpec output exceeded the command "
+                        f"budget of {self._limit_bytes} bytes."
+                    ),
+                    "Reduce active OpenSpec output or inspect one change at a time.",
+                )
+
+
 def collect_native_evidence(
     snapshot_root: Path,
     *,
@@ -53,6 +85,7 @@ def collect_native_evidence(
     deadline: float,
     limits: WorkflowLimits,
 ) -> NativeCollection:
+    output_budget = _OutputBudget(limits.report_output_bytes)
     list_result = executor.run(
         ("openspec", "list", "--json"),
         cwd=snapshot_root,
@@ -61,6 +94,7 @@ def collect_native_evidence(
         output_limit_bytes=limits.native_output_bytes,
         source="openspec",
     )
+    output_budget.consume(list_result)
     list_payload = _json_object(list_result, command="openspec list --json")
     list_rows = _parse_list(list_payload)
     names = tuple(sorted(list_rows))
@@ -94,9 +128,11 @@ def collect_native_evidence(
         change=requested_change,
         allowed_returncodes=frozenset({0, 1}),
     )
+    output_budget.consume(validation_result)
     validations, validation_errors = _parse_validations(
         _json_object(validation_result, command="openspec validate --json"),
         expected_names=selected,
+        returncode=validation_result.returncode,
     )
     validation_digest = _digest(validation_result.stdout)
     statuses, status_errors = _collect_statuses(
@@ -105,6 +141,7 @@ def collect_native_evidence(
         executor=executor,
         deadline=deadline,
         limits=limits,
+        output_budget=output_budget,
     )
     list_digest = _digest(list_result.stdout)
     changes: dict[str, NativeChange] = {}
@@ -112,42 +149,23 @@ def collect_native_evidence(
     for name in selected:
         if name in errors:
             continue
-        try:
-            status_result, status_payload = statuses[name]
-            status = _parse_status(status_payload, expected_name=name)
-            if (
-                status["schema_name"] != "spec-driven"
-                or "tasks" not in status["apply_requires"]
-                or not any(item.id == "tasks" for item in status["artifacts"])
-            ):
-                _raise(
-                    "workflow.openspec.unsupported_schema",
-                    name,
-                    "Active change does not use the supported task-bearing spec-driven schema.",
-                    "Add a reviewed schema strategy before aggregating this change.",
-                    details={
-                        "schema_name": status["schema_name"],
-                        "payload_digest": _digest(status_result.stdout),
-                    },
-                )
-            changes[name] = NativeChange(
-                name=name,
-                tasks=list_rows[name],
-                evidence=NativeEvidence(
-                    schema_name=status["schema_name"],
-                    is_complete=status["is_complete"],
-                    apply_requires=status["apply_requires"],
-                    artifacts=status["artifacts"],
-                    validation=validations[name],
-                    payload_digests={
-                        "list": list_digest,
-                        "status": _digest(status_result.stdout),
-                        "validation": validation_digest,
-                    },
-                ),
-            )
-        except WorkflowCollectionError as exc:
-            errors[name] = exc.error
+        status = statuses[name]
+        changes[name] = NativeChange(
+            name=name,
+            tasks=list_rows[name],
+            evidence=NativeEvidence(
+                schema_name=status.schema_name,
+                is_complete=status.is_complete,
+                apply_requires=status.apply_requires,
+                artifacts=status.artifacts,
+                validation=validations[name],
+                payload_digests={
+                    "list": list_digest,
+                    "status": status.payload_digest,
+                    "validation": validation_digest,
+                },
+            ),
+        )
     return NativeCollection(
         names=names,
         changes=changes,
@@ -163,14 +181,15 @@ def _collect_statuses(
     executor: BoundedProcessExecutor,
     deadline: float,
     limits: WorkflowLimits,
+    output_budget: _OutputBudget,
 ) -> tuple[
-    dict[str, tuple[ProcessResult, dict[str, Any]]],
+    dict[str, _ParsedStatus],
     dict[str, WorkflowError],
 ]:
     if not names:
         return {}, {}
 
-    def collect(name: str) -> tuple[str, ProcessResult, dict[str, Any]]:
+    def collect(name: str) -> tuple[str, _ParsedStatus]:
         if time.monotonic() >= deadline:
             _raise(
                 "workflow.process.timeout",
@@ -187,9 +206,42 @@ def _collect_statuses(
             source="openspec",
             change=name,
         )
-        return name, result, _json_object(result, command="openspec status --json")
+        output_budget.consume(result)
+        payload = _json_object(result, command="openspec status --json")
+        schema_name = _status_identity(payload, expected_name=name)
+        payload_digest = _digest(result.stdout)
+        if schema_name != "spec-driven":
+            _raise(
+                "workflow.openspec.unsupported_schema",
+                name,
+                "Active change does not use the supported task-bearing spec-driven schema.",
+                "Add a reviewed schema strategy before aggregating this change.",
+                details={
+                    "schema_name": schema_name,
+                    "payload_digest": payload_digest,
+                },
+            )
+        status = _parse_status(
+            payload,
+            expected_name=name,
+            payload_digest=payload_digest,
+        )
+        if "tasks" not in status.apply_requires or not any(
+            item.id == "tasks" for item in status.artifacts
+        ):
+            _raise(
+                "workflow.openspec.unsupported_schema",
+                name,
+                "Active change does not use the supported task-bearing spec-driven schema.",
+                "Add a reviewed schema strategy before aggregating this change.",
+                details={
+                    "schema_name": schema_name,
+                    "payload_digest": payload_digest,
+                },
+            )
+        return name, status
 
-    collected: dict[str, tuple[ProcessResult, dict[str, Any]]] = {}
+    collected: dict[str, _ParsedStatus] = {}
     errors: dict[str, WorkflowError] = {}
     with ThreadPoolExecutor(max_workers=min(limits.status_workers, len(names))) as pool:
         futures = {pool.submit(collect, name): name for name in names}
@@ -197,9 +249,11 @@ def _collect_statuses(
             for future in as_completed(futures):
                 name = futures[future]
                 try:
-                    _, result, payload = future.result()
-                    collected[name] = (result, payload)
+                    _, status = future.result()
+                    collected[name] = status
                 except WorkflowCollectionError as exc:
+                    if exc.error.change is None:
+                        raise
                     errors[name] = exc.error
         except BaseException:
             for future in futures:
@@ -245,7 +299,22 @@ def _parse_list(payload: dict[str, Any]) -> dict[str, TaskProgress]:
     return rows
 
 
-def _parse_status(payload: dict[str, Any], *, expected_name: str) -> dict[str, Any]:
+def _status_identity(payload: dict[str, Any], *, expected_name: str) -> str:
+    if (
+        payload.get("changeName") != expected_name
+        or not isinstance(payload.get("schemaName"), str)
+        or not payload["schemaName"]
+    ):
+        _raise_shape("Native OpenSpec status identity is malformed.", expected_name)
+    return payload["schemaName"]
+
+
+def _parse_status(
+    payload: dict[str, Any],
+    *,
+    expected_name: str,
+    payload_digest: str,
+) -> _ParsedStatus:
     if set(payload) != {
         "changeName",
         "schemaName",
@@ -255,10 +324,7 @@ def _parse_status(payload: dict[str, Any], *, expected_name: str) -> dict[str, A
     }:
         _raise_shape("Native OpenSpec status response is malformed.", expected_name)
     if (
-        payload.get("changeName") != expected_name
-        or not isinstance(payload.get("schemaName"), str)
-        or not payload["schemaName"]
-        or not isinstance(payload.get("isComplete"), bool)
+        not isinstance(payload.get("isComplete"), bool)
         or not _string_list(payload.get("applyRequires"))
         or not isinstance(payload.get("artifacts"), list)
     ):
@@ -296,16 +362,20 @@ def _parse_status(payload: dict[str, Any], *, expected_name: str) -> dict[str, A
     is_complete = payload["isComplete"]
     if is_complete != all(item.status == "done" for item in artifacts):
         _raise_shape("Native OpenSpec completion contradicts artifact status.", expected_name)
-    return {
-        "schema_name": payload["schemaName"],
-        "is_complete": is_complete,
-        "apply_requires": tuple(payload["applyRequires"]),
-        "artifacts": tuple(artifacts),
-    }
+    return _ParsedStatus(
+        schema_name=payload["schemaName"],
+        is_complete=is_complete,
+        apply_requires=tuple(payload["applyRequires"]),
+        artifacts=tuple(artifacts),
+        payload_digest=payload_digest,
+    )
 
 
 def _parse_validations(
-    payload: dict[str, Any], *, expected_names: tuple[str, ...]
+    payload: dict[str, Any],
+    *,
+    expected_names: tuple[str, ...],
+    returncode: int,
 ) -> tuple[dict[str, ValidationEvidence], dict[str, WorkflowError]]:
     if (
         set(payload) != {"items", "summary", "version"}
@@ -366,7 +436,68 @@ def _parse_validations(
             errors[name] = exc.error
     if set(results) | set(errors) != expected:
         _raise_shape("Native OpenSpec validation scope does not match active changes.")
+    _validate_validation_summary(
+        payload["summary"],
+        item_count=len(payload["items"]),
+        valid_results=results,
+        malformed_count=len(errors),
+        returncode=returncode,
+    )
     return results, errors
+
+
+def _validate_validation_summary(
+    summary: dict[str, Any],
+    *,
+    item_count: int,
+    valid_results: dict[str, ValidationEvidence],
+    malformed_count: int,
+    returncode: int,
+) -> None:
+    if set(summary) != {"totals", "byType"}:
+        _raise_shape("Native OpenSpec validation summary is malformed.")
+    totals = summary.get("totals")
+    by_type = summary.get("byType")
+    if (
+        not isinstance(totals, dict)
+        or not isinstance(by_type, dict)
+        or set(by_type) != {"change", "spec"}
+        or not isinstance(by_type.get("change"), dict)
+        or not isinstance(by_type.get("spec"), dict)
+    ):
+        _raise_shape("Native OpenSpec validation summary is malformed.")
+    counts = _validation_counts(totals)
+    change_counts = _validation_counts(by_type["change"])
+    spec_counts = _validation_counts(by_type["spec"])
+    if (
+        counts != change_counts
+        or spec_counts != (0, 0, 0)
+        or counts[0] != item_count
+        or counts[1] + counts[2] != item_count
+    ):
+        _raise_shape("Native OpenSpec validation summary contradicts its scope.")
+    known_passed = sum(item.valid for item in valid_results.values())
+    known_failed = len(valid_results) - known_passed
+    if (
+        counts[1] < known_passed
+        or counts[2] < known_failed
+        or (counts[1] - known_passed) + (counts[2] - known_failed) != malformed_count
+    ):
+        _raise_shape("Native OpenSpec validation summary contradicts its items.")
+    expected_returncode = 0 if counts[2] == 0 else 1
+    if returncode != expected_returncode:
+        _raise_shape("Native OpenSpec validation exit code contradicts its summary.")
+
+
+def _validation_counts(payload: dict[str, Any]) -> tuple[int, int, int]:
+    if set(payload) != {"items", "passed", "failed"}:
+        _raise_shape("Native OpenSpec validation counts are malformed.")
+    items = _nonnegative_int(payload.get("items"))
+    passed = _nonnegative_int(payload.get("passed"))
+    failed = _nonnegative_int(payload.get("failed"))
+    if items is None or passed is None or failed is None:
+        _raise_shape("Native OpenSpec validation counts are malformed.")
+    return items, passed, failed
 
 
 def _json_object(result: ProcessResult, *, command: str) -> dict[str, Any]:
