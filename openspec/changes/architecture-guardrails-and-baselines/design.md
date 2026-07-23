@@ -410,11 +410,16 @@ records the Observatory catalog projection declarations in
 facts for each logical table and names current code owners plus target
 classification. Warehouse artifact entries are derived from every
 `write_table` and `upsert_table` producer in
-`trade_py/data/warehouse/materialize.py`, including the validation report. The
-classification is intentionally `candidate` for obvious families and
-`deferred` where the parent design requires later file/row analysis. Both are
-non-authorizing. This avoids making the guard another global database facade
-or pretending exact future table names already exist.
+`trade_py/data/warehouse/materialize.py`, including the validation report, and
+every other first-party production call statically resolving to
+`WarehouseLayout.write_table` or `WarehouseLayout.upsert_table`. This includes
+the standalone CLI fetch producers in `trade_py/cli/data.py` for
+`dim.dim_data_source` and `ods.ods_fetch_attempt`; test fixtures are excluded
+because they do not produce repository artifacts. The classification is
+intentionally `candidate` for obvious families and `deferred` where the parent
+design requires later file/row analysis. Both are non-authorizing. This avoids
+making the guard another global database facade or pretending exact future table
+names already exist.
 
 `BtcRunStore.current_path`, `compatibility_path`, and
 `engine/cmake/python_bindings.cmake` are pinned as source facts, alongside

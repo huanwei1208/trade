@@ -87,13 +87,25 @@ provider/observed/received/available/revision/finality clocks, SourceManifest
 rights enforcement, provider-free replay, and the Capture transport-versus-
 Datasets semantic quarantine split before migrating a news or NLP adapter.
 
-The warehouse artifact inventory SHALL be producer-driven: it SHALL derive its
-declared layer/table/path facts from every current `write_table` and
-`upsert_table` call rather than only a hand-maintained required-table list.
-Each declaration SHALL name the materialization source, exact producer literal,
-layer, table, path role, and target/deferred classification. This includes
+The warehouse artifact inventory SHALL be producer-driven: it SHALL statically
+discover every first-party production call that resolves to
+`WarehouseLayout.write_table` or `WarehouseLayout.upsert_table`, rather than
+only a hand-maintained required-table list or one materialization module. Test
+fixtures are not production artifact producers. Each declaration SHALL name the
+producer source, exact call literal, layer, table, path role, and
+target/deferred classification. This includes
 `ads_warehouse_validation_report` where the producer exists even when a
-validation-required table list omits it.
+validation-required table list omits it, and the CLI fetch producers
+`dim.dim_data_source` and `ods.ods_fetch_attempt`.
+
+#### Scenario: A production warehouse writer is outside the materializer
+
+- **WHEN** `trade_py/cli/data.py` resolves a `WarehouseLayout.write_table` call
+  for `dim.dim_data_source` or an `upsert_table` call for
+  `ods.ods_fetch_attempt`
+- **THEN** the baseline declares both producer facts and validation fails for an
+  undeclared production writer even when `_REQUIRED_TABLES` or
+  `materialize.py` does not list it
 
 #### Scenario: A declared pointer or receipt source is changed
 
