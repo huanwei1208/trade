@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from trade_py.devtools.openspec_status.errors import (
+    ErrorSource,
     WorkflowCollectionError,
     WorkflowError,
 )
@@ -41,7 +42,7 @@ class BoundedProcessExecutor:
         deadline: float,
         timeout_seconds: float,
         output_limit_bytes: int,
-        source: str,
+        source: ErrorSource,
         change: str | None = None,
         allowed_returncodes: frozenset[int] = frozenset({0}),
     ) -> ProcessResult:
@@ -206,7 +207,7 @@ class BoundedProcessExecutor:
     @staticmethod
     def _raise(
         code: str,
-        source: str,
+        source: ErrorSource,
         change: str | None,
         message: str,
         remediation: str,

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from trade_py.devtools.openspec_status.errors import (
+    ErrorSource,
     WorkflowCollectionError,
     WorkflowError,
 )
@@ -406,7 +407,7 @@ def _raise(
     message: str,
     remediation: str,
     *,
-    source: str = "openspec",
+    source: ErrorSource = "openspec",
     details: dict[str, str] | None = None,
 ) -> NoReturn:
     raise WorkflowCollectionError(

@@ -203,6 +203,8 @@ def test_repository_discovery_failure_is_a_stable_json_error(
     assert payload["changes"] == []
     assert payload["source"] is None
     assert payload["errors"][0]["code"] == "workflow.repository.discovery"
+    assert payload["errors"][0]["source"] == "git"
+    assert payload["errors"][0]["details"] == {}
     assert payload["errors"][0]["change"] == "unknown-change"
 
 
@@ -258,6 +260,8 @@ def test_keyboard_interrupt_is_rendered_without_traceback(
     assert code == 2
     assert payload["status"] == "ERROR"
     assert payload["errors"][0]["code"] == "workflow.command.interrupted"
+    assert payload["errors"][0]["source"] == "request"
+    assert payload["errors"][0]["details"] == {}
 
 
 def test_partial_change_error_preserves_siblings_and_exit_precedence() -> None:
@@ -324,7 +328,52 @@ def test_report_output_limit_accepts_exact_size_and_fails_closed_one_byte_over()
     assert oversized.exit_code == 2
     assert oversized_payload["changes"] == []
     assert oversized_payload["errors"][0]["code"] == "workflow.report.too_large"
+    assert oversized_payload["errors"][0]["source"] == "openspec"
+    assert oversized_payload["errors"][0]["details"] == {}
     assert oversized_payload["summary"]["errors"] == 1
+
+
+def test_workflow_error_rejects_undeclared_source_and_details() -> None:
+    with pytest.raises(ValueError, match="Unsupported workflow error source"):
+        WorkflowError(
+            code="workflow.invalid",
+            source="report",  # type: ignore[arg-type]
+            message="invalid source",
+            remediation="use the v1 source enum",
+        )
+    with pytest.raises(ValueError, match="details do not match"):
+        WorkflowError(
+            code="workflow.process.timeout",
+            source="openspec",
+            message="timed out",
+            remediation="rerun",
+            details={"limit_bytes": "1"},
+        )
+
+
+def test_unsupported_schema_error_requires_exact_contract_details() -> None:
+    with pytest.raises(ValueError, match="details do not match"):
+        WorkflowError(
+            code="workflow.openspec.unsupported_schema",
+            source="openspec",
+            message="unsupported",
+            remediation="add a schema strategy",
+            details={"schema_name": "custom"},
+        )
+    error = WorkflowError(
+        code="workflow.openspec.unsupported_schema",
+        source="openspec",
+        message="unsupported",
+        remediation="add a schema strategy",
+        details={
+            "schema_name": "custom",
+            "payload_digest": f"sha256:{'a' * 64}",
+        },
+    )
+    assert error.to_dict()["details"] == {
+        "payload_digest": f"sha256:{'a' * 64}",
+        "schema_name": "custom",
+    }
 
 
 def test_shell_openspec_route_is_frozen_no_sync_and_forwards_arguments(

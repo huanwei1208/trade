@@ -6,7 +6,7 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trade_py.devtools.openspec_status.errors import WorkflowError
+from trade_py.devtools.openspec_status.errors import ErrorSource, WorkflowError
 from trade_py.devtools.openspec_status.models import WorkflowReport
 from trade_py.devtools.openspec_status.render import render_workflow
 from trade_py.devtools.openspec_status.service import collect_workflow
@@ -20,7 +20,7 @@ def run_openspec_cli(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         report = _error_report(
             code="workflow.command.interrupted",
-            source="command",
+            source="request",
             message="OpenSpec workflow collection was interrupted.",
             remediation="Rerun the command when you are ready to continue.",
             change=args.change,
@@ -28,7 +28,7 @@ def run_openspec_cli(args: argparse.Namespace) -> int:
     except (OSError, ScopeError) as exc:
         report = _error_report(
             code="workflow.repository.discovery",
-            source="repository",
+            source="git",
             message=str(exc),
             remediation="Run the command inside a valid trade Git repository.",
             change=args.change,
@@ -41,7 +41,7 @@ def run_openspec_cli(args: argparse.Namespace) -> int:
 def _error_report(
     *,
     code: str,
-    source: str,
+    source: ErrorSource,
     message: str,
     remediation: str,
     change: str | None,

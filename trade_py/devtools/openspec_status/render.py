@@ -38,10 +38,9 @@ def _bounded_report(report: WorkflowReport) -> tuple[WorkflowReport, str]:
 
     error = WorkflowError(
         code="workflow.report.too_large",
-        source="report",
+        source="openspec",
         message="The complete OpenSpec workflow report exceeds its output limit.",
         remediation="Inspect one active change at a time or reduce active OpenSpec work.",
-        details={"limit_bytes": str(report.limits.report_output_bytes)},
     )
     bounded = WorkflowReport(
         evaluation_date=report.evaluation_date,
