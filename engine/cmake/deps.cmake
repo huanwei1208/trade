@@ -306,6 +306,127 @@ else()
     endif()
 endif()
 
+# Collect targets created by a subproject directory so compatibility shims can
+# stay attached to dependency-owned targets instead of global compiler flags.
+function(_trade_collect_directory_targets OUT_VAR SOURCE_DIR)
+    get_property(_trade_targets DIRECTORY "${SOURCE_DIR}" PROPERTY BUILDSYSTEM_TARGETS)
+    get_property(_trade_subdirs DIRECTORY "${SOURCE_DIR}" PROPERTY SUBDIRECTORIES)
+    foreach(_trade_subdir IN LISTS _trade_subdirs)
+        _trade_collect_directory_targets(_trade_child_targets "${_trade_subdir}")
+        list(APPEND _trade_targets ${_trade_child_targets})
+    endforeach()
+    set(${OUT_VAR} ${_trade_targets} PARENT_SCOPE)
+endfunction()
+
+function(_trade_apply_arrow_libcxx_bitops_compat ARROW_SOURCE_DIR)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        return()
+    endif()
+    if(NOT CMAKE_CXX_FLAGS MATCHES "(^| )-stdlib=libc\\+\\+($| )")
+        return()
+    endif()
+
+    include(CheckCXXSourceCompiles)
+    include(CMakePushCheckState)
+
+    set(_trade_bitops_probe_key
+        "${CMAKE_CXX_COMPILER}|${CMAKE_CXX_COMPILER_ID}|${CMAKE_CXX_COMPILER_VERSION}|${CMAKE_CXX_STANDARD}|${CMAKE_CXX_FLAGS}"
+    )
+    if(NOT DEFINED TRADE_CXX_LIBCXX_BITOPS_PROBE_KEY
+       OR NOT TRADE_CXX_LIBCXX_BITOPS_PROBE_KEY STREQUAL "${_trade_bitops_probe_key}")
+        unset(TRADE_CXX_HAS_STD_BIT_WIDTH CACHE)
+        unset(TRADE_CXX_HAS_LIBCXX_BITOPS_MACRO CACHE)
+        set(TRADE_CXX_LIBCXX_BITOPS_PROBE_KEY "${_trade_bitops_probe_key}" CACHE INTERNAL
+            "Toolchain inputs for Arrow libc++ bitops compatibility probes"
+        )
+    endif()
+
+    set(_trade_had_try_compile_target_type FALSE)
+    if(DEFINED CMAKE_TRY_COMPILE_TARGET_TYPE)
+        set(_trade_had_try_compile_target_type TRUE)
+        set(_trade_saved_try_compile_target_type "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+    endif()
+    cmake_push_check_state(RESET)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_CXX_FLAGS}")
+    check_cxx_source_compiles([=[
+#include <bit>
+#include <cstdint>
+int main() {
+  return std::bit_width(std::uint64_t{7}) == 3 ? 0 : 1;
+}
+]=] TRADE_CXX_HAS_STD_BIT_WIDTH)
+    check_cxx_source_compiles([=[
+#include <bit>
+#include <version>
+#ifndef __cpp_lib_bitops
+#error "__cpp_lib_bitops is missing"
+#endif
+#if __cpp_lib_bitops < 201907L
+#error "__cpp_lib_bitops is too old"
+#endif
+int main() {
+  return 0;
+}
+]=] TRADE_CXX_HAS_LIBCXX_BITOPS_MACRO)
+    cmake_pop_check_state()
+    if(_trade_had_try_compile_target_type)
+        set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_trade_saved_try_compile_target_type}")
+    else()
+        unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
+    endif()
+
+    if(NOT TRADE_CXX_HAS_STD_BIT_WIDTH)
+        message(WARNING
+            "Arrow/Parquet: Clang libc++ bitops compatibility skipped; "
+            "std::bit_width probe failed for ${CMAKE_CXX_COMPILER_ID} "
+            "${CMAKE_CXX_COMPILER_VERSION} with CMAKE_CXX_FLAGS='${CMAKE_CXX_FLAGS}'. "
+            "Check build/linux-clang/CMakeFiles/CMakeError.log and the LLVM 13 "
+            "libc++/libc++abi/libunwind package state."
+        )
+        return()
+    endif()
+    if(TRADE_CXX_HAS_LIBCXX_BITOPS_MACRO)
+        message(STATUS "Arrow/Parquet: Clang libc++ bitops compatibility not needed; __cpp_lib_bitops is available")
+        return()
+    endif()
+
+    _trade_collect_directory_targets(_trade_arrow_targets "${ARROW_SOURCE_DIR}")
+    set(_trade_patched_arrow_targets)
+    foreach(_trade_arrow_target IN LISTS _trade_arrow_targets)
+        if(NOT _trade_arrow_target MATCHES "^(arrow|parquet)")
+            continue()
+        endif()
+        get_target_property(_trade_arrow_target_type "${_trade_arrow_target}" TYPE)
+        if(_trade_arrow_target_type STREQUAL "INTERFACE_LIBRARY")
+            continue()
+        endif()
+        if(NOT _trade_arrow_target_type MATCHES "^(OBJECT_LIBRARY|STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY|EXECUTABLE)$")
+            continue()
+        endif()
+        target_compile_definitions("${_trade_arrow_target}" PRIVATE __cpp_lib_bitops=201907L)
+        list(APPEND _trade_patched_arrow_targets "${_trade_arrow_target}")
+    endforeach()
+    list(LENGTH _trade_patched_arrow_targets _trade_patched_arrow_target_count)
+    if(_trade_patched_arrow_target_count EQUAL 0)
+        message(FATAL_ERROR
+            "Arrow/Parquet: Clang libc++ bitops compatibility was required, "
+            "but no patchable Arrow/Parquet targets were found under ${ARROW_SOURCE_DIR}."
+        )
+    endif()
+
+    if(NOT TARGET trade_arrow_libcxx_bitops_compat)
+        add_library(trade_arrow_libcxx_bitops_compat INTERFACE)
+        target_compile_definitions(trade_arrow_libcxx_bitops_compat INTERFACE __cpp_lib_bitops=201907L)
+    endif()
+
+    list(JOIN _trade_patched_arrow_targets ", " _trade_patched_arrow_targets_text)
+    message(STATUS
+        "Arrow/Parquet: applied Clang libc++ bitops compatibility definition "
+        "to ${_trade_patched_arrow_target_count} target(s): ${_trade_patched_arrow_targets_text}"
+    )
+endfunction()
+
 # ── Arrow & Parquet ──────────────────────────────────────────────────────────
 # Building from source: Arrow downloads its own internal deps (Thrift,
 # Flatbuffers, compression libs) on first configure via BUNDLED mode.
@@ -331,6 +452,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/arrow/cpp/CMakeLists.txt")
     # external-project paths after engine/ migration.
     set(_trade_arrow_binary_dir "${CMAKE_BINARY_DIR}/vendor/arrow/cpp")
     add_subdirectory(vendor/arrow/cpp "${_trade_arrow_binary_dir}" EXCLUDE_FROM_ALL)
+    _trade_apply_arrow_libcxx_bitops_compat("${CMAKE_CURRENT_SOURCE_DIR}/vendor/arrow/cpp")
     # Arrow creates 'arrow_shared' / 'parquet_shared' as the real build targets.
     # The Arrow:: namespace aliases only exist in the installed CMake config
     # (ArrowConfig.cmake), NOT when using add_subdirectory – create them here.
