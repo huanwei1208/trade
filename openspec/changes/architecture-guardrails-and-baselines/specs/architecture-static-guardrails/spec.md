@@ -231,17 +231,23 @@ unless a later child adds a reviewed parser/allowlist and corresponding tests.
 
 ### Requirement: Architecture results SHALL be bounded, deterministic, and complete for their declared scope
 
-The contributor SHALL validate the baseline in one deterministic step and
-validate target source in explicit `batched_paths()` batches with deterministic
-batch identifiers. It SHALL impose a 1 MiB per-source cap, at most 128 target
-files and 8 MiB aggregate source bytes per batch, at most 512 target files and
-32 MiB aggregate target source bytes per architecture-selected scope, and an
-explicit `architecture.scope_budget_exceeded` quality failure before it drops
-or parses excess work. These declared limits are independent of the existing
-65,536-byte argv limit and the four-light-worker executor bound. It SHALL
-report at most 64 findings per envelope, an explicit omitted count, a 30 second
-timeout, and a 32 KiB output limit. The serialized envelope SHALL reserve at
-least 1 KiB for mandatory metadata and counts, bound every displayed
+The contributor SHALL validate bounded producer-prefilter batches, then the
+baseline in one deterministic prerequisite step, and target source in explicit
+`batched_paths()` batches with deterministic batch identifiers. It SHALL impose
+a 1 MiB per-source cap, at most 128 target files and 8 MiB aggregate source
+bytes per batch, at most 512 target files and 32 MiB aggregate target source
+bytes per architecture-selected scope, and an explicit
+`architecture.scope_budget_exceeded` quality failure before it drops or parses
+excess target work. Producer discovery has its own declared raw/included
+path-count and path-byte, file-count, and source-byte budgets, with
+`architecture.producer_discovery_path_budget_exceeded`,
+`architecture.producer_discovery_budget_exceeded`, or
+`architecture.producer_discovery_unsafe_source` before an incomplete producer
+inventory can reach the baseline. These declared limits are independent of the
+existing 65,536-byte argv limit and the four-light-worker executor bound. It
+SHALL report at most 64 findings per envelope, an explicit omitted count, a 30
+second timeout, and a 32 KiB output limit. The serialized envelope SHALL
+reserve at least 1 KiB for mandatory metadata and counts, bound every displayed
 path/message/remediation field by bytes before JSON encoding, and degrade to a
 valid count-only truncated envelope rather than exceed the output limit.
 Diagnostics SHALL have a stable ordering by path/line/rule/message and be
@@ -249,19 +255,21 @@ emitted in the declared structured-output schema as well as human-readable
 form.
 
 The architecture structured-output contract SHALL be
-`trade.architecture.guard.v1`. Every baseline and target step SHALL emit one
-JSON object with required fields `schema_version`, `status`, `scope`,
-`partial_scope`, `findings`, `counts`, `emitted_count`, and `omitted_count`.
-`status` SHALL be `pass`, `fail`, or `invalid`; `scope` SHALL identify
-`baseline` or the sorted target batch identity; `partial_scope` SHALL state
-whether canonical filtering excluded an architecture-sensitive delta.
-`counts` SHALL contain non-negative `error`, `warning`, and `total` integers
-consistent with the ordered `findings` plus `omitted_count`. Each emitted
-finding SHALL contain `rule_id`, repository-relative `path`, positive `line`,
-bounded `message`, and bounded `remediation`. JSON and human text SHALL derive
-from the same ordered finding set. Unknown schema versions, missing required
-fields, invalid counts, unsafe paths, invalid status, or an output overflow
-SHALL be an infrastructure failure, never an architecture pass.
+`trade.architecture.guard.v1`. Every producer-prefilter, baseline, and target
+step SHALL emit one JSON object with required fields `schema_version`, `status`,
+`scope`, `partial_scope`, `findings`, `counts`, `emitted_count`, and
+`omitted_count`. `status` SHALL be `pass`, `fail`, or `invalid`; `scope` SHALL
+identify `producer-prefilter:<sorted-batch-identity>`, `baseline`, or the
+sorted target batch identity; `partial_scope` SHALL state whether canonical
+filtering excluded an architecture-sensitive delta. `counts` SHALL contain
+non-negative `error`, `warning`, and `total` integers consistent with the
+ordered `findings` plus `omitted_count`. Each emitted finding SHALL contain
+`rule_id`, repository-relative `path`, positive `line` except path-admission
+failures which use line `1`, bounded `message`, and bounded `remediation.`
+JSON and human text SHALL derive from the same ordered finding set. Unknown
+schema versions, missing required fields, invalid counts, unsafe paths, invalid
+status, or an output overflow SHALL be an infrastructure failure, never an
+architecture pass.
 
 The contributor SHALL trigger for every baseline-declared evidence source and
 for its guard, parser, contributor, and registry integration paths. Rename or
@@ -269,11 +277,13 @@ delete of an evidence source SHALL trigger validation and fail until the
 baseline is updated. The shared `ScopeSelection` contract SHALL preserve the
 canonical unfiltered modified, added, deleted, renamed-from, renamed-to, and
 untracked delta sets plus normalized requested filters before it creates the
-filtered execution fields. The planner SHALL pass that metadata unchanged to
-contributors and create `architecture.partial_scope` when the canonical
-unfiltered delta contains a baseline, target, guard, contributor, registry,
-native, or interface-baseline trigger excluded by `--path`. The contributor
-SHALL NOT rediscover Git state. The rule SHALL cover modified files, both rename
+filtered execution fields, then derive the immutable bounded
+`ProducerDiscoverySelection` without a second Git query. The planner SHALL
+pass both selections unchanged to contributors and create
+`architecture.partial_scope` when the canonical unfiltered delta contains a
+baseline, target, guard, contributor, registry, native, interface-baseline, or
+producer-discovery trigger excluded by `--path`. The contributor SHALL NOT
+rediscover Git state. The rule SHALL cover modified files, both rename
 endpoints, deletion, and untracked files. Existing global scope-discovery and
 full-fingerprint costs are outside this child and SHALL have the named
 quality-platform follow-up `quality-scope-capacity-baseline`, owned by
@@ -289,6 +299,23 @@ child shall add no additional full-tree scan.
   file/source-byte budgets
 - **THEN** the contributor emits one baseline step and ordered target batches
   using `batched_paths()` and deterministic batch IDs without dropping a file
+
+#### Scenario: A large producer delta needs argv-safe prefilter batches
+
+- **WHEN** selected producer-candidate filenames exceed one argv but remain
+  within the governed producer path/source budgets
+- **THEN** the contributor emits ordered `producer-prefilter` batches using
+  `batched_paths()`, preserves all rename/delete endpoints in canonical
+  metadata, and runs the baseline only after producer admission completes
+
+#### Scenario: A producer source is unsafe or producer discovery exceeds a budget
+
+- **WHEN** a producer source is a symlink, non-regular, escapes the repository,
+  changes while read, has no safe no-follow read primitive, or its streamed
+  raw/included paths or source bytes exceed the governed limit
+- **THEN** the prefilter emits the corresponding stable
+  `architecture.producer_discovery_*` failure without partial inventory,
+  baseline acceptance, or target acceptance
 
 #### Scenario: Target source work exceeds a budget
 

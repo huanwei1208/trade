@@ -120,23 +120,28 @@ not a skip or a warning, when a target rule is violated.
 `--path` is a partial development selector, not a release-acceptance shortcut.
 `ScopeSelection` retains normalized requested filters and canonical unfiltered
 modified, added, deleted, rename-source, rename-target, and untracked delta
-metadata before deriving its existing filtered execution fields. The planner,
-not a contributor, compares architecture triggers against that metadata. If
-filters exclude an architecture-sensitive changed source, planning fails closed
-as `architecture.partial_scope`, including rename endpoints and deleted or
-untracked sources. A complete selected scope contains one baseline validation
-step and all deterministic target-source batches.
+metadata before deriving its existing filtered execution fields. It derives an
+immutable bounded `ProducerDiscoverySelection` for production-Python candidates
+and declared producer-source endpoints from that same metadata. The planner,
+not a contributor, compares architecture triggers against both selections. If
+filters exclude a target, baseline, or producer-discovery-sensitive changed
+source, planning fails closed as `architecture.partial_scope`, including both
+rename endpoints and deleted or untracked sources. A complete selected scope
+contains one baseline validation step, deterministic producer-prefilter batches,
+and all deterministic target-source batches.
 
 ### Ownership and boundaries
 
 `trade_py/devtools/architecture_guard.py` owns parsing, validation, bounded
 diagnostic-envelope formatting, and baseline fact semantics for this child.
 `trade_py/devtools/quality/models.py` and `scope.py` own the additive canonical
-unfiltered delta/filter contract; `planner.py` owns conversion of excluded
-architecture-sensitive delta facts into a fail-closed plan issue. The future
-`trade_py/devtools/quality/contributors/architecture.py` receives that canonical
-selection and only constructs bounded subprocess steps; it must not rediscover
-Git state. The existing quality registry owns contributor registration.
+unfiltered delta/filter and `ProducerDiscoverySelection` contracts; `planner.py`
+owns conversion of excluded architecture-sensitive delta facts, including
+producer signals, into a fail-closed plan issue. The future
+`trade_py/devtools/quality/contributors/architecture.py` receives those
+canonical selections and only constructs deterministic bounded producer-prefilter,
+baseline, and target subprocess steps; it must not rediscover Git state. The
+existing quality registry owns contributor registration.
 `architecture-baseline.toml` is the authoritative declaration of audited source
 facts. It separately freezes `target_source_root = "src/trade"` and
 `target_import_root = "trade"`; the guard uses the latter for absolute and
@@ -162,16 +167,17 @@ implementation child may add an explicit `approved_binding` that names one
 Context and one persistence-adapter scope after proving writer, reader,
 transaction, compatibility, and owner behavior.
 
-The checker reads UTF-8 text using repository-relative paths beneath the
-worktree and rejects malformed TOML, missing sources, unsafe relative paths,
-duplicate declarations, and source facts that no longer match their declared
-literal. It does not load modules, initialize `TradeDB`, read an artifact
-directory, or accept arbitrary paths outside the repository. The focused
-source-only fixture permits reads only of the baseline and declared source
-evidence files; it denies `sqlite3.connect`, `duckdb.connect`,
-`pandas.read_parquet`, all reads of in-repository `data/**`, `warehouse/**`,
-`market/**`, SQLite, Parquet, manifest, pointer, and receipt sentinels, and
-all out-of-repository paths.
+The checker reads UTF-8 text through repository-confined no-follow descriptors
+and rejects malformed TOML, missing sources, unsafe relative paths, symlinks,
+non-regular files, source identity drift, duplicate declarations, and source
+facts that no longer match their declared literal. It does not load modules,
+initialize `TradeDB`, read an artifact directory, or accept arbitrary paths
+outside the repository. The focused source-only fixture permits reads only of
+the baseline, declared source evidence, and verified regular descriptors in the
+bounded production-Python producer-discovery universe; it denies
+`sqlite3.connect`, `duckdb.connect`, `pandas.read_parquet`, all reads of
+in-repository `data/**`, `warehouse/**`, `market/**`, SQLite, Parquet,
+manifest, pointer, and receipt sentinels, and all out-of-repository paths.
 
 ### Contracts and compatibility
 
@@ -238,18 +244,19 @@ bounded producer-inventory pass below.
 
 The first target scope is expected to be small because Context children add
 bounded modules incrementally. The contributor explicitly uses
-`batched_paths()` and deterministic batch identifiers: exactly one baseline
-step plus target batches within the configured argv budget. Independent of that
-argv limit, the guard refuses a source over 1 MiB, a target batch over 128 files
-or 8 MiB aggregate source, and a selected architecture target scope over 512
-files or 32 MiB aggregate source. It reports an explicit budget failure rather
-than silently dropping work. The existing executor runs at most four light
-steps concurrently; four maximum-size target batches are therefore bounded to
-32 MiB source input at once. A 30-second step timeout, 64 emitted findings,
-bounded fields, reserved metadata space, count-only truncation fallback, and
-32 KiB serialized envelope prevent an oversized structured report. Baseline
-validation is linear in its declared evidence entries and is exercised from a
-temporary fixture repository.
+`batched_paths()` and deterministic batch identifiers: producer-prefilter
+batches, exactly one baseline step after their admission, and target batches
+within the configured argv budget. Independent of that argv limit, the guard
+refuses a source over 1 MiB, a target batch over 128 files or 8 MiB aggregate
+source, and a selected architecture target scope over 512 files or 32 MiB
+aggregate source. It reports an explicit budget failure rather than silently
+dropping work. The existing executor runs at most four light steps
+concurrently; four maximum-size target batches are therefore bounded to 32 MiB
+source input at once. A 30-second step timeout, 64 emitted findings, bounded
+fields, reserved metadata space, count-only truncation fallback, and 32 KiB
+serialized envelope prevent an oversized structured report. Baseline validation
+is linear in its declared evidence entries and is exercised from a temporary
+fixture repository.
 
 Warehouse producer inventory is a distinct source-only baseline pass, not a
 target-Context dependency scan. Its initial universe is every Git-tracked
@@ -257,11 +264,24 @@ first-party production Python source beneath `trade_py/`, excluding test-only,
 generated, vendor, cache, non-source data assets, and artifact paths; Python
 production modules under `trade_py/data/` remain in scope. The pass is allowed
 to walk that one declared root because a finite baseline-declared source list
-cannot prove there is no unknown current writer. The current measured universe
-is 304 files and 2,967,859 bytes; it is bounded by the same 512-file, 32-MiB,
-and 1-MiB-per-file limits and fails with
-`architecture.producer_discovery_budget_exceeded` before emitting an
-incomplete inventory. It resolves only
+cannot prove there is no unknown current writer. Git index enumeration is
+NUL-delimited, streamed, path-validated, and stopped at 1,024 raw records or
+128 KiB raw path bytes before it can accumulate an unbounded list. The
+inclusion predicate accepts only unique regular `100644`/`100755` `trade_py/**.py`
+entries with no `test`/`tests` component or `test_`/`_test.py` basename and
+outside `vendor`, `third_party`, `generated`, `cache`, and `__pycache__` path
+segments; it currently includes 305 files and 2,968,477 source bytes, with zero
+exclusions. Included paths are additionally bounded to 512 entries and 64 KiB
+path bytes, each source is bounded to 1 MiB, and aggregate source is bounded to
+32 MiB.
+Repository-confined directory-descriptor traversal and `O_NOFOLLOW`-equivalent
+file reads reject symlinks, non-regular entries, escapes, unsupported safe-read
+primitives, and pre-read/post-read/post-path identity drift as
+`architecture.producer_discovery_unsafe_source`; the identity tuple is device,
+inode, size, and nanosecond mtime. Raw/included path overflow reports
+`architecture.producer_discovery_path_budget_exceeded`; source overflow reports
+`architecture.producer_discovery_budget_exceeded`. All failures occur before
+an incomplete inventory can be emitted. It resolves only
 `trade_py.data.warehouse.io.write_table` and `upsert_table`, direct/module
 imports, aliases, and the `trade_py.data.warehouse` package re-exports. The
 functions are module-level and receive `WarehouseLayout` as their first
@@ -271,15 +291,23 @@ failure, not an excluded producer.
 
 For ongoing changes, canonical unfiltered modified, added, rename-source,
 rename-target, and untracked metadata identify production Python files before
-ordinary path filters apply. The planner runs the bounded import/call
-prefilter for those files before declaring a delta legacy-only. A canonical
-writer, an unresolved writer-like import, or a changed/deleted declared
-producer source triggers baseline validation; an unknown discovered producer
-fails until it is declared. This targeted delta pass is bounded by the same
-file and byte limits and never repeats a generic repository AST scan. The
-source-only test suite proves direct imports, package re-exports, aliases, a
-new production writer, declared-writer rename/deletion, and test-only writer
-exclusion.
+ordinary path filters apply. `ScopeSelection` supplies them as the bounded
+canonical `ProducerDiscoverySelection`; the contributor transports openable
+candidate paths through deterministic `batched_paths()` prefilter steps that
+honor the 65,536-byte argv limit, retaining rename/delete endpoint metadata
+without Git rescan or a temporary manifest. A single untransportable path or
+an over-budget selection fails before legacy-only classification. Deleted and
+rename-source paths are not opened and instead are compared with declared
+producer sources. A canonical writer, an unresolved writer-like import, or a
+changed/deleted declared producer source triggers baseline validation; an
+unknown discovered producer fails until it is declared. Filtering out any
+producer signal yields `architecture.partial_scope` before acceptance. This
+targeted delta pass is bounded by the same path, file, and byte limits and
+never repeats a generic repository AST scan. The source-only test suite proves
+direct imports, package re-exports, aliases, a new production writer,
+declared-writer rename/deletion, test-only writer exclusion, streamed
+enumeration overflow, long argv path transport, over-cap delta selection,
+symlink/non-regular rejection, and source replacement during read.
 
 Existing scope discovery and before/after full-worktree fingerprinting remain
 an owned quality-platform performance debt. The child records the named
@@ -308,11 +336,19 @@ Each failure reports a deterministic rule name such as
 `artifacts.direct_access`, `interfaces.direct_sql`,
 `dependency.legacy_namespace`, `dependency.dynamic_loading`,
 `execution.direct_process_creation`, `platform.business_vocabulary`, or
-`native.boundary`. Diagnostics include the repository-relative path and source
-line where the offending import, annotation, attribute, SQL literal, direct
-artifact client, dynamic loader, process spawn, or vocabulary occurs. They sort
-by path, line, rule, and message; truncation reports the emitted and omitted
-counts rather than hiding findings.
+`native.boundary`. Producer discovery additionally names
+`architecture.producer_discovery_unresolved_import`,
+`architecture.producer_discovery_unresolved_layout`,
+`architecture.producer_discovery_nonliteral_target`,
+`architecture.producer_discovery_undeclared_writer`,
+`architecture.producer_discovery_path_budget_exceeded`,
+`architecture.producer_discovery_budget_exceeded`, and
+`architecture.producer_discovery_unsafe_source`. Diagnostics include the
+repository-relative path and source line where the offending import,
+annotation, attribute, SQL literal, direct artifact client, dynamic loader,
+process spawn, vocabulary, or producer source occurs. They sort by path, line,
+rule, and message; truncation reports the emitted and omitted counts rather
+than hiding findings.
 
 `trade dev check --show-plan` shows the architecture step when triggered. A
 clean legacy-only implementation change does not silently receive an unrelated
@@ -518,6 +554,18 @@ source-protection guarantee and avoids duplicate Git traversal.
   package re-exports. Exceeded discovery budgets, unresolved canonical writer
   bindings, and undeclared producers fail closed rather than silently reducing
   inventory coverage.
+- **Producer discovery reads an unsafe or changing source** -> The streamed
+  index admission accepts only regular tracked entries, and repository-confined
+  no-follow descriptor reads verify identity before and after each source.
+  Symlinks, non-regular entries, path escapes, unavailable safe-read support,
+  and replacement races emit `architecture.producer_discovery_unsafe_source`
+  without a partial inventory.
+- **Producer discovery consumes unbounded paths or loses an excluded delta** ->
+  Raw/included path-count and byte budgets stop the streamed initial census;
+  `ProducerDiscoverySelection` bounds canonical delta transport through
+  deterministic argv-safe batches. An excluded modified, added, deleted,
+  renamed, or untracked producer signal is `architecture.partial_scope`, never
+  a legacy-only acceptance.
 - **Source-only baseline reads data by accident** -> The validator allowlists
   only its baseline/evidence source files in a temporary fixture and explicitly
   denies in-repository data/artifact sentinels as well as external paths. A

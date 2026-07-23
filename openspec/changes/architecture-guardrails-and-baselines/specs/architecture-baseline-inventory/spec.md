@@ -98,8 +98,19 @@ invent nonexistent `WarehouseLayout` instance methods. A call counts as a
 producer when its callee resolves to one canonical writer and its first
 argument is a statically known `WarehouseLayout` binding. A nonliteral
 layer/table, unresolved warehouse-writer import, or unresolved layout binding
-in a candidate call SHALL fail closed with a producer-discovery finding rather
-than be omitted from the inventory.
+in a candidate call SHALL fail closed rather than be omitted from the
+inventory. The following stable finding IDs SHALL include the repository path,
+positive line where applicable, bounded remediation, and one of the following
+conditions: `architecture.producer_discovery_unresolved_import` for an
+unresolved writer-like import; `architecture.producer_discovery_unresolved_layout`
+for an unresolved first layout argument; `architecture.producer_discovery_nonliteral_target`
+for a nonliteral layer or table; and
+`architecture.producer_discovery_undeclared_writer` when a resolved literal
+producer has no declaration. Their remediations respectively require a
+canonical import, a statically traceable `WarehouseLayout` binding, literal
+artifact coordinates, or a reviewed baseline declaration. A budget overflow,
+unsafe source, or path-transport failure SHALL instead use the dedicated
+finding IDs below.
 
 The initial inventory pass SHALL parse the complete, bounded universe of Git
 tracked first-party production Python sources below `trade_py/`. It excludes
@@ -107,23 +118,69 @@ test-only paths and files, generated, vendor, cache, non-source data assets,
 and artifact paths; production modules such as `trade_py/data/**.py` remain in
 scope. It never imports code or reads a database or artifact. This is the sole
 narrow exception to the rule against recursive full-repository AST scanning: it
-is limited to the declared `trade_py/` production universe, at most 512 files
-and 32 MiB aggregate source, and one source file may not exceed 1 MiB. The
-validator SHALL emit `architecture.producer_discovery_budget_exceeded` and fail
-without an incomplete inventory if any limit is exceeded. The current source
-measurement of 304 files and 2,967,859 bytes is capacity evidence, not an
-authorization to raise the limits.
+is limited to the declared `trade_py/` production universe. The exact
+inclusion predicate is a unique NUL-delimited Git index path that begins
+`trade_py/`, ends `.py`, has a regular `100644` or `100755` mode, has neither
+`test` nor `tests` as a path component, has no basename beginning `test_` or
+ending `_test.py`, and is not inside a `vendor`, `third_party`, `generated`,
+`cache`, or `__pycache__` path segment; `trade_py/data/**.py` remains
+production source.
+The scanner SHALL consume the Git path stream incrementally, validate and
+deduplicate each record as received, and stop before materializing an
+unbounded path list. It SHALL refuse more than 1,024 raw index records or
+128 KiB of raw path bytes, more than 512 included paths or 64 KiB of included
+path bytes, more than 32 MiB aggregate source, or one source file over 1 MiB.
+`architecture.producer_discovery_path_budget_exceeded` SHALL fail the scan
+before AST parsing when a raw or included path budget is exceeded;
+`architecture.producer_discovery_budget_exceeded` SHALL fail it before
+emitting an incomplete inventory when a file or source-byte budget is
+exceeded. Both remediations require reducing/splitting the source scope or a
+reviewed increase to the governed budget.
+
+Every included path SHALL be opened only through repository-confined directory
+descriptors with no-follow semantics for every path component and file. The
+scanner SHALL reject a symlink, non-regular file, path escape, unavailable
+no-follow primitive, unreadable source, or any pre-read/post-read/post-path
+identity mismatch with `architecture.producer_discovery_unsafe_source`; its
+remediation requires a regular, repository-confined source stable for the
+check. The identity SHALL include device, inode, size, and nanosecond mtime,
+and the source contents SHALL be read only from the verified descriptor. This
+prevents a symlink or replacement from becoming source evidence or an
+inconsistent producer inventory.
+
+The current capacity measurement is 305 included paths and 2,968,477 source
+bytes from that exact predicate at the reviewed commit; it excludes zero
+current paths. It is capacity evidence, not an authorization to raise the
+limits.
 
 After the initial inventory, every modified, added, renamed, or untracked
 production Python file receives the same bounded AST import/call prefilter
-before the planner classifies the delta as legacy-only. A detected canonical
-writer, a changed or deleted declared producer source, or an unresolved
-warehouse-writer import forces baseline validation. The validator fails until
-the baseline declares every discovered producer; it does not accept a
-hand-maintained required-table list or one materialization module as proof of
-completeness. Test fixtures are not production artifact producers. Each
-declaration SHALL name the producer source, exact call literal, layer, table,
-path role, and target/deferred classification. This includes
+before the planner classifies the delta as legacy-only. `ScopeSelection` SHALL
+carry this canonical, unfiltered producer-candidate set and rename/delete
+endpoints as an immutable `ProducerDiscoverySelection`, rather than permitting
+the contributor to rediscover Git. The selector SHALL enforce the same
+512-path, 64-KiB-path, 32-MiB-source, and 1-MiB-file limits before AST work.
+The contributor SHALL transport existing candidates in deterministic
+`batched_paths()` producer-prefilter steps within the existing 65,536-byte argv
+limit; it SHALL create no manifest, cache, or mutable application state. A
+candidate set whose encoded argv batch would exceed that limit SHALL split
+deterministically, while a single untransportable path fails with
+`architecture.producer_discovery_path_budget_exceeded`. Deleted paths and
+rename-source endpoints are not opened; they are matched against declared
+producer sources and produce a baseline-staleness failure until reconciled.
+
+A detected canonical writer, a changed or deleted declared producer source, or
+an unresolved warehouse-writer import forces baseline validation. Those
+producer signals are architecture-sensitive: if `--path` excludes any
+modified, added, deleted, rename-source, rename-target, or untracked signal,
+the planner SHALL emit `architecture.partial_scope` with the excluded paths
+before any acceptance result. A noncandidate legacy-only delta remains
+non-triggering. The validator fails until the baseline declares every
+discovered producer; it does not accept a hand-maintained required-table list
+or one materialization module as proof of completeness. Test fixtures are not
+production artifact producers. Each declaration SHALL name the producer
+source, exact call literal, layer, table, path role, and target/deferred
+classification. This includes
 `ads_warehouse_validation_report` where the producer exists even when a
 validation-required table list omits it, and the CLI fetch producers
 `dim.dim_data_source` and `ods.ods_fetch_attempt`.
@@ -155,6 +212,13 @@ validation-required table list omits it, and the CLI fetch producers
   validation runs, and an undeclared producer fails closed until the inventory
   declaration is added
 
+#### Scenario: A producer signal is excluded by a path filter
+
+- **WHEN** `--path` excludes a modified, added, deleted, rename-source,
+  rename-target, or untracked producer-discovery signal
+- **THEN** planning reports `architecture.partial_scope` and the excluded
+  repository-relative paths before any target or baseline acceptance result
+
 #### Scenario: A declared producer source is renamed or deleted
 
 - **WHEN** a child renames or deletes a source named by a warehouse producer
@@ -169,6 +233,25 @@ validation-required table list omits it, and the CLI fetch producers
 - **THEN** the production-universe filter excludes that source and validation
   does not require an artifact declaration for the fixture
 
+#### Scenario: A producer source is unsafe or changes while read
+
+- **WHEN** an included production-Python path is a symlink, non-regular file,
+  escapes the repository, cannot be opened without following links, or has a
+  changed identity between the verified descriptor read and post-read path
+  check
+- **THEN** discovery stops with
+  `architecture.producer_discovery_unsafe_source` and emits no partial
+  inventory
+
+#### Scenario: Discovery exceeds a path or source budget
+
+- **WHEN** the streamed Git enumeration, bounded delta selection, one source,
+  or aggregate source bytes exceeds its declared path/file/byte limit
+- **THEN** discovery stops with
+  `architecture.producer_discovery_path_budget_exceeded` or
+  `architecture.producer_discovery_budget_exceeded`, as applicable, before
+  parsing further sources or reporting a pass
+
 #### Scenario: A declared pointer or receipt source is changed
 
 - **WHEN** a child renames, deletes, or rewrites the code declaration of a
@@ -180,8 +263,8 @@ validation-required table list omits it, and the CLI fetch producers
 
 - **WHEN** the baseline validator runs in its focused negative-I/O fixture
 - **THEN** the fixture permits reads only of the baseline, declared
-  repository source-evidence files, and the bounded production-Python
-  discovery universe, and patched `sqlite3.connect`,
+  repository source-evidence files, and verified regular descriptors in the
+  bounded production-Python discovery universe, and patched `sqlite3.connect`,
   `duckdb.connect`, `pandas.read_parquet`, generic `open`/`Path.read_*` for
   in-repository `data/**`, `warehouse/**`, `market/**`, SQLite, Parquet,
   manifest, pointer, and receipt sentinels, and every out-of-repository path

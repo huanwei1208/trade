@@ -34,24 +34,24 @@ reason = "The checker performs no provider interaction, capture, import, replay,
 [[impacts]]
 id = "runtime_concurrency"
 applies = true
-reason = "The existing quality executor may run the guard's deterministic target batches alongside other light read-only checks, so this developer-tool path requires bounded concurrency, prerequisite ordering, cancellation, and overload evidence without changing application runtime behavior."
+reason = "The existing quality executor may run deterministic producer-prefilter and target batches alongside other light read-only checks, so this developer-tool path requires bounded concurrency, prerequisite ordering, cancellation, and overload evidence without changing application runtime behavior."
 
 [evidence.contract]
-contract = "The changed public developer contract is the read-only trade dev check plan/report: ScopeSelection additively preserves canonical unfiltered delta/filter metadata; an excluded architecture-sensitive delta emits architecture.partial_scope; and every architecture step emits bounded trade.architecture.guard.v1 JSON with status, scope, partial_scope, ordered findings, counts, emitted_count, and omitted_count."
+contract = "The changed public developer contract is the read-only trade dev check plan/report: ScopeSelection additively preserves canonical unfiltered delta/filter metadata plus bounded ProducerDiscoverySelection; an excluded architecture-sensitive or producer-discovery delta emits architecture.partial_scope; and every producer-prefilter, baseline, and target step emits bounded trade.architecture.guard.v1 JSON with status, scope, partial_scope, ordered findings, counts, emitted_count, and omitted_count."
 consumers = "Repository developers and child OpenSpec implementers consume the quality plan/report before adding src/trade modules; existing CLI, HTTP, Web, SDK, notebook, scheduler, event, database, artifact, and native runtime consumers remain unchanged."
-compatibility = "Existing ScopeSelection execution fields remain filtered for ordinary providers, while new metadata is additive. Legacy trade_py imports and runtime behavior remain outside prospective enforcement until each migration child supplies a compatible target module; a legacy-only changed scope receives no new architecture step."
+compatibility = "Existing ScopeSelection execution fields remain filtered for ordinary providers, while ProducerDiscoverySelection and its failure/partial-scope signals are additive. Legacy trade_py imports and runtime behavior remain outside prospective enforcement until each migration child supplies a compatible target module; a noncandidate legacy-only changed scope receives no new architecture step."
 migration = "The first target files arrive only in kernel-and-public-contracts or later child changes, each with its own compatibility evidence. The baseline records candidate/deferred facts and bounded CLI/HTTP/OpenAPI/SSE source inventory rather than moving source, readers, or interface behavior."
 rollback = "Remove the isolated contributor, validator, baseline, architecture-specific scope metadata, planner issue, and focused tests to return to the prior developer quality plan; no runtime interface, durable state, schema, or data artifact requires restoration."
 
 [evidence.concurrency]
-ownership = "ScopeSelection and the planner own canonical delta/filter metadata and partial-scope refusal; the architecture contributor constructs one baseline step and target batches; the existing quality executor owns scheduling and process lifecycle; the guard owns no mutable application state."
-bound = "The repository quality configuration caps light-step execution at four workers and argv at 65,536 bytes. The contributor creates one baseline step, caps each source file at 1 MiB, each target batch at 128 files and 8 MiB aggregate source, and the complete architecture-selected target scope at 512 files and 32 MiB. It emits at most 64 findings per envelope, reserves 1 KiB for metadata/counts, bounds display fields before encoding, uses count-only truncation if needed, sets a 30 second timeout, and never exceeds a 32 KiB structured-output limit."
-ordering = "Baseline evidence validation is a prerequisite for every sorted target batch. Planner partial-scope or scope-budget failures are emitted before target acceptance. Target paths, batch IDs, diagnostic records, and final report records sort deterministically; batches do not share mutable inputs or outputs."
+ownership = "ScopeSelection and the planner own canonical delta/filter metadata, bounded ProducerDiscoverySelection, and partial-scope refusal; the architecture contributor constructs producer-prefilter batches, one prerequisite baseline step, and target batches; the existing quality executor owns scheduling and process lifecycle; the guard owns no mutable application state."
+bound = "The repository quality configuration caps light-step execution at four workers and argv at 65,536 bytes. Streamed initial producer discovery stops at 1,024 raw records/128 KiB raw path bytes, 512 included paths/64 KiB path bytes, 1 MiB per source, and 32 MiB aggregate source; descriptor reads refuse unsafe or unstable sources. Delta producer-prefilter batches use batched_paths within argv limits. Target batches remain capped at 128 files and 8 MiB aggregate source, with a 512-file/32-MiB complete target scope. Every envelope emits at most 64 findings, reserves 1 KiB for metadata/counts, bounds display fields before encoding, uses count-only truncation if needed, sets a 30 second timeout, and never exceeds a 32 KiB structured-output limit."
+ordering = "Producer-prefilter admission precedes one baseline step, which is a prerequisite for every sorted target batch. Planner partial-scope, producer-budget, producer-unsafe-source, or scope-budget failures are emitted before target acceptance. Paths, batch IDs, diagnostic records, and final report records sort deterministically; batches do not share mutable inputs or outputs."
 atomicity = "Each read-only subprocess parses an immutable selected source set and exits with one complete structured diagnostic envelope. The check produces no database, artifact, cache, or application-state transition."
 timeout_cancellation = "Each architecture CheckStep sets a 30 second timeout; the existing executor terminates a timed-out subprocess process group. No retry reuses partial diagnostics, and a developer reruns after correcting the source or baseline."
-backpressure = "batched_paths enforces the existing argv bound; per-file, per-batch, and total-scope source budgets stop oversized work before parsing; and the versioned finding/output envelope caps prevent unbounded process memory or report growth. Excess scope is reported as an explicit quality failure, never silently dropped."
+backpressure = "Streamed producer admission stops before an unbounded path list; batched_paths enforces argv limits for producer-prefilter and target work; per-file, per-batch, total-scope, and producer path/source budgets stop oversized work before parsing; and the versioned finding/output envelope caps prevent unbounded process memory or report growth. Excess or unsafe scope is reported as an explicit quality failure, never silently dropped."
 partial_failure = "A failed baseline blocks every dependent target batch. A failed or timed-out target batch remains a deterministic quality failure while independent ordinary quality checks retain their own result; no partial architecture result is presented as acceptance."
-capacity_validation = "Focused scope/planner/contributor tests cover one baseline step, multiple target batches, many short paths with near-cap source files, four-worker scheduling eligibility, oversized argv input, oversized source, per-batch and total-scope budget refusal, serialized worst-case finding truncation, invalid-envelope rejection, timeout/output configuration, modified/rename/delete/untracked triggers, and canonical-metadata partial-scope refusal."
+capacity_validation = "Focused scope/planner/contributor tests cover streamed producer enumeration and early raw/included path refusal, normal regular source reads, symlink/non-regular/path-escape/source-replacement refusal, producer direct/re-export/alias resolution, long argv path and over-cap delta transport, one prerequisite baseline step, multiple producer and target batches, many short paths with near-cap source files, four-worker scheduling eligibility, oversized source, per-batch and total-scope budget refusal, serialized worst-case finding truncation, invalid-envelope rejection, timeout/output configuration, and modified/rename/delete/untracked producer partial-scope refusal."
 
 [[obligations]]
 id = "architecture.static-guard"
@@ -80,6 +80,7 @@ failure_states = [
   "direct database, artifact, or SQL escape",
   "direct dynamic execution or process creation",
   "partial architecture scope or scope budget exceeded",
+  "producer discovery unresolved, undeclared, unsafe, or over budget",
   "invalid or oversized structured diagnostic envelope",
   "Platform business vocabulary",
   "native import outside adapter boundary",
@@ -114,6 +115,7 @@ failure_states = [
   "duplicate table declaration",
   "unclassified target ownership",
   "stale projection, pointer, Capture, native, or interface fact",
+  "producer discovery path, source, or declaration mismatch",
   "attempted database, artifact, or non-evidence-path read",
 ]
 spec_requirements = [
