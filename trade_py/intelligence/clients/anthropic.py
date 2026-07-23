@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class AnthropicClient(BaseLLMClient):
     """Calls Claude via the Anthropic Messages API."""
 
-    MODEL = "claude-haiku-4-5-20251001"
+    MODEL = "claude-sonnet-5"
 
     @classmethod
     def factory_fields(cls) -> set[str]:
@@ -43,10 +43,15 @@ class AnthropicClient(BaseLLMClient):
         response = self._client.messages.create(
             model=self.model,
             max_tokens=self.MAX_TOKENS,
+            # Sonnet 5 runs adaptive thinking when the field is omitted; this is a
+            # fixed-schema extraction task, so disable it for cost and latency.
+            thinking={"type": "disabled"},
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.content[0].text.strip()
+        raw = next(
+            (block.text for block in response.content if block.type == "text"), ""
+        ).strip()
         in_tok = response.usage.input_tokens
         out_tok = response.usage.output_tokens
         self._total_input_tokens += in_tok
@@ -55,8 +60,8 @@ class AnthropicClient(BaseLLMClient):
 
     @property
     def estimated_cost(self) -> float:
-        # Claude Haiku: $0.80/M input, $4.00/M output
-        return (self._total_input_tokens * 0.80 + self._total_output_tokens * 4.00) / 1_000_000
+        # Claude Sonnet 5: $3.00/M input, $15.00/M output
+        return (self._total_input_tokens * 3.00 + self._total_output_tokens * 15.00) / 1_000_000
 
     @property
     def token_usage(self) -> dict:

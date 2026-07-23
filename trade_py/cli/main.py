@@ -1,6 +1,23 @@
 from __future__ import annotations
 
+import os
 import sys
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load a .env file into os.environ via python-dotenv.
+
+    Search order: $TRADE_ENV_FILE, else <project-root>/.env. Existing
+    environment variables always win (shell/cron export overrides the file),
+    so non-interactive contexts (dagu ssh, cron) can supply ANTHROPIC_API_KEY
+    via a file without touching the shell profile.
+    """
+    from dotenv import load_dotenv
+
+    configured = os.environ.get("TRADE_ENV_FILE", "").strip()
+    target = Path(configured).expanduser() if configured else Path(__file__).resolve().parents[2] / ".env"
+    load_dotenv(target, override=False)
 
 # Direct ``python trade_py/cli/main.py`` execution otherwise puts this directory
 # first on sys.path, where cli/inspect.py shadows the standard-library module.
@@ -76,6 +93,7 @@ def _import_domain(name: str):
 
 
 def main(argv: list[str] | None = None) -> int:
+    _load_dotenv()
     # The 10 canonical (visible) domains
     canonical_domains = [
         # Trigger / run

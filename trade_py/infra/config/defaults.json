@@ -18,8 +18,8 @@
     "rss_fetch_retries": 2,
     "show_source_diagnostics": false,
     "semantic_mode": "hybrid",
-    "llm_provider": "ollama",
-    "llm_model": "qwen2.5:7b-instruct",
+    "llm_provider": "anthropic",
+    "llm_model": "claude-sonnet-5",
     "ollama_base_url": "http://127.0.0.1:11434",
     "rsshub_base_url": "http://127.0.0.1:1200",
     "dry_run": false

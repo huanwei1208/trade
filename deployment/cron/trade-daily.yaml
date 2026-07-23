@@ -1,0 +1,60 @@
+# Trade 每日流水线（EBRT）— dagu DAG
+# 依赖结构（菱形）：
+#     kline-sync ─────────────┐
+#                             ├──▶ recommend
+#     sentiment ──▶ belief ───┘
+#
+# 安装：见 deployment/cron/README.md
+name: trade-daily
+description: "A股每日流水线：K线+新闻 → 信念 → 推荐（EBRT）"
+
+# 工作日 18:30 启动整条 DAG，dagu 按依赖顺序跑，不再靠时间差
+schedule: "30 18 * * 1-5"
+
+# 单实例，避免上一轮没跑完又启动
+maxActiveRuns: 1
+
+env:
+  - PROJ: /home/peng/PROGRAM/GitHub/trade
+
+steps:
+  # ── 输入层（并行）───────────────────────────────────────────
+  - name: kline-sync
+    executor:
+      type: ssh2
+      config:
+        host: server
+    command: bash -lc 'cd $PROJ && ./trade py data kline sync --mode incremental --adjust hfq --provider sina'
+
+  - name: sentiment
+    executor:
+      type: ssh2
+      config:
+        host: server
+    # ANTHROPIC_API_KEY 从专用 env 文件读（非交互 ssh 读不到 .zshrc）
+    command: |
+      bash -lc '
+        cd $PROJ && 
+        ./trade py data sentiment
+      '
+
+  # ── 信念层（等 sentiment 写完 Gold）─────────────────────────
+  - name: belief
+    executor:
+      type: ssh2
+      config:
+        host: server
+    command: bash -lc 'cd $PROJ && ./trade py daily belief'
+    depends:
+      - sentiment
+
+  # ── 决策层（等 belief 和 kline 都完成）──────────────────────
+  - name: recommend
+    executor:
+      type: ssh2
+      config:
+        host: server
+    command: bash -lc 'cd $PROJ && ./trade py daily recommend'
+    depends:
+      - belief
+      - kline-sync

@@ -110,15 +110,16 @@ def _finalize_frame(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
     for col in ["volume", "amount", "turnover_rate"]:
         if col not in out.columns:
             out[col] = 0.0
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        out[col] = pd.to_numeric(out[col], errors="coerce").to_numpy(dtype=float, na_value=0.0)
     if "pct_chg" in out.columns:
-        out["pct_chg"] = pd.to_numeric(out["pct_chg"], errors="coerce")
+        out["pct_chg"] = pd.to_numeric(out["pct_chg"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
     if "prev_close" in out.columns:
-        out["prev_close"] = pd.to_numeric(out["prev_close"], errors="coerce")
+        out["prev_close"] = pd.to_numeric(out["prev_close"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
 
     out = out.sort_values("date").reset_index(drop=True)
     prev_close = out["prev_close"] if "prev_close" in out.columns else pd.Series(np.nan, index=out.index, dtype="float64")
     if "pct_chg" in out.columns:
+        out["pct_chg"] = pd.to_numeric(out["pct_chg"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
         denominator = 1.0 + (out["pct_chg"] / 100.0)
         derived_prev = out["close"] / denominator.where(denominator.abs() > 1e-9)
         prev_close = prev_close.where(prev_close.notna() & (prev_close > 0), derived_prev)
@@ -195,6 +196,37 @@ class AkshareKlineProvider:
         df = raw.rename(columns=col_map)
         keep = [c for c in col_map.values() if c in df.columns]
         return _finalize_frame(symbol, df[keep].copy())
+
+
+class SinaKlineProvider:
+    name = "sina"
+
+    @staticmethod
+    @retry(delays=_RETRY_DELAYS_SEC, on=(Exception,))
+    def _fetch_raw(ak, sina_code: str, start_ymd: str, end_ymd: str, adjust: str):
+        return ak.stock_zh_a_daily(
+            symbol=sina_code,
+            start_date=start_ymd,
+            end_date=end_ymd,
+            adjust=adjust if adjust != "none" else "",
+        )
+
+    def fetch(self, symbol: str, start: str, end: str, adjust: str = "hfq") -> pd.DataFrame:
+        import akshare as ak
+
+        sym = ensure_symbol(symbol)
+        sina_code = sym.split(".")[1].lower() + sym.split(".")[0]
+        raw = self._fetch_raw(ak, sina_code, start.replace("-", ""), end.replace("-", ""), adjust)
+        if raw is None or raw.empty:
+            return pd.DataFrame(columns=_COLUMN_ORDER)
+        df = raw.reset_index() if "date" not in raw.columns else raw.copy()
+        # Sina volume is in shares; project convention (Eastmoney) is lots (手).
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce") / 100.0
+        # Sina turnover is a fraction; project convention is percent.
+        if "turnover" in df.columns:
+            df["turnover_rate"] = pd.to_numeric(df["turnover"], errors="coerce") * 100.0
+        keep = [c for c in ["date", "open", "high", "low", "close", "volume", "amount", "turnover_rate"] if c in df.columns]
+        return _finalize_frame(sym, df[keep].copy())
 
 
 class BaostockKlineProvider:
@@ -329,6 +361,8 @@ def build_provider_chain(provider: str, data_root: str = "data") -> ProviderChai
     provider = (provider or "auto").lower()
     if provider == "akshare":
         return ProviderChain([AkshareKlineProvider()])
+    if provider == "sina":
+        return ProviderChain([SinaKlineProvider()])
     if provider == "baostock":
         return ProviderChain([BaostockKlineProvider()])
     if provider == "tencent":
@@ -336,14 +370,15 @@ def build_provider_chain(provider: str, data_root: str = "data") -> ProviderChai
     if provider == "tushare":
         from trade_py.data.market.kline.tushare import TushareKlineProvider
         return ProviderChain([TushareKlineProvider(data_root)])
-    # auto: try Tushare first (primary), then akshare, then baostock
+    # auto: try Tushare first (primary), then akshare, then sina, then baostock
     try:
         from trade_py.data.market.kline.tushare import TushareKlineProvider
         return ProviderChain([
             TushareKlineProvider(data_root),
             AkshareKlineProvider(),
+            SinaKlineProvider(),
             TencentKlineProvider(),
             BaostockKlineProvider(),
         ])
     except Exception:
-        return ProviderChain([AkshareKlineProvider(), TencentKlineProvider(), BaostockKlineProvider()])
+        return ProviderChain([AkshareKlineProvider(), SinaKlineProvider(), TencentKlineProvider(), BaostockKlineProvider()])

@@ -388,7 +388,7 @@ def make_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--start", default=None)
     p_sync.add_argument("--end", default=None)
     p_sync.add_argument("--adjust", choices=["hfq", "qfq", "none"], default=d("adjust", "none"))
-    p_sync.add_argument("--provider", choices=["auto", "tushare", "akshare", "baostock", "tencent"], default=d("provider", "auto"))
+    p_sync.add_argument("--provider", choices=["auto", "tushare", "akshare", "sina", "baostock", "tencent"], default=d("provider", "auto"))
     p_sync.add_argument("--delay-ms", type=int, default=int(d("delay_ms", 300)))
     p_sync.add_argument("--fail-fast", action="store_true")
 

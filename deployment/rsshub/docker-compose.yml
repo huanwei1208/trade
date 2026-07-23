@@ -54,9 +54,6 @@ services:
 networks:
   rsshub_net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.31.250.0/24
 
 volumes:
   rsshub_redis_data:
