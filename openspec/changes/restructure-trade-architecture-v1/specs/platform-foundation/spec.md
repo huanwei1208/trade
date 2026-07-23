@@ -3,9 +3,10 @@
 ### Requirement: Platform persistence and events SHALL precede Context extraction
 
 Platform SHALL provide a minimal public persistence and events foundation
-before Capture, Datasets, Studies or Decision Support owns a new durable
-transition. The
-foundation. The foundation SHALL provide a context-local transaction port that
+after the `kernel-and-public-contracts` child has published its framework-free
+IDs, envelopes, `ActorContext`, `OperationReceipt`, error and policy-reference
+DTOs, but before Capture, Datasets, Studies or Decision Support owns a new
+durable transition. The foundation SHALL provide a context-local transaction port that
 atomically commits the owner's aggregate transition, immutable receipt/audit
 record and outbox record; it SHALL NOT provide a business repository or a
 cross-context transaction. The foundation SHALL also provide durable command
@@ -28,6 +29,25 @@ ordered delivery policy, bounded retry and a dead-letter/redrive record.
 - **THEN** Platform records a bounded dead-letter entry with correlation,
   causation, payload digest and failure reason, requires an audited redrive
   command, and never drops or silently reorders the envelope
+
+### Requirement: Ordered delivery SHALL use a durable OrderingContract
+
+For every envelope that declares ordering, Platform SHALL persist an
+`OrderingContract` containing ordering scope/key, fenced producer epoch,
+transactionally assigned sequence, consumer expected sequence, stale/duplicate
+rule, bounded gap timeout and head-of-line failure policy. A consumer SHALL
+not apply sequence `N+1` before the required handling of `N`; a stale,
+duplicate or gap-expired envelope SHALL create an explicit receipt,
+quarantine/reconciliation action or dead-letter outcome under the contract.
+Unordered envelopes SHALL explicitly declare that ordering is not required.
+
+#### Scenario: Sequence N+1 arrives before N after a restart
+
+- **WHEN** a consumer lease expires and a dispatcher delivers sequence `N+1`
+  before sequence `N` for the same ordered scope
+- **THEN** the consumer retains durable expected-sequence state, does not
+  apply `N+1`, and waits, replays, or routes the gap through the declared
+  bounded reconciliation path without silently changing aggregate order
 
 ### Requirement: Artifact commit visibility SHALL be crash-recoverable
 
@@ -61,10 +81,13 @@ Platform Persistence SHALL provide a `DatabaseRuntime` and
 migration-leader startup modes. A migration leader lock, schema capability
 generation and supported minimum/maximum generation SHALL fence incompatible
 writers. Context migration registration SHALL remain context-owned, while the
-coordinator runs registrations in a declared dependency order. The legacy
-`TradeDB` facade SHALL delegate through compatible context repositories during
-the transition and SHALL NOT initialize or migrate all business domains as an
-implicit side effect.
+coordinator runs registrations in a declared dependency order. The foundation
+SHALL introduce an explicit `LegacySchemaBootstrapAdapter` for the existing
+`TradeDB` migration history; it does not require Context repositories that
+have not yet been extracted. A later owner-transition child SHALL replace each
+legacy registration/delegation only after its Context repository and reader
+exist. New Bootstrap entrypoints SHALL NOT trigger global schema initialization
+as an implicit `TradeDB` constructor side effect.
 
 #### Scenario: Two binary generations start against one SQLite database
 
@@ -81,6 +104,25 @@ implicit side effect.
 - **THEN** the coordinator records the checkpoint and capability state, the
   old compatible reader remains available, and a retry resumes idempotently
   without reapplying destructive work
+
+### Requirement: Capacity evidence SHALL be comparable across child changes
+
+Platform SHALL define a versioned `CapacityEnvelope` result contract for every
+1x/10x gate. It SHALL record fixture cardinality and duration, source/credential
+and stream shape where applicable, concurrency, runner resource profile,
+latency percentiles, admission/rejection counts, SQLite lock/write time,
+scan bytes/files, CPU/memory/disk peaks, backlog/recovery time and explicit
+overload outcome. A child SHALL reserve named limits in that envelope and
+shall not activate a source, query, delivery or interface surface using an
+illustrative parent value as a production limit.
+
+#### Scenario: A Dataset child reports a 10x query result
+
+- **WHEN** a Dataset child completes its 10x QueryBudget fixture
+- **THEN** it emits a CapacityEnvelope result with the declared workload,
+  threshold, observed scan/resource/latency values and explicit pass, defer or
+  overload result that can be compared with another child without inferring
+  undocumented measurement conditions
 
 ### Requirement: Platform composition SHALL have one explicit Bootstrap owner
 

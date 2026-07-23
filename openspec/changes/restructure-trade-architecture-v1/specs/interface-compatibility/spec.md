@@ -55,6 +55,9 @@ SHALL provide bounded ProcessView list/detail and recovery-link queries through
 the owning Processes/Platform query APIs. Legacy error shapes remain available
 until their snapshot and retirement conditions pass; adapters SHALL NOT expose
 raw exception text, credentials, artifact bytes or private table state.
+`ErrorEnvelope`, `OperationReceipt` and `ProcessView` SHALL preserve distinct
+`unknown`, `not_observed`, `unavailable`, `empty`, `partial`, `blocked`,
+`quarantined`, `stale` and terminal-error states in CLI, HTTP and SSE snapshots.
 
 #### Scenario: A retained route observes a blocked process
 
@@ -63,6 +66,25 @@ raw exception text, credentials, artifact bytes or private table state.
 - **THEN** the adapter returns the compatible status/payload plus a stable
   ErrorEnvelope reason and correlation/process link, and does not retry,
   repair, redrive or mutate the process while servicing the query
+
+### Requirement: Interfaces SHALL expose bounded retention and recovery operations
+
+Operations interfaces SHALL expose owner-managed, bounded `RetentionView`,
+`GcDryRunReceipt` and `GcRunReceipt` query/receipt DTOs through compatible
+`trade status`, `trade show` and Operations BFF surfaces. The view SHALL report
+retention class, last/next evaluation, freshness/unknown state, bytes/items by
+class, capacity forecast/at-risk state, legal hold, protected-reference reason,
+candidate count, tombstone/archive recovery location and failed/suppressed
+deletion reason. A query SHALL not run collection; an authorized command SHALL
+return a receipt linked to the retention operation.
+
+#### Scenario: An operator investigates retention-at-risk
+
+- **WHEN** a compatible CLI or Operations page queries a retention class that
+  exceeds its capacity forecast or is blocked by protected references
+- **THEN** it receives a bounded RetentionView with explicit freshness and
+  lineage/recovery links, and any dry-run or collection command returns an
+  auditable receipt without deleting data during the query
 
 ### Requirement: BFF and SSE fan-out SHALL have finite client budgets
 

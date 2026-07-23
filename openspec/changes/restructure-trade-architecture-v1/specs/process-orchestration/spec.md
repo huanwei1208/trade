@@ -33,6 +33,17 @@ limit, deadline and redrive/dead-letter state. A `ProcessView` SHALL expose
 bounded list/detail/recovery query data without exposing business tables or raw
 payloads.
 
+`ActorContext` SHALL be derived from trusted CLI, HTTP authentication,
+scheduler, event or system metadata rather than caller-supplied payload fields,
+and SHALL identify origin, authenticated/system principal, authority scope,
+delegation chain and explicit anonymous/unknown policy. Versioned DTOs SHALL
+define `OperationReceipt` IDs/kind/command digest/scoped idempotency/timestamps/
+terminal state, `ProcessView` step/deadline/retry/DLQ/bounded history/permitted
+recovery actions, and `ErrorEnvelope` schema version/reason/state/retryability/
+retry-after/correlation/operation/process references/safe recovery hint.
+`unknown`, `not_observed` and `unavailable` SHALL remain distinguishable from
+successful, empty or healthy state.
+
 #### Scenario: A caller repeats an accepted command after a timeout
 
 - **WHEN** a CLI, HTTP, scheduler or event adapter resubmits a command with the
@@ -48,6 +59,26 @@ payloads.
 - **THEN** Platform stops admitting unbounded work, makes backlog state visible
   through ProcessView/Operations queries, redelivers only under the ordering
   and retry policy, and routes exhausted work to an audited dead letter
+
+### Requirement: Mutation compatibility SHALL use a receipt and recovery ledger
+
+Interfaces and Processes SHALL record a mutation ledger row before delegating
+each CLI, HTTP, Web, scheduler or event mutation. The row SHALL identify legacy
+request/response/status behavior, command owner and canonical digest, trusted
+ActorContext source, idempotency scope, returned OperationReceipt/ProcessView
+selector, cancellation/retry/redrive authorization, ErrorEnvelope/legacy
+mapping, snapshot validation, rollout gate and retirement condition. Background
+work SHALL enter durable command ingress/process state before the corresponding
+interface is migrated.
+
+#### Scenario: A legacy action starts background work
+
+- **WHEN** a compatibility route currently returns an action ID while a local
+  thread or process continues the work
+- **THEN** its ledger row maps the action to a durable OperationReceipt and
+  ProcessView before delegation, preserves the legacy response shape during the
+  compatibility window, and documents authorized retry, cancellation and
+  redrive paths
 
 ### Requirement: Contexts SHALL publish facts and Processes SHALL issue commands
 

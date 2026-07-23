@@ -24,6 +24,25 @@ canonical Dataset or determine data quality.
 - **THEN** Capture records the failed attempt, schedules a bounded retry and
   leaves no ambiguous raw artifact or canonical Dataset pointer
 
+### Requirement: Capture admission SHALL be durable across source and credential scope
+
+SourceManifest SHALL declare provider/credential quota scope, request/byte/cost
+windows, concurrent capture slots, page/CaptureRun ceilings, Retry-After
+precedence, jitter, deadline, stream segment rotation/buffer/checkpoint bounds
+and explicit defer/reject policy. Capture SHALL persist a durable admission
+reservation/accounting claim before provider interaction so independently
+started workers cannot exceed the same source/credential limit. A retry SHALL
+persist its retry-after/deadline evidence and a stream SHALL advance a
+checkpoint only after its segment receipt is durable.
+
+#### Scenario: Two workers share one provider credential
+
+- **WHEN** two Capture workers submit requests using the same SourceManifest
+  credential scope near its configured window or concurrency limit
+- **THEN** durable admission accepts only reservations within the shared limit,
+  records explicit deferred/rejected outcomes for the remainder, and retains
+  Retry-After/deadline/checkpoint evidence across worker restart
+
 ### Requirement: SourceManifest SHALL enforce source rights and downstream use
 
 Every Capture request SHALL resolve a versioned immutable `SourceManifest` that
@@ -53,6 +72,27 @@ disallowed downstream use.
   policy-aware event for protected downstream references, and preserves the
   receipt, digest and revocation reason for audit without deleting an artifact
   still protected by a live retention or legal-hold reference
+
+### Requirement: Rights revocation SHALL propagate through retained lineage
+
+Capture SHALL emit a `RightsRestrictionDeclared` event containing the
+SourceManifest policy/version and protected CaptureArtifactRefs when rights
+expire or are revoked. A `PropagateRightsRestriction` Process SHALL traverse
+CaptureArtifact to DatasetVersion/Snapshot, StudyResult, DecisionCase and
+projection lineage, applying the policy-selected `access_restricted`,
+`withdrawn`, `stale` or `retained_for_audit_only` state. The Process SHALL
+prevent prohibited export, BFF display and downstream processing, record
+exceptions such as legal holds, and append a completion receipt. Renewal SHALL
+create a later policy/restriction resolution and SHALL NOT erase earlier audit
+evidence.
+
+#### Scenario: Rights are revoked after semantic publication
+
+- **WHEN** a SourceManifest revocation affects a retained artifact that has
+  already produced a DatasetVersion and StudyResult
+- **THEN** propagation restricts or withdraws affected consumers according to
+  policy, retains legal-hold evidence, records any unresolved projection, and
+  exposes a completion receipt without deleting the historical lineage
 
 ### Requirement: Capture SHALL support non-linear artifact consumption
 
@@ -124,6 +164,24 @@ replaying a quarantined artifact or a delivery dead letter.
 - **THEN** Capture records the payload/diagnostic as quarantined, emits no
   consumable artifact reference, and an operator can retry validation or replay
   the committed bytes without making a provider call
+
+### Requirement: Capture quarantine SHALL control access and revalidation
+
+Capture SHALL create a `QuarantineReceipt` with classification, safe diagnostic
+reference, access role/purpose, retention class, validator/policy version,
+redaction state and immutable original digest. A quarantined artifact SHALL
+transition only to `revalidated`, `tombstoned` or `retained_for_audit` through
+an authorized command. Revalidation SHALL append a later receipt/reference
+generation that proves the original bytes/digest and changed parser/policy; it
+SHALL NOT mutate the original CaptureArtifact or permit restricted raw access.
+
+#### Scenario: A parser policy is corrected after quarantine
+
+- **WHEN** an authorized operator revalidates a quarantined artifact after a
+  parser or policy change
+- **THEN** Capture creates a new revalidation receipt with validator/policy
+  identity, retains the original quarantine evidence, applies access controls
+  to raw content and emits a consumable reference only when validation passes
 
 ### Requirement: Capture replay and supersession SHALL preserve provenance
 

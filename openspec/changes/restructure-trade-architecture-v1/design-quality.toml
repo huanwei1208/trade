@@ -126,6 +126,8 @@ availability_states = ["nonempty", "empty", "partial", "unavailable", "rate_limi
 quota = { amount = 1000000, unit = "requests", window_seconds = 86400 }
 cost = { max_amount = 1000000, currency = "credits", window_seconds = 86400 }
 concurrency = 64
+# These numeric values are schema-fixture examples only. Each SourceManifest
+# supplies enforceable source/credential-specific production limits.
 retry_classification = { max_attempts = 5, backoff = "exponential", retryable_classes = ["timeout", "rate_limit", "transient_5xx"] }
 circuit_breaker = { failure_threshold = 5, cooldown_seconds = 300 }
 bounded_queue_backpressure = { capacity = 10000, overflow = "reject", backpressure = true }
@@ -195,7 +197,13 @@ failure_states = [
 ]
 spec_requirements = [
   "capture-contract:Capture SHALL record external interaction as immutable receipts",
+  "capture-contract:Capture admission SHALL be durable across source and credential scope",
+  "capture-contract:SourceManifest SHALL enforce source rights and downstream use",
+  "capture-contract:Rights revocation SHALL propagate through retained lineage",
   "capture-contract:Capture SHALL support non-linear artifact consumption",
+  "capture-contract:Capture SHALL preserve temporal identity, corrections and finality",
+  "capture-contract:Capture quarantine SHALL remain distinct from delivery DLQ",
+  "capture-contract:Capture quarantine SHALL control access and revalidation",
   "capture-contract:Capture replay and supersession SHALL preserve provenance",
 ]
 validation_tasks = ["3.1"]
@@ -224,11 +232,13 @@ failure_states = [
 ]
 spec_requirements = [
   "platform-foundation:Platform persistence and events SHALL precede Context extraction",
+  "platform-foundation:Ordered delivery SHALL use a durable OrderingContract",
   "platform-foundation:Artifact commit visibility SHALL be crash-recoverable",
   "platform-foundation:Migration startup SHALL be coordinated and mixed-version safe",
+  "platform-foundation:Capacity evidence SHALL be comparable across child changes",
   "platform-foundation:Platform composition SHALL have one explicit Bootstrap owner",
 ]
-validation_tasks = ["2.2", "3.1", "4.1", "5.1", "5.2"]
+validation_tasks = ["2.3", "3.1", "4.1", "4.2", "5.1", "5.2"]
 
 [[obligations]]
 id = "datasets.products"
@@ -253,9 +263,14 @@ failure_states = [
 spec_requirements = [
   "dataset-product-lifecycle:Datasets SHALL produce immutable data products",
   "dataset-product-lifecycle:Datasets SHALL own quality, lineage, revisions and point-in-time resolution",
+  "dataset-product-lifecycle:Formal PIT and revision semantics SHALL be proven before formal use",
+  "dataset-product-lifecycle:Dataset physical layout and query execution SHALL be budgeted",
   "dataset-product-lifecycle:Catalogs and releases SHALL be projections over immutable products",
+  "dataset-product-lifecycle:Durable Dataset migration SHALL prove reconciliation equivalence",
+  "dataset-product-lifecycle:Semantic derived datasets SHALL retain derivation provenance",
+  "dataset-product-lifecycle:Formal and compatibility artifact reads SHALL verify integrity",
 ]
-validation_tasks = ["2.3", "3.2", "3.3"]
+validation_tasks = ["2.4", "3.2", "3.3"]
 
 [[obligations]]
 id = "studies.reproducibility"
@@ -282,7 +297,7 @@ spec_requirements = [
   "study-lifecycle:Studies SHALL express evidence gaps without performing capture",
   "study-lifecycle:Study results SHALL be versioned, validated and revision-aware",
 ]
-validation_tasks = ["2.3", "3.3", "4.1"]
+validation_tasks = ["2.4", "3.3", "4.1"]
 
 [[obligations]]
 id = "processes.recovery"
@@ -307,10 +322,12 @@ failure_states = [
 ]
 spec_requirements = [
   "process-orchestration:Cross-context workflows SHALL be owned by durable Process Managers",
+  "process-orchestration:Commands and events SHALL have durable handoff receipts",
+  "process-orchestration:Mutation compatibility SHALL use a receipt and recovery ledger",
   "process-orchestration:Contexts SHALL publish facts and Processes SHALL issue commands",
   "process-orchestration:Scheduling and event adapters SHALL remain technical boundaries",
 ]
-validation_tasks = ["4.1", "4.3"]
+validation_tasks = ["2.2", "4.1", "4.2", "4.3"]
 
 [[obligations]]
 id = "interfaces.compatibility"
@@ -337,9 +354,12 @@ failure_states = [
 spec_requirements = [
   "interface-compatibility:Existing CLI contracts SHALL remain stable through compatibility adapters",
   "interface-compatibility:HTTP, SSE and Web page surfaces SHALL be contract-compatible",
+  "interface-compatibility:Interface errors and process views SHALL remain operable",
+  "interface-compatibility:Interfaces SHALL expose bounded retention and recovery operations",
+  "interface-compatibility:BFF and SSE fan-out SHALL have finite client budgets",
   "interface-compatibility:SDK, notebooks and imports SHALL use shared contracts",
 ]
-validation_tasks = ["2.4", "4.3", "5.1"]
+validation_tasks = ["2.2", "2.5", "4.2", "4.3", "5.1"]
 
 [[obligations]]
 id = "dependency.guardrails"
@@ -365,6 +385,8 @@ spec_requirements = [
   "dependency-guardrails:Contracts and domain code SHALL not leak implementation types",
   "dependency-guardrails:Database access SHALL have one logical context owner",
   "dependency-guardrails:Platform SHALL remain free of business semantics",
+  "dependency-guardrails:Native capabilities SHALL remain context-port adapters",
+  "dependency-guardrails:Native binding linkage SHALL exclude persistence and lifecycle targets",
 ]
 validation_tasks = ["2.1", "5.1"]
 
@@ -389,7 +411,10 @@ failure_states = [
 ]
 spec_requirements = [
   "migration-governance:Architecture implementation SHALL be phased and reversible",
+  "migration-governance:Migration coordination and release bridges SHALL have one authority",
   "migration-governance:Legacy interfaces SHALL retire only after explicit exit criteria",
+  "migration-governance:Restorable backups SHALL be verified before activation",
+  "migration-governance:Retention and garbage collection SHALL preserve reachable lineage",
   "migration-governance:Data safety SHALL be preserved during migration",
 ]
-validation_tasks = ["1.3", "3.4", "5.2"]
+validation_tasks = ["1.3", "2.3", "3.4", "4.2", "5.2"]

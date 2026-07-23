@@ -33,8 +33,12 @@ SHALL have Datasets as their sole business owner. A formal DatasetVersion and
 DatasetSnapshot SHALL record immutable `CanonicalizationPolicyRef` and
 `QualityPolicyRef` values, each including policy/version digest and explicit
 unit, timezone, precision, duplicate, missingness and reconciliation
-semantics. A required missing temporal clock SHALL fail closed for formal
-point-in-time resolution.
+semantics. `DatasetVersionRef` SHALL include canonicalization-policy,
+quality-policy, transform-code/environment, physical-layout and ordered-input
+lineage identities. `DatasetSnapshotRef` SHALL include constituent-version,
+knowledge-mode/effective-cut, revision/retraction-mapping,
+clock-confidence/eligibility and snapshot-content identities. A required
+missing temporal clock SHALL fail closed for formal point-in-time resolution.
 
 #### Scenario: A row has no required availability clock
 
@@ -148,10 +152,19 @@ other Capture content is canonicalized into reusable semantic data, linked to
 the input CaptureArtifactRefs or DatasetVersionRefs. The receipt SHALL identify
 the model/provider/version, prompt/template, parser, environment/dependency
 identity, parameter/seed policy, response/output digest, cost/usage evidence,
-policy authorization and any human correction. Human correction SHALL append a
-new correction receipt/version rather than overwrite a prior model or reviewer
-output. Fold-local semantic transforms remain Study-local and are not published
-as derived datasets.
+policy authorization and any human correction. It SHALL bind an immutable
+semantic schema policy for output schema/version, embedding space/dimension,
+tokenizer/chunking, normalization, entity taxonomy and compatibility range.
+For deterministic local derivations it SHALL include executable transform/image
+and dependency-lock digests, normalized input manifest and rerun-equality
+evidence. For provider/nondeterministic derivations it SHALL include permitted
+archival response/output evidence, model release, normalized request/prompt
+identity, parameter/seed policy and explicit
+`replay_verifiable_not_recomputable` state where exact recomputation is
+unavailable. Human correction SHALL append a new correction receipt/version
+with reviewer role, payload digest and justification rather than overwrite a
+prior model or reviewer output. Fold-local semantic transforms remain
+Study-local and are not published as derived datasets.
 
 #### Scenario: A sentiment source is derived from captured news
 
@@ -160,3 +173,22 @@ as derived datasets.
 - **THEN** the published DatasetVersion includes its DerivationReceipt lineage
   and policy references, and a later reviewer correction produces a new
   versioned result linked to the prior output instead of mutating it in place
+
+### Requirement: Formal and compatibility artifact reads SHALL verify integrity
+
+Every formal or compatibility artifact reader SHALL resolve a manifest-backed
+`ArtifactRef` and verify its recorded digest before parsing a raw receipt,
+primary, shadow, canonical, reconciliation, revision, derived or result
+artifact.
+An explicitly non-formal diagnostic mode MAY expose only an
+`integrity_unverified` state with no formal publication, quality conclusion or
+Study eligibility. The Dataset and interface child changes SHALL include tamper
+fixtures for each retained artifact class and legacy manifest migration.
+
+#### Scenario: A compatibility reader finds a tampered revision artifact
+
+- **WHEN** a compatibility query resolves a revision or reconciliation artifact
+  whose bytes do not match its manifest-backed ArtifactRef digest
+- **THEN** the reader rejects formal use, returns an integrity-failed or
+  integrity-unverified state according to its mode, and preserves the digest
+  mismatch evidence without substituting a different artifact

@@ -2,14 +2,17 @@
 
 ### Requirement: Context imports SHALL follow the declared acyclic graph
 
-The system SHALL enforce this graph: Capture MAY depend on Kernel; Datasets MAY
-depend on Kernel and Capture contracts; Studies MAY depend on Kernel and
-Datasets contracts; Decision Support MAY depend on Kernel, Datasets contracts
-and Studies contracts; Processes MAY depend on all business contracts and
-Platform public APIs; Interfaces MAY depend on contracts, approved
-use-case/query handles, Processes and Platform public APIs; Bootstrap alone MAY
-compose concrete adapters, repositories, use cases, process managers and
-platform implementations.
+The system SHALL enforce this graph: Capture MAY depend on Kernel and Platform
+public contracts/ports; Datasets MAY depend on Kernel, Platform public
+contracts/ports and Capture contracts; Studies MAY depend on Kernel, Platform
+public contracts/ports and Datasets contracts; Decision Support MAY depend on
+Kernel, Platform public contracts/ports, Datasets contracts and Studies
+contracts; Processes MAY depend on all business contracts and Platform public
+APIs; Interfaces MAY depend on contracts, approved use-case/query handles,
+Processes and Platform public APIs; Platform SHALL NOT depend on business
+Context implementations or contracts; Bootstrap alone MAY compose concrete
+adapters, repositories, use cases, process managers and platform
+implementations.
 
 #### Scenario: A Study needs capture information
 
@@ -23,6 +26,14 @@ platform implementations.
   computation
 - **THEN** it depends on its own port or a Platform public capability and does
   not import a concrete adapter from another context
+
+#### Scenario: A context uses a Platform transaction capability
+
+- **WHEN** a Context use case requires an outbox, read-only session, execution
+  or native-compute capability
+- **THEN** it imports only the Platform's framework-free public port/DTO and
+  its own port adapter, while Platform imports no Context contract or
+  implementation and Bootstrap supplies the concrete binding
 
 ### Requirement: Contracts and domain code SHALL not leak implementation types
 
@@ -83,3 +94,18 @@ depend on their Context port rather than import a native extension.
   returns typed values only, and C++/Python differential tests cover normal,
   cancellation and safe-failure cases without allowing native code to mutate
   context persistence or releases
+
+### Requirement: Native binding linkage SHALL exclude persistence and lifecycle targets
+
+The native binding build SHALL link a dedicated compute-only target containing
+only catalogued capability sources. It SHALL NOT link storage, SQLite, Parquet
+writer, artifact, release-pointer, CLI/runtime composition or orchestration
+targets. CMake/source-path and exported-symbol deny checks SHALL enforce this
+boundary before a native binding is enabled.
+
+#### Scenario: A new native binding source is proposed
+
+- **WHEN** a child change adds a source group or export to `_trade_native`
+- **THEN** the build check rejects it if the group reaches storage, writer,
+  persistence or lifecycle code, and the child maps the remaining compute API
+  to one Context port with a differential fixture

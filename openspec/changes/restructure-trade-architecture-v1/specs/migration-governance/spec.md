@@ -3,14 +3,16 @@
 ### Requirement: Architecture implementation SHALL be phased and reversible
 
 Implementation SHALL proceed through independently reviewable child OpenSpec
-changes: guardrails/baselines, Platform persistence/events/Bootstrap foundation,
-Kernel/contracts, formal PIT/revision semantics, Capture, Datasets, Studies,
-Processes, CLI/HTTP/SDK compatibility, package/Web layout, then legacy cleanup.
-Every child SHALL use a dedicated worktree, have focused tests, state affected
-public contracts, record data safety and define a rollback path. No Context
-extraction that emits a context outbox or accepts cross-context commands SHALL
-precede the Platform foundation, and no formal DatasetSnapshot/Study migration
-SHALL precede the formal PIT/revision gate.
+changes: guardrails/baselines, Kernel/public contracts, Platform
+persistence/events/Bootstrap foundation, formal PIT/revision semantics, Capture,
+Datasets, Studies, Processes, CLI/HTTP/SDK compatibility, package/Web layout,
+then legacy cleanup. Every child SHALL use a dedicated worktree, have focused
+tests, state affected public contracts, record data safety and define a rollback
+path. No Context extraction that emits a context outbox or accepts
+cross-context commands SHALL precede the Platform foundation; the Platform
+foundation SHALL not require not-yet-extracted Context repositories; and no
+formal DatasetSnapshot/Study migration SHALL precede the formal PIT/revision
+gate.
 
 #### Scenario: A child change needs a new context-owned table
 
@@ -72,10 +74,16 @@ immutable content digests, size, creation generation, schema capability range
 and required context artifacts. Restore SHALL validate archive member safety,
 manifest integrity and SHA-256 digests before extraction into a staged
 temporary root, validate the staged database/artifacts against the manifest,
-and only then activate the selected generation. Every restore attempt SHALL
+and only then activate the selected generation. Restore SHALL persist a
+`RestoreOperation` state machine
+`prepared -> staged_verified -> writers_fenced -> activated ->
+health_verified -> committed`, with explicit rollback/reconciliation states.
+`MigrationCoordinator` SHALL fence writers/readers, journal one
+generation compare-and-swap activation, require runtime rebind/readiness and
+reconcile a crash at every intermediate state. Every restore attempt SHALL
 append an audited receipt with actor, source, target, result and explicit
-corruption/mismatch state; a failed verification SHALL leave the active root
-untouched.
+corruption/mismatch state; a failed verification or post-activation health
+window SHALL leave or restore the prior active generation.
 
 #### Scenario: A backup archive is corrupt or contains an unsafe member
 
@@ -85,6 +93,15 @@ untouched.
   restore-verification-failed receipt with the reason, and preserves the
   previous active database/artifacts without extracting unverified content into
   them
+
+#### Scenario: Activation fails after writers are fenced
+
+- **WHEN** a staged verified restore has fenced writers but the runtime crashes
+  during generation activation or fails its bounded health window
+- **THEN** restart reconciliation resolves the journal to either the verified
+  restored generation or the prior generation, rebinds runtimes only after
+  readiness succeeds, and records the rollback/health outcome without exposing
+  two writable generations
 
 ### Requirement: Retention and garbage collection SHALL preserve reachable lineage
 
