@@ -5,11 +5,19 @@ import shutil
 import subprocess
 import threading
 import time
+from datetime import date
 from pathlib import Path
 
 import pytest
 
+from trade_py.devtools.design_quality.governance import (
+    GovernanceRequirement,
+    GovernanceRequirementSource,
+    GovernanceResolution,
+)
 from trade_py.devtools.design_quality.policy import load_policy
+from trade_py.devtools.design_quality.report_binding import ReportBinding
+from trade_py.devtools.openspec_status import design as design_adapter
 from trade_py.devtools.openspec_status.errors import (
     WorkflowCollectionError,
     WorkflowError,
@@ -21,6 +29,7 @@ from trade_py.devtools.openspec_status.executor import (
 from trade_py.devtools.openspec_status.models import WorkflowLimits
 from trade_py.devtools.openspec_status.native import collect_native_evidence
 from trade_py.devtools.openspec_status.snapshot import capture_source_generation
+from trade_py.devtools.quality.executor import DesignBatchValidation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -129,11 +138,13 @@ class _NativeExecutor(BoundedProcessExecutor):
         *,
         failed_status: str | None = None,
         unsupported_schema: str | None = None,
+        malformed_validation: str | None = None,
     ) -> None:
         super().__init__()
         self.names = names
         self.failed_status = failed_status
         self.unsupported_schema = unsupported_schema
+        self.malformed_validation = malformed_validation
         self._lock = threading.Lock()
         self.active_status = 0
         self.max_active_status = 0
@@ -171,7 +182,7 @@ class _NativeExecutor(BoundedProcessExecutor):
                     {
                         "id": name,
                         "type": "change",
-                        "valid": True,
+                        "valid": ("not-a-boolean" if name == self.malformed_validation else True),
                         "issues": [],
                         "durationMs": 1,
                     }
@@ -267,6 +278,79 @@ def test_native_partial_status_failure_preserves_sibling(tmp_path: Path) -> None
     assert collection.errors["change-b"].code == "workflow.process.exit"
 
 
+def test_native_malformed_validation_preserves_sibling(tmp_path: Path) -> None:
+    names = ("change-a", "change-b")
+    executor = _NativeExecutor(names, malformed_validation="change-b")
+
+    collection = collect_native_evidence(
+        tmp_path,
+        expected_names=names,
+        requested_change=None,
+        executor=executor,
+        deadline=time.monotonic() + 10,
+        limits=WorkflowLimits(),
+    )
+
+    assert set(collection.changes) == {"change-a"}
+    assert collection.errors["change-b"].code == "workflow.openspec.shape"
+    assert collection.errors["change-b"].change == "change-b"
+
+
+def test_design_malformed_report_preserves_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    names = ("change-a", "change-b")
+    requirements = GovernanceResolution(
+        tuple(
+            GovernanceRequirement(
+                change=name,
+                required=True,
+                source=GovernanceRequirementSource.NEW_CHANGE,
+                live=True,
+            )
+            for name in names
+        )
+    )
+    binding = ReportBinding(
+        governance_status="GOVERNED",
+        artifact_digest=f"sha256:{'1' * 64}",
+        profiles=("core",),
+        artifacts=(),
+        total_bytes=0,
+    )
+    monkeypatch.setattr(
+        design_adapter,
+        "load_report_bindings",
+        lambda *_args, **_kwargs: {name: binding for name in names},
+    )
+    monkeypatch.setattr(
+        design_adapter,
+        "validate_design_batch_payload",
+        lambda *_args, **_kwargs: DesignBatchValidation(
+            envelope_error=None,
+            report_errors={"change-b": "report digest is invalid"},
+        ),
+    )
+    executor = _DesignExecutor(names)
+
+    collection = design_adapter.collect_design_evidence(
+        tmp_path,
+        names,
+        requirements,
+        evaluation_date=date(2026, 7, 23),
+        executor=executor,
+        deadline=time.monotonic() + 10,
+        policy=load_policy(REPO_ROOT),
+        limits=WorkflowLimits(),
+    )
+
+    assert set(collection.evidence) == {"change-a"}
+    assert collection.evidence["change-a"].report["change"] == "change-a"
+    assert collection.errors["change-b"].code == "workflow.design_quality.invalid"
+    assert collection.errors["change-b"].change == "change-b"
+
+
 def test_unsupported_schema_preserves_only_schema_and_payload_digest(
     tmp_path: Path,
 ) -> None:
@@ -286,3 +370,41 @@ def test_unsupported_schema_preserves_only_schema_and_payload_digest(
     assert error.details["schema_name"] == "custom-schema"
     assert set(error.details) == {"schema_name", "payload_digest"}
     assert error.details["payload_digest"].startswith("sha256:")
+
+
+class _DesignExecutor(BoundedProcessExecutor):
+    def __init__(self, names: tuple[str, ...]) -> None:
+        super().__init__()
+        self.names = names
+
+    def run(
+        self,
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        deadline: float,
+        timeout_seconds: float,
+        output_limit_bytes: int,
+        source: str,
+        change: str | None = None,
+        allowed_returncodes: frozenset[int] = frozenset({0}),
+    ) -> ProcessResult:
+        del cwd, deadline, timeout_seconds, output_limit_bytes, source, change
+        assert 0 in allowed_returncodes
+        assert "--parent-managed-process-group" in argv
+        return _result(
+            argv,
+            {
+                "schema_version": "trade.design.batch.v1",
+                "exit_code": 0,
+                "reports": [{"change": name} for name in self.names],
+                "errors": [],
+                "summary": {
+                    "changes": len(self.names),
+                    "passed": len(self.names),
+                    "failed": 0,
+                    "not_governed": 0,
+                    "errors": 0,
+                },
+            },
+        )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import NoReturn
@@ -21,6 +22,12 @@ from trade_py.devtools.openspec_status.models import GovernanceEvidence, Workflo
 from trade_py.devtools.quality.executor import validate_design_batch_payload
 
 
+@dataclass(frozen=True)
+class DesignCollection:
+    evidence: dict[str, GovernanceEvidence]
+    errors: dict[str, WorkflowError]
+
+
 def collect_design_evidence(
     repo_root: Path,
     names: tuple[str, ...],
@@ -31,9 +38,9 @@ def collect_design_evidence(
     deadline: float,
     policy: Policy,
     limits: WorkflowLimits,
-) -> dict[str, GovernanceEvidence]:
+) -> DesignCollection:
     if not names:
-        return {}
+        return DesignCollection(evidence={}, errors={})
     requirements = {item.change: item for item in governance.requirements}
     if set(requirements) != set(names):
         _raise("Governance provenance does not match the selected active changes.")
@@ -77,7 +84,7 @@ def collect_design_evidence(
         raise AssertionError("unreachable") from exc
     if not isinstance(payload, dict):
         _raise("Design-quality batch did not emit a JSON object.")
-    error = validate_design_batch_payload(
+    validation = validate_design_batch_payload(
         payload,
         result.returncode,
         policy=policy,
@@ -86,27 +93,41 @@ def collect_design_evidence(
         bindings=bindings,
         evaluation_date=evaluation_date,
     )
-    if error:
-        _raise(error)
+    if validation.envelope_error:
+        _raise(validation.envelope_error)
     reports = payload.get("reports")
     if not isinstance(reports, list):
         _raise("Design-quality batch omitted its report list.")
     evidence: dict[str, GovernanceEvidence] = {}
+    errors: dict[str, WorkflowError] = {}
     for raw in reports:
         if not isinstance(raw, dict) or not isinstance(raw.get("change"), str):
             _raise("Design-quality batch contains a malformed report.")
         name = raw["change"]
         requirement = requirements.get(name)
-        if requirement is None or name in evidence:
+        if requirement is None or name in evidence or name in errors:
             _raise("Design-quality batch contains duplicate or unexpected reports.")
+        report_error = validation.report_errors.get(name)
+        if report_error:
+            errors[name] = WorkflowError(
+                code="workflow.design_quality.invalid",
+                source="design_quality",
+                change=name,
+                message=report_error,
+                remediation=(
+                    f"Run ./trade dev design-check {name} --strict, repair the "
+                    "structured evidence, and rerun."
+                ),
+            )
+            continue
         evidence[name] = GovernanceEvidence(
             required=requirement.required,
             requirement_source=requirement.source.value,
             report=raw,
         )
-    if set(evidence) != set(names):
+    if set(evidence) | set(errors) != set(names):
         _raise("Design-quality batch did not return every selected active change.")
-    return evidence
+    return DesignCollection(evidence=evidence, errors=errors)
 
 
 def _raise(message: str) -> NoReturn:

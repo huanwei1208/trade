@@ -96,10 +96,11 @@ def collect_workflow(
             limits=active_limits,
         )
         generation.verify(policy)
+        errors = {**native.errors, **designs.errors}
         changes = tuple(
-            ChangeWorkflow.unavailable(name, native.errors[name])
-            if name in native.errors
-            else _derive_change(native.changes[name], designs[name])
+            ChangeWorkflow.unavailable(name, errors[name])
+            if name in errors
+            else _derive_change(native.changes[name], designs.evidence[name])
             for name in selected
         )
         return WorkflowReport(

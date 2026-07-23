@@ -19,6 +19,7 @@ from trade_py.devtools.quality.executor import (
     _design_envelope_error,
     _design_invocation,
     execute_steps,
+    validate_design_batch_payload,
 )
 from trade_py.devtools.quality.models import (
     CheckStep,
@@ -326,6 +327,71 @@ def test_parent_accepts_exact_planned_current_snapshot(tmp_path: Path) -> None:
             bindings={change: binding},
         )
         is None
+    )
+
+
+def test_workflow_validator_isolates_one_malformed_bound_report(tmp_path: Path) -> None:
+    names = ("change-a", "change-b")
+    for name in names:
+        _write_binding_change(tmp_path, name)
+    bindings = load_report_bindings(tmp_path, names, POLICY)
+    today = datetime.now(timezone.utc).date()
+    reports = []
+    for name in names:
+        binding = bindings[name]
+        assert binding.profiles is not None
+        reports.append(
+            _design_report_payload(
+                change=name,
+                artifact_digest=binding.artifact_digest,
+                profiles=list(binding.profiles),
+                artifacts=[dict(item) for item in binding.artifacts],
+                metadata={
+                    "total_bytes": binding.total_bytes,
+                    "reviewed_at": today.isoformat(),
+                    "reviewed_commit": "c" * 40,
+                    "reviewed_commit_status": "verified",
+                },
+            )
+        )
+    reports[1]["artifact_digest"] = f"sha256:{'0' * 64}"
+    payload = {
+        "schema_version": "trade.design.batch.v1",
+        "exit_code": 0,
+        "reports": reports,
+        "summary": {
+            "changes": 2,
+            "passed": 2,
+            "failed": 0,
+            "not_governed": 0,
+            "errors": 0,
+        },
+    }
+
+    validation = validate_design_batch_payload(
+        payload,
+        0,
+        policy=POLICY,
+        expected_changes=names,
+        expected_governance={name: bindings[name].governance_status for name in names},
+        bindings=bindings,
+        evaluation_date=today,
+    )
+
+    assert validation.envelope_error is None
+    assert set(validation.report_errors) == {"change-b"}
+    assert "trusted current snapshot" in validation.report_errors["change-b"]
+    assert (
+        _design_envelope_error(
+            payload,
+            0,
+            policy=POLICY,
+            expected_changes=names,
+            expected_governance={name: bindings[name].governance_status for name in names},
+            bindings=bindings,
+            current_date=today,
+        )
+        is not None
     )
 
 

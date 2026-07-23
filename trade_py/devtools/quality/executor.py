@@ -86,6 +86,12 @@ class _DesignInvocation:
     policy_targets: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class DesignBatchValidation:
+    envelope_error: str | None
+    report_errors: dict[str, str]
+
+
 def _design_invocation(argv: tuple[str, ...]) -> _DesignInvocation | None:
     try:
         module_index = argv.index("-m")
@@ -297,18 +303,78 @@ def validate_design_batch_payload(
     expected_governance: dict[str, str],
     bindings: dict[str, ReportBinding],
     evaluation_date: date,
-) -> str | None:
-    """Validate a strict design batch against trusted current-snapshot bindings."""
+) -> DesignBatchValidation:
+    """Validate batch structure and return change-local report errors separately."""
 
-    return _design_envelope_error(
-        payload,
-        returncode,
-        policy=policy,
-        expected_changes=expected_changes,
-        expected_governance=expected_governance,
-        bindings=bindings,
-        current_date=evaluation_date,
-    )
+    reports = payload.get("reports")
+    summary = payload.get("summary")
+    errors = payload.get("errors", [])
+    nested_exit = payload.get("exit_code")
+    if (
+        payload.get("schema_version") != "trade.design.batch.v1"
+        or not isinstance(nested_exit, int)
+        or isinstance(nested_exit, bool)
+        or nested_exit != returncode
+        or not isinstance(reports, list)
+        or not all(isinstance(item, dict) for item in reports)
+        or not isinstance(summary, dict)
+        or not isinstance(errors, list)
+    ):
+        return DesignBatchValidation(
+            "Structured design envelope is inconsistent with the child process exit",
+            {},
+        )
+    if errors:
+        return DesignBatchValidation(
+            "Structured design batch contains infrastructure error records",
+            {},
+        )
+    report_changes = tuple(item.get("change") for item in reports)
+    if (
+        not all(isinstance(change, str) for change in report_changes)
+        or len(report_changes) != len(set(report_changes))
+        or report_changes != expected_changes
+    ):
+        return DesignBatchValidation(
+            "Structured design envelope does not match the planned changes",
+            {},
+        )
+    if set(summary) != {"changes", "passed", "failed", "not_governed", "errors"} or any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in summary.values()
+    ):
+        return DesignBatchValidation(
+            "Structured design envelope contains malformed summary counts",
+            {},
+        )
+    if (
+        summary.get("changes") != len(reports)
+        or summary.get("errors") != 0
+        or sum(int(summary.get(name, 0)) for name in ("passed", "failed", "not_governed"))
+        != len(reports)
+        or returncode not in {0, 1}
+        or returncode != (1 if summary.get("failed", 0) else 0)
+    ):
+        return DesignBatchValidation(
+            "Structured design envelope summary does not match its report scope",
+            {},
+        )
+
+    report_errors: dict[str, str] = {}
+    for report in reports:
+        change = report["change"]
+        assert isinstance(change, str)
+        error = _design_report_error(
+            report,
+            policy=policy,
+            binding=bindings.get(change),
+            require_binding=True,
+            expected_governance=expected_governance.get(change),
+            current_date=evaluation_date,
+        )
+        if error:
+            report_errors[change] = error
+    return DesignBatchValidation(None, report_errors)
 
 
 def _design_report_error(

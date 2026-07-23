@@ -93,7 +93,7 @@ def collect_native_evidence(
         change=requested_change,
         allowed_returncodes=frozenset({0, 1}),
     )
-    validations = _parse_validations(
+    validations, validation_errors = _parse_validations(
         _json_object(validation_result, command="openspec validate --json"),
         expected_names=selected,
     )
@@ -107,7 +107,7 @@ def collect_native_evidence(
     )
     list_digest = _digest(list_result.stdout)
     changes: dict[str, NativeChange] = {}
-    errors = dict(status_errors)
+    errors = {**validation_errors, **status_errors}
     for name in selected:
         if name in errors:
             continue
@@ -305,7 +305,7 @@ def _parse_status(payload: dict[str, Any], *, expected_name: str) -> dict[str, A
 
 def _parse_validations(
     payload: dict[str, Any], *, expected_names: tuple[str, ...]
-) -> dict[str, ValidationEvidence]:
+) -> tuple[dict[str, ValidationEvidence], dict[str, WorkflowError]]:
     if (
         set(payload) != {"items", "summary", "version"}
         or payload.get("version") != "1.0"
@@ -314,53 +314,58 @@ def _parse_validations(
     ):
         _raise_shape("Native OpenSpec validation response is malformed.")
     results: dict[str, ValidationEvidence] = {}
+    errors: dict[str, WorkflowError] = {}
+    expected = set(expected_names)
     for row in payload["items"]:
-        if (
-            not isinstance(row, dict)
-            or set(row) != {"id", "type", "valid", "issues", "durationMs"}
-            or row.get("type") != "change"
-            or not isinstance(row.get("id"), str)
-            or not isinstance(row.get("valid"), bool)
-            or not isinstance(row.get("issues"), list)
-            or _nonnegative_int(row.get("durationMs")) is None
-        ):
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
             _raise_shape("Native OpenSpec validation contains a malformed record.")
         name = row["id"]
-        if name in results:
+        if name not in expected or name in results or name in errors:
             _raise_shape("Native OpenSpec validation contains duplicate changes.")
-        issues: list[ValidationIssue] = []
-        for issue in row["issues"]:
+        try:
             if (
-                not isinstance(issue, dict)
-                or not {"level", "path", "message"} <= set(issue)
-                or set(issue) - {"level", "path", "message", "line", "column"}
-                or issue.get("level") not in {"ERROR", "WARNING", "INFO"}
-                or not isinstance(issue.get("path"), str)
-                or not isinstance(issue.get("message"), str)
-                or not issue["message"]
+                set(row) != {"id", "type", "valid", "issues", "durationMs"}
+                or row.get("type") != "change"
+                or not isinstance(row.get("valid"), bool)
+                or not isinstance(row.get("issues"), list)
+                or _nonnegative_int(row.get("durationMs")) is None
             ):
-                _raise_shape("Native OpenSpec validation contains a malformed issue.", name)
-            issues.append(
-                ValidationIssue(
-                    severity="error" if issue["level"] == "ERROR" else "warning",
-                    path=issue["path"] or None,
-                    message=issue["message"],
+                _raise_shape("Native OpenSpec validation contains a malformed record.", name)
+            issues: list[ValidationIssue] = []
+            for issue in row["issues"]:
+                if (
+                    not isinstance(issue, dict)
+                    or not {"level", "path", "message"} <= set(issue)
+                    or set(issue) - {"level", "path", "message", "line", "column"}
+                    or issue.get("level") not in {"ERROR", "WARNING", "INFO"}
+                    or not isinstance(issue.get("path"), str)
+                    or not isinstance(issue.get("message"), str)
+                    or not issue["message"]
+                ):
+                    _raise_shape("Native OpenSpec validation contains a malformed issue.", name)
+                issues.append(
+                    ValidationIssue(
+                        severity="error" if issue["level"] == "ERROR" else "warning",
+                        path=issue["path"] or None,
+                        message=issue["message"],
+                    )
                 )
+            ordered = tuple(
+                sorted(issues, key=lambda item: (item.severity, item.path or "", item.message))
             )
-        ordered = tuple(
-            sorted(issues, key=lambda item: (item.severity, item.path or "", item.message))
-        )
-        valid = row["valid"]
-        if valid == any(item.severity == "error" for item in ordered):
-            _raise_shape("Native OpenSpec validation validity contradicts its issues.", name)
-        results[name] = ValidationEvidence(
-            valid=valid,
-            issues=ordered[:50],
-            omitted_count=max(0, len(ordered) - 50),
-        )
-    if tuple(sorted(results)) != tuple(sorted(expected_names)):
+            valid = row["valid"]
+            if valid == any(item.severity == "error" for item in ordered):
+                _raise_shape("Native OpenSpec validation validity contradicts its issues.", name)
+            results[name] = ValidationEvidence(
+                valid=valid,
+                issues=ordered[:50],
+                omitted_count=max(0, len(ordered) - 50),
+            )
+        except WorkflowCollectionError as exc:
+            errors[name] = exc.error
+    if set(results) | set(errors) != expected:
         _raise_shape("Native OpenSpec validation scope does not match active changes.")
-    return results
+    return results, errors
 
 
 def _json_object(result: ProcessResult, *, command: str) -> dict[str, Any]:

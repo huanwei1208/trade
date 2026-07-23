@@ -12,6 +12,7 @@ from trade_py.devtools.design_quality.governance import (
     GovernanceRequirementSource,
     GovernanceResolution,
 )
+from trade_py.devtools.openspec_status.design import DesignCollection
 from trade_py.devtools.openspec_status.errors import WorkflowError
 from trade_py.devtools.openspec_status.executor import BoundedProcessExecutor
 from trade_py.devtools.openspec_status.models import (
@@ -405,9 +406,12 @@ def test_collect_workflow_passes_one_captured_date_to_design_batch(
         *,
         evaluation_date: date,
         **_kwargs: object,
-    ) -> dict[str, GovernanceEvidence]:
+    ) -> DesignCollection:
         received_dates.append(evaluation_date)
-        return {"change-a": _governance_evidence}
+        return DesignCollection(
+            evidence={"change-a": _governance_evidence},
+            errors={},
+        )
 
     _governance_evidence = _governance()
     monkeypatch.setattr(service, "collect_design_evidence", collect_design)
