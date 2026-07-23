@@ -33,8 +33,8 @@ reason = "No news, social, macro, on-chain, exchange, or third-party event feed 
 
 [[impacts]]
 id = "runtime_concurrency"
-applies = false
-reason = "Collection is a sequential developer command with bounded local subprocesses and no concurrent runtime workflow."
+applies = true
+reason = "List mode runs bounded parallel native status processes and owns cancellation, ordering, and aggregate deadlines."
 
 [evidence.contract]
 contract = "The additive public contract is ./trade dev openspec [change] [--format text|json] with schema trade.openspec.workflow.v1."
@@ -43,31 +43,53 @@ compatibility = "Existing native OpenSpec commands, trade dev commands, design-c
 migration = "No migration is required because the command is additive and stores no state."
 rollback = "Reverting the command route, owner package, and tests restores the previous workflow without changing OpenSpec artifacts."
 
+[evidence.concurrency]
+ownership = "trade_py/devtools/openspec_status owns one bounded executor and at most four native status workers."
+bound = "At most 100 active changes, four status workers, one strict design batch, and a 60 second command deadline."
+ordering = "Change reports and errors are sorted deterministically after worker completion; native artifact order remains source order."
+atomicity = "Native commands read one immutable temporary OpenSpec snapshot and publication requires matching design artifact digests plus final source verification."
+timeout_cancellation = "Each child has a 10 second timeout; overflow, deadline, interrupt, or failure terminates its process group with TERM then KILL and always reaps it."
+backpressure = "Each native child has a 1 MiB streaming output budget and the final report has a 16 MiB serialization budget with explicit omission counts."
+partial_failure = "Per-change infrastructure failure preserves successful siblings but marks the affected change unavailable and gives aggregate exit 2."
+capacity_validation = "Deterministic 10-change and 100-change tests assert worker count, process count, output bounds, deadlines, cancellation, and no surviving children."
+
 [[obligations]]
 id = "openspec.status-service"
 owner = "trade_py/devtools/openspec_status"
-paths = ["trade_py/devtools/openspec_status/", "tests/test_openspec_status.py"]
+paths = ["trade_py/devtools/openspec_status/", "trade_py/devtools/design_quality/governance.py", "tests/test_openspec_status.py"]
 contracts = ["active change lifecycle derivation", "read-only native OpenSpec aggregation"]
-failure_states = ["artifact_task_ambiguity", "native_validation_failure", "governance_failure", "dependency_unavailable", "partial_change_failure"]
+failure_states = ["artifact_task_ambiguity", "native_validation_failure", "governance_failure", "governance_provenance_unavailable", "evidence_generation_drift", "unsupported_schema", "dependency_unavailable", "partial_change_failure"]
 spec_requirements = [
   "openspec-workflow-status:Active OpenSpec workflow status is aggregated read-only",
   "openspec-workflow-status:Artifact completion and implementation completion remain distinct",
   "openspec-workflow-status:Governance and validation block unsafe progression",
   "openspec-workflow-status:Machine-readable reporting and failures are stable",
 ]
-validation_tasks = ["1.3", "2.4", "2.5", "4.1"]
+validation_tasks = ["1.3", "2.5", "2.6", "4.1"]
 
 [[obligations]]
 id = "openspec.public-cli"
 owner = "trade_py/cli/dev.py"
-paths = ["trade_py/cli/dev.py", "trade_py/devtools/openspec_status/cli.py", "tests/test_openspec_status_cli.py"]
+paths = ["trade", "trade_py/cli/dev.py", "trade_py/devtools/openspec_status/cli.py", "tests/test_openspec_status_cli.py"]
 contracts = ["./trade dev openspec [change] [--format text|json]", "trade.openspec.workflow.v1"]
-failure_states = ["invalid_argument", "unknown_change", "repository_discovery_failure", "malformed_native_json", "subprocess_timeout", "output_limit"]
+failure_states = ["invalid_argument", "unknown_change", "repository_discovery_failure", "malformed_native_json", "subprocess_timeout", "command_deadline", "output_limit", "interrupt_cleanup"]
 spec_requirements = [
   "openspec-workflow-status:Active OpenSpec workflow status is aggregated read-only",
   "openspec-workflow-status:Machine-readable reporting and failures are stable",
 ]
 validation_tasks = ["1.3", "3.3", "3.4", "4.1"]
+
+[[obligations]]
+id = "openspec.concurrent-collection"
+owner = "trade_py/devtools/openspec_status"
+paths = ["trade_py/devtools/openspec_status/executor.py", "trade_py/devtools/openspec_status/service.py", "tests/test_openspec_status_executor.py"]
+contracts = ["four-worker native status collection", "bounded process-tree execution", "deterministic aggregate report"]
+failure_states = ["child_timeout", "output_overflow", "inherited_pipe_hang", "keyboard_interrupt", "aggregate_deadline", "worker_partial_failure"]
+spec_requirements = [
+  "openspec-workflow-status:Active OpenSpec workflow status is aggregated read-only",
+  "openspec-workflow-status:Machine-readable reporting and failures are stable",
+]
+validation_tasks = ["2.5", "2.6", "4.1"]
 
 [[obligations]]
 id = "openspec.review-evidence"
