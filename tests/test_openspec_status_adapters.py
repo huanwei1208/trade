@@ -185,13 +185,7 @@ def test_source_generation_rejects_temporary_snapshot_mutation(tmp_path: Path) -
 
     with pytest.raises(WorkflowCollectionError) as raised:
         with generation.materialize() as materialized:
-            proposal = (
-                materialized
-                / "openspec"
-                / "changes"
-                / "new-change"
-                / "proposal.md"
-            )
+            proposal = materialized / "openspec" / "changes" / "new-change" / "proposal.md"
             proposal.write_text("native mutation\n", encoding="utf-8")
 
     assert raised.value.error.code == "workflow.snapshot.temporary_changed"

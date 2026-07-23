@@ -8,6 +8,7 @@ from typing import Literal
 ErrorSource = Literal["request", "git", "openspec", "design_quality", "snapshot"]
 _ERROR_SOURCES = frozenset({"request", "git", "openspec", "design_quality", "snapshot"})
 
+
 @dataclass(frozen=True)
 class WorkflowError:
     code: str
@@ -28,9 +29,7 @@ class WorkflowError:
             else set()
         )
         if set(self.details) != expected_details or not all(self.details.values()):
-            raise ValueError(
-                f"Workflow error details do not match the v1 contract: {self.code}"
-            )
+            raise ValueError(f"Workflow error details do not match the v1 contract: {self.code}")
 
     def to_dict(self) -> dict[str, object]:
         return {

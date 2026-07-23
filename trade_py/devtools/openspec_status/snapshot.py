@@ -135,10 +135,13 @@ class SourceGeneration:
             except BaseException:
                 raise
             else:
-                if _materialized_manifest(
-                    root,
-                    byte_limit=self.limits.report_output_bytes + _CONFIG_LIMIT,
-                ) != manifest:
+                if (
+                    _materialized_manifest(
+                        root,
+                        byte_limit=self.limits.report_output_bytes + _CONFIG_LIMIT,
+                    )
+                    != manifest
+                ):
                     raise WorkflowCollectionError(
                         WorkflowError(
                             code="workflow.snapshot.temporary_changed",
