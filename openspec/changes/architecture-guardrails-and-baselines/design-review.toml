@@ -1,0 +1,104 @@
+schema_version = 1
+policy_version = "v1"
+policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
+artifact_digest_algorithm = "sha256-path-content-v1"
+artifact_digest = "sha256:ed86159c01fdc023ffbe355e7219947c1c8a76d017bf44369f17571164df0a63"
+reviewed_commit = "81238e187c322df2e75bf994cce59b52bb6c0eb4"
+reviewed_at = "2026-07-23"
+status = "approved"
+bootstrap = false
+
+[[judges]]
+role = "reliability"
+status = "approved"
+score_after = 9
+
+[[judges]]
+role = "performance"
+status = "approved"
+score_after = 9
+
+[[judges]]
+role = "architecture"
+status = "approved"
+score_after = 9
+
+[[judges]]
+role = "data_quality"
+status = "approved"
+score_after = 9
+
+[[judges]]
+role = "observability"
+status = "approved"
+score_after = 9
+
+[[judges]]
+role = "news_future"
+status = "approved"
+score_after = 9
+
+[[findings]]
+id = "PROD-REL-001"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Producer discovery now reads only streamed, bounded, regular Git-index entries through repository-confined no-follow descriptors and rejects unsafe or unstable source identities before an inventory can be accepted."
+evidence = [
+  "specs/architecture-baseline-inventory/spec.md:115",
+  "specs/architecture-baseline-inventory/spec.md:140",
+  "tasks.md:11",
+]
+
+[[findings]]
+id = "PROD-PERF-001"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Initial producer enumeration has raw and included path budgets, while immutable producer selections use deterministic argv-safe prefilter batches without contributor Git rediscovery or partial acceptance."
+evidence = [
+  "specs/architecture-baseline-inventory/spec.md:128",
+  "specs/architecture-baseline-inventory/spec.md:156",
+  "specs/architecture-static-guardrails/spec.md:232",
+]
+
+[[findings]]
+id = "PROD-DQ-001"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "The source-only fixture now permits only baseline evidence and verified regular production-source descriptors, while its reproducible inclusion predicate records 305 files and 2968477 source bytes."
+evidence = [
+  "design.md:170",
+  "design.md:261",
+  "specs/architecture-baseline-inventory/spec.md:262",
+]
+
+[[findings]]
+id = "PROD-OBS-001"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Canonical writer resolution, unsafe-source, path-budget, source-budget, unresolved-layout, nonliteral-target, and undeclared-producer states now have stable rule identifiers and bounded remediations."
+evidence = [
+  "specs/architecture-baseline-inventory/spec.md:102",
+  "design.md:337",
+  "tasks.md:17",
+]
+
+[[findings]]
+id = "PROD-OBS-002"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Producer modified, added, deleted, both rename endpoints, and untracked signals are now canonical partial-scope triggers, so an excluded producer cannot become a legacy-only acceptance."
+evidence = [
+  "specs/architecture-baseline-inventory/spec.md:172",
+  "specs/architecture-static-guardrails/spec.md:274",
+  "tasks.md:15",
+]
