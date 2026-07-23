@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
+from pathlib import Path
 
 import pytest
 
+from trade_py.devtools.design_quality.governance import (
+    GovernanceRequirement,
+    GovernanceRequirementSource,
+    GovernanceResolution,
+)
 from trade_py.devtools.openspec_status.errors import WorkflowError
+from trade_py.devtools.openspec_status.executor import BoundedProcessExecutor
 from trade_py.devtools.openspec_status.models import (
     ArtifactEvidence,
     ChangeWorkflow,
@@ -17,7 +26,7 @@ from trade_py.devtools.openspec_status.models import (
     WorkflowReport,
     WorkflowSource,
 )
-from trade_py.devtools.openspec_status.native import NativeChange
+from trade_py.devtools.openspec_status.native import NativeChange, NativeCollection
 from trade_py.devtools.openspec_status.service import _derive_change
 
 
@@ -272,3 +281,143 @@ def test_workflow_report_error_precedence_and_summary_are_consistent() -> None:
         "errors": 1,
     }
     assert payload["errors"] == [error.to_dict()]
+
+
+class _Generation:
+    def __init__(
+        self,
+        repo_root: Path,
+        names: tuple[str, ...],
+        governance: GovernanceResolution,
+    ) -> None:
+        self.repo_root = repo_root
+        self.names = names
+        self.governance = governance
+        self.source = WorkflowSource(
+            git_head="a" * 40,
+            base_ref="master",
+            base_sha="b" * 40,
+            snapshot_digest=f"sha256:{'c' * 64}",
+        )
+        self.verified = False
+
+    @contextmanager
+    def materialize(self) -> Iterator[Path]:
+        yield self.repo_root
+
+    def verify(self, _policy: object) -> None:
+        self.verified = True
+
+
+def test_collect_workflow_empty_scope_is_success_without_design_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from trade_py.devtools.openspec_status import service
+
+    generation = _Generation(tmp_path, (), GovernanceResolution(()))
+    monkeypatch.setattr(service, "load_policy", lambda _root: object())
+    monkeypatch.setattr(
+        service,
+        "capture_source_generation",
+        lambda *_args, **_kwargs: generation,
+    )
+    monkeypatch.setattr(
+        service,
+        "collect_native_evidence",
+        lambda *_args, **_kwargs: NativeCollection(
+            names=(),
+            changes={},
+            errors={},
+            list_digest=f"sha256:{'d' * 64}",
+        ),
+    )
+
+    executor = BoundedProcessExecutor()
+
+    def reject_process(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("empty scope must not launch a process")
+
+    monkeypatch.setattr(executor, "run", reject_process)
+
+    report = service.collect_workflow(
+        tmp_path,
+        evaluation_date=date(2026, 7, 23),
+        executor=executor,
+    )
+
+    assert report.status == "PASS"
+    assert report.exit_code == 0
+    assert report.changes == ()
+    assert report.to_dict()["summary"] == {
+        "changes": 0,
+        "authoring": 0,
+        "review": 0,
+        "implementation": 0,
+        "archive_ready": 0,
+        "blocked": 0,
+        "unavailable": 0,
+        "errors": 0,
+    }
+    assert generation.verified is True
+
+
+def test_collect_workflow_passes_one_captured_date_to_design_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from trade_py.devtools.openspec_status import service
+
+    captured_date = date(2026, 7, 23)
+    requirement = GovernanceRequirement(
+        change="change-a",
+        required=True,
+        source=GovernanceRequirementSource.NEW_CHANGE,
+        live=True,
+    )
+    generation = _Generation(
+        tmp_path,
+        ("change-a",),
+        GovernanceResolution((requirement,)),
+    )
+    monkeypatch.setattr(service, "load_policy", lambda _root: object())
+    monkeypatch.setattr(
+        service,
+        "capture_source_generation",
+        lambda *_args, **_kwargs: generation,
+    )
+    monkeypatch.setattr(
+        service,
+        "collect_native_evidence",
+        lambda *_args, **_kwargs: NativeCollection(
+            names=("change-a",),
+            changes={"change-a": _native()},
+            errors={},
+            list_digest=f"sha256:{'d' * 64}",
+        ),
+    )
+    received_dates: list[date] = []
+
+    def collect_design(
+        _root: Path,
+        _names: tuple[str, ...],
+        _governance: GovernanceResolution,
+        *,
+        evaluation_date: date,
+        **_kwargs: object,
+    ) -> dict[str, GovernanceEvidence]:
+        received_dates.append(evaluation_date)
+        return {"change-a": _governance_evidence}
+
+    _governance_evidence = _governance()
+    monkeypatch.setattr(service, "collect_design_evidence", collect_design)
+
+    report = service.collect_workflow(
+        tmp_path,
+        evaluation_date=captured_date,
+    )
+
+    assert received_dates == [captured_date]
+    assert report.evaluation_date == captured_date
+    assert report.changes[0].governance is _governance_evidence
+    assert generation.verified is True
