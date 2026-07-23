@@ -8,38 +8,76 @@ print_help() {
   cd "$ROOT_DIR"
   uv run python -m trade_py.cli.main --help
   echo ""
-  echo "正式入口:"
-  echo "  ./trade run <args>         统一触发入口（事件 / agenda / job）"
-  echo "  ./trade status [args]      系统总览（质量门禁 / agenda / 最近执行）"
-  echo "  ./trade inspect <args>     统一查看入口（dag / calendar / agenda / kg 等）"
-  echo "  ./trade web [args]         启动 TradeDB Web Console"
-  echo "  ./trade backup <args>      备份与恢复（本地快照 / Google Drive）"
+  echo "=== 10-domain CLI (post-convergence) ==="
   echo ""
-  echo "常用 workflow:"
-  echo "  ./trade sync               →  trade run sync"
-  echo "  ./trade open               →  trade run open"
-  echo "  ./trade close              →  trade run close"
-  echo "  ./trade morning            →  trade run morning"
-  echo "  ./trade intraday           →  trade run intraday"
-  echo "  ./trade evening            →  trade run evening"
-  echo "  ./trade agenda [args]      →  trade run agenda [args]"
+  echo "核心入口:"
+  echo "  ./trade run <target>      统一触发 (DAG/daily/agenda/job/belief/recommend/picks)"
+  echo "  ./trade status            综合健康体检 (原 trade doctor; cron 友好: 0=ok 1=warn 2=fail)"
+  echo "  ./trade status data       数据层状态 (原 data status)"
+  echo "  ./trade status jobs       任务执行状态 (原 data jobs status)"
+  echo "  ./trade status freshness  多资产新鲜度 (原 ops freshness)"
+  echo "  ./trade web [args]        启动 Web Console (FastAPI + React)"
   echo ""
-  echo "管理员域（调试 / 细分任务）:"
-  echo "  ./trade data <args>        数据采集"
-  echo "  ./trade model <args>       模型与信号分析"
-  echo "  ./trade factor <args>      因子仓与因子评估"
-  echo "  ./trade account <args>     账户与自选股管理"
-  echo "  ./trade event <args>       事件管理 / DAG / job 触发"
-  echo "  ./trade evaluate <args>    评估层与质量门禁"
-  echo "  ./trade kg <args>          Learned KG 候选边学习 / 审核 / 上线"
-  echo "  ./trade start <args>       启动 EventBus daemon"
+  echo "只读视图 (show):"
+  echo "  ./trade show dag          pipeline DAG"
+  echo "  ./trade show events       最近事件日志"
+  echo "  ./trade show runs         job 执行历史"
+  echo "  ./trade show calendar     交易日历 / 未来事件"
+  echo "  ./trade show agenda       agenda 队列"
+  echo "  ./trade show backups      最近备份"
+  echo ""
+  echo "研究 (research):"
+  echo "  ./trade research model <cmd>    模型训练/推理/对比/上线"
+  echo "  ./trade research factor <cmd>   因子评估"
+  echo "  ./trade research evaluate <cmd> 质量门禁评估"
+  echo "  ./trade research btc <cmd>      BTC 研究工作流 (run/import/promote; --commit 写入)"
+  echo "  ./trade kg ...                  Learned KG 流程"
+  echo ""
+  echo "BTC 观测站 (observatory):"
+  echo "  ./trade observatory catalog <cmd>  目录 rebuild/update/verify/status (只读投影)"
+  echo "  ./trade observatory research <cmd> BTC 研究 run/import/promote (--commit 写入)"
+  echo ""
+  echo "配置 (config):"
+  echo "  ./trade config init/show/get/set/doctor"
+  echo "  ./trade config source ...       数据源启停/注册"
+  echo "  ./trade config dag ...          DAG 节点开关"
+  echo "  ./trade config watch ...        自选股管理"
+  echo ""
+  echo "数据 (data):"
+  echo "  ./trade data                   快速只读状态"
+  echo "  ./trade data update core       核心数据增量更新"
+  echo "  ./trade data update crypto     BTC assurance + 非 BTC crypto"
+  echo "  ./trade data update all        全部结构化数据 (不含新闻/模型/决策)"
+  echo "  ./trade data check [--full]    只读检查"
+  echo "  ./trade data --help-all        高级兼容命令"
+  echo ""
+  echo "运维/事件:"
+  echo "  ./trade event trigger/run/sync/add/rebuild/backfill"
+  echo "  ./trade backup create/push/restore/list"
+  echo "  ./trade start                  启动 EventBus daemon"
+  echo ""
+  echo "常用 workflow 快捷:"
+  echo "  ./trade open → trade run open"
+  echo "  ./trade close → trade run close"
+  echo "  ./trade morning|intraday|evening → trade run <target>"
+  echo ""
+  echo "向后兼容 (弃用命令仍可用，会打印提示):"
+  echo "  ./trade doctor → trade status"
+  echo "  ./trade inspect → trade show"
+  echo "  ./trade model|factor|evaluate → trade research <group>"
+  echo "  ./trade daily → trade run / trade status"
+  echo "  ./trade ops → trade status / trade run"
+  echo "  ./trade account watch-* → trade config watch"
   echo ""
   echo "开发命令:"
-  echo "  ./trade doctor             检查 cmake/gcc/uv 环境"
-  echo "  ./trade setup-python       uv sync"
+  echo "  ./trade dev design-check <change>  设计证据预检/严格批准（先预检→六角色评审→strict）"
+  echo "  ./trade dev check          检查当前分支改动（只读、离线）"
+  echo "  ./trade dev fix            显式修复选中的自有源码"
+  echo "  ./trade setup-python       安装 Python 与开发质量依赖"
   echo "  ./trade configure [preset] CMake configure (default: linux-clang)"
   echo "  ./trade build [preset]     CMake build"
   echo "  ./trade test [preset]      ctest"
+  echo "  ./trade cli <args>         运行 C++ trade_cli 二进制"
 }
 
 require_cmd() {
@@ -62,30 +100,10 @@ compiler_major() {
   "$cxx" -dumpversion 2>/dev/null | awk -F. '{print $1}'
 }
 
-cmd_doctor() {
-  echo "Project root: $ROOT_DIR"
-  echo "Tools:"
-  for x in cmake ninja g++ gcc uv; do
-    if command -v "$x" >/dev/null 2>&1; then
-      echo "  - $x: $(command -v "$x")"
-    else
-      echo "  - $x: MISSING"
-    fi
-  done
-  local gmaj
-  gmaj="$(compiler_major)"
-  if [ "$gmaj" -lt 10 ]; then
-    echo "Compiler check: FAIL (GCC/G++ >= 10 required, current major=$gmaj)"
-    echo "Hint: install gcc-13 g++-13 and set CC/CXX accordingly."
-  else
-    echo "Compiler check: OK (major=$gmaj)"
-  fi
-}
-
 cmd_setup_python() {
   require_cmd uv
   cd "$ROOT_DIR"
-  uv sync
+  uv sync --extra dev
 }
 
 cmd_configure() {
@@ -153,10 +171,6 @@ cmd_cli() {
   fi
 }
 
-cmd_removed() {
-  echo "$1 已移除。请使用 ./trade status、./trade inspect 或 ./trade web。"
-}
-
 cmd_py() {
   if [ $# -lt 1 ]; then
     echo "Usage: ./trade py <domain> [args...]"
@@ -168,7 +182,7 @@ cmd_py() {
   uv run python -m trade_py.cli.main "$@"
 }
 
-cmd_trade_py_domain() {
+cmd_domain() {
   local domain="$1"; shift || true
   require_cmd uv
   cd "$ROOT_DIR"
@@ -179,11 +193,30 @@ cmd_trade_py_domain() {
   fi
 }
 
-cmd_trade_py_domain_allow_empty() {
+cmd_domain_allow_empty() {
   local domain="$1"; shift || true
   require_cmd uv
   cd "$ROOT_DIR"
   uv run python -m trade_py.cli.main "$domain" "$@"
+}
+
+cmd_dev() {
+  require_cmd uv
+  cd "$ROOT_DIR"
+  local quality_mode=""
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -v|--verbose|-q|--quiet) ;;
+      check|fix|design-check) quality_mode="$arg"; break ;;
+      *) break ;;
+    esac
+  done
+  if [ -n "$quality_mode" ]; then
+    uv run --frozen --no-sync python -m trade_py.cli.main dev "$@"
+  else
+    uv run python -m trade_py.cli.main dev "$@"
+  fi
 }
 
 cmd_test() {
@@ -195,37 +228,69 @@ cmd_test() {
 }
 
 main() {
-  local sub="${1:-help}"
-  shift || true
+  # Collect global flags (-v/--verbose/-q/--quiet) from anywhere in the args
+  local global_flags=()
+  local sub=""
+  local sub_args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -v|--verbose) global_flags+=("$1"); shift ;;
+      -q|--quiet) global_flags+=("$1"); shift ;;
+      -h|--help|help)
+        if [ -z "$sub" ]; then
+          print_help
+          exit 0
+        else
+          sub_args+=("$1"); shift
+        fi
+        ;;
+      *)
+        if [ -z "$sub" ]; then
+          sub="$1"
+        else
+          sub_args+=("$1")
+        fi
+        shift
+        ;;
+    esac
+  done
+  if [ -z "$sub" ]; then
+    sub="help"
+  fi
+
   case "$sub" in
-    morning|intraday|evening|agenda|open|close|sync) cmd_trade_py_domain run "$sub" "$@" ;;
-    run) cmd_trade_py_domain run "$@" ;;
-    status) cmd_trade_py_domain_allow_empty status "$@" ;;
-    inspect) cmd_trade_py_domain inspect "$@" ;;
-    backup) cmd_trade_py_domain backup "$@" ;;
-    doctor) cmd_doctor "$@" ;;
-    setup-python) cmd_setup_python "$@" ;;
-    configure) cmd_configure "$@" ;;
-    build) cmd_build "$@" ;;
-    cli) cmd_cli "$@" ;;
-    data) cmd_trade_py_domain data "$@" ;;
-    model) cmd_trade_py_domain model "$@" ;;
-    factor) cmd_trade_py_domain factor "$@" ;;
-    account) cmd_trade_py_domain account "$@" ;;
-    event) cmd_trade_py_domain event "$@" ;;
-    evaluate) cmd_trade_py_domain evaluate "$@" ;;
-    kg) cmd_trade_py_domain kg "$@" ;;
-    start) cmd_trade_py_domain_allow_empty start "$@" ;;
-    web) cmd_trade_py_domain_allow_empty web "$@" ;;
-    brief|report|schedule) cmd_removed "$sub" ;;
-    py) cmd_py "$@" ;;
-    ui) cmd_removed "$sub" ;;
-    test) cmd_test "$@" ;;
+    # Workflow shortcuts → run
+    morning|intraday|evening|agenda|open|close|sync) cmd_domain run "$sub" "${global_flags[@]}" "${sub_args[@]}" ;;
+    # The 10 canonical domains
+    run) cmd_domain run "${global_flags[@]}" "${sub_args[@]}" ;;
+    status) cmd_domain_allow_empty status "${global_flags[@]}" "${sub_args[@]}" ;;
+    show) cmd_domain show "${global_flags[@]}" "${sub_args[@]}" ;;
+    research) cmd_domain research "${global_flags[@]}" "${sub_args[@]}" ;;
+    observatory) cmd_domain observatory "${global_flags[@]}" "${sub_args[@]}" ;;
+    data) cmd_domain_allow_empty data "${global_flags[@]}" "${sub_args[@]}" ;;
+    kg) cmd_domain kg "${global_flags[@]}" "${sub_args[@]}" ;;
+    config) cmd_domain config "${global_flags[@]}" "${sub_args[@]}" ;;
+    event) cmd_domain event "${global_flags[@]}" "${sub_args[@]}" ;;
+    backup) cmd_domain backup "${global_flags[@]}" "${sub_args[@]}" ;;
+    start) cmd_domain_allow_empty start "${global_flags[@]}" "${sub_args[@]}" ;;
+    web) cmd_domain_allow_empty web "${global_flags[@]}" "${sub_args[@]}" ;;
+    dev) cmd_dev "${global_flags[@]}" "${sub_args[@]}" ;;
+    # Legacy/deprecated domains (still work, dispatch to Python which prints deprecation warning)
+    doctor) cmd_domain_allow_empty "$sub" "${global_flags[@]}" "${sub_args[@]}" ;;
+    inspect|daily|ops|account|model|factor|evaluate)
+      cmd_domain "$sub" "${global_flags[@]}" "${sub_args[@]}" ;;
+    # Build/setup commands
+    setup-python) cmd_setup_python "${sub_args[@]}" ;;
+    configure) cmd_configure "${sub_args[@]}" ;;
+    build) cmd_build "${sub_args[@]}" ;;
+    cli) cmd_cli "${sub_args[@]}" ;;
+    py) cmd_py "${sub_args[@]}" ;;
+    test) cmd_test "${sub_args[@]}" ;;
+    brief|report|schedule|ui) echo "$sub 已移除。请使用 ./trade status、./trade show 或 ./trade web。" ;;
     help|-h|--help) print_help ;;
     *)
       echo "错误：未知命令 '$sub'"
-      echo "可用顶层命令: run | status | inspect | web | backup | sync | open | close | morning | intraday | evening | agenda | data | model | factor | account | event | evaluate | kg | start | cli | py | doctor | setup-python | configure | build | test | help"
-      echo "运行 './trade help' 查看详细用法"
+      echo "运行 './trade help' 查看用法"
       exit 1
       ;;
   esac

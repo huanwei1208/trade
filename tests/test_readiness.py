@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import pandas as pd
+
 from trade_py.db.trade_db import TradeDB
 from trade_web.backend import readiness as readiness_module
 from trade_web.backend.readiness import (
     _collect_recovery_actions,
+    build_readiness_grid,
     create_recovery_action,
     execute_recovery_action,
     list_recovery_history,
@@ -110,3 +113,63 @@ def test_execute_recovery_action_creates_workflow_and_job_run_trace(monkeypatch,
     assert job_rows[0]["status"] == "ok"
     assert job_rows[0]["trigger_event_id"] == child_events[0]["id"]
     assert "2026-03-20" in str(job_rows[0]["result_summary"] or "")
+
+
+def test_readiness_grid_exposes_crypto_btc_ads_health(monkeypatch, tmp_path) -> None:
+    db = TradeDB(tmp_path)
+    health = {
+        "data_readiness": "degraded",
+        "blocking_gate": "D3",
+        "blocking_reason_code": "SOURCE_DIVERGENCE",
+        "cross_source_validation": {"status": "fail", "block_rows": 1},
+        "observed": {"watermark": "2026-01-09", "row_count": 730},
+    }
+
+    def fake_read_crypto_validation_outputs(_data_root):
+        return {
+            "tables": {
+                "ads_crypto_data_readiness_report": pd.DataFrame(
+                    [
+                        {
+                            "run_id": "validation-run",
+                            "generation_id": "generation-1",
+                            "data_run_id": "data-run",
+                            "data_readiness": "degraded",
+                            "watermark": "2026-01-09",
+                            "reason_codes": '["SOURCE_DIVERGENCE"]',
+                            "evidence_ref": "/tmp/run/manifest.json",
+                            "data_health_json": readiness_module.json.dumps(health),
+                        }
+                    ]
+                )
+            }
+        }
+
+    monkeypatch.setattr(
+        "trade_py.data.warehouse.crypto.read_crypto_validation_outputs",
+        fake_read_crypto_validation_outputs,
+    )
+    monkeypatch.setattr(readiness_module, "_collect_repair_runs", lambda *_args, **_kwargs: ({}, {}))
+    monkeypatch.setattr(readiness_module, "_collect_gap_ranges", lambda *_args, **_kwargs: {})
+
+    payload = build_readiness_grid(
+        tmp_path,
+        db,
+        days=2,
+        end_date="2026-01-09",
+        datasets=["crypto_btc"],
+        include_actions=False,
+    )
+
+    row = payload["rows"][0]
+    assert row["dataset"] == "crypto_btc"
+    latest = row["cells"][-1]
+    previous = row["cells"][0]
+    assert latest["status"] == "LATE_READY"
+    assert latest["source_last_date"] == "2026-01-09"
+    assert latest["reason_codes"] == ["SOURCE_DIVERGENCE"]
+    assert latest["data_health"]["blocking_gate"] == "D3"
+    assert latest["data_health"]["cross_source_validation"]["block_rows"] == 1
+    assert latest["evidence_ref"] == "/tmp/run/manifest.json"
+    assert previous["status"] == "LATE_READY"
+    assert previous["fingerprint"] != latest["fingerprint"]

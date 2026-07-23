@@ -53,6 +53,22 @@ sdk env
 mvn test
 ```
 
+格式与测试门禁默认离线运行。首次准备依赖时显式联网执行一次：
+
+```bash
+mvn spotless:check test
+```
+
+之后的检查不会下载依赖：
+
+```bash
+mvn -o spotless:check
+mvn -o test
+```
+
+这里固定使用兼容 Java 8 的 Spotless `2.30.0` 和 google-java-format `1.7`；
+升级格式化器前必须同时验证 Maven 运行时和 Java 8 源码兼容性。
+
 ## Java 示例
 
 ```java

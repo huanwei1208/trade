@@ -75,6 +75,25 @@ def test_build_ops_compute_layers_groups_nodes_by_semantic_layer(monkeypatch, tm
                     "dataset": "models",
                     "cells": [{"date": "2026-03-20", "status": "READY", "row_count": 2, "expected_count": 2, "coverage_pct": 1.0, "lag_days": 0, "source_last_date": "2026-03-20", "last_backfill_at": None}],
                 },
+                {
+                    "dataset": "crypto_btc",
+                    "cells": [
+                        {
+                            "date": "2026-03-20",
+                            "status": "LATE_READY",
+                            "row_count": 730,
+                            "expected_count": 1,
+                            "coverage_pct": 1.0,
+                            "lag_days": 0,
+                            "source_last_date": "2026-03-20",
+                            "last_backfill_at": None,
+                            "data_health": {
+                                "blocking_gate": "D3",
+                                "blocking_reason_code": "SOURCE_DIVERGENCE",
+                            },
+                        }
+                    ],
+                },
             ]
         },
     )
@@ -123,6 +142,15 @@ def test_build_ops_compute_layers_groups_nodes_by_semantic_layer(monkeypatch, tm
     assert {layer["key"] for layer in payload["layers"]} == {"source", "feature", "factor", "model", "decision", "workflow"}
     by_id = {node["id"]: node for node in payload["nodes"]}
     assert by_id["source:planned_events"]["mapped_dataset"] == "planned_events"
+    assert by_id["source:crypto_btc"]["mapped_dataset"] == "crypto_btc"
+    assert by_id["source:crypto_btc"]["latest_status"] == "partial"
+    assert by_id["source:crypto_btc"]["latest_output_summary"]["metric"] == 1.0
+    assert by_id["source:crypto_btc"]["downstream_ids"] == [
+        "factor:data_quality_factor",
+        "model:trust",
+        "workflow:crypto_research_validation",
+    ]
+    assert "source:crypto_btc" in by_id["factor:data_quality_factor"]["upstream_ids"]
     assert by_id["model:conviction"]["mapped_dataset"] == "belief_state"
     assert by_id["model:model_registry"]["mapped_dataset"] == "models"
     assert by_id["decision:recommendation"]["latest_output_summary"]["primary"] == "WATCH"

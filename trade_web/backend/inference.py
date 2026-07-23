@@ -20,21 +20,33 @@ predict() now returns a trust block alongside model scores:
     }
   }
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+if TYPE_CHECKING:
+    from trade_py.db.trade_db import TradeDB
 
 logger = logging.getLogger(__name__)
+
+
+class _SyncStateFreshnessStore(Protocol):
+    def sync_state_latest_date(self, dataset: str) -> str | None: ...
+
 
 class InferenceService:
     """Wraps active registry models and serves prediction requests."""
 
-    def __init__(self, data_root: str) -> None:
+    def __init__(self, data_root: str, *, db: TradeDB | None = None) -> None:
         self._data_root = data_root
+        self._db = db
         self._lock = threading.RLock()
         self._models: dict[str, Any] = {}
         self._model_meta: dict[str, dict[str, Any]] = {}
@@ -51,10 +63,8 @@ class InferenceService:
             return
 
         try:
-            from trade_py.db.trade_db import TradeDB
-
-            db = TradeDB(self._data_root)
-            registry_rows = db.model_registry_list()
+            with self._db_session() as db:
+                registry_rows = db.model_registry_list()
         except Exception as exc:
             logger.error("Failed to load model_registry: %s", exc)
             return
@@ -112,21 +122,28 @@ class InferenceService:
         logger.info("InferenceService: reloading models")
         self._load_models()
 
+    @contextmanager
+    def _db_session(self) -> Iterator[TradeDB]:
+        if self._db is not None:
+            yield self._db
+            return
+        from trade_py.db.trade_db import TradeDB
+
+        with TradeDB(self._data_root) as db:
+            yield db
+
     def _data_lag_days(self) -> int | None:
         """Estimate data freshness lag from kline sync_state (max across symbols)."""
         try:
             from datetime import date
-            from trade_py.db.trade_db import TradeDB
 
-            db = TradeDB(self._data_root)
-            row = db._conn.execute(
-                "SELECT MAX(last_date) FROM sync_state WHERE dataset='kline'"
-            ).fetchone()
-            last_raw = row[0] if row else None
+            with self._db_session() as db:
+                sync_state_db = cast(_SyncStateFreshnessStore, db)
+                last_raw = sync_state_db.sync_state_latest_date("kline")
             if last_raw is None:
                 return None
             today = date.today()
-            last_date = last_raw if hasattr(last_raw, "year") else date.fromisoformat(str(last_raw)[:10])
+            last_date = date.fromisoformat(last_raw[:10])
             return max(0, (today - last_date).days)
         except Exception:
             return None
@@ -135,6 +152,7 @@ class InferenceService:
         """Run inference for the given symbols, returning scores + trust."""
         import numpy as np
         import pandas as pd
+
         from trade_py.trust import TrustBreakdown, compute_prediction_trust
 
         del date_str  # reserved for future point-in-time inference
@@ -144,7 +162,9 @@ class InferenceService:
             model_risk = self._models.get("kg_risk_5pct")
             meta_5d = self._model_meta.get("kg_return_5d", {})
             feature_cols_5d = list(self._feature_cols_by_model.get("kg_return_5d", []))
-            feature_cols_risk = list(self._feature_cols_by_model.get("kg_risk_5pct", feature_cols_5d))
+            feature_cols_risk = list(
+                self._feature_cols_by_model.get("kg_risk_5pct", feature_cols_5d)
+            )
 
         if model_5d is None:
             return {
@@ -162,18 +182,19 @@ class InferenceService:
         generation_method = str(meta_5d.get("framework", "lightgbm"))
 
         try:
-            from trade_py.db.trade_db import TradeDB
-
-            db = TradeDB(self._data_root)
-            requested_cols = list(dict.fromkeys(feature_cols_5d + feature_cols_risk))
-            raw_factor_values: dict[str, dict[str, Any]] = {}
-            records = []
-            for symbol in symbols:
-                factors = db.factor_get_latest(symbol, requested_cols if requested_cols else None)
-                raw_factor_values[symbol] = dict(factors)
-                row = {col: factors.get(col, 0.0) for col in requested_cols}
-                row["symbol"] = symbol
-                records.append(row)
+            with self._db_session() as db:
+                requested_cols = list(dict.fromkeys(feature_cols_5d + feature_cols_risk))
+                raw_factor_values: dict[str, dict[str, Any]] = {}
+                records = []
+                for symbol in symbols:
+                    factors = db.factor_get_latest(
+                        symbol,
+                        requested_cols if requested_cols else None,
+                    )
+                    raw_factor_values[symbol] = dict(factors)
+                    row = {col: factors.get(col, 0.0) for col in requested_cols}
+                    row["symbol"] = symbol
+                    records.append(row)
 
             if not records:
                 return {}
@@ -216,7 +237,9 @@ class InferenceService:
                 )
                 result[symbol] = {
                     "model_score": round(float(ranks[idx]), 2),
-                    "model_risk": round(float(risk_scores[idx]), 4) if risk_scores is not None else None,
+                    "model_risk": round(float(risk_scores[idx]), 4)
+                    if risk_scores is not None
+                    else None,
                     "model_version": model_version,
                     "trust": trust.to_dict(),
                 }
@@ -228,7 +251,9 @@ class InferenceService:
                     "model_score": None,
                     "model_risk": None,
                     "model_version": None,
-                    "trust": TrustBreakdown.unavailable(f"inference_error:{type(exc).__name__}").to_dict(),
+                    "trust": TrustBreakdown.unavailable(
+                        f"inference_error:{type(exc).__name__}"
+                    ).to_dict(),
                 }
                 for symbol in symbols
             }

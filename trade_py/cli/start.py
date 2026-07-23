@@ -14,6 +14,7 @@ import argparse
 import logging
 import time
 
+from trade_py.cli import global_flag_parent
 from trade_py.infra.settings import default_data_root
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ def make_parser() -> argparse.ArgumentParser:
         prog="trade start",
         description="启动 EventBus daemon（DAG bootstrap + 调度器）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
         epilog=(
             "示例:\n"
             "  trade start                   # 启动 daemon（阻塞运行）\n"

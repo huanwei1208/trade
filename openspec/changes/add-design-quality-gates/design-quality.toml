@@ -1,0 +1,90 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "Adds a public developer CLI command and extends quality report contracts."
+
+[[impacts]]
+id = "persistent_write"
+applies = false
+reason = "The checker and integration are filesystem read-only and do not modify runtime data."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "No database, parquet, API payload, or runtime schema changes are introduced."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "The change governs design evidence but does not compute historical market knowledge."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "No forecast, recommendation, ranking, or model output is produced by the checker."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "No news, social, macro, on-chain, or third-party event data is ingested."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "Changed-scope planning batches multiple changes and must preserve deterministic concurrent quality execution."
+
+[evidence.contract]
+contract = "The additive public contract is ./trade dev design-check plus versioned JSON report schemas."
+consumers = "Developers and the changed-scope quality runner consume the CLI and structured batch report."
+compatibility = "Existing trade dev check, fix, quality, and review commands retain their arguments and ownership."
+migration = "No runtime migration is required; new governed changes opt in through an explicit marker."
+rollback = "Reverting the squash commit removes the additive command, policy, contributor, and skill together."
+
+[evidence.concurrency]
+ownership = "The existing quality planner owns process orchestration; the design contributor only emits one step."
+bound = "A batch is capped at 100 unique live or missing changes and 16 MiB of allowlisted artifacts."
+ordering = "Change names, snapshots, reports, findings, and plan steps are sorted deterministically."
+atomicity = "Each subprocess evaluates immutable snapshots and publishes one complete JSON envelope at exit."
+timeout_cancellation = "The parent quality executor applies a 30 second timeout and kills the child process group."
+backpressure = "One aggregate child and bounded stdout prevent per-change process or output fan-out."
+partial_failure = "Batch and parent exit precedence retain quality failure 1 and infrastructure failure 2."
+capacity_validation = "Planner and evaluator tests cover 2, 10, 100, and over-limit change scopes."
+
+[[obligations]]
+id = "design.direct-cli"
+owner = "trade_py/devtools/design_quality"
+paths = ["trade", "trade_py/cli/dev.py", "trade_py/devtools/design_quality/"]
+contracts = ["./trade dev design-check"]
+failure_states = ["policy_rejection", "configuration_error", "unsafe_path", "stale_snapshot"]
+spec_requirements = ["design-quality-gate:Stable direct CLI contract", "design-quality-gate:Bounded deterministic read-only snapshots"]
+validation_tasks = ["1.5", "2.5", "2.6", "4.5"]
+
+[[obligations]]
+id = "design.changed-scope"
+owner = "trade_py/devtools/quality"
+paths = ["trade_py/devtools/quality/scope.py", "trade_py/devtools/quality/planner.py", "trade_py/devtools/quality/executor.py"]
+contracts = ["./trade dev check"]
+failure_states = ["deleted_governance", "nested_quality_failure", "nested_infrastructure_failure"]
+spec_requirements = ["design-quality-gate:Supplemental aggregate changed-scope contributor", "design-quality-gate:Governance deletion cannot bypass checking"]
+validation_tasks = ["2.5", "2.6", "4.5"]
+
+[[obligations]]
+id = "design.review-evidence"
+owner = "openspec governance"
+paths = ["openspec/changes/*/design-review.toml", "design-policy/v1.toml"]
+contracts = ["strict implementation approval"]
+failure_states = ["missing_review", "stale_review", "incomplete_panel", "unresolved_p0"]
+spec_requirements = ["design-quality-gate:Digest-bound six-role review evidence", "design-quality-agent-workflow:Human review remains authoritative"]
+validation_tasks = ["1.5", "3.3", "3.4", "4.6"]
+
+[[obligations]]
+id = "design.agent-workflow"
+owner = ".codex/skills/design-quality"
+paths = [".codex/skills/design-quality/", ".codex/skills/code-quality/", "AGENTS.md"]
+contracts = ["pre-review", "consensus review", "strict approval", "implementation handoff"]
+failure_states = ["competing_workflows", "policy_skill_drift"]
+spec_requirements = ["design-quality-agent-workflow:Two-phase pre-code design workflow", "design-quality-agent-workflow:Minimal and referenced guidance"]
+validation_tasks = ["3.3", "3.4", "4.5"]

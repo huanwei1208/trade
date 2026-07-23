@@ -1,0 +1,263 @@
+schema_version = 1
+policy_version = "v1"
+policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
+artifact_digest_algorithm = "sha256-path-content-v1"
+artifact_digest = "sha256:5d56a8889a93be6d4ec24d5b66772981f7823404d1a287c5a30167ab1331447a"
+reviewed_commit = "47cdc8fed61ed7ccb5aad301a82fca9b642d395e"
+reviewed_at = "2026-07-22"
+status = "approved"
+bootstrap = false
+
+[[judges]]
+role = "reliability"
+status = "approved"
+score_before = 6
+score_after = 8.0
+
+[[judges]]
+role = "performance"
+status = "approved"
+score_before = 7
+score_after = 9.5
+
+[[judges]]
+role = "architecture"
+status = "approved"
+score_before = 6
+score_after = 9.0
+
+[[judges]]
+role = "data_quality"
+status = "approved"
+score_before = 6
+score_after = 9.0
+
+[[judges]]
+role = "observability"
+status = "approved"
+score_before = 6
+score_after = 8.0
+
+[[judges]]
+role = "news_future"
+status = "approved"
+score_before = 8
+score_after = 9.8
+
+[[findings]]
+id = "KLINE-REVIEW-001"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "Passive chart events are request-free; only an explicit click, keyboard, or date-input pin may start one keyed snapshot-pinned Date Evidence request, and a newer pin aborts the prior request."
+evidence = [
+  "design.md:Performance and capacity",
+  "specs/btc-research-workspace/spec.md:Bounded and accessible evidence exploration",
+  "tasks.md:4.4",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-002"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 3
+status = "resolved"
+resolution = "Lazy module, chart, series, data, resize, fullscreen, and callback failures are locally contained with safe codes, manual Retry and Compare, idempotent partial cleanup, and disposed-generation guards."
+evidence = [
+  "design.md:Failure and recovery",
+  "specs/btc-research-workspace/spec.md:Chart module or renderer operation fails",
+  "tasks.md:4.3",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-003"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "The vendor-neutral adapter now requires real UTC dates, strict decimals, positive enclosing OHLC, optional non-negative volume, duplicate-date rejection, Context provenance agreement, and explicit partial/fatal diagnostics."
+evidence = [
+  "design.md:Data and state invariants",
+  "specs/btc-research-workspace/spec.md:Daily chart input is partially or wholly invalid",
+  "tasks.md:4.3",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-004"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "Rows plus Context excluded_dates form an in-bounds UTC daily lattice; duplicate, missing, unobserved, quarantined, and invalid dates remain whitespace evidence. Frontend marker_position is corrected to the backend string contract and fixtures include an actual query-output shape."
+evidence = [
+  "design.md:Data and state invariants",
+  "specs/btc-research-workspace/spec.md:Daily chart input is partially or wholly invalid",
+  "tasks.md:4.5",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-005"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Capability transport/cache freshness remains fail-closed while a fresh successful catalog_stale payload with enabled and show_nav remains inspectable under the deployed contract."
+evidence = [
+  "design.md:Failure and recovery",
+  "specs/btc-research-workspace/spec.md:Fresh catalog-stale evidence is inspectable",
+  "tasks.md:4.5",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-006"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "Canonical obsChart ownership and legacy normalization live in lib/observatory.ts and App.tsx; Market and Compare use mutually exclusive request topology with Context-pinned Date Evidence."
+evidence = [
+  "design.md:Ownership and boundaries",
+  "design.md:Performance and capacity",
+  "tasks.md:4.4",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-007"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "The chart is a Market-only lazy chunk with explicit gzip ceilings, rAF/date-deduplicated crosshair work, non-live hover, 730 and 7300 structural/smoke budgets, explicit over-capacity behavior, and mobile gesture rules."
+evidence = [
+  "design.md:Performance and capacity",
+  "specs/btc-research-workspace/spec.md:Validated history reaches the renderer envelope",
+  "tasks.md:4.2",
+  "tasks.md:4.5",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-008"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "The UI says local daily Observatory snapshot and not live, derives data identity from active Context, keeps shadow assurance-only, and identifies TradingView only as the charting library."
+evidence = [
+  "design.md:Data and state invariants",
+  "specs/btc-research-workspace/spec.md:Market renders an exchange-style daily K-line",
+  "tasks.md:4.5",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-009"
+priority = "P1"
+severity = "MED"
+consensus_count = 1
+status = "resolved"
+resolution = "Per-date reason and evidence arrays, preview rows, detail rows, and fatal-code display are bounded with explicit omitted counts; the full diagnostic surface remains non-live and user-expanded."
+evidence = [
+  "trade_web/frontend/src/lib/observatoryChart.ts:diagnostic limits",
+  "trade_web/frontend/src/components/observatory/ExchangeKlineChart.tsx:bounded diagnostic summary",
+  "trade_web/frontend/src/test/observatory.exchange-kline.test.tsx:omission count coverage",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-010"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "The adapter filters Context exclusions to the inclusive requested window before span and capacity accounting, rejects rows escaping that window, compares exact decimal OHLC envelopes before numeric geometry conversion, and uses endpoint-faithful quarantine fixtures."
+evidence = [
+  "trade_web/frontend/src/lib/observatoryChart.ts:request window and exact decimal validation",
+  "trade_web/frontend/src/test/observatory.chart.test.ts:bounded window and precision regressions",
+  "trade_web/frontend/src/test/fixtures.ts:selected-series quarantine fidelity",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-011"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Renderer failures now use only the approved four safe codes, keyboard inspection has a dedicated polite announcement including excluded-date reasons, source volume avoids invented units, and callback or fullscreen failures preserve explicit Retry and Compare recovery."
+evidence = [
+  "trade_web/frontend/src/components/observatory/ExchangeKlineChart.tsx:failure and keyboard contracts",
+  "trade_web/frontend/src/components/observatory/ExchangeKlinePanel.tsx:module failure recovery",
+  "trade_web/frontend/src/test/observatory.exchange-kline.test.tsx:recovery and accessibility coverage",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-012"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Resource state, fast-cache confirmation, and conditional ETag reuse are bound to request, refresh, and stable channel-snapshot semantic identity; drift clears mounted truth synchronously, aborts superseded work, and waits for refreshed Context before descendants."
+evidence = [
+  "trade_web/frontend/src/pages/observatory/observatoryResource.ts:semantic validation lifecycle",
+  "trade_web/frontend/src/pages/observatory/ObservatoryPage.tsx:channel-snapshot validation keys",
+  "trade_web/frontend/src/test/observatory.page.test.tsx:delayed Context refresh race regression",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-013"
+priority = "P1"
+severity = "MED"
+consensus_count = 1
+status = "resolved"
+resolution = "Current callback and fullscreen runtime failures expose the existing user-triggered Retry path plus the independent Compare escape without adding automatic retry or provider requests."
+evidence = [
+  "trade_web/frontend/src/components/observatory/ExchangeKlineChart.tsx:runtime retryability",
+  "trade_web/frontend/src/test/observatory.exchange-kline.test.tsx:Retry and Compare assertions",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-014"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "accepted"
+resolution = "MarketSummary still interprets the confirmed raw series separately from the strict chart adapter; a later presentation-model cleanup should unify them, while current response validation and chart fail-closed behavior keep this outside the K-line merge boundary."
+evidence = [
+  "trade_web/frontend/src/pages/observatory/MarketWorkspace.tsx:MarketSummary composition",
+  "trade_web/frontend/src/components/observatory/OverviewPanels.tsx:raw summary selection",
+]
+
+[[findings]]
+id = "KLINE-REVIEW-015"
+priority = "P2"
+severity = "LOW"
+consensus_count = 1
+status = "accepted"
+resolution = "Diagnostic omission totals count overflow occurrences rather than unique hidden values, and duplicate rows on a Context-excluded date are not fully reflected in invalidRowCount; both remain bounded and neither changes rendered candles, gaps, markers, or fail-closed truth."
+evidence = [
+  "trade_web/frontend/src/lib/observatoryChart.ts:diagnostic accounting",
+  "trade_web/frontend/src/lib/observatoryChart.ts:excluded-date lattice precedence",
+]
+
+[[findings]]
+id = "KLINE-TF-001"
+priority = "P2"
+severity = "MED"
+consensus_count = 2
+status = "accepted"
+resolution = "Implementation must prove fixed-point carry/scale alignment, the 128-digit overflow boundary, UTC week/month/year transitions, partial-volume semantics, and aggregate-to-daily Date Evidence mapping with focused tests; the design now defines the required invariants."
+evidence = [
+  "design.md:Follow-up amendment: timeframe and click interaction",
+  "specs/btc-research-workspace/spec.md:Exchange timeframe selection and click isolation",
+  "tasks.md:4.7",
+]
+
+[[findings]]
+id = "KLINE-TF-002"
+priority = "P2"
+severity = "LOW"
+consensus_count = 1
+status = "accepted"
+resolution = "Aggregate metadata and reason/evidence references remain bounded in the implementation and accessible summary; exact cap values are enforced by the existing chart envelope plus focused tests."
+evidence = [
+  "design.md:Follow-up amendment: timeframe and click interaction",
+  "proposal.md:Validation",
+]

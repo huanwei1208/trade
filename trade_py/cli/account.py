@@ -2,19 +2,17 @@ from __future__ import annotations
 
 import argparse
 
-from trade_py.infra.settings import default_data_root
-from trade_py.data.account.repository import AccountRepository
-from trade_py.data.account.service import AccountService
-from trade_py.db.trade_db import TradeDB
+from trade_py.infra.settings.context import default_data_root
 
 
 def make_parser() -> argparse.ArgumentParser:
-    from trade_py.cli import epilog_from_subparsers
+    from trade_py.cli import epilog_from_subparsers, global_flag_parent
 
     parser = argparse.ArgumentParser(
         prog="trade account",
-        description="账户与自选股管理",
+        description="[DEPRECATED: watchlist moved to `trade config watch`] 账户与自选股管理 / 候选股推荐",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
     )
     parser.add_argument("--data-root", default=str(default_data_root()))
     sub = parser.add_subparsers(dest="command", required=True)
@@ -86,50 +84,46 @@ def make_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import sys as _sys
     args = make_parser().parse_args(argv)
-    service = AccountService(AccountRepository(args.data_root))
 
-    if args.command == "watch-add":
-        from trade_py.data.market.kline.providers import ensure_symbol
-        sym = ensure_symbol(args.symbol.strip())
-        info = service.lookup_instrument(args.symbol)
-        if info is None:
-            print(f"错误：未找到 {sym}，instruments 库中无此标的。")
-            print("请先运行: trade data kline instruments")
-            return 1
-        print(f"找到: {sym}  {info['name']}  ({info['market_name']})")
-        try:
-            ans = input("确认添加到自选股? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\n已取消")
-            return 1
-        if ans != "y":
-            print("已取消")
-            return 1
-        service.add_watch(args.symbol, args.note)
-        print(f"已添加: {sym}  {info['name']}")
-        return 0
-    if args.command == "watch-remove":
-        service.remove_watch(args.symbol)
-        return 0
-    if args.command == "watch-list":
-        rows = service.list_watch_with_names()
-        if not rows:
-            print("自选股为空")
-            return 0
-        name_w = max(len(r["name"]) for r in rows) if rows else 4
-        for r in rows:
-            print(f"{r['symbol']:<14}  {r['name']:<{name_w}}  {r['market_name']}")
-        return 0
-    if args.command == "setting-set":
-        service.set_setting(args.key, args.value)
-        return 0
-    if args.command == "setting-get":
-        val = service.get_setting(args.key)
-        print(val)
-        return 0
+    _DEPRECATED_NOTE = (
+        "Note: 'trade account {old}' is deprecated; "
+        "use 'trade config {new}' instead.\n"
+    )
+
+    if args.command in ("watch-add", "watch-remove", "watch-list"):
+        print(_DEPRECATED_NOTE.format(
+            old=args.command,
+            new={"watch-add": "watch add", "watch-remove": "watch remove", "watch-list": "watch list"}[args.command],
+        ), file=_sys.stderr)
+        from trade_py.cli import config as config_cli
+        if args.command == "watch-list":
+            cfg_argv = ["watch", "list"]
+        elif args.command == "watch-remove":
+            cfg_argv = ["watch", "remove", args.symbol]
+        else:
+            cfg_argv = ["watch", "add", args.symbol]
+            if getattr(args, "note", ""):
+                cfg_argv += ["--note", args.note]
+        cfg_argv += ["--data-root", args.data_root]
+        return config_cli.main(cfg_argv)
+
+    if args.command in ("setting-set", "setting-get"):
+        print(_DEPRECATED_NOTE.format(
+            old=args.command,
+            new={"setting-set": "set", "setting-get": "get"}[args.command],
+        ), file=_sys.stderr)
+        from trade_py.cli import config as config_cli
+        cfg_argv = [{"setting-set": "set", "setting-get": "get"}[args.command], args.key]
+        if args.command == "setting-set":
+            cfg_argv.append(args.value)
+        cfg_argv += ["--data-root", args.data_root]
+        return config_cli.main(cfg_argv)
+
     if args.command == "suggest":
         from trade_py.db.settings_db import SettingsDB
+        from trade_py.db.trade_db import TradeDB
         from trade_py.data.market.index.tushare import SW_SECTOR_INDICES
         db = SettingsDB(args.data_root)
         gate_db = TradeDB(args.data_root)

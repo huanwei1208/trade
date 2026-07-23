@@ -33,6 +33,21 @@ DATASET_CATALOG: tuple[DatasetMeta, ...] = (
     DatasetMeta("belief_state", "Belief State", True, ("today", "candidates", "symbol", "belief"), "belief_update"),
     DatasetMeta("recommendation", "Recommendation", True, ("today", "candidates", "symbol", "recommendations"), "recommend"),
     DatasetMeta("models", "Models", False, ("signals", "belief", "recommendations", "trust"), "model_train"),
+    # Crypto assets (24/7 markets — calendar-day freshness)
+    DatasetMeta("crypto.btc", "Crypto BTC", True, ("today", "candidates", "research", "trust", "ops"), "crypto_btc_fetch"),
+    DatasetMeta("crypto.eth", "Crypto ETH", False, ("research", "signals", "trust"), "asset_batch_ingest"),
+    DatasetMeta("crypto.sol", "Crypto SOL", False, ("research", "signals"), "asset_batch_ingest"),
+    DatasetMeta("crypto.bnb", "Crypto BNB", False, ("research", "signals"), "asset_batch_ingest"),
+    DatasetMeta("crypto.xrp", "Crypto XRP", False, ("research", "signals"), "asset_batch_ingest"),
+    DatasetMeta("crypto.fear_greed", "Fear & Greed", False, ("research", "signals", "sentiment"), "crypto_news_sentiment"),
+    DatasetMeta("crypto_news", "Crypto News", False, ("events", "signals", "research"), "crypto_news_sentiment"),
+    # FX assets
+    DatasetMeta("fx.usdcnh", "FX USD/CNH", False, ("research", "macro", "signals"), "asset_batch_ingest"),
+    # Commodity assets
+    DatasetMeta("commodity.gold", "Commodity Gold", False, ("research", "macro", "signals", "trust"), "asset_batch_ingest"),
+    # Legacy keys (retained for transition/back-compat with older freshness rows)
+    DatasetMeta("crypto_btc", "Crypto BTC (legacy)", False, ("research", "trust"), "crypto_btc_fetch"),
+    DatasetMeta("crypto_fear_greed", "Fear & Greed (legacy)", False, ("research", "signals"), "crypto_news_sentiment"),
     DatasetMeta("sector_map", "Sector Map", False, ("events", "signals", "belief"), "sector_refresh"),
 )
 
@@ -48,6 +63,21 @@ DOWNSTREAM_JOB_MAP: dict[str, list[str]] = {
     "belief_state": ["recommend", "evaluate_daily"],
     "recommendation": ["evaluate_daily"],
     "models": ["belief_update", "recommend", "evaluate_daily"],
+    # Crypto group
+    "crypto.btc": ["crypto_research_validation", "belief_update", "evaluate_daily"],
+    "crypto.eth": ["crypto_research_validation", "evaluate_daily"],
+    "crypto.sol": ["evaluate_daily"],
+    "crypto.bnb": ["evaluate_daily"],
+    "crypto.xrp": ["evaluate_daily"],
+    "crypto.fear_greed": ["belief_update", "evaluate_daily"],
+    "crypto_news": ["event_extract", "belief_update", "evaluate_daily"],
+    # FX group
+    "fx.usdcnh": ["belief_update", "evaluate_daily"],
+    # Commodity group
+    "commodity.gold": ["belief_update", "evaluate_daily"],
+    # Legacy keys
+    "crypto_btc": ["crypto_research_validation"],
+    "crypto_fear_greed": ["belief_update", "evaluate_daily"],
     "sector_map": ["event_extract", "kg_propagate", "window_score", "belief_update", "recommend", "evaluate_daily"],
 }
 
@@ -237,6 +267,108 @@ def _collect_freshness_by_date(db, date_from: str, date_to: str) -> dict[str, di
         item["details"] = _safe_json(item.get("details_json"), {})
         payload[str(item.get("as_of_date"))][str(item.get("dataset"))] = item
     return payload
+
+
+def _clean_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"nan", "nat", "none"}:
+        return None
+    return text
+
+
+def _collect_crypto_btc_current(data_root: str | Path) -> dict[str, Any] | None:
+    try:
+        from trade_py.data.warehouse.crypto import read_crypto_validation_outputs
+
+        snapshot = read_crypto_validation_outputs(data_root)
+        readiness_frame = (snapshot.get("tables") or {}).get("ads_crypto_data_readiness_report")
+        if readiness_frame is None or readiness_frame.empty:
+            return None
+        row = readiness_frame.iloc[0].to_dict()
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    health = _safe_json(row.get("data_health_json"), {})
+    observed = health.get("observed") if isinstance(health, dict) else {}
+    reason_codes = _safe_json(row.get("reason_codes"), [])
+    if not isinstance(reason_codes, list):
+        reason_codes = []
+    watermark = _clean_text(row.get("watermark")) or _clean_text((observed or {}).get("watermark"))
+    return {
+        "data_readiness": _clean_text(row.get("data_readiness")) or "invalid",
+        "watermark": watermark,
+        "data_health": health if isinstance(health, dict) else {},
+        "reason_codes": [str(item) for item in reason_codes],
+        "evidence_ref": _clean_text(row.get("evidence_ref")),
+        "data_run_id": _clean_text(row.get("data_run_id")),
+        "validation_run_id": _clean_text(row.get("run_id")),
+        "generation_id": _clean_text(row.get("generation_id")),
+        "row_count": (observed or {}).get("row_count") if isinstance(observed, dict) else None,
+    }
+
+
+# Multi-asset single-parquet datasets (crypto coins, FX, commodity).
+# Resolution checks canonical new-layout paths first, then falls back to
+# legacy cross_asset paths. Crypto assets are 24/7 so freshness uses calendar days.
+_MULTI_ASSET_FILES: dict[str, tuple[str, ...]] = {
+    "crypto.btc":     ("market/crypto/btc.parquet",     "market/cross_asset/crypto/btc.parquet",     "market/cross_asset/btc.parquet",     "cross_asset/btc.parquet"),
+    "crypto.eth":     ("market/crypto/eth.parquet",     "market/cross_asset/crypto/eth.parquet",     "market/cross_asset/eth.parquet",     "cross_asset/eth.parquet"),
+    "crypto.sol":     ("market/crypto/sol.parquet",     "market/cross_asset/crypto/sol.parquet",     "market/cross_asset/sol.parquet",     "cross_asset/sol.parquet"),
+    "crypto.bnb":     ("market/crypto/bnb.parquet",     "market/cross_asset/crypto/bnb.parquet",     "market/cross_asset/bnb.parquet",     "cross_asset/bnb.parquet"),
+    "crypto.xrp":     ("market/crypto/xrp.parquet",     "market/cross_asset/crypto/xrp.parquet",     "market/cross_asset/xrp.parquet",     "cross_asset/xrp.parquet"),
+    "crypto.fear_greed": ("market/crypto/fear_greed.parquet", "market/cross_asset/crypto/fear_greed.parquet", "market/cross_asset/fear_greed.parquet"),
+    "fx.usdcnh":      ("market/fx/usdcnh.parquet",      "market/cross_asset/fx_cnh.parquet",         "cross_asset/fx_cnh.parquet",         "market/cross_asset/fx_usdcnh.parquet"),
+    "commodity.gold": ("market/commodity/gold.parquet", "market/cross_asset/gold.parquet",           "cross_asset/gold.parquet"),
+}
+
+
+def _resolve_multi_asset_file(data_root: str | Path, dataset_key: str) -> Path | None:
+    """Return the first existing parquet path for a multi-asset dataset, or None."""
+    root = Path(data_root)
+    candidates = _MULTI_ASSET_FILES.get(dataset_key)
+    if not candidates:
+        return None
+    for rel in candidates:
+        p = root / rel
+        if p.exists():
+            return p
+    return None
+
+
+def _collect_multi_asset_max_date(path: Path | None, date_col: str = "date") -> tuple[str | None, int | None]:
+    """Return (max_date_iso, row_count) for a multi-asset parquet file, or (None, None) if unreadable."""
+    if path is None or not path.exists():
+        return None, None
+    try:
+        import duckdb
+        con = duckdb.connect()
+        try:
+            row = con.execute(
+                f"SELECT COUNT(*) AS n, MAX({date_col}) AS max_d FROM read_parquet('{path}', union_by_name=true)"
+            ).fetchone()
+        finally:
+            con.close()
+        if not row:
+            return None, None
+        n, max_d = row
+        max_date_iso = str(max_d)[:10] if max_d else None
+        return max_date_iso, int(n or 0) if n is not None else None
+    except Exception:
+        return None, None
+
+
+def _crypto_readiness_status(raw: Any, *, covered: bool) -> str:
+    if not covered:
+        return "MISSING"
+    status = str(raw or "").strip().lower()
+    if status == "ready":
+        return "READY"
+    if status == "degraded":
+        return "LATE_READY"
+    if status == "insufficient_data":
+        return "PARTIAL"
+    if status == "invalid":
+        return "MISSING"
+    return "UNKNOWN"
 
 
 def _collect_last_date_distribution(db, source: str, dataset: str) -> tuple[list[tuple[str, int]], str | None]:
@@ -463,6 +595,8 @@ def _hash_cell_snapshot(dataset: str, day: str, cell: dict[str, Any], base_finge
         "lag_days": cell.get("lag_days"),
         "source_last_date": cell.get("source_last_date"),
         "reason_codes": cell.get("reason_codes"),
+        "data_health": cell.get("data_health"),
+        "evidence_ref": cell.get("evidence_ref"),
         "base_fingerprint": base_fingerprint,
     }
     return hashlib.sha1(json.dumps(raw, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -496,6 +630,8 @@ def _build_cell(
     last_backfill_at: str | None = None,
     history: list[dict[str, Any]] | None = None,
     reason_codes: list[str] | None = None,
+    data_health: dict[str, Any] | None = None,
+    evidence_ref: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "id": f"{dataset.key}:{day_iso}",
@@ -511,6 +647,8 @@ def _build_cell(
         "affected_outputs": list(dataset.impacts),
         "history": history or [],
         "reason_codes": reason_codes or [],
+        "data_health": data_health or {},
+        "evidence_ref": evidence_ref,
         "changed_since_last_ready": False,
         "fingerprint": None,
     }
@@ -564,8 +702,19 @@ def build_readiness_grid(
 
     needs_gold_dates = any(item.key in {"sentiment_gold", "events"} for item in catalog)
     needs_silver_dates = any(item.key == "sentiment_silver" for item in catalog)
+    needs_crypto_btc = any(item.key in {"crypto_btc", "crypto.btc"} for item in catalog)
+    # Multi-asset parquet datasets that live as single files (date-partitioned internally).
+    multi_asset_keys = [k for k in _MULTI_ASSET_FILES if any(item.key == k for item in catalog)]
     sentiment_gold_dates = _list_daily_files(Path(data_root) / "sentiment" / "gold") if needs_gold_dates else set()
     sentiment_silver_dates = _list_daily_files(Path(data_root) / "sentiment" / "silver") if needs_silver_dates else set()
+    crypto_btc_current = _collect_crypto_btc_current(data_root) if needs_crypto_btc else None
+    # Resolve paths + max-date metadata for each multi-asset file.
+    multi_asset_meta: dict[str, dict[str, Any]] = {}
+    for ds_key in multi_asset_keys:
+        date_col = "timestamp" if ds_key == "crypto.fear_greed" else "date"
+        p = _resolve_multi_asset_file(data_root, ds_key)
+        max_d, n = _collect_multi_asset_max_date(p, date_col=date_col)
+        multi_asset_meta[ds_key] = {"path": p, "max_date": max_d, "rows": n}
     latest_gold = _latest_path_date(sentiment_gold_dates)
     latest_silver = _latest_path_date(sentiment_silver_dates)
 
@@ -774,6 +923,70 @@ def build_readiness_grid(
                     last_backfill_at=last_backfill_at,
                     history=_history_summary(cell_history),
                     reason_codes=[],
+                )
+            elif dataset.key in {"crypto_btc", "crypto.btc"}:
+                watermark = _clean_text((crypto_btc_current or {}).get("watermark"))
+                watermark_day = _to_date(watermark)
+                covered = bool(watermark_day and watermark_day >= day)
+                data_health = (
+                    (crypto_btc_current or {}).get("data_health")
+                    if isinstance((crypto_btc_current or {}).get("data_health"), dict)
+                    else {}
+                )
+                reason_codes = list((crypto_btc_current or {}).get("reason_codes") or [])
+                blocking_reason = data_health.get("blocking_reason_code") if data_health else None
+                if blocking_reason and str(blocking_reason) not in reason_codes:
+                    reason_codes.append(str(blocking_reason))
+                if crypto_btc_current is None:
+                    reason_codes = ["missing_crypto_ads_current"]
+                elif not covered:
+                    reason_codes = reason_codes or ["crypto_btc_not_current_for_day"]
+                cell = _build_cell(
+                    dataset,
+                    day_iso,
+                    status=_crypto_readiness_status(
+                        (crypto_btc_current or {}).get("data_readiness"),
+                        covered=covered,
+                    ),
+                    row_count=int((crypto_btc_current or {}).get("row_count") or 1) if covered else 0,
+                    expected_count=1,
+                    coverage_pct=1.0 if covered else 0.0,
+                    lag_days=max(0, (day - watermark_day).days) if watermark_day else None,
+                    source_last_date=watermark,
+                    last_backfill_at=last_backfill_at,
+                    history=_history_summary(cell_history),
+                    reason_codes=reason_codes,
+                    data_health=data_health,
+                    evidence_ref=(crypto_btc_current or {}).get("evidence_ref"),
+                )
+            elif dataset.key in _MULTI_ASSET_FILES and dataset.key not in {"crypto.btc"}:
+                # Single-parquet multi-asset datasets: readiness based on max date in file.
+                # Crypto markets are 24/7 so we treat calendar days the same as trading days here.
+                meta = multi_asset_meta.get(dataset.key, {})
+                file_max = _to_date(meta.get("max_date"))
+                lag = max(0, (day - file_max).days) if file_max else None
+                file_exists = meta.get("path") is not None and meta.get("rows", 0)
+                # Staleness thresholds aligned with multi_asset_stats quality gate (>7 days = stale).
+                max_tolerated_lag = 7 if dataset.key in {"crypto.fear_greed"} else 3
+                covered = bool(file_exists and file_max and lag is not None and lag <= max_tolerated_lag)
+                reason_codes = []
+                if not file_exists:
+                    reason_codes = ["missing_multi_asset_file"]
+                elif lag is None or lag > max_tolerated_lag:
+                    reason_codes = [f"{dataset.key.replace('.', '_')}_stale"]
+                cell = _build_cell(
+                    dataset,
+                    day_iso,
+                    status="READY" if covered else ("MISSING" if not file_exists else "PARTIAL"),
+                    row_count=meta.get("rows") if file_exists else 0,
+                    expected_count=1,
+                    coverage_pct=1.0 if covered else 0.0,
+                    lag_days=lag,
+                    source_last_date=meta.get("max_date"),
+                    last_backfill_at=last_backfill_at,
+                    history=_history_summary(cell_history),
+                    reason_codes=reason_codes,
+                    evidence_ref=str(meta["path"]) if meta.get("path") else None,
                 )
             elif dataset.key == "sector_map":
                 member_count = int(sector_row["count"] or 0)

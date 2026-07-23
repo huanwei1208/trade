@@ -1,0 +1,54 @@
+version = 1
+
+[ownership]
+exclude = [
+    ".git/**",
+    ".venv/**",
+    "**/__pycache__/**",
+    "build/**",
+    "dist/**",
+    "**/target/**",
+    "engine/vendor/**",
+    "trade_web/frontend/dist/**",
+    "trade_web/frontend/node_modules/**",
+    "**/generated/**",
+    "**/*.generated.*",
+]
+protected = [
+    "data/**",
+    "models/**",
+    "**/*.db",
+    "**/*.sqlite",
+    "**/*.sqlite3",
+    "**/*.parquet",
+]
+fixtures = [
+    "tests/fixtures/**",
+    "**/src/test/resources/**",
+]
+source_extensions = [
+    ".py", ".pyi", ".sh", ".bash",
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx",
+    ".java", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".rs", ".go", ".rb", ".php", ".swift", ".kt", ".kts", ".scala",
+]
+
+[execution]
+max_argv_bytes = 65536
+max_light_workers = 4
+
+[performance]
+max_git_processes = 10
+max_scope_discovery_ms = 2000
+
+[setup]
+ruff = "./trade setup-python"
+basedpyright = "./trade setup-python"
+shellcheck = "sudo apt-get install shellcheck"
+"clang-format" = "sudo apt-get install clang-format"
+mvn = "cd engine/tradedb-driver && mvn spotless:check test"
+npm = "npm --prefix trade_web/frontend ci"
+
+[suppressions]
+required_fields = ["rule", "scope", "reason", "owner", "expires"]
+entries = []

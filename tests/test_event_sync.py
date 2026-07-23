@@ -82,7 +82,7 @@ def test_sync_events_reports_legacy_silver_taxonomy(tmp_path: Path) -> None:
             {
                 "date": target.isoformat(),
                 "symbol": "_MARKET_",
-                "event_type": "macro",
+                "event_type": "legacy_macro",
                 "event_magnitude": 0.8,
                 "affected_sectors": "SW_Electronics",
                 "sentiment_score": 0.1,

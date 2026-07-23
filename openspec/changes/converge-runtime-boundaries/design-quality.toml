@@ -1,0 +1,247 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The change adds typed EventBus overload outcomes, durable deferred-event HTTP semantics, additive runtime capacity, and a stable run ID plus explicit failure outcomes for /api/run while preserving accepted target, limit, event, and route fields."
+
+[[impacts]]
+id = "persistent_write"
+applies = true
+reason = "Bounded admission changes how already-persisted event and per-handler state transitions proceed under saturation, shutdown, submission failure, replay, and partial dispatch; Web command lifecycle is also recorded in existing job_runs rows."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "The existing event_log and event_handler_runs schema, uniqueness, payloads, indexes, DB versions, and parquet layouts remain unchanged."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "The change does not compute or alter historical market knowledge, forecast clocks, labels, recommendations, rankings, backtests, or Observatory snapshots."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "No model is trained, scored, promoted, served, calibrated, or used to produce a prediction or recommendation."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "No news, social, macro, on-chain, provider, source schema, provenance, licensing, correction, or event-feed ingestion behavior changes; existing NLP channel work is only subject to generic bounded runtime admission."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "The design makes Web process resources lifecycle-owned and introduces finite per-channel EventBus admission, overload, shutdown, partial-failure, replay, and capacity-observability semantics."
+
+[evidence.contract]
+contract = "Existing FastAPI paths and accepted EventBus.publish object-payload behavior remain compatible; additive contracts are typed admission outcomes, durable deferred-event recovery, versioned runtime capacity, and /api/run PID plus stable run identity."
+consumers = "FastAPI routers, scheduler/daemon code, CLI event/run commands, BatchIngestEngine event publication, job-run operations readers, tests, and human operators consume the runtime boundaries."
+compatibility = "Existing route paths, methods, parameters, accepted target and limit fields, event IDs, topics, parent links, handler names, per-handler idempotency, replay, and accepted object-payload returns remain unchanged. Non-object payloads now fail before persistence rather than changing meaning across live and replay paths."
+migration = "No data or schema migration is required. Callers adopt typed admission only where overload must be surfaced; HTTP failure responses recover the existing event instead of resubmitting, and command completion reuses the existing job_runs surface."
+rollback = "Revert command-runner wiring, bounded admission, extracted router registration, and resource-container composition in reverse order; committed event, handler, and job-run rows remain readable by the prior implementation."
+
+[evidence.storage]
+authoritative_writer = "TradeDB event_log, event_handler_runs, and existing job_runs methods remain the durable runtime writers; in-memory permits, futures, queues, PIDs, counters, and capacity snapshots are never authoritative."
+idempotency_key = "The existing unique pair (event_id, handler_name) plus succeeded-handler lookup remains the idempotency key; replay skips only handlers durably marked ok."
+concurrency_control = "The Web resource container owns one process TradeDB and EventBus lifecycle; an exclusive canonical-data-root lock fences workflow-command reconciliation and admission; process-identity claim tokens prevent age-only reclaim of a live handler; locked semantic TradeDB facade methods and SQLite transactions own durable transitions, while per-channel and command bounds own finite in-memory admission."
+staging_validation = "Omitted payload is normalized to an object while every explicit value is validated and canonically serialized before event or deterministic child insertion; event and eligible handler identity precede executor admission; command run identity precedes spawn; invalid capacity fails startup; admission, submission, audit-persistence, and spawn failures leave explicit durable state."
+atomic_visibility = "A handler becomes successful only after its durable ok transition. Acquiring a permit or submitting a future never changes durable success visibility, and parent finalization reads aggregated handler state."
+crash_windows = "A crash before or after executor submission leaves a non-ok handler replayable unless its ok commit completed; bounded rotating indexed replay advances past unavailable old work without scanning completed history; process-identity fencing prevents live stale reclaim; deterministic agenda keys recover post-commit ambiguity; exclusive command ownership reconciles only after a prior owner is gone; failed terminal audit writes remain owned for retry."
+corrupt_predecessor = "An unavailable or corrupt SQLite predecessor fails startup or the owning operation with context; the change does not replace, truncate, delete, or reinterpret it as an empty healthy database."
+partial_results = "For multi-handler events, accepted handlers may complete while saturated or failed-submission handlers remain non-ok; the parent event cannot finalize ok until all required handler rows are durably successful."
+reader_consistency = "Readers continue to observe committed SQLite/WAL state through locked TradeDB facade methods. Capacity and PID state are explicitly process-local metadata and are not substituted for durable event, handler, or command-run truth."
+backup_hash_verification = "The existing backup owner records SHA-256 for snapshot archives in scripts/backup.py and TradeDB backup metadata; temporary DB copies additionally verify event/handler rows before and after replay."
+small_sample_verification = "Temporary fixtures force partial handler admission, more unavailable rows than one replay budget, sparse candidates behind large completed history, renewal outage beyond lease, agenda post-commit ambiguity, DAG handoff failure after success, invalid and mutated payloads, command spawn/exit/owner overlap/terminal-write failure, sync-state concurrency, heartbeat blockage, and shutdown retry; all verify durable audit state."
+rollback = "Code rollback restores prior command, admission, and composition behavior without deleting or rewriting event or job-run rows; pending handlers remain recoverable and historical command rows remain readable."
+audit_trail = "Structured logs and existing event_log/event_handler_runs/job_runs records retain event or run ID, handler or target, outcome, timing, safe error, parent link, and replay evidence; overload and command records omit full payload bodies."
+
+[evidence.concurrency]
+ownership = "WebResourceContainer owns Web TradeDB, EventBus, RuntimeCommandRunner and service lifecycle; EventBus owns topic routing, channel admission, futures and claim heartbeats; each admitted handler owns one permit and process-identity claim; each command owns one audited run, supervised process group, pending terminal result and shared data-root owner lock."
+bound = "All five channels and Web commands have finite validated admitted-work capacities; configured channel capacity is at least workers and capped by a reviewed repository constant."
+ordering = "Canonical payload, durable event and handler identity precede admission; command owner lock and run identity precede reconciliation and spawn; shutdown closes command and event admission, terminates commands and persists exact terminal results, drains handlers and claim heartbeats against one deadline, then closes the DB."
+atomicity = "Permit acquire/release is exact-once process state, while durable success remains one committed handler transition. Parent event completion is derived only after all required durable handler states are successful."
+timeout_cancellation = "Admission waits zero or a small bounded interval; one owner-level monotonic shutdown deadline bounds command TERM/KILL, terminal persistence, executor drain and claim-heartbeat completion; incomplete cleanup retains DB and locks for retry. Runtime HTTP/SSE parameters have finite maxima, heavy status work leaves the event loop, and HTTP overload returns promptly without advising duplicate event resubmission."
+backpressure = "A full channel or command runner returns saturated without queue growth, permit consumption, silent drop, or success. Separate channel permits plus rotating replay prevent NLP saturation from consuming or starving signal and decision work."
+partial_failure = "Accepted, saturated, shutting_down, and submission_failed outcomes are aggregated per handler with reserved runtime provenance; deterministic agenda keys recover ambiguous post-commit insertion and nested durable deferral; news fan-out continues per durable notification; successful DAG work is not downgraded by handoff failure; arbitrary handler exception text remains terminal."
+capacity_validation = "Deterministic tests submit past channel and command bounds, assert admitted work never exceeds them, prove live and replay channel isolation, reject overlapping command owners, bound HTTP and shutdown work, exercise sparse replay query plans, release work and heartbeats, and verify all capacity returns."
+
+[[obligations]]
+id = "runtime.resources"
+owner = "trade_web/backend/runtime"
+paths = [
+  "trade_web/backend/app.py",
+  "trade_web/backend/runtime/",
+  "tests/test_status_backend.py",
+]
+contracts = [
+  "one Web process-owned TradeDB, EventBus and workflow-command lifecycle",
+  "FastAPI lifespan startup and shutdown",
+  "one finite owner-level shutdown deadline",
+  "retryable fail-closed cleanup",
+]
+failure_states = [
+  "partial_start_failure",
+  "resource_unavailable",
+  "stopping",
+  "stopped",
+  "duplicate_cleanup",
+  "command_owner_loss",
+  "shutdown_retry",
+  "shutdown_deadline_exceeded",
+  "claim_heartbeat_live",
+]
+spec_requirements = [
+  "runtime-boundary-ownership:Web resources have one explicit process owner",
+  "runtime-boundary-ownership:Runtime boundary migration is incremental and reversible",
+]
+validation_tasks = ["1.3", "1.4", "2.1", "2.2", "2.3", "6.1", "6.3"]
+
+[[obligations]]
+id = "runtime.http-boundary"
+owner = "trade_web/backend/runtime"
+paths = [
+  "trade_web/backend/app.py",
+  "trade_web/backend/runtime/",
+  "tests/test_status_backend.py",
+]
+contracts = [
+  "existing FastAPI route inventory and payloads",
+  "additive runtime capacity status",
+  "finite runtime query and stream bounds",
+  "semantic locked DB read facades",
+  "durable deferred-event response without resubmission guidance",
+  "additive /api/run run identity and explicit failures",
+]
+failure_states = [
+  "invalid_transport_input",
+  "runtime_unavailable",
+  "runtime_saturated",
+  "service_failure",
+  "durable_event_deferred",
+  "payload_type_invalid",
+  "query_cost_exceeded",
+  "status_degraded",
+  "command_audit_unavailable",
+  "command_spawn_failed",
+]
+spec_requirements = [
+  "runtime-boundary-ownership:HTTP routers remain thin and contract-compatible",
+  "runtime-boundary-ownership:Runtime capacity is observable without data scans",
+]
+validation_tasks = ["1.3", "1.4", "3.1", "3.2", "3.3", "5.2", "6.1", "6.3"]
+
+[[obligations]]
+id = "runtime.admission"
+owner = "trade_py/bus"
+paths = [
+  "trade_py/bus/",
+  "trade_py/cli/start.py",
+  "trade_py/cli/event.py",
+  "tests/test_jobs.py",
+  "tests/test_scheduler.py",
+]
+contracts = [
+  "durable-before-dispatch EventBus",
+  "per-handler idempotency and replay",
+  "finite per-channel admission outcomes",
+  "object-only live payload contract",
+  "canonical live and replay payload snapshot",
+  "process-identity claim fencing",
+  "reserved runtime-admission failure provenance",
+  "deterministic agenda dispatch identity",
+  "bounded fair replay progress",
+  "indexed sparse replay candidates",
+]
+failure_states = [
+  "saturated",
+  "shutting_down",
+  "submission_failed",
+  "partial_admission",
+  "handler_error",
+  "crash_before_completion",
+  "claim_renewal_failure",
+  "claim_renewal_outage",
+  "live_claim_reclaim_blocked",
+  "replay_starvation",
+  "replay_history_scan",
+  "no_handler_shutdown_replay",
+  "dag_handoff_failure",
+  "agenda_persistence_failure",
+  "agenda_post_commit_ambiguity",
+  "agenda_child_deferred",
+  "mutable_payload_divergence",
+  "handler_error_prefix_collision",
+  "heartbeat_shutdown_incomplete",
+]
+spec_requirements = [
+  "runtime-boundary-ownership:EventBus admission is bounded and explicit",
+  "runtime-boundary-ownership:Runtime boundary migration is incremental and reversible",
+]
+validation_tasks = ["1.3", "1.4", "4.1", "4.2", "4.3", "4.4", "6.1", "6.3"]
+
+[[obligations]]
+id = "runtime.capacity-status"
+owner = "trade_py/bus and trade_web/backend/runtime"
+paths = [
+  "trade_py/bus/",
+  "trade_web/backend/runtime/",
+  "trade_web/backend/app.py",
+  "tests/test_status_backend.py",
+]
+contracts = [
+  "read-only process-local runtime capacity snapshot",
+  "payload-safe structured overload logs",
+]
+failure_states = [
+  "capacity_unavailable",
+  "saturated",
+  "stopping",
+  "stopped",
+  "counter_reset_after_restart",
+]
+spec_requirements = [
+  "runtime-boundary-ownership:Runtime capacity is observable without data scans",
+]
+validation_tasks = ["1.3", "1.4", "5.1", "5.2", "5.3", "6.1", "6.3"]
+
+[[obligations]]
+id = "runtime.commands"
+owner = "trade_web/backend/runtime"
+paths = [
+  "trade_web/backend/runtime/commands.py",
+  "trade_web/backend/runtime/resources.py",
+  "trade_web/backend/app.py",
+  "trade_py/db/trade_db.py",
+  "tests/test_runtime_commands.py",
+  "tests/test_web_runtime_commands.py",
+  "tests/test_web_runtime_resources.py",
+]
+contracts = [
+  "bounded out-of-process workflow execution",
+  "exclusive canonical-data-root owner lock",
+  "stable existing job_runs audit identity",
+  "retryable exact terminal audit persistence",
+  "queryable terminal command outcome",
+  "crash-safe process-group ownership",
+]
+failure_states = [
+  "command_saturated",
+  "command_stopping",
+  "command_spawn_failed",
+  "command_audit_persistence_failed",
+  "command_owner_contended",
+  "command_exit_error",
+  "command_terminated",
+  "command_completion_pending",
+  "owner_lost",
+  "stale_run_reconciled",
+]
+spec_requirements = [
+  "runtime-boundary-ownership:Web workflow commands have durable bounded ownership",
+  "runtime-boundary-ownership:Web resources have one explicit process owner",
+  "runtime-boundary-ownership:HTTP routers remain thin and contract-compatible",
+]
+validation_tasks = ["1.3", "1.4", "2.2", "3.3", "6.1", "6.3"]

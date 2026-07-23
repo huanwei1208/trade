@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Quality Guard"
+  short_description: "Gate architecture evidence before implementation and merge"
+  default_prompt: "Use $design-quality to govern this medium or large trade change before implementation."

@@ -1,12 +1,17 @@
+"""trade model — DEPRECATED top-level shim.
+
+Use ``trade research model <cmd>`` instead. This module retains all original
+functionality but prints a DeprecationWarning on invocation.
+"""
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from datetime import date
 from pathlib import Path
 
-from trade_py.infra.settings import default_data_root
-from trade_py.signals.window_scorer import score_watchlist
+from trade_py.infra.settings.context import default_data_root
 
 logger = logging.getLogger(__name__)
 
@@ -316,13 +321,22 @@ def _cmd_nlp_train(args: argparse.Namespace) -> int:
         return 1
 
 
-def make_parser() -> argparse.ArgumentParser:
-    from trade_py.cli import epilog_from_subparsers
+def make_parser(
+    *,
+    prog: str = "trade model",
+    deprecated: bool = True,
+) -> argparse.ArgumentParser:
+    from trade_py.cli import epilog_from_subparsers, global_flag_parent
 
     parser = argparse.ArgumentParser(
-        prog="trade model",
-        description="模型与信号分析 — 窗口得分/情绪IC/预测/训练",
+        prog=prog,
+        description=(
+            "[DEPRECATED] 模型与信号分析 — 请使用 `trade research model`"
+            if deprecated
+            else "模型与信号分析"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[global_flag_parent()],
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -460,11 +474,27 @@ def make_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    deprecated: bool = True,
+    prog: str | None = None,
+) -> int:
+    if deprecated:
+        msg = (
+            "DeprecationWarning: 'trade model' is deprecated; "
+            "use 'trade research model' instead."
+        )
+        print(msg, file=sys.stderr)
+
     argv = argv or []
-    args = make_parser().parse_args(argv)
+    args = make_parser(
+        prog=prog or "trade model",
+        deprecated=deprecated,
+    ).parse_args(argv)
 
     if args.command == "score":
+        from trade_py.signals.window_scorer import score_watchlist
         scores = score_watchlist(args.data_root, args.date)
         if not scores:
             print("No scores computed (watchlist empty or no data)")

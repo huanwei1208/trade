@@ -4,6 +4,8 @@ import sys
 import types
 from dataclasses import dataclass
 
+import pytest
+
 from trade_py.jobs import run_job
 
 
@@ -177,3 +179,25 @@ def test_kg_propagate_job_forwards_range(monkeypatch, tmp_path) -> None:
         "start": "2025-10-24",
         "end": "2026-02-20",
     }
+
+
+def test_macro_job_rejects_partial_dataset_failure(monkeypatch, tmp_path) -> None:
+    captured: list[str] = []
+    fake_macro_module = types.ModuleType("trade_py.data.market.macro")
+
+    class FakeMacroFetcher:
+        def __init__(self, data_root: str) -> None:
+            self.data_root = data_root
+
+        def fetch_and_save(self, name: str) -> None:
+            captured.append(name)
+            if name == "ppi":
+                raise RuntimeError("provider unavailable")
+
+    fake_macro_module.MacroFetcher = FakeMacroFetcher
+    monkeypatch.setitem(sys.modules, "trade_py.data.market.macro", fake_macro_module)
+
+    with pytest.raises(RuntimeError, match="宏观数据同步不完整.*ppi"):
+        run_job("macro", str(tmp_path))
+
+    assert captured == ["gdp", "cpi", "ppi", "pmi"]

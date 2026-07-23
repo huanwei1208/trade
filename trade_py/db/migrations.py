@@ -8,6 +8,7 @@ Invariant: versions are applied in ascending order, at most once.
 from __future__ import annotations
 
 import logging
+import json
 import sqlite3
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ def _col_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
 # Version 9: daily evaluation DAG rows
 # Version 10: UI snapshot cache + remove legacy brief DAG/settings
 # Version 12: disable legacy sentiment_pipeline + event_pipeline DAG rows
+# Version 17: add dedicated post-UTC-close BTC acquisition and validation DAG rows
+# Version 22: enforce one canonical BTC writer and non-BTC generic crypto ingest
 
 MIGRATIONS: list[tuple[int, str]] = [
     (2, "DROP TABLE IF EXISTS macro_events;"),
@@ -247,7 +250,8 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
         dag_rows = [
             # STAGE: fetch
             ("fetch", "gate.morning",            "kline_update",       "data.kline.synced",     1, "K线同步"),
-            ("fetch", "gate.morning",            "cross_asset_fetch",  None,                    1, "跨资产数据"),
+            ("fetch", "gate.morning",            "cross_asset_fetch",  None,                    1, "Gold/FX 跨资产数据"),
+            ("fetch", "gate.crypto_daily",       "crypto_btc_fetch",   "data.crypto.synced",   1, "BTC UTC 日线门禁"),
             ("fetch", "gate.pre_market",         "market_index",       "data.index.synced",     1, "指数数据"),
             ("fetch", "gate.signal_am",          "fund_flow_update",   None,                    1, "资金流向（早盘）"),
             ("fetch", "gate.market_close",       "fund_flow_update",   None,                    1, "资金流向（收盘）"),
@@ -261,6 +265,7 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
             ("compute", "gate.signal_am",        "window_score",   "signal.window.updated",  1, "早盘前全市场评分"),
             ("compute", "gate.market_close",     "window_score",   "signal.window.updated",  1, "收盘后全市场评分"),
             ("compute", "data.sentiment.synced", "event_pipeline", None,                     1, "情绪→事件级联"),
+            ("compute", "data.crypto.synced",    "crypto_research_validation", None,          1, "Crypto 数据→研究验证"),
             ("compute", "gate.event_extract",    "event_pipeline", None,                     1, "事件提取"),
             ("compute", "gate.model_weekly",     "build_features", "model.features.built",   1, "特征构建"),
             ("compute", "model.features.built",  "build_labels",   "model.labels.built",     1, "标签构建"),
@@ -846,6 +851,331 @@ def _migrate_v16(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v17(conn: sqlite3.Connection) -> None:
+    """Add a dedicated post-UTC-close BTC job without moving Gold/FX."""
+    if not _table_exists(conn, "pipeline_dag"):
+        return
+    conn.execute(
+        "UPDATE pipeline_dag SET source=?, emits='', description=? "
+        "WHERE job_name=?",
+        ("gate.morning", "Gold/FX 跨资产数据", "cross_asset_fetch"),
+    )
+    target_exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? LIMIT 1",
+        ("gate.crypto_daily", "crypto_btc_fetch"),
+    ).fetchone()
+    if not target_exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                "fetch",
+                "gate.crypto_daily",
+                "crypto_btc_fetch",
+                "data.crypto.synced",
+                1,
+                "BTC UTC 日线门禁",
+            ),
+        )
+    validation_exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? LIMIT 1",
+        ("data.crypto.synced", "crypto_research_validation"),
+    ).fetchone()
+    if not validation_exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                "compute",
+                "data.crypto.synced",
+                "crypto_research_validation",
+                "",
+                1,
+                "Crypto 数据→研究验证",
+            ),
+        )
+    conn.commit()
+
+
+def _migrate_v18(conn: sqlite3.Connection) -> None:
+    """Create asset_registry table and seed default assets (crypto/fx/commodity)."""
+    # Table already created in _init_schema, ensure indexes exist
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_asset_class ON asset_registry(asset_class, enabled, priority)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_asset_venue ON asset_registry(venue)
+    """)
+
+    # Seed default assets if table is empty
+    count = conn.execute("SELECT COUNT(*) FROM asset_registry").fetchone()[0]
+    if count == 0:
+        default_assets = [
+            # Crypto: 5 major assets, OKX primary, Binance shadow configured via config_json
+            ("crypto.BTC",  "crypto", "BTC",  "USDT", "okx",     "1d", 1, 10, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            ("crypto.ETH",  "crypto", "ETH",  "USDT", "okx",     "1d", 1,  9, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            ("crypto.SOL",  "crypto", "SOL",  "USDT", "okx",     "1d", 1,  8, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            ("crypto.BNB",  "crypto", "BNB",  "USDT", "okx",     "1d", 1,  7, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            ("crypto.XRP",  "crypto", "XRP",  "USDT", "okx",     "1d", 1,  6, 100, 300, 730, '{"shadow_provider": "binance"}'),
+            # Commodities
+            ("commodity.gold", "commodity", "Au99.99", "CNY", "sge", "1d", 1, 5, 1, 1000, 3650, '{}'),
+            # FX
+            ("fx.USDCNH", "fx", "USDCNH", "CNY", "eastmoney", "1d", 1, 5, 1, 1000, 3650, '{}'),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO asset_registry
+                (asset_id, asset_class, symbol, quote_asset, venue, interval,
+                 enabled, priority, batch_size, min_interval_ms, backfill_days, config_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            default_assets,
+        )
+    conn.commit()
+
+
+def _migrate_v19(conn: sqlite3.Connection) -> None:
+    """Update DAG to use meta-driven asset_batch_ingest instead of hardcoded BTC job."""
+    if not _table_exists(conn, "pipeline_dag"):
+        return
+    # Keep BTC on its dedicated assurance-gated writer.
+    conn.execute(
+        "UPDATE pipeline_dag SET description='BTC assurance-gated UTC 日线同步' WHERE job_name='crypto_btc_fetch'"
+    )
+    # Disable legacy cross_asset_fetch, use meta-driven instead
+    conn.execute(
+        "UPDATE pipeline_dag SET enabled=0 WHERE job_name='cross_asset_fetch'"
+    )
+    # Add commodity asset ingest
+    exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? AND config_json LIKE ?",
+        ("gate.morning", "asset_batch_ingest", '%"asset_class": "commodity"%'),
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description, config_json) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                "fetch",
+                "gate.morning",
+                "asset_batch_ingest",
+                "data.asset.ingested",
+                1,
+                "Morning 大宗商品采集 (gold)",
+                '{"asset_class": "commodity"}',
+            ),
+        )
+    # Add FX asset ingest
+    exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? AND config_json LIKE ?",
+        ("gate.morning", "asset_batch_ingest", '%"asset_class": "fx"%'),
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description, config_json) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                "fetch",
+                "gate.morning",
+                "asset_batch_ingest",
+                "data.asset.ingested",
+                1,
+                "Morning 汇率采集 (USDCNH)",
+                '{"asset_class": "fx"}',
+            ),
+        )
+    # Add crypto asset batch ingest
+    exists = conn.execute(
+        "SELECT 1 FROM pipeline_dag WHERE source=? AND job_name=? AND config_json LIKE ?",
+        ("gate.crypto_daily", "asset_batch_ingest", '%"asset_class": "crypto"%'),
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            "INSERT INTO pipeline_dag (stage, source, job_name, emits, enabled, description, config_json) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                "fetch",
+                "gate.crypto_daily",
+                "asset_batch_ingest",
+                "data.batch.completed",
+                1,
+                "Crypto 非 BTC 资产批量采集 (ETH/SOL/BNB/XRP)",
+                '{"asset_class": "crypto", "exclude_symbols": ["BTC"]}',
+            ),
+        )
+    conn.commit()
+
+
+def _migrate_v20(conn: sqlite3.Connection) -> None:
+    """Rename dataset keys from cross_asset.* to crypto.*/fx.*/commodity.* namespaces.
+
+    Non-destructive: only updates string references in tables; no data or parquet
+    files are deleted. Adds idempotent verification that asset_registry contains
+    entries for the new keys (v18/v19 should already have them).
+    """
+    # Mapping of old dataset key prefix/name → new dataset key prefix/name.
+    # Simple full-key rename map (no wildcard) applied to string columns via UPDATE.
+    rename_map = [
+        ("cross_asset.gold",       "commodity.gold"),
+        ("cross_asset.fx_cnh",     "fx.usdcnh"),
+        ("cross_asset.btc",        "crypto.btc"),
+        ("cross_asset.eth",        "crypto.eth"),
+        ("cross_asset.sol",        "crypto.sol"),
+        ("cross_asset.bnb",        "crypto.bnb"),
+        ("cross_asset.xrp",        "crypto.xrp"),
+        ("cross_asset.fear_greed", "crypto.fear_greed"),
+    ]
+
+    # Tables whose text columns may contain old cross_asset.* dataset references.
+    # We skip schema_migrations (immutable history), job_runs (historical logs),
+    # and tables that use 'cross_asset_fetch' as a job-name literal (that rename
+    # is a separate semantic change handled in code, not as a dataset rename).
+    tables_and_columns = [
+        # FreshnessStatus.dataset (dataset-level freshness watermarks)
+        ("FreshnessStatus", "dataset"),
+        # sync_state.dataset (per-source dataset watermarks)
+        ("sync_state", "dataset"),
+        # quality_gate_history.dataset references
+        ("quality_gate_history", "dataset"),
+        # pipeline_dag.emits / config_json
+        ("pipeline_dag", "emits"),
+        # event_routing rules (if table exists)
+        ("event_routing", "dataset"),
+    ]
+
+    for table, column in tables_and_columns:
+        if not _table_exists(conn, table):
+            continue
+        # Check column exists
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            continue
+        for old_key, new_key in rename_map:
+            conn.execute(
+                f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
+                (new_key, old_key),
+            )
+
+    # JSON-ish columns may embed old keys inside config_json/result_summary.
+    # For those we do a conservative string replace (safe because keys contain
+    # no regex-active characters and are fully-qualified names with no ambiguity
+    # in these fields).
+    json_columns = [
+        ("pipeline_dag", "config_json"),
+        ("pipeline_dag", "description"),
+    ]
+    for table, column in json_columns:
+        if not _table_exists(conn, table):
+            continue
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            continue
+        for old_key, new_key in rename_map:
+            conn.execute(
+                f"UPDATE {table} SET {column} = replace({column}, ?, ?) "
+                f"WHERE {column} LIKE ?",
+                (old_key, new_key, f"%{old_key}%"),
+            )
+
+    # Verify asset_registry has expected entries for the renamed keys.
+    # v18 seeded crypto.BTC/crypto.ETH/... with capitalized suffixes; we ensure
+    # both lower-case dataset_key variants exist as aliases so reads using
+    # crypto.btc (lower) also resolve. Asset ids are matched case-insensitively.
+    if _table_exists(conn, "asset_registry"):
+        expected_ids = {
+            "crypto.btc", "crypto.eth", "crypto.sol", "crypto.bnb", "crypto.xrp",
+            "fx.usdcnh", "commodity.gold",
+        }
+        rows = conn.execute(
+            "SELECT asset_id, asset_class FROM asset_registry"
+        ).fetchall()
+        existing_lower = {str(r[0]).lower(): r[0] for r in rows}
+        missing = [
+            ds for ds in expected_ids
+            if ds not in existing_lower
+        ]
+        if missing:
+            logger.warning("asset_registry missing expected dataset ids: %s; "
+                           "these should be created by `trade data source add`.", missing)
+
+    conn.commit()
+
+
+def _migrate_v21(conn: sqlite3.Connection) -> None:
+    """Create event_handler_runs table for per-handler idempotency tracking."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS event_handler_runs (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id       INTEGER NOT NULL,
+            handler_name   TEXT NOT NULL,
+            status         TEXT NOT NULL DEFAULT 'pending',
+            error_message  TEXT,
+            started_at     TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            finished_at    TEXT,
+            duration_ms    INTEGER,
+            FOREIGN KEY (event_id) REFERENCES event_log(id),
+            UNIQUE(event_id, handler_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_event_handler_runs_event
+            ON event_handler_runs(event_id);
+        CREATE INDEX IF NOT EXISTS idx_event_handler_runs_status
+            ON event_handler_runs(status);
+    """)
+    # Backfill: for events already in 'ok' status, record all their subscribed
+    # handlers as succeeded. We can't know the exact handler set at the time,
+    # so we leave already-completed events alone — only 'pending' or 'error'
+    # events will be re-evaluated through the new dispatch logic on replay.
+    conn.commit()
+
+
+def _migrate_v22(conn: sqlite3.Connection) -> None:
+    """Make BTC ownership explicit and exclude it from generic crypto ingest."""
+    if _table_exists(conn, "pipeline_dag"):
+        rows = conn.execute(
+            "SELECT id, config_json FROM pipeline_dag WHERE job_name='asset_batch_ingest'"
+        ).fetchall()
+        for dag_id, raw_config in rows:
+            try:
+                config = json.loads(raw_config or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(config, dict) or config.get("asset_class") != "crypto":
+                continue
+            excluded = {
+                str(symbol).strip().upper()
+                for symbol in config.get("exclude_symbols", [])
+                if str(symbol).strip()
+            }
+            excluded.add("BTC")
+            config["exclude_symbols"] = sorted(excluded)
+            conn.execute(
+                "UPDATE pipeline_dag SET config_json=?, description=? WHERE id=?",
+                (
+                    json.dumps(config, ensure_ascii=False, sort_keys=True),
+                    "Crypto 非 BTC 资产批量采集 (ETH/SOL/BNB/XRP)",
+                    int(dag_id),
+                ),
+            )
+
+    if _table_exists(conn, "asset_registry"):
+        rows = conn.execute(
+            "SELECT asset_id, config_json FROM asset_registry WHERE lower(asset_id)='crypto.btc'"
+        ).fetchall()
+        for asset_id, raw_config in rows:
+            try:
+                config = json.loads(raw_config or "{}")
+            except (TypeError, ValueError):
+                config = {}
+            if not isinstance(config, dict):
+                config = {}
+            config["canonical_writer"] = "btc_assurance"
+            conn.execute(
+                "UPDATE asset_registry SET config_json=?, updated_at=CURRENT_TIMESTAMP WHERE asset_id=?",
+                (json.dumps(config, ensure_ascii=False, sort_keys=True), asset_id),
+            )
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations in ascending version order."""
     conn.execute(
@@ -1030,4 +1360,76 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("Migration v16 applied")
         except Exception as exc:
             logger.error("Migration v16 failed: %s", exc)
+            raise
+
+    # ── v17: post-UTC-close Crypto acquisition gate ─────────────────────────
+    if 17 not in applied:
+        logger.info("Applying DB migration v17 (Crypto daily gate)")
+        try:
+            _migrate_v17(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (17)")
+            conn.commit()
+            logger.info("Migration v17 applied")
+        except Exception as exc:
+            logger.error("Migration v17 failed: %s", exc)
+            raise
+
+    # ── v18: unified asset registry for meta-driven ingest ────────────────────
+    if 18 not in applied:
+        logger.info("Applying DB migration v18 (asset registry)")
+        try:
+            _migrate_v18(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (18)")
+            conn.commit()
+            logger.info("Migration v18 applied")
+        except Exception as exc:
+            logger.error("Migration v18 failed: %s", exc)
+            raise
+
+    # ── v19: update DAG for generic asset batch ingest ──────────────────────
+    if 19 not in applied:
+        logger.info("Applying DB migration v19 (asset ingest DAG)")
+        try:
+            _migrate_v19(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (19)")
+            conn.commit()
+            logger.info("Migration v19 applied")
+        except Exception as exc:
+            logger.error("Migration v19 failed: %s", exc)
+            raise
+
+    # ── v20: dataset key rename cross_asset.* → crypto.*/fx.*/commodity.* ────
+    if 20 not in applied:
+        logger.info("Applying DB migration v20 (dataset key rename cross_asset → crypto/fx/commodity)")
+        try:
+            _migrate_v20(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (20)")
+            conn.commit()
+            logger.info("Migration v20 applied")
+        except Exception as exc:
+            logger.error("Migration v20 failed: %s", exc)
+            raise
+
+    # ── v21: event_handler_runs table for per-handler idempotency ───────────
+    if 21 not in applied:
+        logger.info("Applying DB migration v21 (event_handler_runs)")
+        try:
+            _migrate_v21(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (21)")
+            conn.commit()
+            logger.info("Migration v21 applied")
+        except Exception as exc:
+            logger.error("Migration v21 failed: %s", exc)
+            raise
+
+    # ── v22: single canonical BTC writer ────────────────────────────────────
+    if 22 not in applied:
+        logger.info("Applying DB migration v22 (single canonical BTC writer)")
+        try:
+            _migrate_v22(conn)
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (22)")
+            conn.commit()
+            logger.info("Migration v22 applied")
+        except Exception as exc:
+            logger.error("Migration v22 failed: %s", exc)
             raise

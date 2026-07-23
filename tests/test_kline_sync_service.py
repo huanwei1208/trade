@@ -4,8 +4,9 @@ import types
 
 import pandas as pd
 
-from trade_py.data.market.kline.service import KlineSyncOptions, KlineSyncService
+from trade_py.data.market.kline.service import KlineSyncOptions, KlineSyncService, _kline_value_error
 from trade_py.data.market.kline.tushare import _parse_raw
+from trade_py.data.market.kline.providers import TencentKlineProvider
 
 
 def test_missing_ranges_split_around_existing_downloads() -> None:
@@ -56,6 +57,7 @@ def test_target_ranges_only_request_uncovered_gaps(tmp_path) -> None:
 
 def test_chunk_days_uses_larger_windows_for_tushare() -> None:
     assert KlineSyncService._chunk_days("tushare") == 3650
+    assert KlineSyncService._chunk_days("tencent") == 3650
     assert KlineSyncService._chunk_days("akshare") == 31
 
 
@@ -159,13 +161,156 @@ def test_full_mode_uses_chunked_trade_date_batch_and_persists_rows(tmp_path, mon
         ["2026-01-05", "2026-01-06"],
     ]
     assert captured["saved"] == [
-        ("000001.SZ", ["2026-01-01", "2026-01-02"]),
-        ("000002.SZ", ["2026-01-01", "2026-01-02"]),
-        ("000001.SZ", ["2026-01-05", "2026-01-06"]),
-        ("000002.SZ", ["2026-01-05", "2026-01-06"]),
+        ("000001.SZ", ["2026-01-01", "2026-01-02", "2026-01-05", "2026-01-06"]),
+        ("000002.SZ", ["2026-01-01", "2026-01-02", "2026-01-05", "2026-01-06"]),
     ]
     assert summary.total_rows == 8
     assert summary.api_calls == 4
+
+
+def test_kline_value_error_summarizes_invalid_provider_rows() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "date": "2026-06-23",
+                "open": -7.5,
+                "high": -6.2,
+                "low": -7.6,
+                "close": -7.2,
+                "volume": 10.0,
+                "amount": -100.0,
+                "prev_close": 1.0,
+                "vwap": -7.2,
+            }
+        ]
+    )
+
+    error = _kline_value_error(frame)
+
+    assert error is not None
+    assert "non_positive_ohlc=1" in error
+    assert "negative_amount=1" in error
+    assert "negative_vwap=1" in error
+    assert "dates=2026-06-23..2026-06-23" in error
+
+
+def test_symbol_loop_rejects_bad_provider_values_before_persisting(tmp_path, monkeypatch) -> None:
+    service = KlineSyncService(tmp_path)
+    service._db.upsert_instrument("000001.SZ", "Bad")
+    captured: dict[str, object] = {"saved": False}
+
+    class FakeChain:
+        def fetch(self, symbol: str, start: str, end: str, adjust: str):
+            return types.SimpleNamespace(
+                provider="fake",
+                error_kind=None,
+                error_message=None,
+                df=pd.DataFrame(
+                    [
+                        {
+                            "symbol": symbol,
+                            "date": "2026-06-23",
+                            "open": -1.0,
+                            "high": -1.0,
+                            "low": -1.0,
+                            "close": -1.0,
+                            "volume": 100.0,
+                            "amount": -10000.0,
+                            "turnover_rate": 1.0,
+                            "prev_close": 1.0,
+                            "vwap": -1.0,
+                        }
+                    ]
+                ),
+            )
+
+    def fake_save_parquet(symbol: str, frame: pd.DataFrame) -> None:
+        captured["saved"] = True
+
+    monkeypatch.setattr("trade_py.data.market.kline.service.build_provider_chain", lambda *_args, **_kwargs: FakeChain())
+    monkeypatch.setattr(service._fetcher, "save_parquet", fake_save_parquet)
+
+    summary = service.sync(
+        KlineSyncOptions(
+            mode="range",
+            symbols=["000001.SZ"],
+            start="2026-06-23",
+            end="2026-06-23",
+            provider="akshare",
+            delay_ms=0,
+        )
+    )
+
+    result = summary.results["000001.SZ"]
+    assert summary.failed == 1
+    assert summary.succeeded == 0
+    assert result.ok is False
+    assert result.error_kind == "provider_bad_values"
+    assert "non_positive_ohlc=1" in (result.error_message or "")
+    assert captured["saved"] is False
+
+
+def test_trade_date_batch_rejects_bad_values_without_partial_write(tmp_path, monkeypatch) -> None:
+    service = KlineSyncService(tmp_path)
+    target_start = KlineSyncService._parse_date("2026-06-23")
+    target_end = KlineSyncService._parse_date("2026-06-24")
+    captured: dict[str, object] = {"saved": []}
+
+    def fake_target_ranges(symbol: str, opts: KlineSyncOptions):
+        return [(target_start, target_end)]
+
+    class FakeBatchProvider:
+        def __init__(self, data_root: str) -> None:
+            captured["data_root"] = data_root
+
+        def fetch_batch_by_trade_date(self, symbols, trade_dates, adjust):
+            frames = {}
+            for symbol in symbols:
+                rows = []
+                for trade_date in trade_dates:
+                    value = 1.0 if trade_date == "2026-06-23" else -1.0
+                    rows.append(
+                        {
+                            "symbol": symbol,
+                            "date": trade_date,
+                            "open": value,
+                            "high": value,
+                            "low": value,
+                            "close": value,
+                            "volume": 100.0,
+                            "amount": value * 10000.0,
+                            "turnover_rate": 1.0,
+                            "prev_close": 1.0,
+                            "vwap": value,
+                        }
+                    )
+                frames[symbol] = pd.DataFrame(rows)
+            return types.SimpleNamespace(
+                frames=frames,
+                api_calls=len(trade_dates),
+                trade_dates=len(trade_dates),
+                days_with_hits=len(trade_dates),
+            )
+
+    def fake_save_parquet(symbol: str, frame: pd.DataFrame) -> None:
+        captured["saved"].append((symbol, frame["date"].tolist()))
+
+    monkeypatch.setattr(service, "_target_ranges", fake_target_ranges)
+    monkeypatch.setattr("trade_py.data.market.kline.service.TushareKlineProvider", FakeBatchProvider)
+    monkeypatch.setattr("trade_py.data.market.kline.service._TUSHARE_BATCH_TRADE_DATES_PER_PASS", 1)
+    monkeypatch.setattr(service._fetcher, "save_parquet", fake_save_parquet)
+
+    summary = service._try_tushare_trade_date_batch(
+        ["000001.SZ", "000002.SZ"],
+        KlineSyncOptions(mode="range", start="2026-06-23", end="2026-06-24"),
+    )
+
+    assert summary is not None
+    assert summary.failed == 2
+    assert summary.succeeded == 0
+    assert captured["saved"] == []
+    assert summary.results["000001.SZ"].error_kind == "provider_bad_values"
+    assert "dates=2026-06-23..2026-06-24" in (summary.results["000001.SZ"].error_message or "")
 
 
 def test_tushare_parse_preserves_prev_close_and_turnover_rate() -> None:
@@ -208,3 +353,37 @@ def test_tushare_parse_preserves_prev_close_and_turnover_rate() -> None:
 
 def test_kline_sync_options_default_to_none_adjust() -> None:
     assert KlineSyncOptions().adjust == "none"
+
+
+def test_tencent_provider_parses_public_kline_payload(monkeypatch) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self):
+            return {
+                "code": 0,
+                "data": {
+                    "sh600000": {
+                        "qfqday": [
+                            ["2026-03-24", "9.950", "10.040", "10.120", "9.890", "609859.000", "612298436.0"],
+                            ["2026-03-25", "10.060", "10.100", "10.120", "9.940", "456784.000"],
+                        ]
+                    }
+                },
+            }
+
+    def fake_get(url, params, timeout):
+        assert params["param"].startswith("sh600000,day,2026-03-24,2026-03-25")
+        assert timeout == 15
+        return FakeResponse()
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    df = TencentKlineProvider().fetch("600000.SH", "2026-03-24", "2026-03-25", adjust="qfq")
+
+    assert df["symbol"].tolist() == ["600000.SH", "600000.SH"]
+    assert df["date"].tolist() == ["2026-03-24", "2026-03-25"]
+    assert df["close"].tolist() == [10.04, 10.1]
+    assert round(float(df["vwap"].iloc[0]), 4) == round(612298436.0 / (609859.0 * 100.0), 4)
+    assert df["vwap"].iloc[1] == 10.1

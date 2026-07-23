@@ -20,6 +20,10 @@ from trade_py.factors.groups.instrument_features import (
     build_instrument_group_training,
     INSTRUMENT_FEATURE_COLS,
 )
+from trade_py.factors.groups.crypto_features import (
+    build_crypto_group,
+    CRYPTO_FEATURE_COLS,
+)
 
 __all__ = [
     "FactorGroupResult",
@@ -29,8 +33,10 @@ __all__ = [
     "build_technical_group",
     "build_instrument_group",
     "build_instrument_group_training",
+    "build_crypto_group",
     "EVENT_FEATURE_COLS",
     "SENTIMENT_FEATURE_COLS",
     "TECHNICAL_FEATURE_COLS",
     "INSTRUMENT_FEATURE_COLS",
+    "CRYPTO_FEATURE_COLS",
 ]

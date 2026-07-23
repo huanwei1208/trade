@@ -1,0 +1,1 @@
+"""Observatory test package."""
