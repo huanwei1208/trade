@@ -61,3 +61,4 @@ data/
 # eval baseline artifacts (regenerable)
 debug/eval_baseline/results/factor_panel.parquet
 debug/eval_baseline/fetch.log
+.env

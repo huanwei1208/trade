@@ -2,7 +2,24 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load a .env file into os.environ via python-dotenv.
+
+    Search order: $TRADE_ENV_FILE, else <project-root>/.env. Existing
+    environment variables always win (shell/cron export overrides the file),
+    so non-interactive contexts (dagu ssh, cron) can supply ANTHROPIC_API_KEY
+    via a file without touching the shell profile.
+    """
+    from dotenv import load_dotenv
+
+    configured = os.environ.get("TRADE_ENV_FILE", "").strip()
+    target = Path(configured).expanduser() if configured else Path(__file__).resolve().parents[2] / ".env"
+    load_dotenv(target, override=False)
 
 
 def _setup_logging(verbose: bool = False) -> None:
@@ -15,6 +32,7 @@ def _setup_logging(verbose: bool = False) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _load_dotenv()
     from trade_py.cli import data, model, account, event, start, web, kg, evaluate, factor, run, status, inspect, backup
     from trade_py.cli import daily, ops, dev
 
