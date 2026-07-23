@@ -1,0 +1,100 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The existing developer-facing trade dev check command gains a stable scoped architecture quality step, failure semantics, and remediation output without changing end-user runtime interfaces."
+
+[[impacts]]
+id = "persistent_write"
+applies = false
+reason = "The checker only parses repository source text and temporary test fixtures; it neither opens nor writes databases, artifacts, manifests, or durable runtime state."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "The baseline records source-defined table facts and candidate classifications but does not alter schema, execute migrations, or assign final runtime table ownership."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "No dataset, snapshot, clock, forecast, label, research result, or point-in-time resolver behavior is introduced or changed by this source-only guardrail."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "The child has no recommendation, ranking, model fitting, study result, calibration, or decision behavior; it only protects future module boundaries."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "The checker performs no provider interaction, capture, import, replay, news ingestion, payload processing, or external network access."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = false
+reason = "The check executes one bounded offline subprocess and has no effect on application scheduling, admission, retry, queue, worker, or lifecycle behavior."
+
+[evidence.contract]
+contract = "The only changed public developer contract is the read-only trade dev check quality plan/report: when target architecture files, the baseline, or the reviewed native binding source change, it emits a deterministic architecture step with path, line, rule, and remediation."
+consumers = "Repository developers and child OpenSpec implementers consume the quality report before adding src/trade modules; existing CLI, HTTP, Web, SDK, notebook, scheduler, event, database, artifact, and native consumers remain unchanged."
+compatibility = "Legacy trade_py imports and current runtime behavior remain outside prospective enforcement until each migration child supplies a compatible target module; a legacy-only changed scope receives no new architecture step."
+migration = "The first target files arrive only in kernel-and-public-contracts or later child changes, each with its own compatibility evidence. The baseline records candidate/deferred facts rather than moving source or readers."
+rollback = "Remove the isolated quality contributor, validator, baseline, and tests to return to the prior developer quality plan; no runtime interface, durable state, schema, or data artifact requires restoration."
+
+[[obligations]]
+id = "architecture.static-guard"
+owner = "trade_py/devtools architecture quality"
+paths = [
+  "trade_py/devtools/architecture_guard.py",
+  "trade_py/devtools/quality/contributors/architecture.py",
+  "trade_py/devtools/quality/providers/registry.py",
+  "tests/test_architecture_guard.py",
+  "tests/test_architecture_contributor.py",
+]
+contracts = [
+  "scoped read-only trade dev check architecture step",
+  "target dependency and Context Cell graph",
+  "stable architecture diagnostic rule/path/line/remediation",
+]
+failure_states = [
+  "forbidden context implementation import",
+  "contract implementation type leak",
+  "direct database or SQL escape",
+  "Platform business vocabulary",
+  "native import outside adapter boundary",
+]
+spec_requirements = [
+  "architecture-static-guardrails:Future target modules SHALL enforce the approved dependency graph",
+  "architecture-static-guardrails:Target Context Cells SHALL not leak implementation boundaries",
+  "architecture-static-guardrails:Future target database access SHALL preserve Context ownership",
+  "architecture-static-guardrails:Platform and native target boundaries SHALL remain technical",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.2", "2.3", "3.1", "3.2", "3.3"]
+
+[[obligations]]
+id = "architecture.baseline"
+owner = "architecture governance baseline"
+paths = [
+  "architecture-baseline.toml",
+  "trade_py/devtools/architecture_guard.py",
+  "tests/test_architecture_guard.py",
+]
+contracts = [
+  "source-verified legacy package and table inventory",
+  "candidate and deferred table classifications",
+  "native and compatibility-pointer fact inventory",
+]
+failure_states = [
+  "malformed or unsafe baseline",
+  "missing source evidence",
+  "duplicate table declaration",
+  "unclassified target ownership",
+  "stale pointer or native fact",
+]
+spec_requirements = [
+  "architecture-baseline-inventory:The legacy architecture baseline SHALL be source-verified and non-authoritative",
+  "architecture-baseline-inventory:Compatibility and native baseline facts SHALL remain explicit",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "3.1", "3.2", "3.3"]
