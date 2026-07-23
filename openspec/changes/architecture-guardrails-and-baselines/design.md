@@ -233,7 +233,8 @@ the selected target Python files once, parses each with the standard-library
 AST, and reads only the finite set of baseline-declared source files. It has a
 finite subprocess timeout and output limit through the existing quality-step
 model. No network access, package installation, database scan, artifact hash,
-or recursive full-repository AST scan is permitted.
+or recursive full-repository AST scan is permitted, except for the separately
+bounded producer-inventory pass below.
 
 The first target scope is expected to be small because Context children add
 bounded modules incrementally. The contributor explicitly uses
@@ -249,6 +250,36 @@ bounded fields, reserved metadata space, count-only truncation fallback, and
 32 KiB serialized envelope prevent an oversized structured report. Baseline
 validation is linear in its declared evidence entries and is exercised from a
 temporary fixture repository.
+
+Warehouse producer inventory is a distinct source-only baseline pass, not a
+target-Context dependency scan. Its initial universe is every Git-tracked
+first-party production Python source beneath `trade_py/`, excluding test-only,
+generated, vendor, cache, non-source data assets, and artifact paths; Python
+production modules under `trade_py/data/` remain in scope. The pass is allowed
+to walk that one declared root because a finite baseline-declared source list
+cannot prove there is no unknown current writer. The current measured universe
+is 304 files and 2,967,859 bytes; it is bounded by the same 512-file, 32-MiB,
+and 1-MiB-per-file limits and fails with
+`architecture.producer_discovery_budget_exceeded` before emitting an
+incomplete inventory. It resolves only
+`trade_py.data.warehouse.io.write_table` and `upsert_table`, direct/module
+imports, aliases, and the `trade_py.data.warehouse` package re-exports. The
+functions are module-level and receive `WarehouseLayout` as their first
+argument; `WarehouseLayout` does not own writer methods. A candidate call with
+an unresolved canonical import, layout binding, or literal layer/table is a
+failure, not an excluded producer.
+
+For ongoing changes, canonical unfiltered modified, added, rename-source,
+rename-target, and untracked metadata identify production Python files before
+ordinary path filters apply. The planner runs the bounded import/call
+prefilter for those files before declaring a delta legacy-only. A canonical
+writer, an unresolved writer-like import, or a changed/deleted declared
+producer source triggers baseline validation; an unknown discovered producer
+fails until it is declared. This targeted delta pass is bounded by the same
+file and byte limits and never repeats a generic repository AST scan. The
+source-only test suite proves direct imports, package re-exports, aliases, a
+new production writer, declared-writer rename/deletion, and test-only writer
+exclusion.
 
 Existing scope discovery and before/after full-worktree fingerprinting remain
 an owned quality-platform performance debt. The child records the named
@@ -408,18 +439,22 @@ The initial baseline uses the observed DDL locations in
 records the Observatory catalog projection declarations in
 `trade_py/observatory/catalog/store.py`. It records one-or-more provenance
 facts for each logical table and names current code owners plus target
-classification. Warehouse artifact entries are derived from every
-`write_table` and `upsert_table` producer in
+classification. Warehouse artifact entries are derived from every production
+call resolving to the canonical module-level
+`trade_py.data.warehouse.io.write_table` or
+`trade_py.data.warehouse.io.upsert_table` function, each with a
+`WarehouseLayout` first argument. Direct imports, module aliases, and
+`trade_py.data.warehouse` package re-exports resolve to those canonical
+symbols. The bounded initial discovery pass includes the producers in
 `trade_py/data/warehouse/materialize.py`, including the validation report, and
-every other first-party production call statically resolving to
-`WarehouseLayout.write_table` or `WarehouseLayout.upsert_table`. This includes
 the standalone CLI fetch producers in `trade_py/cli/data.py` for
-`dim.dim_data_source` and `ods.ods_fetch_attempt`; test fixtures are excluded
-because they do not produce repository artifacts. The classification is
-intentionally `candidate` for obvious families and `deferred` where the parent
-design requires later file/row analysis. Both are non-authorizing. This avoids
-making the guard another global database facade or pretending exact future table
-names already exist.
+`dim.dim_data_source` and `ods.ods_fetch_attempt`; the ongoing bounded delta
+prefilter prevents a new production writer from being classified legacy-only.
+Test fixtures are excluded because they do not produce repository artifacts.
+The classification is intentionally `candidate` for obvious families and
+`deferred` where the parent design requires later file/row analysis. Both are
+non-authorizing. This avoids making the guard another global database facade or
+pretending exact future table names already exist.
 
 `BtcRunStore.current_path`, `compatibility_path`, and
 `engine/cmake/python_bindings.cmake` are pinned as source facts, alongside
@@ -477,6 +512,12 @@ source-protection guarantee and avoids duplicate Git traversal.
   failures predictable. Existing quality scope/fingerprint costs remain
   separately tracked through `quality-scope-capacity-baseline` and are not
   worsened by this child.
+- **A new legacy Warehouse writer evades a finite evidence list** -> The
+  initial bounded `trade_py/` production-source discovery and every-delta
+  bounded canonical-writer prefilter detect direct imports, aliases, and
+  package re-exports. Exceeded discovery budgets, unresolved canonical writer
+  bindings, and undeclared producers fail closed rather than silently reducing
+  inventory coverage.
 - **Source-only baseline reads data by accident** -> The validator allowlists
   only its baseline/evidence source files in a temporary fixture and explicitly
   denies in-repository data/artifact sentinels as well as external paths. A

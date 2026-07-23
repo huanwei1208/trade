@@ -87,25 +87,87 @@ provider/observed/received/available/revision/finality clocks, SourceManifest
 rights enforcement, provider-free replay, and the Capture transport-versus-
 Datasets semantic quarantine split before migrating a news or NLP adapter.
 
-The warehouse artifact inventory SHALL be producer-driven: it SHALL statically
-discover every first-party production call that resolves to
-`WarehouseLayout.write_table` or `WarehouseLayout.upsert_table`, rather than
-only a hand-maintained required-table list or one materialization module. Test
-fixtures are not production artifact producers. Each declaration SHALL name the
-producer source, exact call literal, layer, table, path role, and
-target/deferred classification. This includes
+The warehouse artifact inventory SHALL be producer-driven. Its only canonical
+writer targets are the module-level functions
+`trade_py.data.warehouse.io.write_table` and
+`trade_py.data.warehouse.io.upsert_table`, each of which accepts a
+`WarehouseLayout` value as its first `layout` argument. The source-only
+resolver SHALL recognize direct and module imports, local aliases, and the
+`trade_py.data.warehouse` package re-exports of those functions; it SHALL NOT
+invent nonexistent `WarehouseLayout` instance methods. A call counts as a
+producer when its callee resolves to one canonical writer and its first
+argument is a statically known `WarehouseLayout` binding. A nonliteral
+layer/table, unresolved warehouse-writer import, or unresolved layout binding
+in a candidate call SHALL fail closed with a producer-discovery finding rather
+than be omitted from the inventory.
+
+The initial inventory pass SHALL parse the complete, bounded universe of Git
+tracked first-party production Python sources below `trade_py/`. It excludes
+test-only paths and files, generated, vendor, cache, non-source data assets,
+and artifact paths; production modules such as `trade_py/data/**.py` remain in
+scope. It never imports code or reads a database or artifact. This is the sole
+narrow exception to the rule against recursive full-repository AST scanning: it
+is limited to the declared `trade_py/` production universe, at most 512 files
+and 32 MiB aggregate source, and one source file may not exceed 1 MiB. The
+validator SHALL emit `architecture.producer_discovery_budget_exceeded` and fail
+without an incomplete inventory if any limit is exceeded. The current source
+measurement of 304 files and 2,967,859 bytes is capacity evidence, not an
+authorization to raise the limits.
+
+After the initial inventory, every modified, added, renamed, or untracked
+production Python file receives the same bounded AST import/call prefilter
+before the planner classifies the delta as legacy-only. A detected canonical
+writer, a changed or deleted declared producer source, or an unresolved
+warehouse-writer import forces baseline validation. The validator fails until
+the baseline declares every discovered producer; it does not accept a
+hand-maintained required-table list or one materialization module as proof of
+completeness. Test fixtures are not production artifact producers. Each
+declaration SHALL name the producer source, exact call literal, layer, table,
+path role, and target/deferred classification. This includes
 `ads_warehouse_validation_report` where the producer exists even when a
 validation-required table list omits it, and the CLI fetch producers
 `dim.dim_data_source` and `ods.ods_fetch_attempt`.
 
 #### Scenario: A production warehouse writer is outside the materializer
 
-- **WHEN** `trade_py/cli/data.py` resolves a `WarehouseLayout.write_table` call
-  for `dim.dim_data_source` or an `upsert_table` call for
+- **WHEN** `trade_py/cli/data.py` resolves a call imported from
+  `trade_py.data.warehouse.write_table` for `dim.dim_data_source` or a call
+  imported from `trade_py.data.warehouse.upsert_table` for
   `ods.ods_fetch_attempt`
 - **THEN** the baseline declares both producer facts and validation fails for an
   undeclared production writer even when `_REQUIRED_TABLES` or
   `materialize.py` does not list it
+
+#### Scenario: An alias or package re-export invokes a canonical writer
+
+- **WHEN** a production source aliases a direct/module import or imports
+  `write_table` or `upsert_table` through the `trade_py.data.warehouse`
+  package re-export
+- **THEN** the resolver records the canonical `io` function target and requires
+  a declaration for each literal producer call instead of treating the alias or
+  re-export as a different writer
+
+#### Scenario: A changed producer is not already in the baseline
+
+- **WHEN** a changed or untracked production Python file contains a call that
+  resolves to a canonical warehouse writer
+- **THEN** its bounded prefilter prevents a legacy-only plan, baseline
+  validation runs, and an undeclared producer fails closed until the inventory
+  declaration is added
+
+#### Scenario: A declared producer source is renamed or deleted
+
+- **WHEN** a child renames or deletes a source named by a warehouse producer
+  declaration
+- **THEN** the baseline contributor runs from canonical rename/delete metadata
+  and fails until the declaration is updated or removed with the corresponding
+  producer inventory evidence
+
+#### Scenario: Test-only calls do not create artifact declarations
+
+- **WHEN** a test fixture calls either canonical warehouse writer
+- **THEN** the production-universe filter excludes that source and validation
+  does not require an artifact declaration for the fixture
 
 #### Scenario: A declared pointer or receipt source is changed
 
@@ -117,8 +179,9 @@ validation-required table list omits it, and the CLI fetch producers
 #### Scenario: Baseline validation runs in a no-I/O fixture
 
 - **WHEN** the baseline validator runs in its focused negative-I/O fixture
-- **THEN** the fixture permits reads only of the baseline and declared
-  repository source-evidence files, and patched `sqlite3.connect`,
+- **THEN** the fixture permits reads only of the baseline, declared
+  repository source-evidence files, and the bounded production-Python
+  discovery universe, and patched `sqlite3.connect`,
   `duckdb.connect`, `pandas.read_parquet`, generic `open`/`Path.read_*` for
   in-repository `data/**`, `warehouse/**`, `market/**`, SQLite, Parquet,
   manifest, pointer, and receipt sentinels, and every out-of-repository path
