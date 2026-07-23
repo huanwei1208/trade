@@ -1,0 +1,71 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The BTC Observatory Web chart default viewport and Newest behavior change for users, while URL state and API payload contracts remain compatible."
+
+[[impacts]]
+id = "persistent_write"
+applies = false
+reason = "The implementation writes only browser-local presentation state and no database, parquet, catalog, manifest, or durable application record."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "No API payload, database table, parquet layout, catalog schema, or application data schema is added or migrated."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "The change repositions an already loaded chart viewport and does not compute, alter, or present new historical market knowledge."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "No forecast, recommendation, score, ranking, model output, or trading decision is produced or changed."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "No news, social, macro, on-chain, exchange feed, or other third-party event data is ingested or transformed."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = false
+reason = "The change adds synchronous browser viewport state handling and no runtime worker, queue, polling loop, task execution, or concurrent orchestration."
+
+[evidence.contract]
+contract = "The public Web behavior is that the BTC selected-channel K-line opens on a recent visible range, keeps full loaded history reachable, and restores a compatible browser-local viewport."
+consumers = "Human BTC Observatory users consume the React Market chart, its Fit and Newest controls, mouse wheel zoom, drag pan, and display timeframe controls."
+compatibility = "Existing Observatory API paths, payloads, URL parameters, selected date behavior, Date Evidence requests, lifecycle labels, and timeframe URL state remain unchanged. Invalid browser viewport cache values fall back to the recent default."
+migration = "No migration is required. The localStorage value is versioned and identity-bound; old or incompatible values are ignored by behavior."
+rollback = "Revert the frontend source change. Browser cache entries may remain but become unused when the key or version is removed, with no backend or data rollback."
+
+[[obligations]]
+id = "btc-kline.viewport-state"
+owner = "trade_web/frontend/src/components/observatory"
+paths = [
+  "trade_web/frontend/src/components/observatory/ExchangeKlinePanel.tsx",
+  "trade_web/frontend/src/components/observatory/ExchangeKlineChart.tsx",
+  "trade_web/frontend/src/test/observatory.exchange-kline.test.tsx",
+]
+contracts = [
+  "selected-channel K-line loads full available series while applying only a visible logical range",
+  "browser-local viewport cache is versioned and bound to asset identity plus display timeframe",
+  "Fit shows all loaded history and Newest restores the recent viewport",
+]
+failure_states = [
+  "missing cache",
+  "malformed cache",
+  "stale cache version",
+  "asset or timeframe mismatch",
+  "range dates missing from current series",
+  "localStorage unavailable",
+  "chart runtime range application failure",
+]
+spec_requirements = [
+  "btc-kline-viewport:BTC K-line opens on recent context while retaining history",
+]
+validation_tasks = ["2.1", "2.2", "2.3", "3.1", "3.2"]
