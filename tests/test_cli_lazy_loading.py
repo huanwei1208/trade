@@ -92,6 +92,17 @@ def test_quality_plan_does_not_import_settings_or_db() -> None:
     assert "pandas" not in payload["loaded"]
 
 
+def test_openspec_help_does_not_collect_or_import_runtime_modules() -> None:
+    payload = _probe_cli("dev", "openspec", "--help")
+
+    assert payload["code"] == 0
+    assert "trade_py.cli.dev" in payload["loaded"]
+    assert "trade_py.devtools.openspec_status.service" not in payload["loaded"]
+    assert "trade_py.infra.settings" not in payload["loaded"]
+    assert "trade_py.db.trade_db" not in payload["loaded"]
+    assert "pandas" not in payload["loaded"]
+
+
 def test_runtime_help_does_not_load_db_jobs_or_write_requested_root(tmp_path: Path) -> None:
     data_root = tmp_path / "runtime-data"
 
