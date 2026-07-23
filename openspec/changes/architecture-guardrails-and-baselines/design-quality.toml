@@ -33,43 +33,64 @@ reason = "The checker performs no provider interaction, capture, import, replay,
 
 [[impacts]]
 id = "runtime_concurrency"
-applies = false
-reason = "The check executes one bounded offline subprocess and has no effect on application scheduling, admission, retry, queue, worker, or lifecycle behavior."
+applies = true
+reason = "The existing quality executor may run the guard's deterministic target batches alongside other light read-only checks, so this developer-tool path requires bounded concurrency, prerequisite ordering, cancellation, and overload evidence without changing application runtime behavior."
 
 [evidence.contract]
-contract = "The only changed public developer contract is the read-only trade dev check quality plan/report: when target architecture files, the baseline, or the reviewed native binding source change, it emits a deterministic architecture step with path, line, rule, and remediation."
-consumers = "Repository developers and child OpenSpec implementers consume the quality report before adding src/trade modules; existing CLI, HTTP, Web, SDK, notebook, scheduler, event, database, artifact, and native consumers remain unchanged."
-compatibility = "Legacy trade_py imports and current runtime behavior remain outside prospective enforcement until each migration child supplies a compatible target module; a legacy-only changed scope receives no new architecture step."
-migration = "The first target files arrive only in kernel-and-public-contracts or later child changes, each with its own compatibility evidence. The baseline records candidate/deferred facts rather than moving source or readers."
-rollback = "Remove the isolated quality contributor, validator, baseline, and tests to return to the prior developer quality plan; no runtime interface, durable state, schema, or data artifact requires restoration."
+contract = "The changed public developer contract is the read-only trade dev check plan/report: ScopeSelection additively preserves canonical unfiltered delta/filter metadata; an excluded architecture-sensitive delta emits architecture.partial_scope; and every architecture step emits bounded trade.architecture.guard.v1 JSON with status, scope, partial_scope, ordered findings, counts, emitted_count, and omitted_count."
+consumers = "Repository developers and child OpenSpec implementers consume the quality plan/report before adding src/trade modules; existing CLI, HTTP, Web, SDK, notebook, scheduler, event, database, artifact, and native runtime consumers remain unchanged."
+compatibility = "Existing ScopeSelection execution fields remain filtered for ordinary providers, while new metadata is additive. Legacy trade_py imports and runtime behavior remain outside prospective enforcement until each migration child supplies a compatible target module; a legacy-only changed scope receives no new architecture step."
+migration = "The first target files arrive only in kernel-and-public-contracts or later child changes, each with its own compatibility evidence. The baseline records candidate/deferred facts and bounded CLI/HTTP/OpenAPI/SSE source inventory rather than moving source, readers, or interface behavior."
+rollback = "Remove the isolated contributor, validator, baseline, architecture-specific scope metadata, planner issue, and focused tests to return to the prior developer quality plan; no runtime interface, durable state, schema, or data artifact requires restoration."
+
+[evidence.concurrency]
+ownership = "ScopeSelection and the planner own canonical delta/filter metadata and partial-scope refusal; the architecture contributor constructs one baseline step and target batches; the existing quality executor owns scheduling and process lifecycle; the guard owns no mutable application state."
+bound = "The repository quality configuration caps light-step execution at four workers and argv at 65,536 bytes. The contributor creates one baseline step, caps each source file at 1 MiB, each target batch at 128 files and 8 MiB aggregate source, and the complete architecture-selected target scope at 512 files and 32 MiB. It emits at most 64 findings per envelope, reserves 1 KiB for metadata/counts, bounds display fields before encoding, uses count-only truncation if needed, sets a 30 second timeout, and never exceeds a 32 KiB structured-output limit."
+ordering = "Baseline evidence validation is a prerequisite for every sorted target batch. Planner partial-scope or scope-budget failures are emitted before target acceptance. Target paths, batch IDs, diagnostic records, and final report records sort deterministically; batches do not share mutable inputs or outputs."
+atomicity = "Each read-only subprocess parses an immutable selected source set and exits with one complete structured diagnostic envelope. The check produces no database, artifact, cache, or application-state transition."
+timeout_cancellation = "Each architecture CheckStep sets a 30 second timeout; the existing executor terminates a timed-out subprocess process group. No retry reuses partial diagnostics, and a developer reruns after correcting the source or baseline."
+backpressure = "batched_paths enforces the existing argv bound; per-file, per-batch, and total-scope source budgets stop oversized work before parsing; and the versioned finding/output envelope caps prevent unbounded process memory or report growth. Excess scope is reported as an explicit quality failure, never silently dropped."
+partial_failure = "A failed baseline blocks every dependent target batch. A failed or timed-out target batch remains a deterministic quality failure while independent ordinary quality checks retain their own result; no partial architecture result is presented as acceptance."
+capacity_validation = "Focused scope/planner/contributor tests cover one baseline step, multiple target batches, many short paths with near-cap source files, four-worker scheduling eligibility, oversized argv input, oversized source, per-batch and total-scope budget refusal, serialized worst-case finding truncation, invalid-envelope rejection, timeout/output configuration, modified/rename/delete/untracked triggers, and canonical-metadata partial-scope refusal."
 
 [[obligations]]
 id = "architecture.static-guard"
 owner = "trade_py/devtools architecture quality"
 paths = [
   "trade_py/devtools/architecture_guard.py",
+  "trade_py/devtools/quality/models.py",
+  "trade_py/devtools/quality/scope.py",
+  "trade_py/devtools/quality/planner.py",
   "trade_py/devtools/quality/contributors/architecture.py",
   "trade_py/devtools/quality/providers/registry.py",
   "tests/test_architecture_guard.py",
   "tests/test_architecture_contributor.py",
+  "tests/test_quality_scope.py",
+  "tests/test_quality_planner.py",
 ]
 contracts = [
   "scoped read-only trade dev check architecture step",
+  "canonical unfiltered scope metadata and architecture.partial_scope refusal",
   "target dependency and Context Cell graph",
-  "stable architecture diagnostic rule/path/line/remediation",
+  "trade.architecture.guard.v1 bounded diagnostic envelope",
 ]
 failure_states = [
   "forbidden context implementation import",
   "contract implementation type leak",
-  "direct database or SQL escape",
+  "direct database, artifact, or SQL escape",
+  "direct dynamic execution or process creation",
+  "partial architecture scope or scope budget exceeded",
+  "invalid or oversized structured diagnostic envelope",
   "Platform business vocabulary",
   "native import outside adapter boundary",
 ]
 spec_requirements = [
   "architecture-static-guardrails:Future target modules SHALL enforce the approved dependency graph",
+  "architecture-static-guardrails:Legacy, dynamic execution, and process-spawn paths SHALL be fail-closed",
   "architecture-static-guardrails:Target Context Cells SHALL not leak implementation boundaries",
-  "architecture-static-guardrails:Future target database access SHALL preserve Context ownership",
+  "architecture-static-guardrails:Future target persistence and artifact access SHALL preserve Context ownership",
   "architecture-static-guardrails:Platform and native target boundaries SHALL remain technical",
+  "architecture-static-guardrails:Architecture results SHALL be bounded, deterministic, and complete for their declared scope",
 ]
 validation_tasks = ["1.1", "1.2", "1.3", "2.2", "2.3", "3.1", "3.2", "3.3"]
 
@@ -84,17 +105,20 @@ paths = [
 contracts = [
   "source-verified legacy package and table inventory",
   "candidate and deferred table classifications",
-  "native and compatibility-pointer fact inventory",
+  "producer-derived artifact and Capture-risk inventory",
+  "native, compatibility-pointer, and CLI/HTTP/OpenAPI/SSE source inventory",
 ]
 failure_states = [
   "malformed or unsafe baseline",
   "missing source evidence",
   "duplicate table declaration",
   "unclassified target ownership",
-  "stale pointer or native fact",
+  "stale projection, pointer, Capture, native, or interface fact",
+  "attempted database, artifact, or non-evidence-path read",
 ]
 spec_requirements = [
   "architecture-baseline-inventory:The legacy architecture baseline SHALL be source-verified and non-authoritative",
+  "architecture-baseline-inventory:Source-only artifact, pointer, receipt, and Capture-risk facts SHALL be complete enough to govern later children",
   "architecture-baseline-inventory:Compatibility and native baseline facts SHALL remain explicit",
 ]
 validation_tasks = ["1.1", "1.2", "1.3", "2.1", "3.1", "3.2", "3.3"]

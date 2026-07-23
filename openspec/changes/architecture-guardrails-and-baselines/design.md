@@ -16,6 +16,39 @@ compatibility pointer at `market/crypto/btc_current.json` alongside
 `market/crypto/btc.parquet`. Both are current compatibility facts, not a
 license to create further unowned pointers.
 
+The source audit also identifies warehouse Parquet families in
+`trade_py/data/warehouse/materialize.py`, Crypto ADS pointer and completion
+receipt conventions in `trade_py/data/warehouse/crypto_store.py`, and the
+Kline reconciliation `current.json` convention in
+`trade_py/data/operations/checks.py`. These are migration inputs, not
+artifacts inspected by this child. Capture migration inputs are likewise
+source-only: `RawRecord` has one `published_at` field, while RSS, GDELT, and
+warehouse RSS paths substitute collector/fetch time when provider publication
+time is unavailable. Archive and date-only feeds infer noon timestamps;
+GDELT streaming re-fetches a provider while reading/writing local state, and
+WAL recovery has a distinct legacy meaning. Semantic quarantine also occurs in
+the warehouse transformation rather than at transport admission. RSS catalogs
+can be selected through environment overrides, while rights-policy evidence is
+not currently present. The Capture child, not this guard, owns the correction.
+
+The audit found further independent persistence and projection declarations
+outside the initial central schema sources: `trade_py/intelligence/schema.py`
+defines `feed_scores` and `source_configs`, while
+`trade_py/observatory/catalog/store.py` defines the rebuildable
+`catalog.sqlite` projection, `generation.json` pointer, and `catalog_meta`,
+`runs`, and `releases` tables. Warehouse materialization writes
+`ads_warehouse_validation_report` even though that table is not in the
+hand-maintained required-table list. The source-only baseline must inventory
+these facts by source producer without treating them as ownership approval.
+
+The parent migration matrix assigns this first child bounded CLI, HTTP, OpenAPI,
+and SSE baselines. The audit identifies the root `trade` facade and
+`trade_py/cli/main.py` domain registry, `trade_web/backend/app.py`,
+`trade_web/backend/runtime/router.py`, Observatory routers, and existing
+CLI/Web contract tests as the source evidence. This child records those
+surfaces only; the later `cli-http-sdk-compatibility` child remains responsible
+for behavior snapshots, adapter delegation, and retirement decisions.
+
 This child is Non-trivial because it changes the repository-wide developer
 quality path and sets future architecture enforcement across tooling, tests,
 and new target module roots. It performs no runtime/domain implementation,
@@ -29,16 +62,21 @@ or ownership transition.
 - Make the parent design's prospective dependency rules executable for new
   `src/trade` Python files without first repairing the entire legacy tree.
 - Detect forbidden concrete Context imports, invalid internal Cell direction,
-  contract type leakage, private database escape, direct interface SQL,
-  Platform business vocabulary, and native imports outside a Context
-  `adapters/native` boundary.
+  contract type leakage, private database or artifact-client escape, direct
+  interface SQL, Platform business vocabulary, legacy namespace, dynamic
+  execution, process-spawn escapes, unauthorized table access, and native
+  imports outside a Context `adapters/native` boundary.
 - Record auditable current facts for Python package roots, schema-definition
-  sources, physical table classifications, C++ binding targets, and the BTC
+  sources, physical table classifications, independent projection declarations,
+  warehouse artifacts, pointers, receipts, Capture migration risks,
+  CLI/HTTP/OpenAPI/SSE source surfaces, C++ binding targets, and the BTC
   compatibility pointer.
 - Keep guard execution deterministic, offline, bounded, and free of runtime
   imports or data-root access.
 - Give later child changes a stable baseline and a small prerequisite rather
   than authorizing a broad directory move.
+- Extend shared quality scope metadata once so filtered architecture checks can
+  fail closed from canonical delta facts without a second Git discovery path.
 
 **Non-Goals:**
 
@@ -47,6 +85,13 @@ or ownership transition.
 - Replacing `TradeDB`, editing existing DDL, opening a SQLite
   database, reading parquet/raw artifacts, or assigning final ownership to
   deferred KG, causal, factor, or legacy recommendation records.
+- Implementing Capture clocks, SourceManifest rights, provider-free replay,
+  quality/quarantine semantics, a plugin system, a remote worker, or a native
+  binding. This child records source facts and prohibits ungoverned loading;
+  their implementation remains separately governed.
+- Changing CLI/HTTP/Web/SDK/Notebook behavior, generating a behavior snapshot,
+  adding an interface compatibility adapter, or delegating an existing route.
+  This child records source-level interface inventory only.
 - Building a generalized lint framework, adding a third-party dependency, or
   enforcing current `trade_py` imports as if legacy code already met the
   target graph.
@@ -58,10 +103,13 @@ or ownership transition.
 
 The existing `trade dev check` contributor mechanism gains one architecture
 step when the changed scope contains `architecture-baseline.toml`, an
-`src/trade/**/*.py` target module, or the reviewed native binding definition.
-The step parses only selected Python source text and named repository source
-files. It produces path, line, rule, and remediation diagnostics; it never
-imports the inspected package.
+`src/trade/**/*.py` target module, any baseline-declared source fact, the
+guard/parser/contributor/registry integration, or the reviewed native binding
+definition, or a baseline-declared interface source. Rename and delete events
+are triggers. The step parses only selected Python source text and named
+repository source files. It produces `trade.architecture.guard.v1` structured
+diagnostics with stable path, line, rule, remediation, ordered findings, counts,
+scope identity, and partial-scope state; it never imports the inspected package.
 
 Acceptance requires that a compliant target module passes, each prohibited
 relationship has a focused failing fixture, baseline source/table/pointer
@@ -69,15 +117,33 @@ claims match the current repository text, and a normal legacy-only changed
 scope remains unaffected. The step must be represented as a quality failure,
 not a skip or a warning, when a target rule is violated.
 
+`--path` is a partial development selector, not a release-acceptance shortcut.
+`ScopeSelection` retains normalized requested filters and canonical unfiltered
+modified, added, deleted, rename-source, rename-target, and untracked delta
+metadata before deriving its existing filtered execution fields. The planner,
+not a contributor, compares architecture triggers against that metadata. If
+filters exclude an architecture-sensitive changed source, planning fails closed
+as `architecture.partial_scope`, including rename endpoints and deleted or
+untracked sources. A complete selected scope contains one baseline validation
+step and all deterministic target-source batches.
+
 ### Ownership and boundaries
 
-`trade_py/devtools/architecture_guard.py` owns parsing, validation, and
-diagnostic formatting for this child. `trade_py/devtools/quality/contributors/architecture.py`
-only decides whether the changed scope requires the guard and constructs a
-bounded subprocess step. The existing quality registry owns contributor
-registration. `architecture-baseline.toml` is the authoritative declaration of
-audited legacy facts. `tests/test_architecture_guard.py` owns target-fixture
-coverage; it does not open the application or a data root.
+`trade_py/devtools/architecture_guard.py` owns parsing, validation, bounded
+diagnostic-envelope formatting, and baseline fact semantics for this child.
+`trade_py/devtools/quality/models.py` and `scope.py` own the additive canonical
+unfiltered delta/filter contract; `planner.py` owns conversion of excluded
+architecture-sensitive delta facts into a fail-closed plan issue. The future
+`trade_py/devtools/quality/contributors/architecture.py` receives that canonical
+selection and only constructs bounded subprocess steps; it must not rediscover
+Git state. The existing quality registry owns contributor registration.
+`architecture-baseline.toml` is the authoritative declaration of audited source
+facts. It separately freezes `target_source_root = "src/trade"` and
+`target_import_root = "trade"`; the guard uses the latter for absolute and
+relative import resolution without requiring target-package installation.
+`tests/test_architecture_guard.py`, `tests/test_architecture_contributor.py`,
+and focused scope/planner extensions own target-fixture coverage; no fixture
+opens the application or a data root.
 
 The guard has a deliberately narrow prospective boundary. It applies to
 `src/trade` once a later child creates that root. It does not validate all
@@ -87,26 +153,38 @@ and satisfy this guard before it becomes a new architectural dependency.
 ### Data and state invariants
 
 The baseline is source metadata, not a runtime catalog, a schema authority, or
-an ownership-transfer mechanism. Every recorded table must point to one audited DDL
-source and receive a `candidate` or `deferred` target classification. A
-`deferred` classification forbids a new target repository from claiming direct
-access until its owning child resolves the classification.
+an ownership-transfer mechanism. Each logical table records a current owner,
+one-or-more source facts with `bootstrap`, `migration`, `alter`, or
+`data_transform` role, an audit-only `candidate` or `deferred` classification,
+semantic kind, target Context/defer reason, and required child. Neither
+`candidate` nor `deferred` authorizes persistence access. Only a later
+implementation child may add an explicit `approved_binding` that names one
+Context and one persistence-adapter scope after proving writer, reader,
+transaction, compatibility, and owner behavior.
 
 The checker reads UTF-8 text using repository-relative paths beneath the
 worktree and rejects malformed TOML, missing sources, unsafe relative paths,
 duplicate declarations, and source facts that no longer match their declared
 literal. It does not load modules, initialize `TradeDB`, read an artifact
-directory, or accept arbitrary paths outside the repository.
+directory, or accept arbitrary paths outside the repository. The focused
+source-only fixture permits reads only of the baseline and declared source
+evidence files; it denies `sqlite3.connect`, `duckdb.connect`,
+`pandas.read_parquet`, all reads of in-repository `data/**`, `warehouse/**`,
+`market/**`, SQLite, Parquet, manifest, pointer, and receipt sentinels, and
+all out-of-repository paths.
 
 ### Contracts and compatibility
 
 The user-facing `trade` command, existing CLI command names, HTTP routes,
-Web payloads, SDK imports, notebook behavior, table readers, BTC pointer
-format, and C++ ABI remain unchanged. The developer-facing `trade dev check`
-contract gains a stable architecture step only for in-scope changes. Its
-diagnostics identify a rule ID, source location, and the approved remediation
-direction; repository consumers can continue to use legacy import paths until
-their individual compatibility child supplies a replacement.
+OpenAPI output, SSE semantics, Web payloads, SDK imports, notebook behavior,
+table readers, BTC pointer format, and C++ ABI remain unchanged. The bounded
+baseline records where these CLI/HTTP/OpenAPI/SSE contracts are defined and
+tested, but it does not snapshot or alter their behavior. The developer-facing
+`trade dev check` contract gains stable scope metadata, a partial-scope refusal,
+and a versioned architecture diagnostic envelope only for in-scope changes.
+Its diagnostics identify a rule ID, source location, and the approved
+remediation direction; repository consumers can continue to use legacy import
+paths until their individual compatibility child supplies a replacement.
 
 The architecture baseline records, rather than replaces, the `trade_py`
 package discovery and the `trade_py` CMake binding target. It reserves
@@ -114,15 +192,33 @@ package discovery and the `trade_py` CMake binding target. It reserves
 exists. The later package-layout child owns the actual transition and must
 prove source, editable, and wheel compatibility.
 
+All target business Contexts can import only `trade.platform.contracts` or
+`trade.platform.api`, never a concrete Platform adapter. Bootstrap is the
+only normal composition root for concrete adapters. The sole future legacy
+exception is a specifically declared Platform persistence adapter, imported
+only by `trade.bootstrap`, which exposes
+`LegacySchemaBootstrapAdapter` through a narrow schema-bootstrap allowlist and
+removal condition. Every other target `trade_py.*` or `trade_web.*` import is
+denied.
+
 ### Failure and recovery
 
-Malformed source, unsupported relative import, malformed baseline, unlisted
-target Cell, missing baseline evidence, or a prohibited dependency is a
+Malformed source, unsupported relative import, malformed or oversized
+diagnostic envelope, malformed baseline, unlisted target Cell, missing baseline
+evidence, exceeded scope budget, partial scope, or a prohibited dependency is a
 fail-closed architecture result. A quality check failure has no side effect:
 the source tree and local data remain unchanged. A developer corrects the
 target module or updates the baseline through a reviewed child change. The
 guard does not automatically rewrite imports, infer table ownership, or
 silently ignore an unknown file.
+
+The implementation supplies a concise developer runbook keyed by
+`architecture.*`, `dependency.*`, `persistence.*`, `artifacts.*`, and
+`execution.*` rule IDs. It states the matching `trade dev check --show-plan`
+and JSON-report commands, the expected owner, and the corrective action for a
+stale baseline, rename/delete, partial scope, scope budget, timeout, invalid
+envelope, or source rule violation. The runbook is developer tooling
+documentation, not an application operations system.
 
 Rollback removes the contributor, guard, baseline, and focused tests together.
 Because the child does not alter runtime behavior, database content, artifact
@@ -140,20 +236,52 @@ model. No network access, package installation, database scan, artifact hash,
 or recursive full-repository AST scan is permitted.
 
 The first target scope is expected to be small because Context children add
-bounded modules incrementally. If a later change introduces a large batch, the
-same existing quality argv batching and output limits apply. Baseline validation
-is linear in its declared source/table/pointer entries and is exercised from a
+bounded modules incrementally. The contributor explicitly uses
+`batched_paths()` and deterministic batch identifiers: exactly one baseline
+step plus target batches within the configured argv budget. Independent of that
+argv limit, the guard refuses a source over 1 MiB, a target batch over 128 files
+or 8 MiB aggregate source, and a selected architecture target scope over 512
+files or 32 MiB aggregate source. It reports an explicit budget failure rather
+than silently dropping work. The existing executor runs at most four light
+steps concurrently; four maximum-size target batches are therefore bounded to
+32 MiB source input at once. A 30-second step timeout, 64 emitted findings,
+bounded fields, reserved metadata space, count-only truncation fallback, and
+32 KiB serialized envelope prevent an oversized structured report. Baseline
+validation is linear in its declared evidence entries and is exercised from a
 temporary fixture repository.
 
+Existing scope discovery and before/after full-worktree fingerprinting remain
+an owned quality-platform performance debt. The child records the named
+`quality-scope-capacity-baseline` follow-up, owned by
+developer-experience/quality-platform, with measured representative scope,
+bounded byte/path work, and a documented fail-safe exit criterion before
+repository-wide target adoption. This child does not add another full-tree
+walk.
+
 ### Observability and operations
+
+Every `trade.architecture.guard.v1` JSON envelope has required
+`schema_version`, `status`, `scope`, `partial_scope`, `findings`, `counts`,
+`emitted_count`, and `omitted_count` fields. `status` is `pass`, `fail`, or
+`invalid`; `scope` identifies the baseline or deterministic target batch; and
+counts are consistent with emitted plus omitted findings. Each finding contains
+`rule_id`, repository-relative `path`, positive `line`, bounded `message`, and
+bounded `remediation`. JSON and terminal detail derive from the same ordered
+finding set. An unrecognized schema, missing/unsafe field, inconsistent count,
+or overflow is an infrastructure result rather than a pass.
 
 Each failure reports a deterministic rule name such as
 `dependency.context_implementation`, `cell.use_case_adapter`,
 `contracts.implementation_type`, `database.owner_escape`,
-`interfaces.direct_sql`, `platform.business_vocabulary`, or
+`database.foreign_table_owner`, `persistence.unapproved_client`,
+`artifacts.direct_access`, `interfaces.direct_sql`,
+`dependency.legacy_namespace`, `dependency.dynamic_loading`,
+`execution.direct_process_creation`, `platform.business_vocabulary`, or
 `native.boundary`. Diagnostics include the repository-relative path and source
-line where the offending import, annotation, attribute, SQL literal, or
-vocabulary occurs.
+line where the offending import, annotation, attribute, SQL literal, direct
+artifact client, dynamic loader, process spawn, or vocabulary occurs. They sort
+by path, line, rule, and message; truncation reports the emitted and omitted
+counts rather than hiding findings.
 
 `trade dev check --show-plan` shows the architecture step when triggered. A
 clean legacy-only implementation change does not silently receive an unrelated
@@ -165,18 +293,30 @@ architecture step whenever it changes.
 
 Focused pytest uses temporary repositories and source files to prove the
 allowed Context graph and each forbidden rule. It covers absolute and relative
-imports, own-Cell direction, contract annotation leakage, Context/Interface
-database access, Platform terminology, native import placement, malformed
-baseline, missing source evidence, duplicate table declaration, and the
-current-tree legacy baseline.
+imports under the declared `trade` import root, rejection of `src.trade.*`,
+Platform public API versus concrete adapter imports, the exact Bootstrap-to-
+Platform legacy schema bridge, legacy namespace imports, dynamic Python/file/
+native loaders, direct process creation and process pools, own-Cell direction,
+contract annotation leakage, Context/Interface database and artifact-client
+access, table owner and approved-binding decisions, Platform terminology, native
+import placement, malformed baseline, multi-source table provenance, independent
+intelligence/projection declarations, producer-derived warehouse artifacts,
+missing/deleted source evidence, precise Capture migration facts, source-only
+CLI/HTTP/OpenAPI/SSE facts, duplicate declarations, negative-I/O enforcement,
+and the current-tree legacy baseline.
 
-Contributor tests assert triggering only for a target source, baseline file,
-or native binding source and assert that a legacy-only scope adds no
-architecture step. The final implementation runs the focused tests, shared
-Python compile validation, `uv run ./trade dev check --show-plan`,
-`uv run ./trade dev check`, and `git diff --check`. No C++ build, frontend
-build, API smoke, or live-data validation is required because no component
-behavior changes.
+Contributor, scope, and planner tests assert triggering for target, baseline,
+every declared evidence path, guard/parser/contributor/registry integration,
+native binding, and interface source changes; they assert that a legacy-only
+scope adds no architecture step. They prove modified/deleted/renamed/untracked
+partial-scope failures using canonical preserved metadata; argv, file-count,
+per-file, batch-byte, total-scope, and four-worker wave budgets; deterministic
+batch IDs; timeout/output settings; valid worst-case structured truncation;
+invalid-envelope rejection; and check mode with no mutation step. The final
+implementation runs the focused tests, shared Python compile validation,
+`uv run ./trade dev check --show-plan`, `uv run ./trade dev check`, and
+`git diff --check`. No C++ build, frontend build, API smoke, or live-data
+validation is required because no component behavior changes.
 
 ### Alternatives and trade-offs
 
@@ -197,10 +337,10 @@ keeps the baseline versioned and machine-verifiable while the parent OpenSpec
 continues to explain target ownership.
 
 **Make the baseline final ownership authority:** rejected because several
-legacy records require row-level analysis. The baseline distinguishes
-`candidate` from `deferred`; an owning Context child must prove its authoritative
-writer, readers, transaction boundary, and compatibility plan before changing
-runtime ownership.
+legacy records require row-level analysis. `candidate` and `deferred` are both
+audit-only; an owning Context child must prove its authoritative writer,
+readers, transaction boundary, compatibility plan, and named persistence
+adapter before adding an explicit `approved_binding`.
 
 ### Rollout and rollback
 
@@ -222,60 +362,90 @@ restore.
 
 ### Use an AST guard with a declarative scope
 
-`architecture-baseline.toml` declares the target root, the target package,
-approved Context names, legacy source facts, and native/pointer facts. The
-checker parses source via `ast.parse`, resolves absolute and relative imports,
-and applies the parent dependency graph only under the declared target root.
-This catches the relationships that matter at the time a new Context file is
-introduced without importing code or relying on fragile text-only import
-searches.
+`architecture-baseline.toml` declares distinct `target_source_root` and
+`target_import_root`, approved Context names, legacy source facts, table
+provenance and approval state, warehouse/pointer/receipt/Capture facts,
+CLI/HTTP/OpenAPI/SSE source facts, and native facts. The checker parses source
+via `ast.parse`, resolves absolute and relative imports under the declared
+import root, and applies the parent dependency graph only under the declared
+target root. It rejects `src.trade.*` as a filesystem-path import rather than
+mistaking it for a Context namespace. This catches the relationships that
+matter at the time a new Context file is introduced without importing code or
+relying on fragile text-only import searches.
 
 The allowed graph is:
 
 ```text
 kernel -> kernel
-capture -> kernel, platform
-datasets -> kernel, platform, capture.contracts
-studies -> kernel, platform, datasets.contracts
-decision_support -> kernel, platform, datasets.contracts, studies.contracts
-processes -> kernel, platform, all business contracts
-interfaces -> kernel, platform, processes, context contracts/use_cases
+capture -> kernel, platform.contracts/api
+datasets -> kernel, platform.contracts/api, capture.contracts
+studies -> kernel, platform.contracts/api, datasets.contracts
+decision_support -> kernel, platform.contracts/api, datasets.contracts, studies.contracts
+processes -> kernel, platform.contracts/api, all business contracts
+interfaces -> kernel, platform.contracts/api, processes, context contracts/use_cases
 bootstrap -> all target modules
-platform -> kernel, platform
+platform -> kernel, platform contracts/api
 ```
 
 Within a Context Cell, `contracts` and `domain` only receive Kernel and own
 types under their approved rule; `ports` receives own domain/contracts;
 `use_cases` receives own domain/ports/contracts plus upstream contracts; and
 `adapters` receives own ports/domain/contracts plus external libraries. A
-Context or Interface file cannot directly import `sqlite3`, `trade_py.db`, or
-access private connection attributes. A target Platform file cannot contain
-declared business aggregate vocabulary. A native extension is importable only
-from a Context `adapters/native` module.
+Context or Interface file cannot directly import unapproved database or
+artifact clients, legacy namespaces, or access private connection attributes. A
+Context may access literal SQL only within a baseline-authorized persistence
+adapter for its approved table. A target Platform file cannot contain declared
+business aggregate vocabulary. A native extension is importable only from a
+Context `adapters/native` module. Dynamic module/file/native loading, direct
+process creation, shell execution, and process pools are forbidden until a
+later separately approved plugin/worker or Platform execution contract.
 
 ### Validate baseline facts, not final Context ownership
 
 The initial baseline uses the observed DDL locations in
-`trade_py/db/trade_db.py`, `trade_py/db/migrations.py`, and
-`trade_py/db/pipeline_db.py`; it names current code owners and a target
-classification. The classification is intentionally `candidate` for obvious
-families and `deferred` where the parent design requires later file/row
-analysis. This avoids making the guard another global database facade or
-pretending exact future table names already exist.
+`trade_py/db/trade_db.py`, `trade_py/db/migrations.py`,
+`trade_py/db/pipeline_db.py`, and `trade_py/intelligence/schema.py`; it also
+records the Observatory catalog projection declarations in
+`trade_py/observatory/catalog/store.py`. It records one-or-more provenance
+facts for each logical table and names current code owners plus target
+classification. Warehouse artifact entries are derived from every
+`write_table` and `upsert_table` producer in
+`trade_py/data/warehouse/materialize.py`, including the validation report. The
+classification is intentionally `candidate` for obvious families and
+`deferred` where the parent design requires later file/row analysis. Both are
+non-authorizing. This avoids making the guard another global database facade
+or pretending exact future table names already exist.
 
 `BtcRunStore.current_path`, `compatibility_path`, and
-`engine/cmake/python_bindings.cmake` are pinned as source facts. This informs
-future Datasets/package changes of a known compatibility edge while making no
-production change to that edge.
+`engine/cmake/python_bindings.cmake` are pinned as source facts, alongside
+warehouse layout/materialization, Crypto ADS pointer/receipt, Kline
+reconciliation, precise Capture time/catalog/replay/quarantine facts, and root
+CLI/FastAPI/OpenAPI/SSE sources. This informs future Capture, Datasets,
+interface, and package changes of known compatibility and recovery edges while
+making no production change to those edges.
+
+The one future legacy schema bridge is deliberately placed at
+`trade.platform.persistence.adapters.legacy_schema_bootstrap`.
+`LegacySchemaBootstrapAdapter` is an implementation in that Platform adapter;
+only `trade.bootstrap` may import it. The baseline declaration must name the
+adapter path and every legacy schema-bootstrap symbol it imports, and no
+business Context, Process, or Interface may import it. This preserves the
+parent's Bootstrap-only composition rule and avoids an ambiguous
+`trade.bootstrap.compat` ownership boundary.
 
 ### Integrate through the existing quality contributor seam
 
 The existing `DesignQualityContributor` shows the project convention for
-scope-aware quality checks. A sibling `ArchitectureContributor` supplies a
-single read-only `CheckStep`; normal provider ownership remains unchanged.
-The contributor never invokes the guard in fix mode and never makes the
-architecture checker a catch-all quality provider. This preserves the quality
-runner's source-protection guarantee.
+scope-aware quality checks. A sibling `ArchitectureContributor` supplies one
+baseline check plus explicitly batched read-only target checks; normal provider
+ownership remains unchanged. The contributor never invokes the guard in fix
+mode and never makes the architecture checker a catch-all quality provider.
+Before contributor planning, the additive `ScopeSelection` fields preserve
+canonical unfiltered delta/filter facts. The shared planner computes
+`architecture.partial_scope` as an ordinary failed plan issue, allowing the
+existing runner and JSON/text reports to expose it consistently while
+independent checks remain observable. This preserves the quality runner's
+source-protection guarantee and avoids duplicate Git traversal.
 
 ## Risks / Trade-offs
 
@@ -284,15 +454,32 @@ runner's source-protection guarantee.
   layouts fail with an explicit rule rather than being guessed; each child
   introduces files in the canonical Cell shape.
 - **Legacy baseline becomes stale** -> The baseline validates source literals
-  and source paths on every baseline/native/target-triggered run; a child must
-  update it in the same reviewed change when audited facts legitimately move.
+  and source paths on every evidence/native/target/guard-triggered run,
+  including rename/deletion; a child must update it in the same reviewed change
+  when audited facts legitimately move.
 - **A source-text rule cannot prove runtime ownership** -> The guard blocks
-  obvious architectural bypasses but does not claim dynamic behavior proof.
-  Later Context and Platform children retain focused integration/contract
-  fixtures and six-role review obligations.
+  direct architectural bypasses and fail-closes unknown table/artifact,
+  dynamic-loading, and process-spawn paths, but does not claim dynamic behavior
+  proof. Later Context and Platform children retain focused
+  integration/contract fixtures and six-role review obligations.
 - **Direct SQL detection has lexical limits** -> It is intentionally scoped to
-  target Interfaces and Context paths. Later repository implementations may
-  own SQL in an approved adapter without reducing the rule for Interfaces.
+  target Interfaces and Context paths. Literal SQL is allowed only in an
+  explicit `approved_binding`; dynamic SQL needs a later parser/allowlist
+  design and cannot bypass the first guard.
+- **Guard volume or noisy diagnostics** -> Per-file, per-batch, total-scope,
+  and concurrent-wave source-byte budgets; argv limits; timeout; versioned
+  bounded envelope; stable sort; and explicit count-only truncation make
+  failures predictable. Existing quality scope/fingerprint costs remain
+  separately tracked through `quality-scope-capacity-baseline` and are not
+  worsened by this child.
+- **Source-only baseline reads data by accident** -> The validator allowlists
+  only its baseline/evidence source files in a temporary fixture and explicitly
+  denies in-repository data/artifact sentinels as well as external paths. A
+  source fact cannot justify physical artifact inspection.
+- **First-child interface scope expands into a compatibility migration** ->
+  This child inventories definition/test sources only. It does not generate
+  behavioral snapshots, delegate a route, or alter a response form; those remain
+  exit criteria of `cli-http-sdk-compatibility`.
 - **Native boundary policy precedes a real binding** -> The baseline records
   the current collision and prohibits future direct imports; the package/native
   child will add CMake linkage and differential checks before enabling a
@@ -304,16 +491,20 @@ The implementation is additive and order-preserving:
 
 1. Add the baseline and parser tests while all application paths remain in
    their current locations.
-2. Add the scoped guard and contributor registration, with tests that prove
+2. Add the additive shared scope/model/planner metadata and focused
+   modified/delete/rename/untracked filtered-scope tests.
+3. Add the scoped guard and contributor registration, with tests that prove
    no legacy-only source is newly audited.
-3. Freeze the baseline as the first architecture migration input.
-4. Require `kernel-and-public-contracts` to introduce any first `src/trade`
+4. Freeze the baseline as the first architecture migration input.
+5. Require `kernel-and-public-contracts` to introduce any first `src/trade`
    paths under this guard.
 
 Rollback removes the guard components and baseline declaration, leaving source,
-database, artifact, native, and interface behavior untouched. Later child
-rollbacks retain legacy modules and update/restore baseline source facts before
-attempting another extraction.
+database, artifact, native, and interface behavior untouched. If needed, the
+additive scope metadata and planner architecture-only plan issue are removed in
+the same isolated rollback, restoring the prior filtered selection behavior.
+Later child rollbacks retain legacy modules and update/restore baseline source
+facts before attempting another extraction.
 
 ## Open Questions
 
