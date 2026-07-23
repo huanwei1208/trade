@@ -27,6 +27,16 @@ evidence-driven, auditable, and easy to review.
   remote branch. If the local environment lacks authenticated GitHub PR tooling,
   state the blocker clearly and provide the PR creation URL. Prefer squash merge
   for the PR and delete the source branch after it is merged.
+- **Project-local GitHub CLI for PRs (MANDATORY)**: Use the official GitHub CLI
+  binary at `.cache/github-cli/gh_2.65.0_linux_amd64/bin/gh` when it exists; do
+  not use `/usr/local/bin/gh`, which may be a non-GitHub internal tool. Before
+  installing another copy, check the project-local binary with
+  `.cache/github-cli/gh_2.65.0_linux_amd64/bin/gh --version` and check auth with
+  `.cache/github-cli/gh_2.65.0_linux_amd64/bin/gh auth status`. Only install a
+  new project-local GitHub CLI into ignored `.cache/github-cli/` if the existing
+  project-local binary is absent or not the official GitHub CLI. If auth is
+  missing, ask the user to authenticate that project-local binary and retry PR
+  creation after every pushed feature branch.
 - **Unit tests required (MANDATORY)**: Every behavior change must have corresponding unit tests added or updated near the touched path. If tests are deferred for a specific reason, explicitly state the no-test reason and residual risk, and create a follow-up task tracking the missing coverage.
 - Start with `git status -sb` in the active worktree. Do not overwrite, delete, or stage unrelated dirty work. Treat untracked local data, `.nvim/`, cache, and generated artifacts as user/runtime state unless the task explicitly targets them.
 - If `AGENTS.md` or an equivalent project instruction file is absent in a new
