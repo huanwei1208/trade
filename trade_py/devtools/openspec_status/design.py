@@ -105,29 +105,37 @@ def collect_design_evidence(
             _raise("Design-quality batch contains a malformed report.")
         name = raw["change"]
         requirement = requirements.get(name)
-        if requirement is None or name in evidence or name in errors:
+        if requirement is None:
             _raise("Design-quality batch contains duplicate or unexpected reports.")
         report_error = validation.report_errors.get(name)
         if report_error:
-            errors[name] = WorkflowError(
-                code="workflow.design_quality.invalid",
-                source="design_quality",
-                change=name,
-                message=report_error,
-                remediation=(
-                    f"Run ./trade dev design-check {name} --strict, repair the "
-                    "structured evidence, and rerun."
-                ),
-            )
+            errors.setdefault(name, _report_error(name, report_error))
             continue
+        if name in evidence:
+            _raise("Design-quality batch contains duplicate or unexpected reports.")
         evidence[name] = GovernanceEvidence(
             required=requirement.required,
             requirement_source=requirement.source.value,
             report=raw,
         )
+    for name, report_error in validation.report_errors.items():
+        errors.setdefault(name, _report_error(name, report_error))
     if set(evidence) | set(errors) != set(names):
         _raise("Design-quality batch did not return every selected active change.")
     return DesignCollection(evidence=evidence, errors=errors)
+
+
+def _report_error(name: str, message: str) -> WorkflowError:
+    return WorkflowError(
+        code="workflow.design_quality.invalid",
+        source="design_quality",
+        change=name,
+        message=message,
+        remediation=(
+            f"Run ./trade dev design-check {name} --strict, repair the "
+            "structured evidence, and rerun."
+        ),
+    )
 
 
 def _raise(message: str) -> NoReturn:

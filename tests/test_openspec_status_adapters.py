@@ -127,8 +127,10 @@ def test_source_generation_detects_artifact_drift(tmp_path: Path) -> None:
     proposal = repo / "openspec" / "changes" / "new-change" / "proposal.md"
     proposal.write_text("changed after capture\n", encoding="utf-8")
 
-    with pytest.raises(WorkflowCollectionError, match="changed"):
-        generation.verify(policy)
+    errors = generation.verify(policy)
+
+    assert errors["new-change"].code == "workflow.snapshot.changed"
+    assert errors["new-change"].change == "new-change"
 
 
 def test_source_generation_detects_active_scope_drift(tmp_path: Path) -> None:
@@ -205,6 +207,7 @@ class _NativeExecutor(BoundedProcessExecutor):
         malformed_validation: str | None = None,
         validation_returncode: int | None = None,
         validation_summary: object | None = None,
+        validation_names: tuple[str, ...] | None = None,
         status_padding_bytes: int = 0,
     ) -> None:
         super().__init__()
@@ -214,6 +217,7 @@ class _NativeExecutor(BoundedProcessExecutor):
         self.malformed_validation = malformed_validation
         self.validation_returncode = validation_returncode
         self.validation_summary = validation_summary
+        self.validation_names = validation_names
         self.status_padding_bytes = status_padding_bytes
         self._lock = threading.Lock()
         self.active_status = 0
@@ -248,6 +252,9 @@ class _NativeExecutor(BoundedProcessExecutor):
             return _result(argv, payload)
         if argv[:2] == ("openspec", "validate"):
             selected = (change,) if change else self.names
+            validation_names = (
+                self.validation_names if self.validation_names is not None else selected
+            )
             failed = int(self.malformed_validation in selected)
             payload = {
                 "items": [
@@ -258,14 +265,14 @@ class _NativeExecutor(BoundedProcessExecutor):
                         "issues": [],
                         "durationMs": 1,
                     }
-                    for name in selected
+                    for name in validation_names
                 ],
                 "summary": (
                     self.validation_summary
                     if self.validation_summary is not None
                     else _validation_summary(
-                        items=len(selected),
-                        passed=len(selected) - failed,
+                        items=len(validation_names),
+                        passed=len(validation_names) - failed,
                         failed=failed,
                     )
                 ),
@@ -401,6 +408,35 @@ def test_native_malformed_validation_preserves_sibling(tmp_path: Path) -> None:
     assert set(collection.changes) == {"change-a"}
     assert collection.errors["change-b"].code == "workflow.openspec.shape"
     assert collection.errors["change-b"].change == "change-b"
+
+
+@pytest.mark.parametrize(
+    ("validation_names", "affected"),
+    (
+        (("change-a",), "change-b"),
+        (("change-a", "change-b", "change-b"), "change-b"),
+    ),
+)
+def test_native_missing_or_duplicate_validation_preserves_sibling(
+    tmp_path: Path,
+    validation_names: tuple[str, ...],
+    affected: str,
+) -> None:
+    names = ("change-a", "change-b")
+    executor = _NativeExecutor(names, validation_names=validation_names)
+
+    collection = collect_native_evidence(
+        tmp_path,
+        expected_names=names,
+        requested_change=None,
+        executor=executor,
+        deadline=time.monotonic() + 10,
+        limits=WorkflowLimits(),
+    )
+
+    assert set(collection.changes) == {"change-a"}
+    assert collection.errors[affected].code == "workflow.openspec.shape"
+    assert collection.errors[affected].change == affected
 
 
 @pytest.mark.parametrize(

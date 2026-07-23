@@ -53,7 +53,7 @@ class SourceGeneration:
     def names(self) -> tuple[str, ...]:
         return tuple(item.name for item in self.snapshots)
 
-    def verify(self, policy: Policy) -> None:
+    def verify(self, policy: Policy) -> dict[str, WorkflowError]:
         names = _active_change_names(self.repo_root, self.limits.max_changes)
         if names != self.names:
             raise WorkflowCollectionError(
@@ -64,24 +64,21 @@ class SourceGeneration:
                     remediation="Stop concurrent edits and rerun the workflow status command.",
                 )
             )
+        errors: dict[str, WorkflowError] = {}
         for snapshot in self.snapshots:
             try:
                 verify_snapshot(snapshot, policy)
-            except DesignQualityError as exc:
-                raise WorkflowCollectionError(
-                    WorkflowError(
-                        code="workflow.snapshot.changed",
-                        source="snapshot",
-                        change=snapshot.name,
-                        message=(
-                            "OpenSpec design artifacts changed during workflow "
-                            f"collection: {snapshot.name}"
-                        ),
-                        remediation=(
-                            "Stop concurrent edits and rerun the workflow status command."
-                        ),
-                    )
-                ) from exc
+            except DesignQualityError:
+                errors[snapshot.name] = WorkflowError(
+                    code="workflow.snapshot.changed",
+                    source="snapshot",
+                    change=snapshot.name,
+                    message=(
+                        "OpenSpec design artifacts changed during workflow "
+                        f"collection: {snapshot.name}"
+                    ),
+                    remediation="Stop concurrent edits and rerun the workflow status command.",
+                )
         payload, signature = _read_config(self.repo_root)
         if payload != self.config_payload or signature != self.config_signature:
             raise WorkflowCollectionError(
@@ -108,6 +105,7 @@ class SourceGeneration:
         )
         if head != self.source.git_head or base_ref_sha != self.base_ref_sha:
             _raise_git("Git HEAD or base ref changed during workflow collection.")
+        return errors
 
     @contextmanager
     def materialize(self) -> Iterator[Path]:

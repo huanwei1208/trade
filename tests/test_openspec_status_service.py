@@ -290,6 +290,7 @@ class _Generation:
         repo_root: Path,
         names: tuple[str, ...],
         governance: GovernanceResolution,
+        drift_errors: dict[str, WorkflowError] | None = None,
     ) -> None:
         self.repo_root = repo_root
         self.names = names
@@ -301,13 +302,15 @@ class _Generation:
             snapshot_digest=f"sha256:{'c' * 64}",
         )
         self.verified = False
+        self.drift_errors = drift_errors or {}
 
     @contextmanager
     def materialize(self) -> Iterator[Path]:
         yield self.repo_root
 
-    def verify(self, _policy: object) -> None:
+    def verify(self, _policy: object) -> dict[str, WorkflowError]:
         self.verified = True
+        return self.drift_errors
 
 
 def test_collect_workflow_empty_scope_is_success_without_design_process(
@@ -425,3 +428,76 @@ def test_collect_workflow_passes_one_captured_date_to_design_batch(
     assert report.evaluation_date == captured_date
     assert report.changes[0].governance is _governance_evidence
     assert generation.verified is True
+
+
+def test_collect_workflow_preserves_sibling_when_final_artifact_drifts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from trade_py.devtools.openspec_status import service
+
+    names = ("change-a", "change-b")
+    requirements = tuple(
+        GovernanceRequirement(
+            change=name,
+            required=True,
+            source=GovernanceRequirementSource.NEW_CHANGE,
+            live=True,
+        )
+        for name in names
+    )
+    drift = WorkflowError(
+        code="workflow.snapshot.changed",
+        source="snapshot",
+        change="change-b",
+        message="change-b drifted",
+        remediation="stop concurrent edits",
+    )
+    generation = _Generation(
+        tmp_path,
+        names,
+        GovernanceResolution(requirements),
+        drift_errors={"change-b": drift},
+    )
+    monkeypatch.setattr(service, "load_policy", lambda _root: object())
+    monkeypatch.setattr(
+        service,
+        "capture_source_generation",
+        lambda *_args, **_kwargs: generation,
+    )
+    monkeypatch.setattr(
+        service,
+        "collect_native_evidence",
+        lambda *_args, **_kwargs: NativeCollection(
+            names=names,
+            changes={
+                name: NativeChange(
+                    name=name,
+                    tasks=_native().tasks,
+                    evidence=_native().evidence,
+                )
+                for name in names
+            },
+            errors={},
+            list_digest=f"sha256:{'d' * 64}",
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "collect_design_evidence",
+        lambda *_args, **_kwargs: DesignCollection(
+            evidence={name: _governance() for name in names},
+            errors={},
+        ),
+    )
+
+    report = service.collect_workflow(
+        tmp_path,
+        evaluation_date=date(2026, 7, 23),
+    )
+
+    assert report.status == "ERROR"
+    assert report.exit_code == 2
+    assert report.changes[0].collection_status == "complete"
+    assert report.changes[1].collection_status == "unavailable"
+    assert report.changes[1].errors == (drift,)

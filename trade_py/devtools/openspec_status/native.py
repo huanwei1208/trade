@@ -391,8 +391,15 @@ def _parse_validations(
         if not isinstance(row, dict) or not isinstance(row.get("id"), str):
             _raise_shape("Native OpenSpec validation contains a malformed record.")
         name = row["id"]
-        if name not in expected or name in results or name in errors:
-            _raise_shape("Native OpenSpec validation contains duplicate changes.")
+        if name not in expected:
+            _raise_shape("Native OpenSpec validation contains an unexpected change.")
+        if name in results or name in errors:
+            results.pop(name, None)
+            errors[name] = _shape_error(
+                "Native OpenSpec validation contains duplicate records.",
+                name,
+            )
+            continue
         try:
             if (
                 set(row) != {"id", "type", "valid", "issues", "durationMs"}
@@ -434,13 +441,15 @@ def _parse_validations(
             )
         except WorkflowCollectionError as exc:
             errors[name] = exc.error
-    if set(results) | set(errors) != expected:
-        _raise_shape("Native OpenSpec validation scope does not match active changes.")
+    for name in sorted(expected - set(results) - set(errors)):
+        errors[name] = _shape_error(
+            "Native OpenSpec validation omitted the selected change.",
+            name,
+        )
     _validate_validation_summary(
         payload["summary"],
         item_count=len(payload["items"]),
         valid_results=results,
-        malformed_count=len(errors),
         returncode=returncode,
     )
     return results, errors
@@ -451,7 +460,6 @@ def _validate_validation_summary(
     *,
     item_count: int,
     valid_results: dict[str, ValidationEvidence],
-    malformed_count: int,
     returncode: int,
 ) -> None:
     if set(summary) != {"totals", "byType"}:
@@ -478,10 +486,11 @@ def _validate_validation_summary(
         _raise_shape("Native OpenSpec validation summary contradicts its scope.")
     known_passed = sum(item.valid for item in valid_results.values())
     known_failed = len(valid_results) - known_passed
+    unknown_items = item_count - len(valid_results)
     if (
         counts[1] < known_passed
         or counts[2] < known_failed
-        or (counts[1] - known_passed) + (counts[2] - known_failed) != malformed_count
+        or (counts[1] - known_passed) + (counts[2] - known_failed) != unknown_items
     ):
         _raise_shape("Native OpenSpec validation summary contradicts its items.")
     expected_returncode = 0 if counts[2] == 0 else 1
@@ -524,11 +533,16 @@ def _digest(payload: bytes) -> str:
 
 
 def _raise_shape(message: str, change: str | None = None) -> NoReturn:
-    _raise(
-        "workflow.openspec.shape",
-        change,
-        message,
-        "Upgrade or repair the native OpenSpec CLI, then rerun.",
+    raise WorkflowCollectionError(_shape_error(message, change))
+
+
+def _shape_error(message: str, change: str | None = None) -> WorkflowError:
+    return WorkflowError(
+        code="workflow.openspec.shape",
+        source="openspec",
+        change=change,
+        message=message,
+        remediation="Upgrade or repair the native OpenSpec CLI, then rerun.",
     )
 
 

@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -330,10 +331,23 @@ def validate_design_batch_payload(
             {},
         )
     report_changes = tuple(item.get("change") for item in reports)
+    if not all(isinstance(change, str) for change in report_changes):
+        return DesignBatchValidation(
+            "Structured design envelope does not match the planned changes",
+            {},
+        )
+    typed_changes = tuple(change for change in report_changes if isinstance(change, str))
+    expected = set(expected_changes)
+    if any(change not in expected for change in typed_changes):
+        return DesignBatchValidation(
+            "Structured design envelope does not match the planned changes",
+            {},
+        )
+    counts = Counter(typed_changes)
     if (
-        not all(isinstance(change, str) for change in report_changes)
-        or len(report_changes) != len(set(report_changes))
-        or report_changes != expected_changes
+        all(count == 1 for count in counts.values())
+        and set(typed_changes) == expected
+        and typed_changes != expected_changes
     ):
         return DesignBatchValidation(
             "Structured design envelope does not match the planned changes",
@@ -394,10 +408,23 @@ def validate_design_batch_payload(
                 {},
             )
 
-    report_errors: dict[str, str] = {}
+    report_errors = {
+        name: "Structured design batch contains duplicate reports for this change"
+        for name, count in counts.items()
+        if count > 1
+    }
+    report_errors.update(
+        {
+            name: "Structured design batch omitted this selected change"
+            for name in expected_changes
+            if name not in counts
+        }
+    )
     for report in reports:
         change = report["change"]
         assert isinstance(change, str)
+        if change in report_errors:
+            continue
         error = _design_report_error(
             report,
             policy=policy,

@@ -95,8 +95,8 @@ def collect_workflow(
             policy=policy,
             limits=active_limits,
         )
-        generation.verify(policy)
-        errors = {**native.errors, **designs.errors}
+        drift_errors = generation.verify(policy)
+        errors = {**native.errors, **designs.errors, **drift_errors}
         changes = tuple(
             ChangeWorkflow.unavailable(name, errors[name])
             if name in errors

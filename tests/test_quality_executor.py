@@ -395,6 +395,65 @@ def test_workflow_validator_isolates_one_malformed_bound_report(tmp_path: Path) 
     )
 
 
+@pytest.mark.parametrize("mode", ("missing", "duplicate"))
+def test_workflow_validator_isolates_missing_or_duplicate_report(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    names = ("change-a", "change-b")
+    for name in names:
+        _write_binding_change(tmp_path, name)
+    bindings = load_report_bindings(tmp_path, names, POLICY)
+    today = datetime.now(timezone.utc).date()
+
+    def report(name: str) -> dict[str, object]:
+        binding = bindings[name]
+        assert binding.profiles is not None
+        return _design_report_payload(
+            change=name,
+            artifact_digest=binding.artifact_digest,
+            profiles=list(binding.profiles),
+            artifacts=[dict(item) for item in binding.artifacts],
+            metadata={
+                "total_bytes": binding.total_bytes,
+                "reviewed_at": today.isoformat(),
+                "reviewed_commit": "c" * 40,
+                "reviewed_commit_status": "verified",
+            },
+        )
+
+    reports = [report("change-a")]
+    if mode == "duplicate":
+        reports.extend((report("change-b"), report("change-b")))
+    payload = {
+        "schema_version": "trade.design.batch.v1",
+        "exit_code": 0,
+        "reports": reports,
+        "summary": {
+            "changes": len(reports),
+            "passed": len(reports),
+            "failed": 0,
+            "not_governed": 0,
+            "errors": 0,
+        },
+    }
+
+    validation = validate_design_batch_payload(
+        payload,
+        0,
+        policy=POLICY,
+        expected_changes=names,
+        expected_governance={name: bindings[name].governance_status for name in names},
+        bindings=bindings,
+        evaluation_date=today,
+    )
+
+    assert validation.envelope_error is None
+    assert set(validation.report_errors) == {"change-b"}
+    expected_word = "omitted" if mode == "missing" else "duplicate"
+    assert expected_word in validation.report_errors["change-b"]
+
+
 def test_workflow_validator_rejects_summary_that_contradicts_reports(
     tmp_path: Path,
 ) -> None:
