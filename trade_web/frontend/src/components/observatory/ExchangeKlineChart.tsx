@@ -39,6 +39,9 @@ type ExchangeKlineChartProps = {
   onRequestCompare?: () => void;
   dateInputRef?: RefObject<HTMLInputElement | null>;
   onTimeframeChange?: (timeframe: ObservatoryTimeframe) => void;
+  view?: KlineViewportRange | null;
+  recent?: KlineViewportRange | null;
+  onRange?: (range: KlineViewportRange) => void;
 };
 
 type ScaleMode = "linear" | "log";
@@ -53,6 +56,10 @@ type CursorReadoutState = {
   x: number;
   y: number;
   placement: CursorPlacement;
+};
+type KlineViewportRange = {
+  from: number;
+  to: number;
 };
 
 type ChartRuntime = {
@@ -353,6 +360,9 @@ export function ExchangeKlineChart({
   onRequestCompare,
   dateInputRef,
   onTimeframeChange,
+  view,
+  recent,
+  onRange,
 }: ExchangeKlineChartProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -465,7 +475,6 @@ export function ExchangeKlineChart({
     const runtime: Partial<ChartRuntime> = {};
     let gapMarkerFrame: number | null = null;
     let resizeObserver: ResizeObserver | null = null;
-    let visibleRangeSubscribed = false;
     let initializationFailureCode: RendererFailure["code"] = "CHART_CREATE_FAILED";
     setRendererFailure(null);
     setRendererState("initializing");
@@ -526,6 +535,10 @@ export function ExchangeKlineChart({
         }
       });
     };
+    const handleVisibleLogicalRangeChange = (range: { from: number; to: number } | null) => {
+      if (modelGapMarkers.length > 0) scheduleGapMarkerDraw();
+      if (!disposed && range) onRange?.(range);
+    };
     const teardownBindings = () => {
       disposed = true;
       if (hoverFrameRef.current !== null) {
@@ -548,12 +561,12 @@ export function ExchangeKlineChart({
       } catch {
         // Each vendor subscription is independently best-effort during teardown.
       }
-      if (visibleRangeSubscribed) {
-        try {
-          runtime.chart.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleGapMarkerDraw);
-        } catch {
-          // Each vendor subscription is independently best-effort during teardown.
-        }
+      try {
+        runtime.chart
+          .timeScale()
+          .unsubscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
+      } catch {
+        // Each vendor subscription is independently best-effort during teardown.
       }
     };
 
@@ -606,7 +619,7 @@ export function ExchangeKlineChart({
         wickDownColor: "#ff7471",
         priceLineVisible: true,
         lastValueVisible: true,
-        title: `${model.identity?.displaySymbol ?? "BTC"} · ${model.identity?.quote ?? "quote"} · ${model.lifecycle?.channelLabel ?? "Selected channel"}${model.lifecycle?.publication === "unpublished" ? " · UNPUBLISHED" : ""}`,
+        title: `${model.identity?.displaySymbol ?? "BTC"} · ${model.identity?.quote ?? "quote"} · ${model.lifecycle?.channelLabel ?? "Channel"}${model.lifecycle?.publication === "unpublished" ? " · UNPUBLISHED" : ""}`,
       });
       runtime.candles = candles;
       const volume = chart.addSeries(HistogramSeries, {
@@ -631,15 +644,16 @@ export function ExchangeKlineChart({
       chart.subscribeCrosshairMove(scheduleHover);
       chart.subscribeClick(handleClick);
       const timeScale = chart.timeScale();
-      if (modelGapMarkers.length > 0) {
-        timeScale.subscribeVisibleLogicalRangeChange(scheduleGapMarkerDraw);
-        visibleRangeSubscribed = true;
-        if (typeof ResizeObserver !== "undefined") {
-          resizeObserver = new ResizeObserver(scheduleGapMarkerDraw);
-          resizeObserver.observe(container);
-        }
+      timeScale.subscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
+      if (modelGapMarkers.length > 0 && typeof ResizeObserver !== "undefined") {
+        resizeObserver = new ResizeObserver(scheduleGapMarkerDraw);
+        resizeObserver.observe(container);
       }
-      timeScale.fitContent();
+      if (view) {
+        timeScale.setVisibleLogicalRange(view);
+      } else {
+        timeScale.fitContent();
+      }
       runtimeRef.current = runtime as ChartRuntime;
 
       if (selectedDate && model.readouts[selectedDate]) {
@@ -670,7 +684,7 @@ export function ExchangeKlineChart({
         setRendererFailure({ code: initializationFailureCode, retryable: true });
       }
     }
-  }, [model, pinDate, retryVersion]);
+  }, [model, onRange, pinDate, retryVersion, view]);
 
   useEffect(() => {
     if (selectedDisplayDate) {
@@ -858,7 +872,11 @@ export function ExchangeKlineChart({
         </button>
         <button
           type="button"
-          onClick={() => runChartAction((runtime) => runtime.chart.timeScale().scrollToRealTime())}
+          onClick={() =>
+            runChartAction(
+              (runtime) => recent && runtime.chart.timeScale().setVisibleLogicalRange(recent),
+            )
+          }
         >
           Newest bar
         </button>

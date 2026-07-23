@@ -7,6 +7,9 @@ import type { ObsChannel } from "../lib/api";
 import { buildObservatoryKlineModel, type ObservatoryKlineModel } from "../lib/observatoryChart";
 import { CONTEXT_FIXTURE, OBSERVED_SERIES_FIXTURE } from "./fixtures";
 
+const KLINE_VIEWPORT_STORAGE_KEY = "trade-web:observatory:klineViewport:v1";
+const KLINE_VIEWPORT_KIND = "market.kline.viewport";
+
 const chartMock = vi.hoisted(() => {
   const candlePriceScale = { applyOptions: vi.fn() };
   const volumePriceScale = { applyOptions: vi.fn() };
@@ -21,6 +24,7 @@ const chartMock = vi.hoisted(() => {
   const timeScale = {
     fitContent: vi.fn(),
     scrollToRealTime: vi.fn(),
+    setVisibleLogicalRange: vi.fn(),
     timeToCoordinate: vi.fn(() => 120),
     subscribeVisibleLogicalRangeChange: vi.fn(),
     unsubscribeVisibleLogicalRangeChange: vi.fn(),
@@ -100,8 +104,83 @@ function readyModel(channel: ObsChannel = "observed") {
   );
 }
 
+function addDays(date: string, days: number) {
+  const next = new Date(`${date}T00:00:00.000Z`);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next.toISOString().slice(0, 10);
+}
+
+function longReadyModel() {
+  const activeContext = {
+    ...CONTEXT_FIXTURE,
+    resolved_channel: "observed" as const,
+    excluded_dates: [],
+  };
+  const rowTemplate = OBSERVED_SERIES_FIXTURE.rows?.[0];
+  const rows = Array.from({ length: 75 }, (_unused, index) => ({
+    ...rowTemplate,
+    date: addDays("2026-05-01", index),
+    open: String(100_000 + index),
+    high: String(101_000 + index),
+    low: String(99_000 + index),
+    close: String(100_500 + index),
+    volume: String(1_000 + index),
+    quality_flags: [],
+    revision_state: "unchanged" as const,
+  }));
+  return buildObservatoryKlineModel(
+    {
+      ...OBSERVED_SERIES_FIXTURE,
+      context: activeContext,
+      rows,
+    },
+    activeContext,
+  );
+}
+
+function viewportCacheId(
+  model: ObservatoryKlineModel,
+  timeframe = "1D",
+  context = CONTEXT_FIXTURE,
+) {
+  const identity = model.identity;
+  const lifecycle = model.lifecycle;
+  return [
+    KLINE_VIEWPORT_KIND,
+    identity?.assetId ?? "unknown",
+    identity?.displaySymbol ?? "unknown",
+    identity?.provider ?? "unknown",
+    identity?.instrument ?? "unknown",
+    identity?.quote ?? "unknown",
+    identity?.interval ?? "unknown",
+    lifecycle?.channel ?? "unknown",
+    lifecycle?.publication ?? "unknown",
+    context.requested_knowledge_as_of ?? "unknown",
+    context.knowledge_mode ?? "unknown",
+    context.revision_policy ?? "unknown",
+    timeframe,
+  ].join("|");
+}
+
+function viewportCachePayload(
+  model: ObservatoryKlineModel,
+  from: string,
+  to: string,
+  timeframe = "1D",
+  context = CONTEXT_FIXTURE,
+) {
+  return JSON.stringify({
+    version: 1,
+    kind: KLINE_VIEWPORT_KIND,
+    id: viewportCacheId(model, timeframe, context),
+    from,
+    to,
+  });
+}
+
 beforeEach(() => {
   resetChartMock();
+  window.localStorage.clear();
 });
 
 afterEach(() => {
@@ -113,7 +192,7 @@ afterEach(() => {
 describe("ExchangeKlineChart", () => {
   it("creates one chart with candle and volume series using exchange-style interactions", () => {
     const model = readyModel();
-    render(<ExchangeKlineChart model={model} />);
+    render(<ExchangeKlineChart model={model} view={{ from: 0, to: 4 }} />);
 
     expect(chartMock.createChart).toHaveBeenCalledTimes(1);
     expect(chartMock.createChart.mock.calls[0]?.[1]).toMatchObject({
@@ -134,7 +213,11 @@ describe("ExchangeKlineChart", () => {
     );
     expect(chartMock.candleSeries.setData).toHaveBeenCalledWith(model.candles);
     expect(chartMock.volumeSeries.setData).toHaveBeenCalledWith(model.volumes);
-    expect(chartMock.timeScale.fitContent).toHaveBeenCalledTimes(1);
+    expect(chartMock.timeScale.setVisibleLogicalRange).toHaveBeenCalledWith({
+      from: 0,
+      to: 4,
+    });
+    expect(chartMock.timeScale.fitContent).not.toHaveBeenCalled();
     expect(screen.getByTestId("exchange-kline-chart")).toHaveAttribute(
       "data-renderer-state",
       "ready",
@@ -145,6 +228,42 @@ describe("ExchangeKlineChart", () => {
       "https://www.tradingview.com/",
     );
     expect(screen.getByText("Volume is shown as supplied; source unit unavailable.")).toBeTruthy();
+  });
+
+  it("opens a long daily chart with the provided recent visible range", () => {
+    const model = longReadyModel();
+    render(<ExchangeKlineChart model={model} view={{ from: 44, to: 74 }} />);
+
+    expect(chartMock.candleSeries.setData).toHaveBeenCalledWith(model.candles);
+    expect(chartMock.timeScale.setVisibleLogicalRange).toHaveBeenCalledWith({
+      from: 44,
+      to: 74,
+    });
+    expect(chartMock.timeScale.fitContent).not.toHaveBeenCalled();
+  });
+
+  it("applies a provided restored viewport", () => {
+    const model = longReadyModel();
+    render(<ExchangeKlineChart model={model} view={{ from: 11, to: 32 }} />);
+
+    expect(chartMock.timeScale.setVisibleLogicalRange).toHaveBeenCalledWith({
+      from: 11,
+      to: 32,
+    });
+  });
+
+  it("reports visible time range changes to the owner", () => {
+    const model = longReadyModel();
+    const onRange = vi.fn();
+    render(<ExchangeKlineChart model={model} view={{ from: 44, to: 74 }} onRange={onRange} />);
+    const visibleTimeRangeChange =
+      chartMock.timeScale.subscribeVisibleLogicalRangeChange.mock.calls[0]?.[0];
+
+    act(() => visibleTimeRangeChange({ from: 21, to: 48 }));
+    expect(onRange).toHaveBeenCalledWith({
+      from: 21,
+      to: 48,
+    });
   });
 
   it.each([
@@ -357,14 +476,25 @@ describe("ExchangeKlineChart", () => {
 
   it("wires scale, fit, newest, date input, and expanded fallback controls", () => {
     const onSelectDate = vi.fn();
-    render(<ExchangeKlineChart model={readyModel()} onSelectDate={onSelectDate} />);
+    render(
+      <ExchangeKlineChart
+        model={readyModel()}
+        onSelectDate={onSelectDate}
+        view={{ from: 0, to: 4 }}
+        recent={{ from: 2, to: 4 }}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Log" }));
     expect(chartMock.candlePriceScale.applyOptions).toHaveBeenCalledWith({ mode: 1 });
     fireEvent.click(screen.getByRole("button", { name: "Fit" }));
     fireEvent.click(screen.getByRole("button", { name: "Newest bar" }));
-    expect(chartMock.timeScale.fitContent).toHaveBeenCalledTimes(2);
-    expect(chartMock.timeScale.scrollToRealTime).toHaveBeenCalledOnce();
+    expect(chartMock.timeScale.fitContent).toHaveBeenCalledOnce();
+    expect(chartMock.timeScale.setVisibleLogicalRange).toHaveBeenLastCalledWith({
+      from: 2,
+      to: 4,
+    });
+    expect(chartMock.timeScale.scrollToRealTime).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByLabelText("Inspect a daily market date"), {
       target: { value: "2026-07-16" },
@@ -445,13 +575,14 @@ describe("ExchangeKlineChart", () => {
     chartMock.timeScale.subscribeVisibleLogicalRangeChange.mockImplementationOnce((callback) => {
       callback();
     });
-    chartMock.timeScale.fitContent.mockImplementationOnce(() => {
-      throw new Error("fit failed after bindings");
+    chartMock.timeScale.setVisibleLogicalRange.mockImplementationOnce(() => {
+      throw new Error("visible range failed after bindings");
     });
 
     render(
       <ExchangeKlineChart
         model={buildObservatoryKlineModel(OBSERVED_SERIES_FIXTURE, CONTEXT_FIXTURE)}
+        view={{ from: 0, to: 4 }}
       />,
     );
 
@@ -839,6 +970,232 @@ describe("ExchangeKlinePanel", () => {
 
     expect(capturedModels.at(-1)).toBe(firstModel);
     expect(loader).toHaveBeenCalledOnce();
+  });
+
+  it("passes recent and cached visible ranges into the lazy chart", async () => {
+    const capturedProps: Array<{
+      model: ObservatoryKlineModel;
+      view?: { from: number; to: number } | null;
+      onRange?: (range: { from: number; to: number }) => void;
+    }> = [];
+    function CapturedChart(props: (typeof capturedProps)[number]) {
+      capturedProps.push(props);
+      return <div data-testid="captured-visible-range">{props.view?.from}</div>;
+    }
+    const model = longReadyModel();
+    const series = {
+      ...OBSERVED_SERIES_FIXTURE,
+      context: { ...CONTEXT_FIXTURE, excluded_dates: [] },
+      rows: model.dates.map((date, index) => ({
+        ...OBSERVED_SERIES_FIXTURE.rows?.[0],
+        date,
+        open: String(100_000 + index),
+        high: String(101_000 + index),
+        low: String(99_000 + index),
+        close: String(100_500 + index),
+        volume: String(1_000 + index),
+        quality_flags: [],
+        revision_state: "unchanged" as const,
+      })),
+    };
+    const loader = vi.fn().mockResolvedValue({ ExchangeKlineChart: CapturedChart });
+
+    render(
+      <ExchangeKlinePanel
+        series={series}
+        context={{ ...CONTEXT_FIXTURE, excluded_dates: [] }}
+        loadChart={loader}
+      />,
+    );
+
+    expect(await screen.findByTestId("captured-visible-range")).toHaveTextContent("44");
+    expect(capturedProps.at(-1)?.view).toEqual({
+      from: 44,
+      to: 74,
+    });
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    capturedProps.at(-1)?.onRange?.({ from: 44, to: 74 });
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
+    expect(setItemSpy).not.toHaveBeenCalled();
+    for (let index = 0; index < 100; index += 1) {
+      capturedProps.at(-1)?.onRange?.({ from: 20 + index / 100, to: 47 + index / 100 });
+    }
+    capturedProps.at(-1)?.onRange?.({ from: 21, to: 48 });
+    await waitFor(() =>
+      expect(JSON.parse(window.localStorage.getItem(KLINE_VIEWPORT_STORAGE_KEY) ?? "{}")).toEqual({
+        version: 1,
+        kind: KLINE_VIEWPORT_KIND,
+        id: viewportCacheId(model, "1D", series.context),
+        from: "2026-05-22",
+        to: "2026-06-18",
+      }),
+    );
+    expect(setItemSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores compatible cached ranges and ignores incompatible ones in the panel", async () => {
+    const capturedRanges: Array<{ from: number; to: number } | null | undefined> = [];
+    function CapturedChart({ view }: { view?: { from: number; to: number } | null }) {
+      capturedRanges.push(view);
+      return <div data-testid="captured-cache-range">{view?.from}</div>;
+    }
+    const model = longReadyModel();
+    const series = {
+      ...OBSERVED_SERIES_FIXTURE,
+      context: { ...CONTEXT_FIXTURE, excluded_dates: [] },
+      rows: model.dates.map((date, index) => ({
+        ...OBSERVED_SERIES_FIXTURE.rows?.[0],
+        date,
+        open: String(100_000 + index),
+        high: String(101_000 + index),
+        low: String(99_000 + index),
+        close: String(100_500 + index),
+        volume: String(1_000 + index),
+        quality_flags: [],
+        revision_state: "unchanged" as const,
+      })),
+    };
+    const loader = vi.fn().mockResolvedValue({ ExchangeKlineChart: CapturedChart });
+    window.localStorage.setItem(
+      KLINE_VIEWPORT_STORAGE_KEY,
+      viewportCachePayload(model, "2026-05-12", "2026-06-02"),
+    );
+
+    const page = render(
+      <ExchangeKlinePanel
+        series={series}
+        context={{ ...CONTEXT_FIXTURE, excluded_dates: [] }}
+        loadChart={loader}
+      />,
+    );
+
+    expect(await screen.findByTestId("captured-cache-range")).toHaveTextContent("11");
+
+    window.localStorage.setItem(
+      KLINE_VIEWPORT_STORAGE_KEY,
+      viewportCachePayload(model, "2026-05-12", "2026-06-02", "1W"),
+    );
+    page.rerender(
+      <ExchangeKlinePanel
+        series={series}
+        context={{ ...CONTEXT_FIXTURE, excluded_dates: [] }}
+        loadChart={loader}
+        onRequestCompare={() => undefined}
+      />,
+    );
+
+    await waitFor(() => expect(capturedRanges.at(-1)).toEqual({ from: 44, to: 74 }));
+  });
+
+  it("falls back from stale, mismatched, or out-of-series viewport cache records", async () => {
+    const capturedRanges: Array<{ from: number; to: number } | null | undefined> = [];
+    function CapturedChart({ view }: { view?: { from: number; to: number } | null }) {
+      capturedRanges.push(view);
+      return <div data-testid="captured-fallback-range">{view?.from}</div>;
+    }
+    const model = longReadyModel();
+    const seriesContext = { ...CONTEXT_FIXTURE, excluded_dates: [] };
+    const series = {
+      ...OBSERVED_SERIES_FIXTURE,
+      context: seriesContext,
+      rows: model.dates.map((date, index) => ({
+        ...OBSERVED_SERIES_FIXTURE.rows?.[0],
+        date,
+        open: String(100_000 + index),
+        high: String(101_000 + index),
+        low: String(99_000 + index),
+        close: String(100_500 + index),
+        volume: String(1_000 + index),
+        quality_flags: [],
+        revision_state: "unchanged" as const,
+      })),
+    };
+    const loader = vi.fn().mockResolvedValue({ ExchangeKlineChart: CapturedChart });
+    window.localStorage.setItem(
+      KLINE_VIEWPORT_STORAGE_KEY,
+      viewportCachePayload(model, "2026-05-12", "2026-06-02", "1D", {
+        ...seriesContext,
+        requested_knowledge_as_of: "2026-06-01T00:00:00Z",
+      }),
+    );
+
+    const page = render(
+      <ExchangeKlinePanel series={series} context={seriesContext} loadChart={loader} />,
+    );
+
+    expect(await screen.findByTestId("captured-fallback-range")).toHaveTextContent("44");
+    expect(capturedRanges.at(-1)).toEqual({ from: 44, to: 74 });
+
+    window.localStorage.setItem(
+      KLINE_VIEWPORT_STORAGE_KEY,
+      viewportCachePayload(model, "2026-05-12", "2026-08-31", "1D", seriesContext),
+    );
+    page.rerender(
+      <ExchangeKlinePanel
+        series={series}
+        context={seriesContext}
+        loadChart={loader}
+        onRequestCompare={() => undefined}
+      />,
+    );
+    await waitFor(() => expect(capturedRanges.at(-1)).toEqual({ from: 44, to: 74 }));
+
+    window.localStorage.setItem(KLINE_VIEWPORT_STORAGE_KEY, "{broken");
+    page.rerender(
+      <ExchangeKlinePanel
+        series={series}
+        context={seriesContext}
+        loadChart={loader}
+        onRetrySeries={() => undefined}
+      />,
+    );
+    await waitFor(() => expect(capturedRanges.at(-1)).toEqual({ from: 44, to: 74 }));
+  });
+
+  it("stops viewport persistence attempts after localStorage rejects a write", async () => {
+    const capturedProps: Array<{
+      view?: { from: number; to: number } | null;
+      onRange?: (range: { from: number; to: number }) => void;
+    }> = [];
+    function CapturedChart(props: (typeof capturedProps)[number]) {
+      capturedProps.push(props);
+      return <div data-testid="captured-storage-failure">{props.view?.from}</div>;
+    }
+    const model = longReadyModel();
+    const seriesContext = { ...CONTEXT_FIXTURE, excluded_dates: [] };
+    const series = {
+      ...OBSERVED_SERIES_FIXTURE,
+      context: seriesContext,
+      rows: model.dates.map((date, index) => ({
+        ...OBSERVED_SERIES_FIXTURE.rows?.[0],
+        date,
+        open: String(100_000 + index),
+        high: String(101_000 + index),
+        low: String(99_000 + index),
+        close: String(100_500 + index),
+        volume: String(1_000 + index),
+        quality_flags: [],
+        revision_state: "unchanged" as const,
+      })),
+    };
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota denied");
+    });
+
+    render(
+      <ExchangeKlinePanel
+        series={series}
+        context={seriesContext}
+        loadChart={vi.fn().mockResolvedValue({ ExchangeKlineChart: CapturedChart })}
+      />,
+    );
+
+    expect(await screen.findByTestId("captured-storage-failure")).toHaveTextContent("44");
+    capturedProps.at(-1)?.onRange?.({ from: 21, to: 48 });
+    await waitFor(() => expect(setItemSpy).toHaveBeenCalledTimes(1));
+    capturedProps.at(-1)?.onRange?.({ from: 22, to: 49 });
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
+    expect(setItemSpy).toHaveBeenCalledTimes(1);
   });
 
   it("contains a lazy chart render failure and preserves Retry and Compare", async () => {
