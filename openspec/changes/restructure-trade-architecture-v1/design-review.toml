@@ -1,0 +1,154 @@
+schema_version = 1
+policy_version = "v1"
+policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
+artifact_digest_algorithm = "sha256-path-content-v1"
+artifact_digest = "sha256:bb77f920409c1ee7d3bbf80fb564719920dfa69adb84fa310672577a6cab4460"
+reviewed_commit = "5ef594e4b477ca161a4a5e3aaf3f557bc9c7c24b"
+reviewed_at = "2026-07-23"
+status = "approved"
+bootstrap = false
+
+[[judges]]
+role = "reliability"
+status = "approved"
+score_before = 8.0
+score_after = 9.0
+
+[[judges]]
+role = "performance"
+status = "approved"
+score_before = 9.0
+score_after = 10.0
+
+[[judges]]
+role = "architecture"
+status = "approved"
+score_before = 5.0
+score_after = 9.0
+
+[[judges]]
+role = "data_quality"
+status = "approved"
+score_before = 9.0
+score_after = 10.0
+
+[[judges]]
+role = "observability"
+status = "approved"
+score_before = 7.0
+score_after = 9.0
+
+[[judges]]
+role = "news_future"
+status = "approved"
+score_before = 8.8
+score_after = 9.0
+
+[[findings]]
+id = "TRADE-ARCH-001"
+priority = "P0"
+severity = "CRIT"
+consensus_count = 1
+status = "resolved"
+resolution = "Kernel and public contracts now precede Platform; Platform uses a LegacySchemaBootstrapAdapter without requiring future Context repositories, and each Context later replaces only its owned legacy delegates."
+evidence = [
+  "design.md:Migration phases and child OpenSpec changes",
+  "specs/platform-foundation/spec.md:Platform persistence and events SHALL precede Context extraction",
+  "tasks.md:2.2",
+  "tasks.md:2.3",
+]
+
+[[findings]]
+id = "TRADE-DATA-001"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Formal point-in-time and revision semantics are an independently validated prerequisite; formal snapshots and Studies fail closed without required clocks, policy identities, and revision mappings."
+evidence = [
+  "specs/dataset-product-lifecycle/spec.md:Formal PIT and revision semantics SHALL be proven before formal use",
+  "specs/study-lifecycle/spec.md:Studies SHALL run only from immutable Dataset snapshots",
+  "tasks.md:2.4",
+]
+
+[[findings]]
+id = "TRADE-REL-001"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Platform now defines durable ordered delivery and verified restore activation: OrderingContract prevents N plus one from applying before N, and RestoreOperation fences writers, atomically activates, rebinds runtimes, verifies health, and rolls back safely."
+evidence = [
+  "specs/platform-foundation/spec.md:Ordered delivery SHALL use a durable OrderingContract",
+  "specs/migration-governance/spec.md:Restorable backups SHALL be verified before activation",
+  "tasks.md:2.3",
+  "tasks.md:3.4",
+]
+
+[[findings]]
+id = "TRADE-DATA-002"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Formal DatasetVersionRef and DatasetSnapshotRef identities bind policies, transform environment, layout, lineage, revision mapping, clock eligibility, and content; all formal and compatibility artifact readers must verify manifest-backed digests."
+evidence = [
+  "specs/dataset-product-lifecycle/spec.md:Datasets SHALL own quality, lineage, revisions and point-in-time resolution",
+  "specs/dataset-product-lifecycle/spec.md:Formal and compatibility artifact reads SHALL verify integrity",
+  "tasks.md:3.2",
+]
+
+[[findings]]
+id = "TRADE-OBS-001"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Trusted ActorContext, OperationReceipt, ProcessView, ErrorEnvelope, mutation receipt/recovery ledger, RetentionView, operational matrix, and bounded BFF/SSE behavior are normative, mapped to quality obligations, and gated by child validation."
+evidence = [
+  "specs/process-orchestration/spec.md:Commands and events SHALL have durable handoff receipts",
+  "specs/process-orchestration/spec.md:Mutation compatibility SHALL use a receipt and recovery ledger",
+  "specs/interface-compatibility/spec.md:Interfaces SHALL expose bounded retention and recovery operations",
+  "design-quality.toml:processes.recovery",
+  "tasks.md:4.2",
+]
+
+[[findings]]
+id = "TRADE-NEWS-001"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 1
+status = "resolved"
+resolution = "Capture requires durable source and credential admission, SourceManifest rights enforcement, downstream rights-restriction propagation, temporal and finality preservation, and access-controlled append-only quarantine revalidation."
+evidence = [
+  "specs/capture-contract/spec.md:Capture admission SHALL be durable across source and credential scope",
+  "specs/capture-contract/spec.md:Rights revocation SHALL propagate through retained lineage",
+  "specs/capture-contract/spec.md:Capture quarantine SHALL control access and revalidation",
+  "tasks.md:3.1",
+]
+
+[[findings]]
+id = "TRADE-PERF-001"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "resolved"
+resolution = "CapacityEnvelope is a shared result contract for one-times and ten-times workloads, while parent numeric source values are explicitly non-operative fixtures and every source must declare and validate its own policy."
+evidence = [
+  "specs/platform-foundation/spec.md:Capacity evidence SHALL be comparable across child changes",
+  "design-quality.toml:evidence.external_event",
+  "tasks.md:2.3",
+]
+
+[[findings]]
+id = "TRADE-FUTURE-001"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "accepted"
+resolution = "The capture-boundary child must distinguish Capture transport, integrity, source-contract, and rights quarantine from Datasets semantic usefulness, canonical interpretation, model fitness, and release eligibility; no target Context ownership is changed by accepting this refinement."
+evidence = [
+  "specs/capture-contract/spec.md:Capture quarantine SHALL remain distinct from delivery DLQ",
+  "design.md:Bounded Context definitions",
+  "tasks.md:3.1",
+]
