@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import trade_py.devtools.design_quality.evaluate as evaluate_module
 from trade_py.devtools.design_quality.errors import DesignQualityError
 from trade_py.devtools.design_quality.evaluate import evaluate_change, evaluate_changes
 from trade_py.devtools.design_quality.models import DesignReport, EvidenceSchema
@@ -268,7 +269,13 @@ def test_valid_governed_change_passes_pre_review_diagnostics(tmp_path: Path) -> 
 
 
 def test_repository_bootstrap_change_passes_strict_self_check() -> None:
-    report = evaluate_change(REPO_ROOT, "add-design-quality-gates", strict=True)
+    report = evaluate_change(
+        REPO_ROOT,
+        "add-design-quality-gates",
+        strict=True,
+        effective_date=TODAY,
+        today=TODAY,
+    )
 
     assert report.status == "PASS"
     assert report.approval_eligible is True
@@ -734,6 +741,94 @@ resolution = "The issue was resolved with current evidence."
     assert "counts blockers=0 warnings=0 suppressed=0 exit_code=0" in text
     assert "core.review.stale" in _rule_ids(stale_report)
     assert "core.review.incomplete" in _rule_ids(malformed_report)
+
+
+@pytest.mark.parametrize(
+    ("parent_managed_process_group", "expected_start_new_session"),
+    ((False, True), (True, False)),
+)
+def test_reviewed_tree_git_session_mode_matches_parent_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    parent_managed_process_group: bool,
+    expected_start_new_session: bool,
+) -> None:
+    repo = _repo(tmp_path)
+    change = _write_change(repo, "process-group-review")
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "design@example.test")
+    _git(repo, "config", "user.name", "Design Test")
+    _git(repo, "add", "--", "design-policy", "openspec")
+    _git(repo, "commit", "-m", "reviewed design")
+    reviewed_commit = _git(repo, "rev-parse", "HEAD")
+    _write_review(repo, change, reviewed_commit=reviewed_commit)
+    observed: list[bool] = []
+    real_bounded_git_stdout = evaluate_module._bounded_git_stdout
+
+    def recording_bounded_git_stdout(
+        repo_root: Path,
+        args: list[str],
+        *,
+        limit: int,
+        timeout: float = 3,
+        start_new_session: bool = True,
+    ) -> tuple[int, bytes] | None:
+        observed.append(start_new_session)
+        return real_bounded_git_stdout(
+            repo_root,
+            args,
+            limit=limit,
+            timeout=timeout,
+            start_new_session=start_new_session,
+        )
+
+    monkeypatch.setattr(
+        evaluate_module,
+        "_bounded_git_stdout",
+        recording_bounded_git_stdout,
+    )
+
+    report = evaluate_change(
+        repo,
+        change.name,
+        strict=True,
+        today=TODAY,
+        parent_managed_process_group=parent_managed_process_group,
+    )
+
+    assert report.approval_eligible is True
+    assert observed == [expected_start_new_session]
+
+
+@pytest.mark.parametrize(
+    ("start_new_session", "expected_kill"),
+    ((True, "group"), (False, "direct")),
+)
+def test_git_timeout_kill_scope_matches_session_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    start_new_session: bool,
+    expected_kill: str,
+) -> None:
+    calls: list[str] = []
+
+    class FakeProcess:
+        pid = 31415
+
+        def kill(self) -> None:
+            calls.append("direct")
+
+    monkeypatch.setattr(
+        evaluate_module.os,
+        "killpg",
+        lambda _pid, _signal: calls.append("group"),
+    )
+
+    evaluate_module._kill_git_process(
+        FakeProcess(),  # type: ignore[arg-type]
+        start_new_session=start_new_session,
+    )
+
+    assert calls == [expected_kill]
 
 
 def test_strict_review_commit_tree_must_match_attested_artifacts(tmp_path: Path) -> None:

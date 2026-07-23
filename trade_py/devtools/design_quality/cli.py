@@ -81,6 +81,8 @@ def _batch_parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-governance", action="append", default=[])
     parser.add_argument("--missing-required", action="append", default=[])
     parser.add_argument("--immutable-policy-edit", action="append", default=[])
+    parser.add_argument("--evaluation-date")
+    parser.add_argument("--parent-managed-process-group", action="store_true")
     parser.add_argument("--strict", action="store_true")
     return parser
 
@@ -96,6 +98,7 @@ def _synthetic_report(
     message: str,
     remediation: str,
     metadata: dict[str, object],
+    effective_date: date,
 ) -> dict[str, object]:
     return {
         "schema_version": "trade.design.report.v1",
@@ -105,7 +108,7 @@ def _synthetic_report(
         "artifact_digest": _EMPTY_ARTIFACT_DIGEST,
         "change": name,
         "strict": strict,
-        "effective_date": datetime.now(timezone.utc).date().isoformat(),
+        "effective_date": effective_date.isoformat(),
         "approval_eligible": False,
         "governance_status": governance_status,
         "status": "FAIL",
@@ -128,7 +131,9 @@ def _synthetic_report(
     }
 
 
-def _missing_report(name: str, policy: Policy, *, strict: bool) -> dict[str, object]:
+def _missing_report(
+    name: str, policy: Policy, *, strict: bool, effective_date: date
+) -> dict[str, object]:
     return _synthetic_report(
         name,
         policy,
@@ -139,10 +144,13 @@ def _missing_report(name: str, policy: Policy, *, strict: bool) -> dict[str, obj
         message="The governed change or marker was deleted from changed scope.",
         remediation="Restore governance or use the supported archive workflow.",
         metadata={"missing_from_changed_scope": True},
+        effective_date=effective_date,
     )
 
 
-def _policy_edit_report(path: str, policy: Policy, *, strict: bool) -> dict[str, object]:
+def _policy_edit_report(
+    path: str, policy: Policy, *, strict: bool, effective_date: date
+) -> dict[str, object]:
     return _synthetic_report(
         f"immutable-policy-{Path(path).stem}",
         policy,
@@ -153,6 +161,7 @@ def _policy_edit_report(path: str, policy: Policy, *, strict: bool) -> dict[str,
         message="An existing immutable design policy version was modified or deleted.",
         remediation="Restore the policy and introduce a newly reviewed version instead.",
         metadata={"immutable_policy_path": path},
+        effective_date=effective_date,
     )
 
 
@@ -192,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         repo_root = discover_repo_root(Path.cwd())
         policy = load_policy(repo_root)
+        evaluation_date = _effective_date(args.evaluation_date) or datetime.now(timezone.utc).date()
         changes = tuple(sorted(set(args.change)))
         required_names = tuple(sorted(set(args.require_governance)))
         missing_names = tuple(sorted(set(args.missing_required) - set(changes)))
@@ -218,8 +228,11 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root,
                 changes,
                 strict=args.strict,
+                effective_date=evaluation_date,
+                today=evaluation_date,
                 require_governance=frozenset(required_names),
                 policy=policy,
+                parent_managed_process_group=args.parent_managed_process_group,
             )
             if changes
             else ()
@@ -232,8 +245,24 @@ def main(argv: list[str] | None = None) -> int:
         return _batch_error(str(exc))
     payload = batch_payload(reports)
     synthetic = [
-        *(_missing_report(item, policy, strict=args.strict) for item in missing_names),
-        *(_policy_edit_report(item, policy, strict=args.strict) for item in policy_edits),
+        *(
+            _missing_report(
+                item,
+                policy,
+                strict=args.strict,
+                effective_date=evaluation_date,
+            )
+            for item in missing_names
+        ),
+        *(
+            _policy_edit_report(
+                item,
+                policy,
+                strict=args.strict,
+                effective_date=evaluation_date,
+            )
+            for item in policy_edits
+        ),
     ]
     payload_reports = payload["reports"]
     if not isinstance(payload_reports, list):

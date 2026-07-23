@@ -560,6 +560,8 @@ def _check_review(
     policy: Policy,
     effective_date: date,
     findings: _Findings,
+    *,
+    parent_managed_process_group: bool,
 ) -> dict[str, str]:
     try:
         review = _parse_toml(snapshot, "design-review.toml")
@@ -632,7 +634,10 @@ def _check_review(
         )
     else:
         reviewed_digest, reviewed_commit_status = _reviewed_tree_digest(
-            snapshot, policy, reviewed_commit
+            snapshot,
+            policy,
+            reviewed_commit,
+            start_new_session=not parent_managed_process_group,
         )
         if reviewed_digest is not None and reviewed_digest != snapshot.artifact_digest:
             findings.add(
@@ -719,7 +724,12 @@ def _check_review(
 
 
 def _bounded_git_stdout(
-    repo_root: Path, args: list[str], *, limit: int, timeout: float = 3
+    repo_root: Path,
+    args: list[str],
+    *,
+    limit: int,
+    timeout: float = 3,
+    start_new_session: bool = True,
 ) -> tuple[int, bytes] | None:
     try:
         process = subprocess.Popen(
@@ -727,7 +737,7 @@ def _bounded_git_stdout(
             cwd=repo_root,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            start_new_session=start_new_session,
         )
     except OSError:
         return None
@@ -745,7 +755,7 @@ def _bounded_git_stdout(
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                os.killpg(process.pid, signal.SIGKILL)
+                _kill_git_process(process, start_new_session=start_new_session)
                 process.wait()
                 return None
             for _, _ in selector.select(min(remaining, 0.1)):
@@ -758,18 +768,25 @@ def _bounded_git_stdout(
                     continue
                 output.extend(chunk)
                 if len(output) > limit:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    _kill_git_process(process, start_new_session=start_new_session)
                     process.wait()
                     return None
         try:
             return process.wait(timeout=max(0.1, deadline - time.monotonic())), bytes(output)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            _kill_git_process(process, start_new_session=start_new_session)
             process.wait()
             return None
     finally:
         selector.close()
         process.stdout.close()
+
+
+def _kill_git_process(process: subprocess.Popen[bytes], *, start_new_session: bool) -> None:
+    if start_new_session:
+        os.killpg(process.pid, signal.SIGKILL)
+    else:
+        process.kill()
 
 
 def _git_batch_blobs(
@@ -845,7 +862,11 @@ def _git_batch_blobs(
 
 
 def _reviewed_tree_digest(
-    snapshot: ChangeSnapshot, policy: Policy, reviewed_commit: str
+    snapshot: ChangeSnapshot,
+    policy: Policy,
+    reviewed_commit: str,
+    *,
+    start_new_session: bool = True,
 ) -> tuple[str | None, str]:
     repo_root = Path(snapshot.repo_root)
     if not (repo_root / ".git").exists():
@@ -868,6 +889,7 @@ def _reviewed_tree_digest(
         repo_root,
         ["ls-tree", "-r", "-z", "--name-only", reviewed_commit, "--", change_prefix],
         limit=tree_limit,
+        start_new_session=start_new_session,
     )
     if tree is None:
         return None, "error"
@@ -988,6 +1010,7 @@ def _evaluate_snapshot(
     strict: bool,
     effective_date: date,
     require_governance: bool,
+    parent_managed_process_group: bool,
 ) -> DesignReport:
     findings = _Findings(policy)
     marker = _marker(snapshot, policy, findings)
@@ -1030,7 +1053,17 @@ def _evaluate_snapshot(
             "design.md",
             "A new abstraction is proposed without consumer evidence.",
         )
-    review_metadata = _check_review(snapshot, policy, effective_date, findings) if strict else {}
+    review_metadata = (
+        _check_review(
+            snapshot,
+            policy,
+            effective_date,
+            findings,
+            parent_managed_process_group=parent_managed_process_group,
+        )
+        if strict
+        else {}
+    )
     exceptions = _apply_exceptions(policy, raw_exceptions, effective_date, findings)
     if len(findings.items) > policy.limits.max_findings:
         findings.items = findings.items[: policy.limits.max_findings - 1]
@@ -1076,6 +1109,7 @@ def evaluate_changes(
     today: date | None = None,
     require_governance: frozenset[str] = frozenset(),
     policy: Policy | None = None,
+    parent_managed_process_group: bool = False,
 ) -> tuple[DesignReport, ...]:
     current_date = today or datetime.now(timezone.utc).date()
     active_date = effective_date or current_date
@@ -1093,6 +1127,7 @@ def evaluate_changes(
             strict=strict,
             effective_date=active_date,
             require_governance=snapshot.name in require_governance,
+            parent_managed_process_group=parent_managed_process_group,
         )
         for snapshot in snapshots
     )
@@ -1107,6 +1142,7 @@ def evaluate_change(
     today: date | None = None,
     require_governance: bool = False,
     policy: Policy | None = None,
+    parent_managed_process_group: bool = False,
 ) -> DesignReport:
     required = frozenset({change}) if require_governance else frozenset()
     return evaluate_changes(
@@ -1117,4 +1153,5 @@ def evaluate_change(
         today=today,
         require_governance=required,
         policy=policy,
+        parent_managed_process_group=parent_managed_process_group,
     )[0]
