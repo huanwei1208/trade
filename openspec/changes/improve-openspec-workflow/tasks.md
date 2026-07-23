@@ -9,35 +9,35 @@
 
 ## 2. Read-only status service
 
-- [ ] 2.1 Add typed `trade_py/devtools/openspec_status/` report and adapter
+- [x] 2.1 Add typed `trade_py/devtools/openspec_status/` report and adapter
   boundaries for snapshot-bound native list/status/validation and complete
   design-quality reports.
-- [ ] 2.2 Extract the shared Git-base governance-requirement resolver and fail
+- [x] 2.2 Extract the shared Git-base governance-requirement resolver and fail
   closed for new changes, deleted markers, existing governed changes, and
   unavailable provenance.
-- [ ] 2.3 Implement the four-worker bounded process executor with streaming
+- [x] 2.3 Implement the four-worker bounded process executor with streaming
   output limits, process-group TERM/KILL/reap, interrupt cleanup, a command-wide
   deadline, and parent-managed design-batch Git group inheritance.
-- [ ] 2.4 Implement the reviewed lifecycle/next-action table, task-bearing
+- [x] 2.4 Implement the reviewed lifecycle/next-action table, task-bearing
   `spec-driven` strategy, immutable native snapshot, digest drift rejection,
   strict batch design evaluation, and explicit unavailable records.
-- [ ] 2.5 Add focused service/executor tests for every lifecycle row, clean strict PASS versus nonempty review-only versus mixed findings, new versus historical governance, marker deletion, unsupported-schema digest details, evidence drift, midnight date capture, empty scope, native and parent-managed active-design-batch timeout/reap with no detached Git survivor, output flooding, inherited pipes, interrupt cleanup, unknown change, partial failure, exact 16 MiB/one-byte-over report bounds, and deterministic 10/100-change capacity. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
-- [ ] 2.6 Run focused service pytest and compileall, then commit the validated implementation unit. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
+- [x] 2.5 Add focused service/executor tests for every lifecycle row, clean strict PASS versus nonempty review-only versus mixed findings, new versus historical governance, marker deletion, unsupported-schema digest details, evidence drift, midnight date capture, empty scope, native and parent-managed active-design-batch timeout/reap with no detached Git survivor, output flooding, inherited pipes, interrupt cleanup, unknown change, partial failure, exact 16 MiB/one-byte-over report bounds, and deterministic 10/100-change capacity. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
+- [x] 2.6 Run focused service pytest and compileall, then commit the validated implementation unit. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
 
 ## 3. Public CLI and reporting
 
-- [ ] 3.1 Add lazy `./trade dev openspec [change] [--format text|json]`
+- [x] 3.1 Add lazy `./trade dev openspec [change] [--format text|json]`
   parsing plus `uv run --frozen --no-sync` shell routing without runtime imports.
-- [ ] 3.2 Add deterministic text rendering and the complete typed
+- [x] 3.2 Add deterministic text rendering and the complete typed
   `trade.openspec.workflow.v1` contract with unmodified embedded design reports,
   native issue omission counts, nullable unavailable evidence, fixed oversized
   error output, and stable exit precedence.
-- [ ] 3.3 Add parser, runtime import-boundary, text/JSON schema, list/single, unknown-change, partial-error, frozen/no-sync, and shell-help tests. `[validates:openspec.public-cli] [validation:test]`
-- [ ] 3.4 Run focused CLI pytest and real repository text/JSON smoke checks, then commit the validated CLI unit. `[validates:openspec.public-cli] [validation:test]`
+- [x] 3.3 Add parser, runtime import-boundary, text/JSON schema, list/single, unknown-change, partial-error, frozen/no-sync, and shell-help tests. `[validates:openspec.public-cli] [validation:test]`
+- [x] 3.4 Run focused CLI pytest and real repository text/JSON smoke checks, then commit the validated CLI unit. `[validates:openspec.public-cli] [validation:test]`
 
 ## 4. Completion and integration
 
-- [ ] 4.1 Run `openspec validate improve-openspec-workflow --strict`, `./trade dev check --show-plan`, `./trade dev check`, focused pytest including executor/capacity coverage, `python -m compileall trade_py tests`, and `git diff --check`. `[validates:openspec.status-service] [validates:openspec.public-cli] [validates:openspec.concurrent-collection] [validation:test]`
+- [x] 4.1 Run `openspec validate improve-openspec-workflow --strict`, `./trade dev check --show-plan`, `./trade dev check`, focused pytest including executor/capacity coverage, `python -m compileall trade_py tests`, and `git diff --check`. `[validates:openspec.status-service] [validates:openspec.public-cli] [validates:openspec.concurrent-collection] [validation:test]`
 - [ ] 4.2 Run the six-role implementation review against the final diff, resolve every P0, refresh review evidence if governed artifacts changed, and rerun strict design approval. `[validates:openspec.review-evidence] [validation:review]`
 - [ ] 4.3 Record exact validation outcomes, compatibility/data/performance
   risks, review findings, and residual follow-ups; update completed task
