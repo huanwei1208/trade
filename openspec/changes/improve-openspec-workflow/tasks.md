@@ -38,12 +38,12 @@
 ## 4. Completion and integration
 
 - [x] 4.1 Run `openspec validate improve-openspec-workflow --strict`, `./trade dev check --show-plan`, `./trade dev check`, focused pytest including executor/capacity coverage, `python -m compileall trade_py tests`, and `git diff --check`. `[validates:openspec.status-service] [validates:openspec.public-cli] [validates:openspec.concurrent-collection] [validation:test]`
-- [ ] 4.2 Run the six-role implementation review against the final diff, resolve every P0, refresh review evidence if governed artifacts changed, and rerun strict design approval. `[validates:openspec.review-evidence] [validation:review]`
-- [ ] 4.3 Record exact validation outcomes, compatibility/data/performance
+- [x] 4.2 Run the six-role implementation review against the final diff, resolve every P0, refresh review evidence if governed artifacts changed, and rerun strict design approval. `[validates:openspec.review-evidence] [validation:review]`
+- [x] 4.3 Record exact validation outcomes, compatibility/data/performance
   risks, review findings, and residual follow-ups; update completed task
   checkboxes.
-- [ ] 4.4 Recheck worktree status, stage only intentional files, and commit the
+- [x] 4.4 Recheck worktree status, stage only intentional files, and commit the
   final validated unit.
-- [ ] 4.5 Push the feature branch, create a GitHub pull request against
+- [x] 4.5 Push the feature branch, create a GitHub pull request against
   `master`, and retain squash-merge plus source-branch deletion as the merge
   policy.
