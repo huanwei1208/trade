@@ -15,7 +15,7 @@ from trade_py.devtools.design_quality.governance import GovernanceResolution
 from trade_py.devtools.design_quality.models import Policy
 from trade_py.devtools.design_quality.report_binding import (
     ReportBinding,
-    load_report_bindings,
+    load_report_bindings_isolated,
 )
 from trade_py.devtools.openspec_status.errors import (
     WorkflowCollectionError,
@@ -54,6 +54,7 @@ def collect_design_evidence(
         names,
         policy,
         required=required,
+        deadline=deadline,
     )
     healthy_names = tuple(name for name in names if name in bindings)
     if not healthy_names:
@@ -139,34 +140,46 @@ def _collect_report_bindings(
     policy: Policy,
     *,
     required: frozenset[str],
+    deadline: float,
 ) -> tuple[dict[str, ReportBinding], dict[str, WorkflowError]]:
-    bindings: dict[str, ReportBinding] = {}
-    errors: dict[str, WorkflowError] = {}
-    total_bytes = 0
-    for name in names:
-        try:
-            binding = load_report_bindings(
-                repo_root,
-                (name,),
-                policy,
-                require_governance=required.intersection({name}),
-            )[name]
-        except DesignQualityError as exc:
-            errors[name] = WorkflowError(
-                code="workflow.snapshot.changed",
-                source="snapshot",
-                change=name,
-                message=str(exc),
-                remediation=(
-                    f"Stop concurrent edits, repair the OpenSpec artifacts for {name}, and rerun."
-                ),
+    def check_deadline() -> None:
+        if time.monotonic() >= deadline:
+            raise WorkflowCollectionError(
+                WorkflowError(
+                    code="workflow.process.timeout",
+                    source="design_quality",
+                    message="Command-wide deadline expired during design binding collection.",
+                    remediation=(
+                        "Reduce active OpenSpec work or repair slow design artifacts, then rerun."
+                    ),
+                )
             )
-            continue
-        bindings[name] = binding
-        total_bytes += binding.total_bytes
-    if total_bytes > policy.limits.max_total_bytes_per_batch:
-        _raise("Design-quality binding artifacts exceed the policy batch byte limit.")
-    return bindings, errors
+
+    check_deadline()
+    try:
+        batch = load_report_bindings_isolated(
+            repo_root,
+            names,
+            policy,
+            require_governance=required,
+            checkpoint=check_deadline,
+        )
+    except DesignQualityError as exc:
+        _raise(str(exc))
+    check_deadline()
+    errors = {
+        name: WorkflowError(
+            code="workflow.snapshot.changed",
+            source="snapshot",
+            change=name,
+            message=str(error),
+            remediation=(
+                f"Stop concurrent edits, repair the OpenSpec artifacts for {name}, and rerun."
+            ),
+        )
+        for name, error in batch.errors.items()
+    }
+    return batch.bindings, errors
 
 
 def _report_error(name: str, message: str) -> WorkflowError:

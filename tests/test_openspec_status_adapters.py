@@ -16,7 +16,10 @@ from trade_py.devtools.design_quality.governance import (
     GovernanceResolution,
 )
 from trade_py.devtools.design_quality.policy import load_policy
-from trade_py.devtools.design_quality.report_binding import ReportBinding
+from trade_py.devtools.design_quality.report_binding import (
+    ReportBinding,
+    ReportBindingBatch,
+)
 from trade_py.devtools.openspec_status import design as design_adapter
 from trade_py.devtools.openspec_status.errors import (
     WorkflowCollectionError,
@@ -574,8 +577,11 @@ def test_design_malformed_report_preserves_sibling(
     )
     monkeypatch.setattr(
         design_adapter,
-        "load_report_bindings",
-        lambda *_args, **_kwargs: {name: binding for name in names},
+        "load_report_bindings_isolated",
+        lambda *_args, **_kwargs: ReportBindingBatch(
+            bindings={name: binding for name in names},
+            errors={},
+        ),
     )
     monkeypatch.setattr(
         design_adapter,
@@ -628,18 +634,16 @@ def test_design_binding_failure_preserves_sibling(
         total_bytes=0,
     )
 
-    def load_binding(
-        _repo_root: Path,
-        selected: tuple[str, ...],
-        *_args: object,
-        **_kwargs: object,
-    ) -> dict[str, ReportBinding]:
-        name = selected[0]
-        if name == "change-b":
-            raise design_adapter.DesignQualityError("artifact changed while reading")
-        return {name: binding}
-
-    monkeypatch.setattr(design_adapter, "load_report_bindings", load_binding)
+    monkeypatch.setattr(
+        design_adapter,
+        "load_report_bindings_isolated",
+        lambda *_args, **_kwargs: ReportBindingBatch(
+            bindings={"change-a": binding},
+            errors={
+                "change-b": design_adapter.DesignQualityError("artifact changed while reading")
+            },
+        ),
+    )
     monkeypatch.setattr(
         design_adapter,
         "validate_design_batch_payload",
@@ -665,6 +669,108 @@ def test_design_binding_failure_preserves_sibling(
     assert error.code == "workflow.snapshot.changed"
     assert error.source == "snapshot"
     assert error.change == "change-b"
+
+
+def test_design_binding_rejects_expired_deadline_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    names = tuple(f"change-{index:03d}" for index in range(100))
+    requirements = GovernanceResolution(
+        tuple(
+            GovernanceRequirement(
+                change=name,
+                required=True,
+                source=GovernanceRequirementSource.NEW_CHANGE,
+                live=True,
+            )
+            for name in names
+        )
+    )
+    calls = 0
+
+    def load_bindings(*_args: object, **_kwargs: object) -> ReportBindingBatch:
+        nonlocal calls
+        calls += 1
+        return ReportBindingBatch(bindings={}, errors={})
+
+    monkeypatch.setattr(
+        design_adapter,
+        "load_report_bindings_isolated",
+        load_bindings,
+    )
+
+    with pytest.raises(WorkflowCollectionError) as raised:
+        design_adapter.collect_design_evidence(
+            tmp_path,
+            names,
+            requirements,
+            evaluation_date=date(2026, 7, 23),
+            executor=_DesignExecutor(()),
+            deadline=time.monotonic() - 1,
+            policy=load_policy(REPO_ROOT),
+            limits=WorkflowLimits(),
+        )
+
+    assert raised.value.error.code == "workflow.process.timeout"
+    assert calls == 0
+
+
+def test_design_binding_stops_slow_batch_at_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    names = tuple(f"change-{index:03d}" for index in range(100))
+    requirements = GovernanceResolution(
+        tuple(
+            GovernanceRequirement(
+                change=name,
+                required=True,
+                source=GovernanceRequirementSource.NEW_CHANGE,
+                live=True,
+            )
+            for name in names
+        )
+    )
+    clock = iter((0.0, 0.25, 0.5, 0.75, 1.0))
+    checkpoints = 0
+
+    def monotonic() -> float:
+        return next(clock, 1.0)
+
+    def load_bindings(
+        *_args: object,
+        checkpoint: object,
+        **_kwargs: object,
+    ) -> ReportBindingBatch:
+        nonlocal checkpoints
+        assert callable(checkpoint)
+        for _name in names:
+            checkpoint()
+            checkpoints += 1
+        raise AssertionError("deadline did not stop the slow binding batch")
+
+    monkeypatch.setattr(design_adapter.time, "monotonic", monotonic)
+    monkeypatch.setattr(
+        design_adapter,
+        "load_report_bindings_isolated",
+        load_bindings,
+    )
+
+    with pytest.raises(WorkflowCollectionError) as raised:
+        design_adapter.collect_design_evidence(
+            tmp_path,
+            names,
+            requirements,
+            evaluation_date=date(2026, 7, 23),
+            executor=_DesignExecutor(()),
+            deadline=1.0,
+            policy=load_policy(REPO_ROOT),
+            limits=WorkflowLimits(),
+        )
+
+    assert raised.value.error.code == "workflow.process.timeout"
+    assert checkpoints == 3
 
 
 def test_unsupported_schema_preserves_only_schema_and_payload_digest(

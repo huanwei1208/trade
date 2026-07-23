@@ -11,12 +11,17 @@ from pathlib import Path
 import pytest
 
 import trade_py.devtools.design_quality.evaluate as evaluate_module
+import trade_py.devtools.design_quality.snapshot as snapshot_module
 from trade_py.devtools.design_quality.errors import DesignQualityError
 from trade_py.devtools.design_quality.evaluate import evaluate_change, evaluate_changes
 from trade_py.devtools.design_quality.models import DesignReport, EvidenceSchema
 from trade_py.devtools.design_quality.policy import load_policy
 from trade_py.devtools.design_quality.render import render_report_text
-from trade_py.devtools.design_quality.snapshot import load_snapshots, verify_snapshot
+from trade_py.devtools.design_quality.snapshot import (
+    load_snapshots,
+    load_snapshots_isolated,
+    verify_snapshot,
+)
 from trade_py.devtools.design_quality.v1_contract import exception_state
 from trade_py.devtools.quality.config import QualityConfig
 from trade_py.devtools.quality.executor import SubprocessExecutor
@@ -1144,6 +1149,80 @@ def test_batch_count_is_checked_before_change_paths(tmp_path: Path) -> None:
 
     with pytest.raises(DesignQualityError, match="Batch has 101 changes"):
         evaluate_changes(repo, names, policy=policy, today=TODAY)
+
+
+def test_snapshot_batch_preflights_exact_aggregate_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    names = tuple(f"bounded-change-{index}" for index in range(10))
+    per_change_bytes = 2 * 1024 * 1024
+    for name in names:
+        change = _write_change(repo, name)
+        design = change / "design.md"
+        current_bytes = sum(path.stat().st_size for path in change.rglob("*") if path.is_file())
+        design.write_text(
+            f"{design.read_text(encoding='utf-8')}{'x' * (per_change_bytes - current_bytes)}",
+            encoding="utf-8",
+        )
+    policy = load_policy(repo)
+    bounded = replace(
+        policy,
+        limits=replace(
+            policy.limits,
+            max_file_bytes=per_change_bytes,
+            max_total_bytes_per_change=per_change_bytes,
+            max_total_bytes_per_batch=16 * 1024 * 1024,
+        ),
+    )
+
+    exact = load_snapshots_isolated(repo, names[:8], bounded)
+
+    assert len(exact.snapshots) == 8
+    assert sum(item.total_bytes for item in exact.snapshots) == 16 * 1024 * 1024
+    assert exact.errors == {}
+
+    reads = 0
+    collections = 0
+    original_collect = snapshot_module._collect
+
+    def tracked_read(*_args: object, **_kwargs: object) -> bytes:
+        nonlocal reads
+        reads += 1
+        raise AssertionError("aggregate overflow must fail before artifact reads")
+
+    def tracked_collect(*args: object, **kwargs: object):
+        nonlocal collections
+        collections += 1
+        return original_collect(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(snapshot_module, "_read_candidate", tracked_read)
+    monkeypatch.setattr(snapshot_module, "_collect", tracked_collect)
+
+    with pytest.raises(DesignQualityError, match="Batch artifacts use"):
+        load_snapshots_isolated(repo, names, bounded)
+
+    assert collections == 9
+    assert reads == 0
+
+
+def test_snapshot_isolated_batch_preserves_valid_utf8_sibling(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    valid = _write_change(repo, "valid-sibling")
+    invalid = _write_change(repo, "invalid-sibling")
+    (invalid / "proposal.md").write_bytes(b"\xff")
+    policy = load_policy(repo)
+
+    batch = load_snapshots_isolated(
+        repo,
+        (valid.name, invalid.name),
+        policy,
+    )
+
+    assert tuple(snapshot.name for snapshot in batch.snapshots) == ("valid-sibling",)
+    assert set(batch.errors) == {"invalid-sibling"}
+    assert "not valid UTF-8" in str(batch.errors["invalid-sibling"])
 
 
 @pytest.mark.parametrize("change_count", (2, 10, 100))

@@ -68,6 +68,56 @@ def test_executor_returns_separate_bounded_streams(tmp_path: Path) -> None:
     assert result.returncode == 0
 
 
+def test_executor_reports_bounded_reproducible_exit_command(tmp_path: Path) -> None:
+    argument = "value with spaces"
+
+    with pytest.raises(WorkflowCollectionError) as raised:
+        BoundedProcessExecutor().run(
+            (
+                sys.executable,
+                "-c",
+                "import sys; print('broken', file=sys.stderr); raise SystemExit(7)",
+                argument,
+            ),
+            cwd=tmp_path,
+            deadline=time.monotonic() + 2,
+            timeout_seconds=2,
+            output_limit_bytes=1024,
+            source="openspec",
+        )
+
+    error = raised.value.error
+    assert error.code == "workflow.process.exit"
+    assert f"'{argument}'" in error.message
+    assert f"'{argument}'" in error.remediation
+    assert "code 7: broken" in error.message
+    assert len(error.message) < 1024
+    assert len(error.remediation) < 1024
+
+
+def test_executor_bounds_long_exit_command_at_argument_boundary(tmp_path: Path) -> None:
+    with pytest.raises(WorkflowCollectionError) as raised:
+        BoundedProcessExecutor().run(
+            (
+                sys.executable,
+                "-c",
+                "raise SystemExit(3)",
+                *(f"argument-{index:03d}-{'x' * 40}" for index in range(20)),
+            ),
+            cwd=tmp_path,
+            deadline=time.monotonic() + 2,
+            timeout_seconds=2,
+            output_limit_bytes=1024,
+            source="openspec",
+        )
+
+    error = raised.value.error
+    assert "args omitted; command length" in error.message
+    assert "args omitted; command length" in error.remediation
+    assert len(error.message) < 1024
+    assert len(error.remediation) < 1024
+
+
 def test_executor_kills_process_group_on_timeout(tmp_path: Path) -> None:
     child_pid = tmp_path / "child.pid"
     script = (

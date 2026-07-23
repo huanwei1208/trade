@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import selectors
+import shlex
 import shutil
 import signal
 import subprocess
@@ -112,12 +113,13 @@ class BoundedProcessExecutor:
             if process.returncode not in allowed_returncodes:
                 diagnostic = _diagnostic(stderr, stdout)
                 suffix = f": {diagnostic}" if diagnostic else ""
+                command = _display_command(argv)
                 self._raise(
                     "workflow.process.exit",
                     source,
                     change,
-                    f"{argv[0]} exited with code {process.returncode}{suffix}",
-                    "Run the reported command directly, repair the failure, and rerun.",
+                    f"{command} exited with code {process.returncode}{suffix}",
+                    f"Run {command} directly, repair the failure, and rerun.",
                 )
             return ProcessResult(
                 argv=argv,
@@ -227,6 +229,26 @@ class BoundedProcessExecutor:
 class _ProcessBoundError(RuntimeError):
     code: str
     message: str
+
+
+def _display_command(argv: tuple[str, ...], *, limit: int = 512) -> str:
+    rendered = shlex.join(argv)
+    if len(rendered) <= limit:
+        return rendered
+    parts: list[str] = []
+    for index, argument in enumerate(argv):
+        token = shlex.quote(argument)
+        candidate = " ".join((*parts, token))
+        suffix = f" ... [{len(argv) - index - 1} args omitted; command length {len(rendered)}]"
+        if len(candidate) + len(suffix) > limit:
+            break
+        parts.append(token)
+    if not parts:
+        return f"[command omitted; {len(argv)} args; command length {len(rendered)}]"
+    return (
+        f"{' '.join(parts)} ... "
+        f"[{len(argv) - len(parts)} args omitted; command length {len(rendered)}]"
+    )
 
 
 def _resolve_executable(executable: str, cwd: Path) -> str | None:
