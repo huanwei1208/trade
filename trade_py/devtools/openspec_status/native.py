@@ -469,14 +469,14 @@ def _validate_validation_summary(
     if (
         not isinstance(totals, dict)
         or not isinstance(by_type, dict)
-        or set(by_type) != {"change", "spec"}
+        or not {"change"} <= set(by_type) <= {"change", "spec"}
         or not isinstance(by_type.get("change"), dict)
-        or not isinstance(by_type.get("spec"), dict)
+        or ("spec" in by_type and not isinstance(by_type["spec"], dict))
     ):
         _raise_shape("Native OpenSpec validation summary is malformed.")
     counts = _validation_counts(totals)
     change_counts = _validation_counts(by_type["change"])
-    spec_counts = _validation_counts(by_type["spec"])
+    spec_counts = _validation_counts(by_type["spec"]) if "spec" in by_type else (0, 0, 0)
     if (
         counts != change_counts
         or spec_counts != (0, 0, 0)

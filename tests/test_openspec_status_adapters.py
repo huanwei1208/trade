@@ -202,6 +202,7 @@ class _NativeExecutor(BoundedProcessExecutor):
         validation_returncode: int | None = None,
         validation_summary: object | None = None,
         validation_names: tuple[str, ...] | None = None,
+        omit_zero_spec_summary: bool = False,
         status_padding_bytes: int = 0,
     ) -> None:
         super().__init__()
@@ -212,6 +213,7 @@ class _NativeExecutor(BoundedProcessExecutor):
         self.validation_returncode = validation_returncode
         self.validation_summary = validation_summary
         self.validation_names = validation_names
+        self.omit_zero_spec_summary = omit_zero_spec_summary
         self.status_padding_bytes = status_padding_bytes
         self._lock = threading.Lock()
         self.active_status = 0
@@ -268,6 +270,7 @@ class _NativeExecutor(BoundedProcessExecutor):
                         items=len(validation_names),
                         passed=len(validation_names) - failed,
                         failed=failed,
+                        include_spec=not self.omit_zero_spec_summary,
                     )
                 ),
                 "version": "1.0",
@@ -339,14 +342,20 @@ def _result(argv: tuple[str, ...], payload: object) -> ProcessResult:
     )
 
 
-def _validation_summary(*, items: int, passed: int, failed: int) -> dict[str, object]:
+def _validation_summary(
+    *,
+    items: int,
+    passed: int,
+    failed: int,
+    include_spec: bool = True,
+) -> dict[str, object]:
     counts = {"items": items, "passed": passed, "failed": failed}
+    by_type = {"change": counts}
+    if include_spec:
+        by_type["spec"] = {"items": 0, "passed": 0, "failed": 0}
     return {
         "totals": counts,
-        "byType": {
-            "change": counts,
-            "spec": {"items": 0, "passed": 0, "failed": 0},
-        },
+        "byType": by_type,
     }
 
 
@@ -367,6 +376,25 @@ def test_native_status_fanout_is_bounded_and_deterministic(tmp_path: Path, count
     assert tuple(sorted(collection.changes)) == names
     assert collection.errors == {}
     assert 1 < executor.max_active_status <= 4
+
+
+def test_native_single_change_accepts_omitted_zero_spec_summary(tmp_path: Path) -> None:
+    executor = _NativeExecutor(
+        ("change-a",),
+        omit_zero_spec_summary=True,
+    )
+
+    collection = collect_native_evidence(
+        tmp_path,
+        expected_names=("change-a",),
+        requested_change="change-a",
+        executor=executor,
+        deadline=time.monotonic() + 10,
+        limits=WorkflowLimits(),
+    )
+
+    assert set(collection.changes) == {"change-a"}
+    assert collection.errors == {}
 
 
 def test_native_partial_status_failure_preserves_sibling(tmp_path: Path) -> None:
