@@ -360,6 +360,40 @@ def validate_design_batch_payload(
             {},
         )
 
+    report_exits = [report.get("exit_code") for report in reports]
+    report_statuses = [report.get("status") for report in reports]
+    report_governance = [report.get("governance_status") for report in reports]
+    classifications_are_valid = (
+        all(isinstance(value, int) and not isinstance(value, bool) for value in report_exits)
+        and all(
+            value in {"PASS", "FAIL", "NOT_GOVERNED", "DIAGNOSTIC"} for value in report_statuses
+        )
+        and all(
+            value
+            in {
+                "GOVERNED",
+                "NOT_GOVERNED",
+                "REQUIRED_MISSING",
+                "POLICY_IMMUTABILITY_VIOLATION",
+            }
+            for value in report_governance
+        )
+    )
+    if classifications_are_valid:
+        expected_summary = {
+            "changes": len(reports),
+            "passed": sum(value == "PASS" for value in report_statuses),
+            "failed": sum(value != 0 for value in report_exits),
+            "not_governed": sum(value == "NOT_GOVERNED" for value in report_governance),
+            "errors": 0,
+        }
+        expected_exit = max(report_exits, default=0)
+        if summary != expected_summary or returncode != expected_exit:
+            return DesignBatchValidation(
+                "Structured design envelope summary does not match its reports",
+                {},
+            )
+
     report_errors: dict[str, str] = {}
     for report in reports:
         change = report["change"]

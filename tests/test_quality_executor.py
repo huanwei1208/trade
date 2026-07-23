@@ -395,6 +395,55 @@ def test_workflow_validator_isolates_one_malformed_bound_report(tmp_path: Path) 
     )
 
 
+def test_workflow_validator_rejects_summary_that_contradicts_reports(
+    tmp_path: Path,
+) -> None:
+    change = "change-a"
+    _write_binding_change(tmp_path, change)
+    binding = load_report_bindings(tmp_path, (change,), POLICY)[change]
+    assert binding.profiles is not None
+    today = datetime.now(timezone.utc).date()
+    report = _design_report_payload(
+        change=change,
+        artifact_digest=binding.artifact_digest,
+        profiles=list(binding.profiles),
+        artifacts=[dict(item) for item in binding.artifacts],
+        metadata={
+            "total_bytes": binding.total_bytes,
+            "reviewed_at": today.isoformat(),
+            "reviewed_commit": "c" * 40,
+            "reviewed_commit_status": "verified",
+        },
+    )
+    payload = {
+        "schema_version": "trade.design.batch.v1",
+        "exit_code": 1,
+        "reports": [report],
+        "summary": {
+            "changes": 1,
+            "passed": 0,
+            "failed": 1,
+            "not_governed": 0,
+            "errors": 0,
+        },
+    }
+
+    validation = validate_design_batch_payload(
+        payload,
+        1,
+        policy=POLICY,
+        expected_changes=(change,),
+        expected_governance={change: binding.governance_status},
+        bindings={change: binding},
+        evaluation_date=today,
+    )
+
+    assert validation.envelope_error == (
+        "Structured design envelope summary does not match its reports"
+    )
+    assert validation.report_errors == {}
+
+
 def test_executor_import_keeps_design_evaluator_lazy() -> None:
     script = """
 import json
