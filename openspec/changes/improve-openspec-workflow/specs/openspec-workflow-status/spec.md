@@ -61,6 +61,8 @@ that implementation tasks are complete.
 - **THEN** the lifecycle is `implementation`
 - **AND THEN** the next action command is
   `openspec instructions apply --change <change>` rather than archive
+- **AND THEN** the change is a successful workflow position and does not cause a
+  nonzero aggregate exit
 
 #### Scenario: Authoring artifacts are incomplete
 
@@ -69,6 +71,8 @@ that implementation tasks are complete.
 - **AND THEN** the next action command is
   `openspec instructions <artifact> --change <change>` for the first ready
   incomplete artifact in native order
+- **AND THEN** the change is a successful workflow position and does not cause a
+  nonzero aggregate exit
 
 #### Scenario: Completed governed change is ready to archive
 
@@ -94,18 +98,22 @@ evidence is failing.
 #### Scenario: Required governance is invalid
 
 - **WHEN** governance is required and the strict design report is `FAIL`,
-  `REQUIRED_MISSING`, or otherwise schema-invalid
+  `REQUIRED_MISSING`, with at least one active non-review governance finding
 - **THEN** the lifecycle is `blocked`
 - **AND THEN** the next action command is
-  `./trade dev design-check <change>` and implementation is not recommended
+  `./trade dev design-check <change> --strict` and implementation is not
+  recommended
 
 #### Scenario: Governed design awaits current approval
 
-- **WHEN** complete valid authoring evidence is governed but does not have
-  current-date strict approval
+- **WHEN** complete valid authoring evidence has a valid strict design report
+  whose active findings, if any, are limited to `core.review.missing`,
+  `core.review.stale`, and `core.review.incomplete`
 - **THEN** the lifecycle is `review`
 - **AND THEN** the next action command is
-  `./trade dev design-check <change> --strict`
+  `./trade dev review --slug <change> --scope openspec/changes/<change>`
+- **AND THEN** the change is a successful workflow position and does not cause a
+  nonzero aggregate exit
 
 #### Scenario: Historical change is not governed
 
@@ -134,10 +142,19 @@ distinguish change-owned blockers from invocation or infrastructure failures.
   required top-level schema, status, exit code, UTC evaluation date, source,
   limits, ordered changes, ordered errors, and complete summary counts
 - **AND THEN** each change uses explicit collection-status/lifecycle enums,
-  nullable unavailable values, complete native and governance evidence, typed
-  next action, errors, and omission counts
+  nullable unavailable tasks/native/governance values, complete native evidence,
+  an unmodified `trade.design.report.v1`, typed next action, errors, and native
+  issue omission counts
 - **AND THEN** identical repository evidence, arguments, and evaluation date
   produce identical lifecycle, ordering, and next-action fields
+
+#### Scenario: Design backend response is malformed
+
+- **WHEN** the design batch or an embedded `trade.design.report.v1` is malformed,
+  inconsistent, or carries the wrong change, date, digest, status, or counts
+- **THEN** the affected collection is `unavailable` with null lifecycle
+- **AND THEN** the top-level status is `ERROR` with exit code `2`, rather than a
+  change-owned `blocked` result
 
 #### Scenario: One change fails during list collection
 
@@ -165,10 +182,19 @@ distinguish change-owned blockers from invocation or infrastructure failures.
 #### Scenario: External process exceeds a bound
 
 - **WHEN** a Git or native OpenSpec process exceeds its timeout/output budget,
+  the managed design-quality batch exceeds the remaining deadline/output budget,
   the command-wide deadline expires, or the user interrupts the command
 - **THEN** the executor terminates and reaps every active process group
 - **AND THEN** the command emits bounded diagnostics and never leaves a child
   process running
+
+#### Scenario: Final report exceeds its output budget
+
+- **WHEN** the fully sorted JSON report exceeds 16 MiB before publication
+- **THEN** the command discards all change payloads and emits one fixed bounded
+  `workflow.report.too_large` ERROR document with exit code `2`
+- **AND THEN** it does not emit partial JSON or truncate an embedded governance
+  report
 
 #### Scenario: Read-only shell route is invoked
 

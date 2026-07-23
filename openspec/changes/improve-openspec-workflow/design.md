@@ -85,13 +85,18 @@ temporary directory. All native OpenSpec commands run against the temporary
 generation. The temporary directory is deleted at exit and is never a source of
 runtime state.
 
-Design-quality strict evaluation runs once in batch against the source worktree. Each
-returned artifact digest must equal the corresponding preloaded snapshot digest, and
-the source snapshot is verified again before report publication. A digest mismatch,
-file-generation drift, Git provenance failure, or mixed evaluation date makes the
-affected collection `unavailable`; no lifecycle is derived from mixed evidence.
-Active change names satisfy the existing safe slug contract. Results are sorted by
-change name, independent of worker completion order or native modification time.
+Design-quality strict evaluation runs once as a dedicated batch process group against
+the source worktree. The batch receives the captured evaluation date, selected
+changes, and exact governance-required set; it emits `trade.design.batch.v1`. The
+shared executor owns its timeout, output budget, interrupt cancellation, TERM/KILL,
+and reap behavior, so the command-wide deadline covers nested Git verification too.
+Each returned artifact digest must equal the corresponding preloaded snapshot digest,
+and the source snapshot is verified again before report publication. A digest
+mismatch, file-generation drift, Git provenance failure, or mixed evaluation date
+makes the affected collection `unavailable`; no lifecycle is derived from mixed
+evidence. Active change names satisfy the existing safe slug contract. Results are
+sorted by change name, independent of worker completion order or native modification
+time.
 
 Native artifact completion and task completion remain separate fields. A native
 `isComplete` value means only that the schema-required authoring artifacts are
@@ -129,7 +134,7 @@ The top level contains:
   `BLOCKED`, including partial infrastructure failure;
 - `exit_code: 0|1|2`, consistent with `status`;
 - `evaluation_date: YYYY-MM-DD`, captured once in UTC;
-- `source: {git_head, base_ref, base_sha, snapshot_digest}`;
+- `source: Source|null`, where fatal request/repository discovery errors use `null`;
 - `changes: Change[]`, sorted by `name`;
 - `errors: Error[]`, sorted by `(change|null, source, code, message)`;
 - `summary`, with integer `changes`, `authoring`, `review`, `implementation`,
@@ -138,15 +143,45 @@ The top level contains:
   `subprocess_timeout_seconds`, `command_deadline_seconds`,
   `native_output_bytes`, and `report_output_bytes`.
 
-Each `Change` contains required `name`, `collection_status:
-"complete"|"unavailable"`, nullable `lifecycle`, nullable integer
-`completed_tasks`/`total_tasks`, `native`, nullable `governance`, `next_action`, and
-`errors`. `native` preserves `schema_name`, `apply_requires`, ordered artifact
-records, validation state/issues, and parsed payload digests. `governance` embeds the
-complete `trade.design.report.v1` object from `DesignReport.to_dict()` and adds
-`required: bool` plus `requirement_source:
-"new_change"|"marker_deleted"|"existing_governed"|"historical_exempt"`. The
-embedded report schema is validated before `approval_eligible` is trusted.
+`Source` is `{git_head, base_ref, base_sha, snapshot_digest}`, with four nonempty
+strings; the three Git identifiers are full commit SHAs except `base_ref`, and the
+snapshot digest is `sha256:<64 lowercase hex>`.
+
+Each `Change` contains required:
+
+- `name: string`;
+- `collection_status: "complete"|"unavailable"`;
+- `lifecycle: "authoring"|"review"|"implementation"|"archive-ready"|"blocked"|null`;
+- `tasks: {completed: integer, total: integer, status:
+  "no-tasks"|"in-progress"|"complete"}|null`;
+- `native: NativeEvidence|null`;
+- `governance: GovernanceEvidence|null`;
+- `next_action: Action`;
+- `errors: Error[]`.
+
+Unavailable changes use `null` for lifecycle, tasks, native, and governance; any
+successfully parsed partial payload contributes only a SHA-256 digest to the error
+record and is not published as trusted evidence.
+
+`NativeEvidence` is:
+
+- `schema_name: "spec-driven"`;
+- `is_complete: bool`;
+- `apply_requires: string[]`;
+- `artifacts: Artifact[]` in native order, where each artifact is `{id: string,
+  output_path: string, status: "ready"|"blocked"|"done", missing_deps: string[]}`;
+- `validation: {valid: bool, issues: ValidationIssue[], omitted_count: integer}`,
+  where each normalized issue is `{severity: "error"|"warning", path: string|null,
+  message: string}` and issues are sorted by `(severity,path|null,message)`;
+- `payload_digests: {list, status, validation}`, each a SHA-256 digest string.
+
+At most 50 normalized native validation issues are retained; `omitted_count` records
+the exact remainder. No governance finding is truncated. `GovernanceEvidence` is
+`{required: bool, requirement_source, report}`, where `requirement_source` is one of
+`"new_change"|"marker_deleted"|"existing_governed"|"historical_exempt"` and
+`report` is the complete, unmodified `trade.design.report.v1` object from
+`DesignReport.to_dict()`. The embedded schema, effective date, change name, artifact
+digest, status/count consistency, and approval fields are validated before use.
 
 `next_action` is always `{kind, command, reason}`. `kind` is
 `author|review|apply|archive|repair|none`; `command` is a string or `null`; and
@@ -155,12 +190,14 @@ remediation}`, with `source` in `request|git|openspec|design_quality|snapshot`,
 nullable `change`, and all other fields nonempty strings. Native validation issues
 remain structured native objects and are not flattened into strings.
 
-Exit `0` means all requested summaries were collected and none is blocked. Exit `1`
-means one or more valid active changes is blocked by change-owned authoring,
-validation, governance, or task-state evidence. Exit `2` means invocation or
-infrastructure failure, including an unknown requested change, missing executable,
-timeout, non-JSON output, malformed required fields, or inability to enumerate
-active changes. Existing commands and their arguments remain unchanged.
+Exit `0` means all requested summaries were collected and every lifecycle is
+`authoring`, `review`, `implementation`, or `archive-ready`. These are ordinary
+workflow positions, not failures. Exit `1` means at least one complete change is
+`blocked` by native validation or a valid change-owned governance finding. Exit `2`
+means invocation or infrastructure failure, including an unknown requested change,
+missing executable, timeout, non-JSON output, malformed required fields, unsupported
+schema, evidence drift, or inability to enumerate active changes. Existing commands
+and their arguments remain unchanged.
 
 Lifecycle is derived by the first matching row:
 
@@ -168,19 +205,25 @@ Lifecycle is derived by the first matching row:
 | --- | --- | --- | --- |
 | 1 | request, Git provenance, snapshot, deadline, native shape, or required backend evidence fails | `unavailable` / `null` | `repair`, exact remediation, exit `2` |
 | 2 | schema is not task-bearing `spec-driven` | `unavailable` / `null` | `repair`, no executable command, exit `2` |
-| 3 | native validation fails | `complete` / `blocked` | `repair`, `openspec validate <change> --strict` |
-| 4 | required artifact is not done | `complete` / `authoring` | `author`, `openspec instructions <artifact> --change <change>` |
-| 5 | governance is required but missing/invalid, or strict report is `FAIL` | `complete` / `blocked` | `repair`, `./trade dev design-check <change>` |
-| 6 | governed design lacks current strict approval but diagnostic evidence is otherwise valid | `complete` / `review` | `review`, `./trade dev design-check <change> --strict` |
-| 7 | no tracked tasks, or any task is incomplete | `complete` / `implementation` | `apply`, `openspec instructions apply --change <change>` |
-| 8 | all tracked tasks complete and required strict approval passes | `complete` / `archive-ready` | `archive`, `openspec archive <change>` |
+| 3 | governance is required but report status is `REQUIRED_MISSING`, or a valid strict report has any active non-review finding | `complete` / `blocked` | `repair`, `./trade dev design-check <change> --strict`, exit `1` |
+| 4 | required artifact is not done | `complete` / `authoring` | `author`, `openspec instructions <artifact> --change <change>`, exit `0` |
+| 5 | native validation fails after authoring is complete | `complete` / `blocked` | `repair`, `openspec validate <change> --strict`, exit `1` |
+| 6 | a valid governed strict report has active findings only from `core.review.missing`, `core.review.stale`, or `core.review.incomplete` | `complete` / `review` | `review`, `./trade dev review --slug <change> --scope openspec/changes/<change>`, exit `0` |
+| 7 | no tracked tasks, or any task is incomplete | `complete` / `implementation` | `apply`, `openspec instructions apply --change <change>`, exit `0` |
+| 8 | all tracked tasks complete and required strict approval passes, or the change is proven historical-exempt | `complete` / `archive-ready` | `archive`, `openspec archive <change>`, exit `0` |
 
 New changes absent from the merge-base OpenSpec tree and changes whose existing
 governance marker was deleted are governance-required. Existing governed changes
 remain required. Only changes present at the merge base without a marker are
-`historical_exempt`. Unavailable Git provenance fails at priority 1. The service runs
-one strict `evaluate_changes` batch with the exact required-name set; its complete
-versioned reports are the sole source for governance rows 5-8.
+`historical_exempt`. Unavailable Git provenance fails at priority 1. A malformed or
+schema-inconsistent design batch/report is backend-unavailable at priority 1, never
+change-owned `blocked`.
+
+The service runs one strict design-quality batch process with the exact required-name
+set and captured evaluation date. A valid report with any unsuppressed finding
+outside the three review-only rule IDs is blocked at priority 3; mixed review and
+non-review findings are blocked. Its complete versioned reports are the sole source
+for governance rows 3, 6, and 8.
 
 No migration is required. Rollback removes the additive parser route and owner
 package; callers can continue using native `openspec` and `design-check`.
@@ -201,13 +244,14 @@ not an empty success. An affected change has `collection_status = "unavailable"`
 `lifecycle = null`; infrastructure failure is never rendered as change-owned
 `blocked`.
 
-One bounded executor owns every Git/OpenSpec child it starts. It uses a new process
-session, nonblocking incremental reads from stdout and stderr, a shared byte budget,
-immediate process-group termination on timeout or overflow, TERM followed by KILL,
-unconditional reap, and bounded stderr tails. `KeyboardInterrupt` and the command
-deadline cancel and reap every active child before exit. Native commands are not
-retried because retry could hide deterministic artifact errors. Recovery is to
-install/fix OpenSpec, repair the named change, rerun design review, complete tasks,
+One bounded executor owns every Git/OpenSpec process and the complete design-quality
+batch process. It uses a new process session, nonblocking incremental reads from
+stdout and stderr, a shared byte budget, immediate process-group termination on
+timeout or overflow, TERM followed by KILL, unconditional reap, and bounded stderr
+tails. `KeyboardInterrupt` and the command deadline cancel and reap every active
+group before exit, including nested Git children of design-quality. Native commands
+are not retried because retry could hide deterministic artifact errors. Recovery is
+to install/fix OpenSpec, repair the named change, rerun design review, complete tasks,
 or invoke the literal next action.
 
 ### Performance and capacity
@@ -221,11 +265,20 @@ same strict design batch path.
 
 The command accepts at most 100 active changes, matching design-policy v1. Each
 native invocation has a 10-second timeout and 1 MiB combined stdout/stderr limit; the
-entire command has a 60-second deadline and a 16 MiB serialized report limit. Native
-issues and governance findings are capped at 50 entries per change with explicit
-`omitted_count`; native parsed payloads and embedded design reports are validated
-before retention. The design evaluator loads policy once and evaluates all names in
-one batch, preserving its 16 MiB artifact envelope.
+design batch has the remaining command deadline and a 16 MiB output limit. The entire
+command has a 60-second deadline and a 16 MiB serialized workflow-report limit.
+Native issues are capped at 50 entries per change with explicit `omitted_count`;
+complete governance reports are retained unchanged and already bounded by policy.
+Native parsed payloads, the batch envelope, and embedded design reports are validated
+before retention. The design batch loads policy once and evaluates all names,
+preserving its 100-change/16 MiB artifact envelope.
+
+The fully sorted JSON document is serialized in memory once before stdout. If it
+exceeds 16 MiB, the service discards every per-change record and emits a fixed bounded
+`trade.openspec.workflow.v1` ERROR document with `source`, empty `changes`, one
+`workflow.report.too_large` error, summary `errors = 1`, and exit `2`. It never emits
+partial JSON or truncates an embedded governance report. Boundary tests cover exactly
+16 MiB and one byte over.
 
 Review measurements on the initial design found roughly 2 seconds for list,
 1.9 seconds for validate-all, and 2.3 seconds per status process. Four workers make
@@ -318,13 +371,14 @@ Native artifact status, task progress, validation, and governance remain visible
 separate fields. The lifecycle is a small deterministic projection for navigation,
 not a replacement state machine.
 
-### Decision 3: Reuse the design-quality service in process
+### Decision 3: Reuse the design-quality batch contract
 
-Calling `evaluate_changes` once avoids shelling out through the public facade,
-reloading policy per change, or copying governance rules. The aggregator derives the
-required-name set from shared Git provenance, requests current-date strict reports,
-validates `trade.design.report.v1`, and embeds each complete report without changing
-design-quality behavior.
+Calling the internal design-quality batch CLI once avoids the public facade,
+reloading policy per change, or copying governance rules while keeping the entire
+evaluation killable under the shared executor. The aggregator derives the
+required-name set from shared Git provenance, requests strict reports for the
+captured UTC date, validates `trade.design.batch.v1` and every
+`trade.design.report.v1`, and embeds each complete report unchanged.
 
 ### Decision 4: Fail explicitly on unavailable evidence
 

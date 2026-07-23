@@ -44,12 +44,12 @@ migration = "No migration is required because the command is additive and stores
 rollback = "Reverting the command route, owner package, and tests restores the previous workflow without changing OpenSpec artifacts."
 
 [evidence.concurrency]
-ownership = "trade_py/devtools/openspec_status owns one bounded executor and at most four native status workers."
+ownership = "trade_py/devtools/openspec_status owns one bounded executor, at most four native status workers, and the strict design batch process group."
 bound = "At most 100 active changes, four status workers, one strict design batch, and a 60 second command deadline."
 ordering = "Change reports and errors are sorted deterministically after worker completion; native artifact order remains source order."
 atomicity = "Native commands read one immutable temporary OpenSpec snapshot and publication requires matching design artifact digests plus final source verification."
-timeout_cancellation = "Each child has a 10 second timeout; overflow, deadline, interrupt, or failure terminates its process group with TERM then KILL and always reaps it."
-backpressure = "Each native child has a 1 MiB streaming output budget and the final report has a 16 MiB serialization budget with explicit omission counts."
+timeout_cancellation = "Native children have 10 second timeouts; the design batch uses the remaining command deadline; overflow, deadline, interrupt, or failure terminates each process group with TERM then KILL and always reaps it."
+backpressure = "Each native child has a 1 MiB streaming output budget, the design batch has 16 MiB, and an oversized final report becomes one fixed bounded error without truncating governance evidence."
 partial_failure = "Per-change infrastructure failure preserves successful siblings but marks the affected change unavailable and gives aggregate exit 2."
 capacity_validation = "Deterministic 10-change and 100-change tests assert worker count, process count, output bounds, deadlines, cancellation, and no surviving children."
 
@@ -84,7 +84,7 @@ id = "openspec.concurrent-collection"
 owner = "trade_py/devtools/openspec_status"
 paths = ["trade_py/devtools/openspec_status/executor.py", "trade_py/devtools/openspec_status/service.py", "tests/test_openspec_status_executor.py"]
 contracts = ["four-worker native status collection", "bounded process-tree execution", "deterministic aggregate report"]
-failure_states = ["child_timeout", "output_overflow", "inherited_pipe_hang", "keyboard_interrupt", "aggregate_deadline", "worker_partial_failure"]
+failure_states = ["child_timeout", "design_batch_timeout", "output_overflow", "report_overflow", "inherited_pipe_hang", "keyboard_interrupt", "aggregate_deadline", "worker_partial_failure"]
 spec_requirements = [
   "openspec-workflow-status:Active OpenSpec workflow status is aggregated read-only",
   "openspec-workflow-status:Machine-readable reporting and failures are stable",

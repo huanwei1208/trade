@@ -21,7 +21,7 @@
 - [ ] 2.4 Implement the reviewed lifecycle/next-action table, task-bearing
   `spec-driven` strategy, immutable native snapshot, digest drift rejection,
   strict batch design evaluation, and explicit unavailable records.
-- [ ] 2.5 Add focused service/executor tests for every lifecycle row, new versus historical governance, marker deletion, strict/stale approval, unsupported schema, evidence drift, midnight date capture, empty scope, timeout, output flooding, inherited pipes, interrupt cleanup, unknown change, partial failure, and deterministic 10/100-change capacity. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
+- [ ] 2.5 Add focused service/executor tests for every lifecycle row, review-only versus non-review strict findings, new versus historical governance, marker deletion, unsupported schema, evidence drift, midnight date capture, empty scope, native and active-design-batch timeout/reap, output flooding, inherited pipes, interrupt cleanup, unknown change, partial failure, exact 16 MiB/one-byte-over report bounds, and deterministic 10/100-change capacity. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
 - [ ] 2.6 Run focused service pytest and compileall, then commit the validated implementation unit. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
 
 ## 3. Public CLI and reporting
@@ -29,8 +29,9 @@
 - [ ] 3.1 Add lazy `./trade dev openspec [change] [--format text|json]`
   parsing plus `uv run --frozen --no-sync` shell routing without runtime imports.
 - [ ] 3.2 Add deterministic text rendering and the complete typed
-  `trade.openspec.workflow.v1` contract with embedded design reports, omission
-  counts, nullable unavailable values, and stable exit precedence.
+  `trade.openspec.workflow.v1` contract with unmodified embedded design reports,
+  native issue omission counts, nullable unavailable evidence, fixed oversized
+  error output, and stable exit precedence.
 - [ ] 3.3 Add parser, runtime import-boundary, text/JSON schema, list/single, unknown-change, partial-error, frozen/no-sync, and shell-help tests. `[validates:openspec.public-cli] [validation:test]`
 - [ ] 3.4 Run focused CLI pytest and real repository text/JSON smoke checks, then commit the validated CLI unit. `[validates:openspec.public-cli] [validation:test]`
 
