@@ -87,9 +87,14 @@ runtime state.
 
 Design-quality strict evaluation runs once as a dedicated batch process group against
 the source worktree. The batch receives the captured evaluation date, selected
-changes, and exact governance-required set; it emits `trade.design.batch.v1`. The
-shared executor owns its timeout, output budget, interrupt cancellation, TERM/KILL,
-and reap behavior, so the command-wide deadline covers nested Git verification too.
+changes, exact governance-required set, and an internal
+`--parent-managed-process-group` flag; it emits `trade.design.batch.v1`. In this mode,
+design-quality Git helpers inherit the batch process group instead of starting nested
+sessions. Their local timeout kills and reaps the direct Git child, while the parent
+executor's deadline or interrupt terminates the full inherited group. Direct
+`design-check` keeps the existing per-Git session isolation. The shared executor owns
+the batch timeout, output budget, interrupt cancellation, TERM/KILL, and reap
+behavior, so the command-wide deadline covers nested Git verification too.
 Each returned artifact digest must equal the corresponding preloaded snapshot digest,
 and the source snapshot is verified again before report publication. A digest
 mismatch, file-generation drift, Git provenance failure, or mixed evaluation date
@@ -186,9 +191,13 @@ digest, status/count consistency, and approval fields are validated before use.
 `next_action` is always `{kind, command, reason}`. `kind` is
 `author|review|apply|archive|repair|none`; `command` is a string or `null`; and
 `reason` is nonempty. Each `Error` is `{code, source, change, message,
-remediation}`, with `source` in `request|git|openspec|design_quality|snapshot`,
-nullable `change`, and all other fields nonempty strings. Native validation issues
-remain structured native objects and are not flattened into strings.
+remediation, details}`, with `source` in
+`request|git|openspec|design_quality|snapshot`, nullable `change`, nonempty string
+fields except `change`, and `details` as a string-to-string map. Unsupported-schema
+errors include only `schema_name` and `payload_digest` details; unvalidated native
+artifact graphs are not published. Other errors use an empty details map. Native
+validation issues remain structured native objects and are not flattened into
+strings.
 
 Exit `0` means all requested summaries were collected and every lifecycle is
 `authoring`, `review`, `implementation`, or `archive-ready`. These are ordinary
@@ -208,7 +217,7 @@ Lifecycle is derived by the first matching row:
 | 3 | governance is required but report status is `REQUIRED_MISSING`, or a valid strict report has any active non-review finding | `complete` / `blocked` | `repair`, `./trade dev design-check <change> --strict`, exit `1` |
 | 4 | required artifact is not done | `complete` / `authoring` | `author`, `openspec instructions <artifact> --change <change>`, exit `0` |
 | 5 | native validation fails after authoring is complete | `complete` / `blocked` | `repair`, `openspec validate <change> --strict`, exit `1` |
-| 6 | a valid governed strict report has active findings only from `core.review.missing`, `core.review.stale`, or `core.review.incomplete` | `complete` / `review` | `review`, `./trade dev review --slug <change> --scope openspec/changes/<change>`, exit `0` |
+| 6 | a valid governed strict report is not approval-eligible and has a nonempty active finding set containing only `core.review.missing`, `core.review.stale`, or `core.review.incomplete` | `complete` / `review` | `review`, `./trade dev review --slug <change> --scope openspec/changes/<change>`, exit `0` |
 | 7 | no tracked tasks, or any task is incomplete | `complete` / `implementation` | `apply`, `openspec instructions apply --change <change>`, exit `0` |
 | 8 | all tracked tasks complete and required strict approval passes, or the change is proven historical-exempt | `complete` / `archive-ready` | `archive`, `openspec archive <change>`, exit `0` |
 
@@ -222,8 +231,10 @@ change-owned `blocked`.
 The service runs one strict design-quality batch process with the exact required-name
 set and captured evaluation date. A valid report with any unsuppressed finding
 outside the three review-only rule IDs is blocked at priority 3; mixed review and
-non-review findings are blocked. Its complete versioned reports are the sole source
-for governance rows 3, 6, and 8.
+non-review findings are blocked. Row 6 requires at least one active review-only
+finding and `approval_eligible = false`; a clean approval-eligible strict `PASS`
+falls through to task and archive rows. Its complete versioned reports are the sole
+source for governance rows 3, 6, and 8.
 
 No migration is required. Rollback removes the additive parser route and owner
 package; callers can continue using native `openspec` and `design-check`.
@@ -248,11 +259,12 @@ One bounded executor owns every Git/OpenSpec process and the complete design-qua
 batch process. It uses a new process session, nonblocking incremental reads from
 stdout and stderr, a shared byte budget, immediate process-group termination on
 timeout or overflow, TERM followed by KILL, unconditional reap, and bounded stderr
-tails. `KeyboardInterrupt` and the command deadline cancel and reap every active
-group before exit, including nested Git children of design-quality. Native commands
-are not retried because retry could hide deterministic artifact errors. Recovery is
-to install/fix OpenSpec, repair the named change, rerun design review, complete tasks,
-or invoke the literal next action.
+tails. The parent-managed design batch forbids nested session creation, so
+`KeyboardInterrupt` and the command deadline cancel and reap every active group and
+its inherited Git children. Direct design-quality invocations retain their current
+isolated-Git behavior. Native commands are not retried because retry could hide
+deterministic artifact errors. Recovery is to install/fix OpenSpec, repair the named
+change, rerun design review, complete tasks, or invoke the literal next action.
 
 ### Performance and capacity
 

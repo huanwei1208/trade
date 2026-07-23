@@ -45,8 +45,9 @@ validation, and SHALL preserve design-quality as the authority for governance.
 - **WHEN** native status does not report task-bearing `schemaName =
   "spec-driven"` with `tasks` required for apply
 - **THEN** the affected change has collection status `unavailable`
-- **AND THEN** the report preserves the native schema and artifact graph and
-  requires a reviewed schema strategy rather than guessing task semantics
+- **AND THEN** the error details preserve only the native schema name and raw
+  payload digest and require a reviewed schema strategy rather than publishing
+  an unvalidated artifact graph or guessing task semantics
 
 ### Requirement: Artifact completion and implementation completion remain distinct
 
@@ -107,8 +108,8 @@ evidence is failing.
 #### Scenario: Governed design awaits current approval
 
 - **WHEN** complete valid authoring evidence has a valid strict design report
-  whose active findings, if any, are limited to `core.review.missing`,
-  `core.review.stale`, and `core.review.incomplete`
+  that is not approval-eligible and has a nonempty active finding set limited to
+  `core.review.missing`, `core.review.stale`, and `core.review.incomplete`
 - **THEN** the lifecycle is `review`
 - **AND THEN** the next action command is
   `./trade dev review --slug <change> --scope openspec/changes/<change>`
@@ -185,13 +186,15 @@ distinguish change-owned blockers from invocation or infrastructure failures.
   the managed design-quality batch exceeds the remaining deadline/output budget,
   the command-wide deadline expires, or the user interrupts the command
 - **THEN** the executor terminates and reaps every active process group
+- **AND THEN** parent-managed design-quality Git children inherit the batch group
+  rather than opening detached sessions
 - **AND THEN** the command emits bounded diagnostics and never leaves a child
   process running
 
 #### Scenario: Final report exceeds its output budget
 
 - **WHEN** the fully sorted JSON report exceeds 16 MiB before publication
-- **THEN** the command discards all change payloads and emits one fixed bounded
+- **THEN** the command discards all per-change records and emits one fixed bounded
   `workflow.report.too_large` ERROR document with exit code `2`
 - **AND THEN** it does not emit partial JSON or truncate an embedded governance
   report

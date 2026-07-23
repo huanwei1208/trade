@@ -5,7 +5,7 @@
 - [x] 1.2 Complete proposal, Design Quality Brief, capability spec, obligation
   mappings, and public-contract evidence.
 - [x] 1.3 Run diagnostic `./trade dev design-check improve-openspec-workflow` and resolve deterministic findings. `[validates:openspec.status-service] [validates:openspec.public-cli] [validation:test]`
-- [ ] 1.4 Run the six-role design consensus review in a separate review worktree, resolve every P0, record digest-bound evidence, and pass current-date strict design approval. `[validates:openspec.review-evidence] [validation:review]`
+- [x] 1.4 Run the six-role design consensus review in a separate review worktree, resolve every P0, record digest-bound evidence, and pass current-date strict design approval. `[validates:openspec.review-evidence] [validation:review]`
 
 ## 2. Read-only status service
 
@@ -16,12 +16,12 @@
   closed for new changes, deleted markers, existing governed changes, and
   unavailable provenance.
 - [ ] 2.3 Implement the four-worker bounded process executor with streaming
-  output limits, process-group TERM/KILL/reap, interrupt cleanup, and a
-  command-wide deadline.
+  output limits, process-group TERM/KILL/reap, interrupt cleanup, a command-wide
+  deadline, and parent-managed design-batch Git group inheritance.
 - [ ] 2.4 Implement the reviewed lifecycle/next-action table, task-bearing
   `spec-driven` strategy, immutable native snapshot, digest drift rejection,
   strict batch design evaluation, and explicit unavailable records.
-- [ ] 2.5 Add focused service/executor tests for every lifecycle row, review-only versus non-review strict findings, new versus historical governance, marker deletion, unsupported schema, evidence drift, midnight date capture, empty scope, native and active-design-batch timeout/reap, output flooding, inherited pipes, interrupt cleanup, unknown change, partial failure, exact 16 MiB/one-byte-over report bounds, and deterministic 10/100-change capacity. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
+- [ ] 2.5 Add focused service/executor tests for every lifecycle row, clean strict PASS versus nonempty review-only versus mixed findings, new versus historical governance, marker deletion, unsupported-schema digest details, evidence drift, midnight date capture, empty scope, native and parent-managed active-design-batch timeout/reap with no detached Git survivor, output flooding, inherited pipes, interrupt cleanup, unknown change, partial failure, exact 16 MiB/one-byte-over report bounds, and deterministic 10/100-change capacity. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
 - [ ] 2.6 Run focused service pytest and compileall, then commit the validated implementation unit. `[validates:openspec.status-service] [validates:openspec.concurrent-collection] [validation:test]`
 
 ## 3. Public CLI and reporting
