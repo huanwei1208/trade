@@ -9,26 +9,33 @@ requests, data evidence, publication state, or formal/trading semantics.
 
 #### Scenario: No compatible viewport cache exists
 
-- **WHEN** the selected-channel K-line receives more than roughly one month of
-  daily data and no compatible saved viewport exists
+- **WHEN** the selected-channel K-line receives more than one recent-window
+  worth of rendered candles and no compatible saved viewport exists
 - **THEN** the chart applies a visible time range ending at the latest available
-  candle and beginning roughly one month earlier
+  rendered candle and beginning at the configured recent-window start for the
+  active display timeframe
 - **AND THEN** older candles remain loaded and reachable through chart zoom,
   scroll, pan, or Fit
 
 #### Scenario: Compatible viewport cache exists
 
-- **WHEN** the user reloads the same asset and display timeframe after zooming
-  or scrolling the K-line
+- **WHEN** the user reloads the same market K-line identity after zooming or
+  scrolling the K-line
 - **THEN** the chart restores the last saved visible time range when it is valid
-  and overlaps the current series
+  for the same asset, provider, instrument, quote, source interval, lifecycle
+  channel, publication state, knowledge mode, revision policy, and display
+  timeframe
+- **AND THEN** both cached endpoints map exactly to rendered display candles in
+  the current chart model
 - **AND THEN** the restore does not alter the selected channel, selected date,
   Date Evidence request, or loaded series data
 
 #### Scenario: Viewport cache is invalid or incompatible
 
 - **WHEN** the saved viewport is malformed, stale-versioned, asset-mismatched,
-  timeframe-mismatched, reversed, or outside the current series
+  source-mismatched, channel-mismatched, knowledge-mismatched,
+  timeframe-mismatched, reversed, missing either endpoint, whitespace-only, or
+  outside the current rendered series
 - **THEN** the chart ignores it and applies the recent visible range default
 - **AND THEN** the user receives a normal chart rather than an error or empty
   visible plot caused by browser storage
@@ -40,3 +47,5 @@ requests, data evidence, publication state, or formal/trading semantics.
   K-line data
 - **AND THEN** the last visible time range is persisted in localStorage when the
   browser allows it
+- **AND THEN** persistence is coalesced and repeated storage failures do not
+  block interaction or keep retrying during the same panel session
