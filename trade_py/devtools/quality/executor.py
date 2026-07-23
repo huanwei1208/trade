@@ -288,6 +288,29 @@ def _design_envelope_error(
     return None
 
 
+def validate_design_batch_payload(
+    payload: dict[str, object],
+    returncode: int,
+    *,
+    policy: Policy,
+    expected_changes: tuple[str, ...],
+    expected_governance: dict[str, str],
+    bindings: dict[str, ReportBinding],
+    evaluation_date: date,
+) -> str | None:
+    """Validate a strict design batch against trusted current-snapshot bindings."""
+
+    return _design_envelope_error(
+        payload,
+        returncode,
+        policy=policy,
+        expected_changes=expected_changes,
+        expected_governance=expected_governance,
+        bindings=bindings,
+        current_date=evaluation_date,
+    )
+
+
 def _design_report_error(
     report: dict[object, object],
     *,
