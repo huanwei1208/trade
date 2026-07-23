@@ -435,11 +435,9 @@ function requireSnapshot(url: URL, route: Route) {
   return null;
 }
 
-function requireBoundedWindow(url: URL, route: Route) {
-  const from = url.searchParams.get("from");
-  const to = url.searchParams.get("to");
-  if (from !== "2026-04-20" || to !== "2026-07-18") {
-    return invalid(route, "Mock requires the Context-derived 90D server window.");
+function requireUnboundedWindow(url: URL, route: Route) {
+  if (url.searchParams.has("from") || url.searchParams.has("to")) {
+    return invalid(route, "Mock requires an unbounded full-range series request.");
   }
   return null;
 }
@@ -481,13 +479,9 @@ export async function mockObservatoryApi(
     }
     if (path.endsWith("/series")) {
       const view = url.searchParams.get("view") || "composite";
-      if (!options.selectedRowCount) {
-        const windowError = requireBoundedWindow(url, route);
-        if (windowError) {
-          return windowError;
-        }
-      } else if (url.searchParams.has("from") || url.searchParams.has("to")) {
-        return invalid(route, "Performance fixtures require an unbounded All request.");
+      const windowError = requireUnboundedWindow(url, route);
+      if (windowError) {
+        return windowError;
       }
       if (view === "composite") {
         if (url.searchParams.has("snapshot_id")) {

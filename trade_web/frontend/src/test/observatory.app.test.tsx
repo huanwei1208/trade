@@ -234,5 +234,6 @@ describe("App Observatory capability gating (fail closed)", () => {
     await waitFor(() => expect(screen.getByTestId("observatory-page")).toBeTruthy());
     await waitFor(() => expect(window.location.search).toContain("obsLens=overview"));
     expect(new URLSearchParams(window.location.search).get("obsChart")).toBeNull();
+    expect(new URLSearchParams(window.location.search).get("obsRange")).toBeNull();
   });
 });

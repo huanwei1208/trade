@@ -115,7 +115,6 @@ function initialObservatoryAttempt(): string | null {
     "obsChart",
     "obsTimeframe",
     "knowledgeAsOf",
-    "obsRange",
     "obsRun",
     "obsCompare",
     "obsDate",

@@ -64,7 +64,7 @@ const LENS_TABS: Array<{ key: ObsLens; label: string }> = [
   { key: "research", label: "Research" },
 ];
 
-const RANGE_OPTIONS = ["30D", "90D", "1Y", "All"];
+const OBSERVATORY_FULL_RANGE = "All";
 
 const RESEARCH_STATES = new Set([
   "exploratory",
@@ -252,9 +252,7 @@ export function ObservatoryPage({
   );
   const context = confirmedData(contextResource);
   const snapshotId = context?.snapshot_id ?? null;
-  const windowBounds = observatoryWindowBounds(context?.market_watermark, urlState.range);
-  const requestWindow =
-    windowBounds.kind === "bounded" ? { from: windowBounds.from, to: windowBounds.to } : {};
+  const windowBounds = observatoryWindowBounds(context?.market_watermark, OBSERVATORY_FULL_RANGE);
   const windowError = windowUnavailableError(windowBounds);
 
   const selectedSeriesResource = useObservatoryResource<ObsSingleSeries>(
@@ -262,7 +260,6 @@ export function ObservatoryPage({
       ? observatorySeriesPath({
           view: urlState.channel,
           snapshotId,
-          ...requestWindow,
         })
       : null,
     {
@@ -280,7 +277,6 @@ export function ObservatoryPage({
       ? observatorySeriesPath({
           view: "composite",
           knowledgeAsOf: knowledgeParam,
-          ...requestWindow,
         })
       : null,
     {
@@ -407,20 +403,6 @@ export function ObservatoryPage({
                 <option value="formal">Published baseline</option>
               </select>
             </label>
-            <label className="obs-select">
-              <span>{urlState.lens === "overview" ? "Range" : "Evidence window"}</span>
-              <select
-                value={urlState.range}
-                onChange={(e) => onUrlStateChange({ range: e.target.value })}
-                data-testid="range-select"
-              >
-                {RANGE_OPTIONS.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </label>
             {urlState.lens === "overview" ? (
               <label className="obs-select">
                 <span>Knowledge</span>
@@ -451,7 +433,6 @@ export function ObservatoryPage({
           selectedSeriesResource={selectedSeriesResource}
           compositeResource={compositeResource}
           dateEvidenceResource={dateEvidenceResource}
-          range={urlState.range}
           timeframe={urlState.timeframe}
           selectedDate={urlState.date ?? null}
           channel={urlState.channel}

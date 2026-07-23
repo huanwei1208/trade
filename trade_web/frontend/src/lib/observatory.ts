@@ -7,7 +7,7 @@
 //   - Candidate is NEVER presented as Published (persistent texture, not a badge),
 //   - quarantine / revision use NON-COLOR semantics (icon + text + texture),
 //   - decimal STRING prices parsed only for geometry (display keeps the string),
-//   - fixed URL round-trips (page/lens/run/date/knowledge_as_of/range).
+//   - fixed URL round-trips (page/lens/run/date/knowledge_as_of).
 // They are unit-tested directly (Vitest) because the SVG chart cannot assert
 // numerical invariants on its own.
 
@@ -426,8 +426,8 @@ export function readMetricString(
 }
 
 // ── Fixed URL serialization ──────────────────────────────────────────────────
-// The observatory context (page/lens/run/date/knowledge_as_of/range/channel)
-// must serialize into query params and restore on refresh (docs/26 §14.2).
+// The observatory context (page/lens/run/date/knowledge_as_of/channel) must
+// serialize into query params and restore on refresh (docs/26 §14.2).
 
 export type ObservatoryChartMode = "market" | "compare";
 export type ObservatoryTimeframe = "1D" | "1W" | "1M" | "1Y";
@@ -438,7 +438,7 @@ export type ObservatoryUrlState = {
   chartMode: ObservatoryChartMode;
   timeframe: ObservatoryTimeframe;
   knowledgeAsOf: string; // "latest" or an RFC3339 / date string
-  range: string; // "30D" | "90D" | "1Y" | "All"
+  range: string; // compatibility field; canonical Observatory views use "All"
   runId?: string | null;
   compareRunId?: string | null;
   date?: string | null;
@@ -450,7 +450,7 @@ export const DEFAULT_OBS_URL_STATE: ObservatoryUrlState = {
   chartMode: "market",
   timeframe: "1D",
   knowledgeAsOf: "latest",
-  range: "90D",
+  range: "All",
   runId: null,
   compareRunId: null,
   date: null,
@@ -460,7 +460,6 @@ const OBS_LENSES: ObsLens[] = ["overview", "trust", "runs", "research"];
 const OBS_CHANNELS: ObsChannel[] = ["formal", "evaluated_candidate", "observed"];
 const OBS_CHART_MODES: ObservatoryChartMode[] = ["market", "compare"];
 const OBS_TIMEFRAMES: ObservatoryTimeframe[] = ["1D", "1W", "1M", "1Y"];
-const OBS_RANGES = ["30D", "90D", "1Y", "All"];
 
 export function normalizeObservatoryState(
   state: Partial<ObservatoryUrlState> | null | undefined,
@@ -469,7 +468,6 @@ export function normalizeObservatoryState(
   const channel = state?.channel;
   const chartMode = state?.chartMode;
   const timeframe = state?.timeframe;
-  const range = state?.range;
   return {
     lens: lens && OBS_LENSES.includes(lens) ? lens : DEFAULT_OBS_URL_STATE.lens,
     channel: channel && OBS_CHANNELS.includes(channel) ? channel : DEFAULT_OBS_URL_STATE.channel,
@@ -483,7 +481,7 @@ export function normalizeObservatoryState(
       typeof state?.knowledgeAsOf === "string" && state.knowledgeAsOf.trim()
         ? state.knowledgeAsOf.trim()
         : DEFAULT_OBS_URL_STATE.knowledgeAsOf,
-    range: range && OBS_RANGES.includes(range) ? range : DEFAULT_OBS_URL_STATE.range,
+    range: DEFAULT_OBS_URL_STATE.range,
     runId: typeof state?.runId === "string" ? state.runId : null,
     compareRunId: typeof state?.compareRunId === "string" ? state.compareRunId : null,
     date: typeof state?.date === "string" ? state.date : null,
@@ -504,9 +502,6 @@ export function serializeObservatoryState(state: ObservatoryUrlState): URLSearch
   if (normalized.knowledgeAsOf && normalized.knowledgeAsOf !== "latest") {
     params.set("knowledgeAsOf", normalized.knowledgeAsOf);
   }
-  if (normalized.range && normalized.range !== DEFAULT_OBS_URL_STATE.range) {
-    params.set("obsRange", normalized.range);
-  }
   if (normalized.runId) {
     params.set("obsRun", normalized.runId);
   }
@@ -524,7 +519,6 @@ export function deserializeObservatoryState(params: URLSearchParams): Observator
   const channel = params.get("obsChannel");
   const chartMode = params.get("obsChart");
   const timeframe = params.get("obsTimeframe");
-  const range = params.get("obsRange");
   return normalizeObservatoryState({
     lens:
       lens && OBS_LENSES.includes(lens as ObsLens) ? (lens as ObsLens) : DEFAULT_OBS_URL_STATE.lens,
@@ -541,7 +535,7 @@ export function deserializeObservatoryState(params: URLSearchParams): Observator
         ? (timeframe as ObservatoryTimeframe)
         : DEFAULT_OBS_URL_STATE.timeframe,
     knowledgeAsOf: params.get("knowledgeAsOf") || "latest",
-    range: range && OBS_RANGES.includes(range) ? range : DEFAULT_OBS_URL_STATE.range,
+    range: DEFAULT_OBS_URL_STATE.range,
     runId: params.get("obsRun"),
     compareRunId: params.get("obsCompare"),
     date: params.get("obsDate"),

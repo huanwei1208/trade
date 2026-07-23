@@ -37,7 +37,6 @@ type MarketWorkspaceProps = {
   selectedSeriesResource: MarketResource<ObsSingleSeries>;
   compositeResource: MarketResource<ObsCompositeSeries>;
   dateEvidenceResource: MarketResource<ObsDateEvidence>;
-  range: string;
   timeframe: ObservatoryTimeframe;
   selectedDate: string | null;
   channel: ObsChannel;
@@ -61,7 +60,6 @@ export function MarketWorkspace({
   selectedSeriesResource,
   compositeResource,
   dateEvidenceResource,
-  range,
   timeframe,
   selectedDate,
   channel,
@@ -213,7 +211,6 @@ export function MarketWorkspace({
         ) : composite ? (
           <CompositeChart
             composite={composite}
-            range={range}
             selectedDate={selectedDate}
             onSelectDate={onSelectDate}
             dateInputRef={dateInspectorRef}

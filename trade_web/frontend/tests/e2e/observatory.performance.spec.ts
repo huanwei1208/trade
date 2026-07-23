@@ -19,7 +19,7 @@ for (const fixture of [
     });
 
     const startedAt = Date.now();
-    await page.goto("/?obsLens=overview&obsRange=All");
+    await page.goto("/?obsLens=overview");
     const chartFrame = page.getByTestId("exchange-kline-chart");
     await expect(chartFrame).toHaveAttribute("data-renderer-state", "ready", {
       timeout: fixture.readyBudgetMs,

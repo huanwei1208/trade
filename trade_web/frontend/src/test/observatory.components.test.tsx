@@ -70,7 +70,7 @@ describe("SnapshotContextBar (Truth Bar)", () => {
 
 describe("CompositeChart", () => {
   it("draws three independent layer groups with correct baseline vs overlay roles", () => {
-    render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
+    render(<CompositeChart composite={COMPOSITE_FIXTURE} />);
     const formal = screen.getByTestId("layer-formal");
     const candidate = screen.getByTestId("layer-evaluated_candidate");
     const observed = screen.getByTestId("layer-latest_observed");
@@ -80,13 +80,13 @@ describe("CompositeChart", () => {
   });
 
   it("marks the formal watermark divider and shows the scale label", () => {
-    render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
+    render(<CompositeChart composite={COMPOSITE_FIXTURE} />);
     expect(screen.getByTestId("formal-watermark-divider")).toBeTruthy();
     expect(screen.getByTestId("scale-current")).toBeTruthy();
   });
 
   it("renders OHLC candles and never presents candidate/observed candles as published", () => {
-    const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
+    const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} />);
     const formalCandles = container.querySelectorAll('[data-testid="candle-formal"]');
     const candidateCandles = container.querySelectorAll(
       '[data-testid="candle-evaluated_candidate"]',
@@ -107,7 +107,7 @@ describe("CompositeChart", () => {
   });
 
   it("renders volume bars and date ticks as part of the K-line visualization", () => {
-    const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
+    const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} />);
 
     expect(container.querySelectorAll('[data-testid="volume-formal"]').length).toBeGreaterThan(0);
     expect(
@@ -120,7 +120,6 @@ describe("CompositeChart", () => {
     render(
       <CompositeChart
         composite={COMPOSITE_FIXTURE}
-        range="All"
         selectedDate="2026-07-14"
         onSelectDate={() => {}}
       />,
@@ -133,7 +132,7 @@ describe("CompositeChart", () => {
   });
 
   it("does not draw a candidate candle for a missing date", () => {
-    const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
+    const { container } = render(<CompositeChart composite={COMPOSITE_FIXTURE} />);
     const missingDateCandle = container.querySelector(
       '[data-testid="candle-evaluated_candidate"][data-date="2026-07-13"]',
     );
@@ -141,7 +140,7 @@ describe("CompositeChart", () => {
   });
 
   it("renders non-color markers with a shape glyph for quarantine/revision", () => {
-    render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
+    render(<CompositeChart composite={COMPOSITE_FIXTURE} />);
     const markers = screen.getAllByTestId("chart-marker");
     expect(markers.length).toBeGreaterThan(0);
     const kinds = markers.map((m) => m.getAttribute("data-marker-kind"));
@@ -151,7 +150,7 @@ describe("CompositeChart", () => {
   });
 
   it("shows the three-layer legend", () => {
-    render(<CompositeChart composite={COMPOSITE_FIXTURE} range="All" />);
+    render(<CompositeChart composite={COMPOSITE_FIXTURE} />);
     const legend = screen.getByTestId("composite-legend");
     expect(within(legend).getByTestId("legend-formal")).toBeTruthy();
     expect(within(legend).getByTestId("legend-evaluated_candidate")).toBeTruthy();
@@ -160,7 +159,7 @@ describe("CompositeChart", () => {
 
   it("uses one pointer overlay and a keyboard-operable date inspector instead of per-date hit targets", () => {
     const { container } = render(
-      <CompositeChart composite={COMPOSITE_FIXTURE} range="All" onSelectDate={() => {}} />,
+      <CompositeChart composite={COMPOSITE_FIXTURE} onSelectDate={() => {}} />,
     );
     expect(screen.getByTestId("chart-pointer-overlay")).toBeTruthy();
     expect(screen.getByTestId("chart-date-inspector")).toHaveAttribute("type", "date");
@@ -183,7 +182,6 @@ describe("CompositeChart", () => {
     const { container } = render(
       <CompositeChart
         composite={compositeWithoutQuarantine}
-        range="All"
         quarantineBreakLayer="latest_observed"
         excludedDates={[
           {
@@ -255,7 +253,6 @@ describe("CompositeChart", () => {
             latest_observed: null,
           },
         }}
-        range="All"
       />,
     );
 
@@ -295,7 +292,6 @@ describe("CompositeChart", () => {
             latest_observed: null,
           },
         }}
-        range="All"
       />,
     );
 
@@ -318,7 +314,6 @@ describe("CompositeChart", () => {
             latest_observed: null,
           },
         }}
-        range="All"
         excludedDates={excludedDates}
       />,
     );
@@ -355,7 +350,6 @@ describe("CompositeChart", () => {
             latest_observed: null,
           },
         }}
-        range="All"
         excludedDates={excludedDates}
       />,
     );
@@ -392,7 +386,6 @@ describe("CompositeChart", () => {
             latest_observed: null,
           },
         }}
-        range="All"
         excludedDates={[
           {
             date: "2021-01-01",
@@ -434,7 +427,6 @@ describe("CompositeChart", () => {
             latest_observed: null,
           },
         }}
-        range="All"
       />,
     );
 

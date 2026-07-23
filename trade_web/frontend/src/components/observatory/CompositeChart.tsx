@@ -3,7 +3,6 @@ import { useMemo, useState, type RefObject } from "react";
 import type { ObsChannel, ObsCompositeSeries, ObsExcludedDate, ObsSeriesRow } from "../../lib/api";
 import { makeIndexScale, makeValueScale, paddedDomain, type ScaleMode } from "../../lib/chart";
 import {
-  applyRangeWindow,
   downsampleSeriesRows,
   extractLayers,
   formalWatermarkDate,
@@ -29,7 +28,6 @@ import {
 
 type CompositeChartProps = {
   composite: ObsCompositeSeries | null | undefined;
-  range: string; // 30D / 90D / 1Y / All
   selectedDate?: string | null;
   onSelectDate?: (date: string) => void;
   dateInputRef?: RefObject<HTMLInputElement | null>;
@@ -230,7 +228,6 @@ function formatChartNumber(value: number | null | undefined, digits = 2): string
 
 export function CompositeChart({
   composite,
-  range,
   selectedDate,
   onSelectDate,
   dateInputRef,
@@ -239,10 +236,8 @@ export function CompositeChart({
   excludedDates = [],
   quarantineBreakLayer,
 }: CompositeChartProps) {
-  // Long-period price defaults to log scale (docs/26 §12.1). 30D/90D linear.
-  const [scaleMode, setScaleMode] = useState<ScaleMode>(
-    range === "1Y" || range === "All" ? "log" : "linear",
-  );
+  // Full-range BTC price defaults to log scale (docs/26 §12.1).
+  const [scaleMode, setScaleMode] = useState<ScaleMode>("log");
 
   const layers = useMemo(() => extractLayers(composite), [composite]);
   const excludedDatesByLayer = useMemo(
@@ -295,7 +290,7 @@ export function CompositeChart({
         .sort(),
     [allExcludedDates, layersWithQuarantineGaps],
   );
-  const windowDates = useMemo(() => applyRangeWindow(allDates, range), [allDates, range]);
+  const windowDates = allDates;
   const dateIndex = useMemo(() => {
     const map = new Map<string, number>();
     windowDates.forEach((d, i) => map.set(d, i));

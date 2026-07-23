@@ -246,7 +246,7 @@ describe("purpose tone", () => {
 });
 
 describe("URL state round-trips (fixed URL restore)", () => {
-  it("serializes and deserializes back to the same state", () => {
+  it("serializes and deserializes canonical state while ignoring legacy range values", () => {
     const state: ObservatoryUrlState = {
       lens: "runs",
       channel: "evaluated_candidate",
@@ -259,8 +259,9 @@ describe("URL state round-trips (fixed URL restore)", () => {
       date: "2026-07-15",
     };
     const params = serializeObservatoryState(state);
+    expect(params.get("obsRange")).toBeNull();
     const restored = deserializeObservatoryState(params);
-    expect(restored).toEqual(state);
+    expect(restored).toEqual({ ...state, range: "All" });
   });
 
   it("defaults are omitted from the query but restore to defaults", () => {
@@ -307,5 +308,13 @@ describe("URL state round-trips (fixed URL restore)", () => {
     });
     expect(legacy).toEqual(DEFAULT_OBS_URL_STATE);
     expect(serializeObservatoryState(legacy).get("obsChart")).toBeNull();
+  });
+
+  it("ignores legacy obsRange query values and restores full range", () => {
+    const restored = deserializeObservatoryState(
+      new URLSearchParams("obsLens=overview&obsRange=30D"),
+    );
+    expect(restored.range).toBe("All");
+    expect(serializeObservatoryState(restored).get("obsRange")).toBeNull();
   });
 });

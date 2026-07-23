@@ -35,7 +35,7 @@ const DEFAULT_STATE: ObservatoryUrlState = {
   chartMode: "market",
   timeframe: "1D",
   knowledgeAsOf: "latest",
-  range: "90D",
+  range: "All",
   runId: null,
   compareRunId: null,
   date: null,
@@ -128,7 +128,7 @@ afterEach(() => {
 });
 
 describe("ObservatoryPage request matrix", () => {
-  it("loads Context first, then only the snapshot-pinned Market series", async () => {
+  it("loads Context first, then only the unbounded snapshot-pinned Market series", async () => {
     const { paths } = installObservatoryFetch();
     renderPage({ range: "90D" });
 
@@ -145,8 +145,8 @@ describe("ObservatoryPage request matrix", () => {
 
     const selectedParams = new URL(selectedPath!, "https://trade.invalid").searchParams;
     expect(selectedParams.get("snapshot_id")).toBe(CONTEXT_FIXTURE.snapshot_id);
-    expect(selectedParams.get("from")).toBe("2026-04-20");
-    expect(selectedParams.get("to")).toBe("2026-07-18");
+    expect(selectedParams.get("from")).toBeNull();
+    expect(selectedParams.get("to")).toBeNull();
     expect(
       paths.some(
         (path) => new URL(path, "https://trade.invalid").searchParams.get("view") === "composite",
@@ -157,7 +157,7 @@ describe("ObservatoryPage request matrix", () => {
     expect(screen.queryByTestId("what-changed")).toBeNull();
   });
 
-  it("loads only the bounded composite series in Compare mode", async () => {
+  it("loads only the unbounded composite series in Compare mode", async () => {
     const { paths } = installObservatoryFetch();
     renderPage({ chartMode: "compare", range: "90D" });
 
@@ -168,8 +168,8 @@ describe("ObservatoryPage request matrix", () => {
     expect(compositePath).toBeTruthy();
     const params = new URL(compositePath!, "https://trade.invalid").searchParams;
     expect(params.get("snapshot_id")).toBeNull();
-    expect(params.get("from")).toBe("2026-04-20");
-    expect(params.get("to")).toBe("2026-07-18");
+    expect(params.get("from")).toBeNull();
+    expect(params.get("to")).toBeNull();
     expect(screen.getByTestId("composite-chart")).toBeTruthy();
     expect(screen.getByTestId("what-changed")).toBeTruthy();
     expect(screen.queryByTestId("market-summary")).toBeNull();
@@ -353,6 +353,14 @@ describe("ObservatoryPage request matrix", () => {
     expect(onUrlStateChange).toHaveBeenCalledWith({ chartMode: "compare" });
   });
 
+  it("does not render a preset range selector for market evidence", async () => {
+    installObservatoryFetch();
+    renderPage({ range: "30D" });
+
+    await screen.findByTestId("exchange-kline-panel-stub");
+    expect(screen.queryByTestId("range-select")).toBeNull();
+  });
+
   it("reuses confirmed Market resources when returning to the Overview lens", async () => {
     const { paths } = installObservatoryFetch();
     const page = render(
@@ -463,6 +471,8 @@ describe("ObservatoryPage request matrix", () => {
     expect(new URL(seriesPath!, "https://trade.invalid").searchParams.get("snapshot_id")).toBe(
       CONTEXT_FIXTURE.snapshot_id,
     );
+    expect(new URL(seriesPath!, "https://trade.invalid").searchParams.get("from")).toBeNull();
+    expect(new URL(seriesPath!, "https://trade.invalid").searchParams.get("to")).toBeNull();
     expect(trustPath).toBeTruthy();
   });
 
@@ -525,17 +535,15 @@ describe("ObservatoryPage request matrix", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks bounded descendants instead of issuing an unbounded request when Context has no watermark", async () => {
+  it("does not require a market watermark before loading full-range descendants", async () => {
     const { paths } = installObservatoryFetch({
       context: { ...CONTEXT_FIXTURE, market_watermark: null },
     });
     renderPage({ range: "90D" });
 
-    await waitFor(() =>
-      expect(screen.getByText("Selected market window unavailable")).toBeTruthy(),
-    );
+    await waitFor(() => expect(paths.filter((path) => path.includes("/series"))).toHaveLength(1));
     expect(paths.filter((path) => path.includes("/context"))).toHaveLength(1);
-    expect(paths.some((path) => path.includes("/series"))).toBe(false);
+    expect(await screen.findByTestId("exchange-kline-panel-stub")).toBeTruthy();
     expect(paths.some((path) => path.includes("/trust"))).toBe(false);
   });
 
