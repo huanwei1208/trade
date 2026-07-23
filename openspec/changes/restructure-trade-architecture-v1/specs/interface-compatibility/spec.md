@@ -46,6 +46,42 @@ pointers directly.
 - **THEN** its BFF returns an explicit typed state and does not fetch, repair,
   publish, run a study or change data lifecycle during the query
 
+### Requirement: Interface errors and process views SHALL remain operable
+
+CLI, HTTP and SSE compatibility adapters SHALL map context and Platform failure
+states to a versioned `ErrorEnvelope` with stable reason code, correlation ID,
+safe retry/recovery hint and compatibility status/exit mapping. Interfaces
+SHALL provide bounded ProcessView list/detail and recovery-link queries through
+the owning Processes/Platform query APIs. Legacy error shapes remain available
+until their snapshot and retirement conditions pass; adapters SHALL NOT expose
+raw exception text, credentials, artifact bytes or private table state.
+
+#### Scenario: A retained route observes a blocked process
+
+- **WHEN** a legacy HTTP route, CLI command or Web page queries an operation
+  whose ProcessView is blocked, dead-lettered, expired or unavailable
+- **THEN** the adapter returns the compatible status/payload plus a stable
+  ErrorEnvelope reason and correlation/process link, and does not retry,
+  repair, redrive or mutate the process while servicing the query
+
+### Requirement: BFF and SSE fan-out SHALL have finite client budgets
+
+Each BFF route SHALL declare parallel-query, deadline, pagination and
+cache/coalescing policy. SSE SHALL declare maximum concurrent connections per
+instance and identity, shared dispatcher/hub ownership, per-client item and
+byte queues, heartbeat, idle timeout, slow-client disconnect and cursor
+retention/resync behavior. A BFF or SSE adapter SHALL use a bounded shared
+fan-out path from durable delivery/projection state; it SHALL NOT start a
+database poller or unbounded queue for every connected client.
+
+#### Scenario: A slow SSE client falls behind retention
+
+- **WHEN** a client exceeds its queue budget or asks for a cursor older than
+  the retained event/projection window
+- **THEN** the adapter disconnects or returns an explicit resync-required
+  response with a stable reason, records safe capacity telemetry, and does not
+  allow that client to accumulate unbounded memory or block other consumers
+
 ### Requirement: SDK, notebooks and imports SHALL use shared contracts
 
 SDK, CLI, HTTP, Web and notebooks SHALL share approved query/use-case DTOs.

@@ -6,7 +6,10 @@ Studies SHALL own `Study`, `Hypothesis`, `StudySpec`, `StudyRun`,
 `ValidationReport`, `StudyResult`, `StudyResultRef`, `PromotionReceipt` and
 `EvidenceGap`. A formal StudyRun SHALL accept `DatasetSnapshotRef` inputs only.
 It SHALL NOT read a provider, CaptureArtifact, raw file, moving latest alias,
-current business database state or HTTP request payload directly.
+current business database state or HTTP request payload directly. A formal
+StudyRun SHALL reject a snapshot unless Datasets has marked its declared
+point-in-time/revision policy as proven by the formal-PIT-and-revision-semantics
+gate, including its immutable canonicalization and quality policy references.
 
 #### Scenario: A study command supplies raw provider content
 
@@ -22,6 +25,15 @@ current business database state or HTTP request payload directly.
 - **THEN** it records the input references, feature/label definitions,
   walk-forward/placebo/benchmark policy and output identity in an immutable
   StudyResult with a ValidationReport
+
+#### Scenario: A snapshot lacks formal PIT proof
+
+- **WHEN** a caller supplies an immutable DatasetSnapshotRef whose required
+  clock, revision mapping, canonicalization policy or quality policy is
+  incomplete or unproven
+- **THEN** Studies rejects the formal run with an explicit PIT-not-proven or
+  policy-lineage reason and does not downgrade the run to a hidden current-data
+  query
 
 ### Requirement: Studies SHALL express evidence gaps without performing capture
 

@@ -38,7 +38,9 @@ current-state claims below derive from code and repository configuration.
 | Warehouse | `trade_py/data/warehouse` materializes data and validation artifacts. | Reclassify each artifact as a Dataset product, a Study-local result or a compatibility projection, instead of moving the directory wholesale. |
 | Observatory | `trade_py/observatory/domain/models.py` already models `ArtifactRef`, immutable run projections, `Release` and `SnapshotContext`; its catalog SQLite is explicitly rebuildable. | Retain the models' reference concepts and catalog projection behavior, but route them to Datasets/Studies contracts and Interfaces BFFs. Observatory is not a target business context. |
 | PIT | `trade_py/observatory/pit/resolver.py` filters by `available_at` or `fetched_at`, but currently keeps rows whose chosen timestamp is absent; `latest_restated` only flags and does not transform revisions. | A child change must make formal PIT resolution fail closed for absent required clocks and define real restatement semantics with golden tests. |
+| Source rights and temporal ingestion | `trade_py/data/news/rss/catalog.py` has no license, attribution, retention, redistribution, LLM-use or region policy fields. `data/news/rss/base.py` can substitute collector-now when publication time is absent. | Versioned SourceManifest policy must enforce rights and preserve absent source time; a semantic/ML consumer must retain derivation provenance. |
 | Event runtime | `trade_py/bus` has durable event records, channel admission and replay. `trade_py/jobs/__init__.py` is a large job registry/execution concentration coupled to the bus. | Treat current bus mechanics as a Platform seed; extract business job behavior to context use cases and process managers. |
+| Restore path | `scripts/backup.py` extracts/restores the selected archive without first proving every member against a manifest and SHA-256 digest. | Platform Backup must verify safe archive members and staged contents before activating a restore, then retain an append-only restore receipt. |
 | Web | `trade_web/backend/app.py` is about 3,781 lines and mixes routes, BFF reads, direct DB/parquet access and operational writes. `runtime/` already has a resource container and router; `observatory/router.py` is a read-only focused router. | Preserve current routes with `interfaces/http/compat`; use the existing focused-router pattern as a migration path. |
 | Frontend | `trade_web/frontend/src/lib/api.ts` currently exposes `today`, `candidates`, `symbol`, `ops`, `research`, `data`, `observatory`; product widgets also expose Actions and Trust endpoints. | Existing pages remain product surfaces. Future BFFs compose query handles rather than directly own tables or lifecycle actions. |
 | Notebook | `research/notebooks/btc_h1_observatory.py` changes `sys.path` to find repository modules. | Create an SDK/Notebook contract before moving notebook locations; prohibit repository scanning and adapter imports after cutover. |
@@ -140,6 +142,10 @@ Acceptance of this design requires:
    without cyclic source imports or cross-context transactions.
 6. Migration work is split into independently reversible child changes with
    temporary-root tests, contract snapshots and compatibility gates.
+7. Platform persistence/events/Bootstrap infrastructure is independently
+   designed and implemented before any Context emits a new outbox transition;
+   formal PIT/revision semantics are independently proven before a formal
+   SnapshotRef or Study migration.
 
 Users are researchers, operators, Web users, CLI/SDK consumers and future
 automation adapters. Non-goals are changing trading semantics, validating a
@@ -159,10 +165,14 @@ contexts. `platform` owns technical mechanics without business vocabulary.
 composition root allowed to import concrete adapters, repositories, use cases,
 process managers and platform implementations.
 
-The current `TradeDB` remains a compatibility facade during transition. It is
-not a target owner. Compatibility delegation is temporary and is retired only
-after the named context repository, query projection and contract suite are
-stable for the defined window.
+Before any Context extraction, `platform-persistence-events-and-bootstrap-
+foundation` supplies the local transaction/outbox port, command ingress
+idempotency, consumer inbox/receipt, lease/ack/DLQ recovery, migration
+coordination and the one Bootstrap composition root. The current `TradeDB`
+remains a compatibility facade during transition. It is not a target owner:
+it delegates to compatible context repositories and must not retain
+constructor-time cross-domain schema initialization, migration or write
+authority after the Platform foundation child exit criteria pass.
 
 ### Data and state invariants
 
@@ -187,6 +197,15 @@ metadata. A required clock that is absent is explicit unavailable for formal PIT
 resolution. It is never silently treated as visible. Exact versus estimated
 time provenance is carried in the reference/quality report.
 
+Every formal DatasetVersion and DatasetSnapshot also binds immutable
+`CanonicalizationPolicyRef` and `QualityPolicyRef` values with policy/version
+digests. The policies state identity, units, timezone, precision, duplicate,
+missingness and reconciliation rules. `as_known` and `latest_restated` are
+different snapshot transformations: formal `latest_restated` requires an actual
+revision/retraction mapping rather than a label on the same selection. The
+`formal-pit-and-revision-semantics` child is a hard predecessor to a formal
+Dataset release or Study migration.
+
 ### Contracts and compatibility
 
 The Bash `trade` facade and Python canonical domains remain external contracts.
@@ -204,22 +223,33 @@ permit retirement.
 ### Persistent-write safety
 
 Each context has one authoritative writer and one local transaction boundary.
-The owner commits aggregate transition, immutable receipt or reference, audit
-record and outbox entry atomically. Capture commits raw bytes only after digest
-and receipt validation; Datasets advances a release only after its immutable
-product and quality result are durable; Studies and Decision Support append
-results and rationale rather than rewriting prior facts. Cross-context work
-uses idempotent delivery and process state, not a shared SQLite transaction.
+The Platform foundation supplies the transaction/outbox port before the first
+Context extraction. The owner commits aggregate transition, immutable receipt
+or reference, audit record and outbox entry atomically; command ingress and
+consumer effects use durable idempotency claims, receipts, leases and
+acknowledgements. Capture uses stage -> digest verify -> commit marker ->
+receipt/outbox -> reconciliation for cross-store raw bytes. Datasets advances a
+release only after its immutable product, policy refs and quality result are
+durable; Studies and Decision Support append results and rationale rather than
+rewriting prior facts. Cross-context work uses idempotent delivery and process
+state, not a shared SQLite transaction. Valid envelopes that cannot be
+delivered enter a bounded, auditable Platform DLQ; invalid source content enters
+Capture quarantine, which is intentionally a different state.
 
 ### Schema migration compatibility
 
 Schema changes are additive versioned changes owned by the Context repository
-whose facts change. Existing SQLite/parquet readers remain available through
-backward and forward compatibility adapters during a minimum 30-day window.
-The owning child change uses an idempotent checkpointed replay, dual-read
-comparison or a readiness-gated pointer switch before cutover. Rollback selects
-the verified prior generation or backup snapshot and never deletes new
-immutable records merely to restore old code.
+whose facts change. `DatabaseRuntime` and `MigrationCoordinator` select
+read-only, compatible-writer or migration-leader startup and fence
+mixed-version writers with a capability generation range and leader lock.
+Existing SQLite/parquet readers remain available through backward and forward
+compatibility adapters during a minimum 30-day window. The owning child change
+uses an idempotent checkpointed replay, dual-read comparison or a
+readiness-gated pointer switch before cutover, then records a
+`MigrationReconciliationManifest` for census, normalized data, clocks, policy,
+lineage, artifact and pointer equivalence. Rollback selects the verified prior
+generation or staged verified backup snapshot and never deletes new immutable
+records merely to restore old code.
 
 ### Point-in-time and predictive evidence
 
@@ -233,13 +263,17 @@ or insufficient-data outcome rather than inventing a numeric fallback.
 
 ### External-event data safety
 
-Capture validates every external interaction against a SourceManifest that
-identifies the source, provenance, license, request budget, concurrency, retry
-classification, circuit breaker and availability state. Pull, push, stream,
-import, replay, correction and tombstone behavior writes immutable receipts,
-durable deduplication keys and quarantine/dead-letter evidence. Provider
-unavailability, invalid content and rate limits remain explicit states; replay
-uses committed artifacts and never silently repeats a provider request.
+Capture validates every external interaction against a versioned SourceManifest
+that identifies verified source/provenance, license/attribution, retention,
+redistribution/export, allowed processors/regions, credential scope, request
+budget, concurrency, retry classification, circuit breaker and availability
+state. Pull, push, stream, import, replay, correction and tombstone behavior
+writes immutable receipts, durable deduplication keys and quarantine/dead-letter
+evidence. Provider event/publication time remains absent when the provider did
+not supply it; collector-now is never substituted as a source clock. Provider
+unavailability, invalid content, rights restriction and rate limits remain
+explicit states; replay uses committed artifacts and never silently repeats a
+provider request.
 
 ### Failure and recovery
 
@@ -255,24 +289,45 @@ Every process has a durable idempotency key and resumes from its latest
 committed step after crash. Duplicate command delivery returns the existing
 receipt/process result. Outbox records are committed atomically with the
 context state transition; delivery can repeat, so event consumers are
-idempotent. A compensation only changes a pointer or creates a later record; it
+idempotent. Delivery has an inbox receipt, lease, acknowledgement, bounded
+attempt policy, backlog age/count/byte visibility and audited DLQ/redrive.
+Capture reconciliation classifies prepared/orphaned/corrupt artifacts after
+crash. Backup restore first validates safe archive members, manifest and
+SHA-256 digests in a staged root; failure leaves the active generation
+untouched. A compensation only changes a pointer or creates a later record; it
 does not rewrite a previously immutable artifact.
 
 ### Performance and capacity
 
-This design makes no unsupported throughput promise. Future child changes must
-measure baseline cost from temporary fixtures and production-safe telemetry
-before changing limits. Capture provides per-source bounded concurrency, rate
-limits, request budgets and circuit breakers. Large payloads are streamed to
-immutable segments; runtime envelopes carry references rather than frames or
-raw bodies.
+This design makes no unsupported throughput promise. The Platform foundation
+child establishes the measurement harness; every durable child proposes a
+measured 1x workload and a 10x workload against temporary roots, declared
+SLOs and explicit CPU/memory/disk/SQLite-lock budgets. A child cannot call a
+qualitative "bounded" policy sufficient until it has the dimensions, observed
+limits and overload result needed for its own surface.
 
-Dataset and Study builds execute as bounded platform executions with a timeout,
-cancellation state and resource receipt. Process managers use a bounded
-in-flight set and deadline, wait for required joins rather than spin, and
-coalesce duplicate refresh/evidence-gap requests by idempotency key. BFF queries
-have finite pagination/window limits and may compose bounded parallel reads, but
-never invoke provider fetch, repair or lifecycle write.
+`SourceManifest` accounts admission durably by source and credential scope,
+not only process-local memory. It declares requests/bytes/cost windows,
+concurrency, Retry-After handling, jitter, deadline and stream limits
+(segment bytes, buffered bytes, uncommitted segment count and checkpoint lag).
+Large payloads stream to immutable segments; runtime envelopes carry references
+rather than frames or raw bodies.
+
+Dataset policy declares physical layout (partition, sort, row-group/file and
+compression constraints) and each read handle carries a `QueryBudget` for
+SQLite indexes/locks, Parquet partition/files/bytes scans and constrained
+DuckDB plan/wall-time/memory use. Dataset and Study builds execute as bounded
+Platform executions with timeout, cancellation state and resource receipt.
+Outbox/process delivery declares payload cap, batch, in-flight count, ordering,
+lease, retry, DLQ, retention/watermark and backlog age/count/byte budgets.
+
+Every BFF declares parallel-query count, deadline, page size, cache/coalescing
+key and fan-out cost. SSE uses one bounded shared hub per instance rather than
+a poller per client, with connection limits by instance/identity, per-client
+item/byte queues, heartbeats, idle timeouts, slow-client disconnect and cursor
+expiry/resync. The 10x fixtures include provider admission, stream burst,
+SQLite contention, outbox recovery, Dataset scans and concurrent/slow SSE
+clients; a failed resource or SLO budget blocks the child cutover.
 
 ### Observability and operations
 
@@ -285,10 +340,20 @@ cancellation evidence.
 
 Status responses distinguish `empty`, `partial`, `degraded`, `unavailable`,
 `quarantined`, `stale`, `blocked` and `failed`; none is represented as a
-successful empty result. `trade status`, Operations and Data Ops become query
-surfaces over those explicit states. Logs and metrics do not contain raw
+successful empty result. `ActorContext`, `OperationReceipt`, `ProcessView` and
+a compatibility-safe versioned `ErrorEnvelope` provide bounded CLI/HTTP/SSE
+inspection and recovery linkage. `trade status`, Operations and Data Ops become
+query surfaces over those explicit states. Logs and metrics do not contain raw
 provider payloads or credentials; artifact digests and opaque IDs enable
 diagnosis.
+
+The initial operational matrix assigns owner, SLI, SLO, alert and runbook to
+Capture admission/rights/clock state, Dataset query and release state, outbox
+backlog/DLQ, Process deadline/retry state, BFF/SSE saturation, projection lag
+and backup verification. Retention status reports classes, legal holds,
+reachable-reference blocks, projected capacity and any retention-at-risk
+condition. The detailed thresholds are measured and ratified by the relevant
+child rather than invented in this parent design.
 
 ### Validation strategy
 
@@ -443,11 +508,12 @@ shared abstraction.
 
 ### Capture
 
-`SourceManifest` defines provider identity, approved contract, rate/quota
-policy, request grammar, source timezone, credentials reference and retention
-policy. `CaptureRequest` is immutable intent. `CapturePlan` expands request
-partitions/segments. `CaptureRun` owns attempt state, while
-`CaptureArtifact` owns committed raw bytes and digest.
+`SourceManifest` defines provider identity, verified provenance,
+license/attribution, retention/legal-hold class, redistribution/export,
+processor/region, credential scope, rate/quota/cost policy, request grammar,
+source timezone and revocation state. `CaptureRequest` is immutable intent.
+`CapturePlan` expands request partitions/segments. `CaptureRun` owns attempt
+state, while `CaptureArtifact` owns committed raw bytes and digest.
 
 ```text
 CaptureRequest: requested -> planned -> dispatched -> completed | failed | cancelled
@@ -456,11 +522,17 @@ CaptureRun:     created -> running -> received -> committed | retryable_failed |
 CaptureArtifact: provisional -> committed -> superseded | retained | tombstoned
 ```
 
-`committed` requires a receipt with source, request identity, mode, timestamps,
-content digest, content type/encoding, segment/cursor identity and retry
-classification. A successful empty response is a committed artifact with
+`committed` requires stage -> digest verification -> immutable commit marker ->
+receipt/outbox transaction. A receipt contains source/request identity, resolved
+SourceManifest policy digest, mode, timestamps, source-time confidence,
+content digest, content type/encoding, segment/cursor/finality/revision
+identity and retry classification. Startup reconciliation classifies prepared,
+orphaned and receipt-mismatched storage states without publishing an ambiguous
+ref. A successful empty response is a committed artifact with
 `availability=empty`, not a missing run. Replay reads the existing artifact and
-creates a new replay receipt; it never recontacts the provider.
+creates a new replay receipt; it never recontacts the provider. Collector time
+is retained as collector time and never substituted for a missing source event
+or publication time.
 
 Supported graph forms are explicit:
 
@@ -475,10 +547,12 @@ Supported graph forms are explicit:
 ### Datasets
 
 `DatasetBuild` records declared immutable inputs, schema/version policy,
-transform code identity, quality profile and output candidate. `DatasetVersion`
-is immutable canonical content. `DatasetSnapshot` pins a selection of versions
-and a knowledge/revision policy. `DatasetRelease` is the mutable publication
-record pointing to an immutable output.
+transform code identity, immutable `CanonicalizationPolicyRef` and
+`QualityPolicyRef`, physical layout and output candidate. `DatasetVersion` is
+immutable canonical content. `DatasetSnapshot` pins a selection of versions,
+effective knowledge cut and a real knowledge/revision transformation.
+`DatasetRelease` is the mutable publication record pointing to an immutable
+output.
 
 ```text
 DatasetBuild:     requested -> building -> validated -> candidate |
@@ -491,16 +565,22 @@ QualityReport:    pending -> passed | warned | blocked | quarantined
 
 A formal build accepts only `CaptureArtifactRef`, `DatasetVersionRef` and
 `DatasetSnapshotRef`. It may produce no release when inputs are incomplete,
-schema-invalid, duplicate-conflicted or quality-blocked. Catalogs and UI caches
-are rebuildable projections and do not become a second authoritative fact
-store.
+schema-invalid, duplicate-conflicted, right-restricted, PIT-not-proven or
+quality-blocked. A formal snapshot is unavailable when its required clock or
+revision mapping is absent. `as_known` and `latest_restated` create distinct
+immutable outputs. Catalogs and UI caches are rebuildable projections and do
+not become a second authoritative fact store. A generation-stamped release is
+the only authority for materializing a legacy pointer; a journal and startup
+reconciliation repair projection drift without allowing the pointer to write
+back.
 
 ### Studies
 
 `Study` owns intent and lifecycle. `Hypothesis` is preregistered claim/version.
 `StudySpec` pins feature/label definition, universe, sample, method, benchmark,
-walk-forward and multiple-testing policy. `StudyRun` pins only DatasetSnapshot
-references. `StudyResult` is immutable and its status is explicit.
+walk-forward and multiple-testing policy. `StudyRun` pins only formal,
+PIT-proven DatasetSnapshot references with their policy lineage. `StudyResult`
+is immutable and its status is explicit.
 
 ```text
 Study:       drafted -> registered -> active -> retired
@@ -713,15 +793,18 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-  Cmd[validated Context command] --> Tx[one Context transaction]
+  Cmd[command ingress] --> Ingress[durable idempotency claim and OperationReceipt]
+  Ingress --> Tx[one Context transaction]
   Tx --> Agg[aggregate state transition]
   Tx --> Audit[audit/receipt]
   Tx --> Outbox[outbox record]
   Agg --> Commit[commit]
   Audit --> Commit
   Outbox --> Commit
-  Commit --> Dispatch[Platform dispatch]
-  Dispatch --> Dedup[idempotent consumer/process]
+  Commit --> Lease[Platform delivery lease]
+  Lease --> Inbox[consumer inbox/idempotency claim]
+  Inbox --> Ack[acknowledgement and delivery receipt]
+  Lease --> DLQ[bounded DLQ and audited redrive]
 ```
 
 ## Process Manager Design
@@ -742,6 +825,16 @@ last_error
 compensation_state
 ```
 
+Every command ingress returns an `OperationReceipt` with operation ID,
+`ActorContext`, command digest, correlation/causation, idempotency key, state,
+safe reason and Process link. Operations interfaces query a bounded
+`ProcessView` from Processes/Platform rather than directly reading business
+tables. Envelopes carry immutable refs only, use a declared ordering key and
+payload cap, and persist consumer inbox, delivery lease, acknowledgement,
+attempt, backlog-age/count/byte and DLQ/redrive state. The source-context
+transaction owns state/audit/outbox; the Platform foundation owns ingress,
+dispatch and consumer delivery mechanics.
+
 The state machine is:
 
 ```text
@@ -757,7 +850,7 @@ requested -> running -> waiting -> completed
 | `close_evidence_gap` | `EvidenceGapDeclared`; requests Capture, Dataset build/release and Study rerun. | Resolve only when the rerun has a declared result; retain gap on provider/quality failure. |
 | `propagate_revision` | Dataset release declares supersession/revision. | Mark lineage-affected StudyResults stale; rerun automatic eligible studies or open review tasks. |
 | `run_registered_study` | Study command with immutable snapshot refs. | Emit completed/rejected/insufficient-data event; no capture call is permitted. |
-| `publish_dataset` | Candidate passed quality and policy. | Atomically release pointer and outbox event within Datasets; compensating withdrawal creates a later release state. |
+| `publish_dataset` | Candidate passed quality and policy; Process may request the command after an external trigger. | Datasets atomically owns release generation, pointer materialization journal and outbox event; compensating withdrawal creates a later release state. |
 | `rebuild_projection` | Dataset/Study/Decision event or operator rebuild command. | Build a replaceable catalog/BFF projection by generation/CAS. |
 | `generate_daily_workspace` | Schedule command after dependencies become visible. | Compose current approved refs into a workspace projection; explicit partial/degraded status is allowed. |
 
@@ -778,20 +871,21 @@ Readers from another context use contracts, events or an owned projection.
 |---|---|---|---|---|---|---|
 | source registry / source manifests | `asset_registry`, CLI config | Capture `SourceManifestRepository` | interfaces, processes | Capture | source command + audit/outbox | Capture |
 | capture requests/plans/runs/checkpoints | mixed data CLI/sync state | Capture `CaptureRepository` | processes, operations query | Capture | request/run/receipt | Capture |
-| raw payload and stream segments | crypto run files and provider paths | Capture `ArtifactStore` | Datasets via ref | Capture | artifact commit + receipt | Capture |
+| raw payload and stream segments | crypto run files and provider paths | Capture `ArtifactStore` | Datasets via ref | Capture | stage/digest/marker/receipt | Capture |
 | canonical versions/builds/lineage | warehouse/crypto store | Datasets `DatasetRepository` | Studies, interfaces | Datasets | build/version/quality/outbox | Datasets |
-| releases/snapshots/current compatibility pointer | crypto pointer, dataset snapshot records | Datasets `ReleaseRepository` | all via ref/query | Datasets | release/pointer/outbox | Datasets |
+| canonicalization/quality/derivation policies | mixed validation/enrichment configuration | Datasets policy repositories | Datasets, Studies through refs | Datasets | policy version/audit/outbox | Datasets |
+| releases/snapshots/current compatibility pointer | crypto pointer, dataset snapshot records | Datasets `ReleaseRepository` | all via ref/query | Datasets | release generation/pointer journal/outbox | Datasets |
 | quality findings/quarantine | daily gate and quality records | Datasets `QualityRepository` | interfaces, Studies eligibility | Datasets | finding/build decision | Datasets |
 | catalog and UI materializations | Observatory catalog/UI snapshots | Datasets or Interfaces `ProjectionRepository` | interfaces only | projection process | projection generation | owner of projection |
 | reusable derived features | factors/registry after classification | Datasets `DerivedDatasetRepository` | Studies, Decision Support | Datasets | dataset build | Datasets |
 | studies/specs/runs/results/validation | model/factor/eval records | Studies `StudyRepository` | Decision Support, interfaces | Studies | run/result/outbox | Studies |
 | evidence gaps/promotion receipts | current research workflow artifacts | Studies `StudyRepository` | processes, interfaces | Studies | gap/result transition | Studies |
 | decision cases/reviews/overrides/intents | recommendation/causal records after classification | Decision Support `DecisionRepository` | interfaces | Decision Support | case/review/audit | Decision Support |
-| event log/outbox/delivery state | EventBus tables | Platform Events store | all through API | Platform Events | context outbox plus delivery transition | Platform Events |
+| event log/outbox/inbox/delivery/DLQ state | EventBus tables | Platform Events store | all through API | Platform Events | context outbox plus delivery transition | Platform Events |
 | execution receipts | job runs/runtime commands | Platform Execution store | processes, operations | Platform Execution | execution receipt | Platform Execution |
-| process state | agenda/workflow records after classification | Processes `ProcessRepository` | interfaces | Processes | process claim/step state | Processes |
+| operation receipts/process state | agenda/workflow records after classification | Processes `ProcessRepository` | interfaces | Processes | ingress/process claim/step state | Processes |
 | schedules/leases | agenda/calendar scheduling mechanics | Platform Scheduling store | processes | Platform Scheduling | lease/fire state | Platform Scheduling |
-| settings/backups | settings/backup snapshot tables | Platform settings/backup stores | capture config, interfaces | Platform | setting/backup record | Platform |
+| settings/backups/restore receipts | settings/backup snapshot tables | Platform settings/backup stores | capture config, interfaces | Platform | setting/backup/restore record | Platform |
 
 Business SQL and business migrations live in the owning context adapter. Platform
 persistence provides connection, transaction, lock, read-only session and
@@ -801,14 +895,14 @@ migration-runner primitives only. It contains no market/business SQL.
 
 | Artifact | Owner | Immutability/pointer rule |
 |---|---|---|
-| provider raw response, import payload, stream segment | Capture | immutable digest-addressed committed artifact; receipt captures request and transport facts |
-| canonical table/parquet and reconciliation output | Datasets | immutable DatasetVersion artifact; formal consumers receive only ref |
+| provider raw response, import payload, stream segment | Capture | stage/digest/commit-marker/receipt protocol; immutable artifact with rights and source-time facts |
+| canonical table/parquet and reconciliation output | Datasets | immutable DatasetVersion artifact with canonicalization/quality policy refs; formal consumers receive only ref |
 | snapshot membership manifest | Datasets | immutable snapshot digest; changes create a new snapshot |
 | catalog/BFF projection | Datasets or Interfaces projection owner | rebuildable by generation; never input authority |
-| feature artifact | Datasets if reusable/versioned; Studies if fold-local | no implicit promotion from local experiment to public dataset |
+| feature artifact | Datasets if reusable/versioned; Studies if fold-local | reusable semantic artifact includes a DerivationReceipt; no implicit promotion from local experiment to public dataset |
 | validation/result/model artifact | Studies | immutable result ref with snapshot lineage and validation state |
 | decision rationale/review receipt | Decision Support | append-only audit; expiry/supersession is a new state |
-| backup archive | Platform Backup | immutable hash manifest; restore creates audited recovery action |
+| backup archive | Platform Backup | immutable manifest/digest; staged verified restore creates audited recovery action |
 
 ## Query and Command Separation
 
@@ -884,7 +978,15 @@ because a Python module moved.
 A BFF may validate permissions, call bounded queries in parallel, map DTOs,
 shape a response and attach cache metadata. It may not call a provider, repair
 data, publish a Dataset, run a Study, move a lifecycle pointer or own an
-unbounded in-memory cache.
+unbounded in-memory cache. Each route declares its parallel-query and deadline
+budget, result/window limit and cache/coalescing identity. Each SSE surface
+uses a shared bounded dispatcher/hub from durable delivery or projection state,
+not one database poller per client; it declares identity/instance connection
+limits, per-client item/byte queues, heartbeat, idle timeout, slow-client
+disconnect and cursor expiry/resync behavior. Compatibility adapters map
+context failure states to a versioned `ErrorEnvelope` with stable reason,
+correlation ID and safe recovery link while preserving legacy payload/error
+shapes for their compatibility window.
 
 ### SDK, notebooks and imports
 
@@ -919,8 +1021,11 @@ not a pybind extension or C++ header.
 A future Python extension is named `_trade_native` to avoid collision with the
 formal Python package. The child change must define ABI/versioning, typed
 marshalling, error conversion, cancellation and C++/Python differential
-fixtures before enabling it. This design does not change engine algorithms,
-CMake targets or binding behavior.
+fixtures before enabling it. Before the first native capability, a catalog maps
+each engine feature to precisely one Context port and owner. A native adapter
+returns typed computation values only: it may not open SQLite, write artifacts,
+advance lifecycle pointers or assemble a runtime. This design does not change
+engine algorithms, CMake targets or binding behavior.
 
 ## File-by-File Classification Method
 
@@ -977,7 +1082,8 @@ tooling. The cross-cutting test inventory is:
 9. Study deterministic rerun fixture: same snapshot/spec/seed produces the
    same result identity or a documented environment mismatch.
 10. Process idempotency/recovery fixture: duplicate delivery, crash after
-    outbox commit, retry, deadline and compensation.
+    outbox commit, inbox claim, lease/ack, retry, deadline, DLQ/redrive and
+    compensation.
 11. DB owner guard: prohibit cross-context repository table access and
     `db._conn` escape.
 12. Read-only query guard: query sessions reject provider fetch/write attempts.
@@ -985,39 +1091,58 @@ tooling. The cross-cutting test inventory is:
     and safe error categories across implementations.
 14. Migration rollback test: additive schema, shadow replay, cutover and
     rollback retain old readers and immutable artifacts.
+15. Capacity-envelope fixture: measured 1x and 10x provider, stream,
+    SQLite/Parquet/DuckDB, outbox and BFF/SSE workloads stay within the
+    declared resource/SLO budget or fail explicitly.
+16. Backup-restore fixture: safe archive-member, manifest/digest verification,
+    staged activation and corruption rejection leave an active fixture root
+    unchanged.
+17. Rights/retention fixture: SourceManifest processor/region/license
+    rejection, revocation tombstone, legal hold and reachable-lineage GC guard.
 
 ## Migration Phases and Child OpenSpec Changes
 
 | Order | Child change | Objective and exit criteria | Rollback |
 |---|---|---|---|
-| 1 | `architecture-guardrails-and-baselines` | Add import guard, route/CLI/OpenAPI baseline snapshots, table access inventory and read-only query guard without moving behavior. | Revert test/tooling changes; no data format change. |
-| 2 | `kernel-and-public-contracts` | Introduce minimal Kernel and versioned contract DTOs/refs with compatibility imports and serialization tests. | Stop new consumers; keep existing types/paths. |
-| 3 | `capture-boundary` | Extract source/request/run/artifact/checkpoint ownership, raw receipt/replay/import behavior and provider ports for a bounded pilot source. | Route compat adapter back to existing service; retain committed artifacts. |
-| 4 | `dataset-product-boundary` | Extract Dataset build/version/snapshot/release/quality/lineage and catalog projection for the pilot source. | Restore prior pointer after comparison; keep new immutable version artifacts. |
-| 5 | `study-boundary` | Move one registered study path to SnapshotRef-only input, evidence-gap declaration and deterministic result/validation receipt. | Preserve old query compatibility; mark new result unpublished/withdrawn if needed. |
-| 6 | `process-manager-and-platform-boundary` | Add durable process state/outbox/schedule/execution boundaries and migrate one refresh/evidence-gap flow. | Disable new process command; replay pending outbox with previous compatible handler. |
-| 7 | `cli-http-sdk-compatibility` | Route selected CLI/HTTP/SSE/SDK/notebook paths through use-case/query contracts with snapshots. | Re-enable legacy adapter path; retain payload aliases. |
-| 8 | `python-package-and-web-layout` | Introduce staged `src/trade` and `web` layout with compatibility package/shims after behavior is already isolated. | Retain old package install/import shims for compatibility window. |
-| 9 | `tests-and-legacy-cleanup` | Retire only proven bridges, obsolete docs/output paths and legacy aliases after usage and snapshot exit criteria. | Restore compatibility adapter; never delete immutable artifacts as rollback. |
+| 1 | `architecture-guardrails-and-baselines` | Add import/DB-owner/read-only guards and CLI/HTTP/OpenAPI/SSE baselines without moving behavior. Its inventory records package/import, native, table and pointer compatibility facts. | Revert test/tooling changes; no data format change. |
+| 2 | `platform-persistence-events-and-bootstrap-foundation` | Establish Context transaction/outbox port, command ingress/OperationReceipt, inbox/lease/ack/DLQ, EventBus bridge, DatabaseRuntime/MigrationCoordinator, verified backup restore and Bootstrap composition. Exit only with crash matrix, mixed-version fence and temporary-root restore tests. | Disable the new Platform adapter, retain EventBus/TradeDB compatibility bridge and all delivery records. |
+| 3 | `kernel-and-public-contracts` | Introduce only justified Kernel and versioned refs/DTOs, including ActorContext, policy refs and error envelopes, with compatibility imports and serialization tests. | Stop new consumers; keep existing types/paths. |
+| 4 | `formal-pit-and-revision-semantics` | Correct fail-closed clock selection and actual as-known/latest-restated mapping using current PIT code and goldens. This is mandatory before formal SnapshotRef/Study migration. | Retain existing reader for non-formal compatibility views; block formal release rather than publish an unproven snapshot. |
+| 5 | `capture-boundary` | Extract a pilot source's SourceManifest rights/temporal policy, request/run/artifact/checkpoint, stage/commit reconciliation, replay/import/revision/quarantine behavior and provider ports. | Route compatibility adapter to existing source service; retain committed artifacts/tombstones. |
+| 6 | `dataset-product-boundary` | Extract pilot Dataset build/version/snapshot/release/quality/lineage/derivation policy and catalog projection, with QueryBudget and generation-stamped legacy pointer bridge. | Restore verified prior pointer/reader after reconciliation; keep new immutable versions. |
+| 7 | `study-boundary` | Move one registered Study to proven-SnapshotRef-only input, EvidenceGap declaration and deterministic validation/result receipts. | Preserve legacy research query compatibility; expose new result as unpublished/stale if necessary. |
+| 8 | `process-manager-boundary` | Introduce selected refresh/evidence-gap/revision flows using the already-proven Platform foundation and Context contracts; Process state never writes Context aggregates. | Disable selected command routing and replay pending events through the compatible handler. |
+| 9 | `cli-http-sdk-compatibility` | Delegate selected CLI/HTTP/SSE/SDK/notebook routes to use-case/query contracts, bounded BFF/SSE hub and ProcessView while preserving snapshots. | Re-enable legacy adapter path; retain payload/error aliases. |
+| 10 | `python-package-and-web-layout` | Make a prior package-transition decision, then introduce staged `src/trade`/`web` layout with dual discovery, import/console/native compatibility smoke tests. | Retain old distribution/import/entrypoint shims for the compatibility window. |
+| 11 | `tests-and-legacy-cleanup` | Retire only bridges, docs/output paths and aliases that meet usage, snapshot, retention and migration exit criteria. | Restore compatibility adapter; never delete immutable artifacts as rollback. |
 
 Each child is one reviewable PR, one dedicated worktree and one independently
-validated change. A child cannot depend on unimplemented future directory moves
-or a global rewrite.
+validated change. A child cannot depend on unimplemented future directory moves,
+a global rewrite, an unbuilt Platform handoff substrate or an unproven formal
+PIT transformation. The package-layout child requires a decision record for
+canonical distribution/import names, `trade_py` forwarding, dual package
+discovery, console/root-facade routing, `_trade_native` installation location,
+and source-tree/editable/wheel smoke coverage before it is designed.
 
 ## Risk Register
 
 | Risk | Severity | Mitigation and owner |
 |---|---|---|
 | A renamed package breaks CLI, notebook or scripts | High | Compatibility packages, CLI snapshots and SDK contract tests; Interfaces child owner. |
-| Single SQLite migration affects unrelated records | High | Context-owned additive migrations, shadow replay, backup/rollback fixture; target context migration owner. |
+| Single SQLite migration affects unrelated records or mixed binaries write incompatible schema | Critical | DatabaseRuntime capability range, migration-leader lock, context registration, writer fence, staged backup and rollback fixture; Platform foundation owner. |
 | Current aliases hide temporal leakage | Critical | SnapshotRef-only formal Studies, fail-closed missing clocks and PIT goldens; Datasets/Studies owner. |
-| Capture retry duplicates provider data or cost | High | durable request identity, receipt digest, bounded source policy and idempotent checkpoint; Capture owner. |
-| Outbox retry duplicates downstream action | High | consumer idempotency keyed by event/process/ref; Platform Events and Processes owner. |
+| Capture rights or absent source time causes impermissible or temporally false use | Critical | Versioned SourceManifest rights/processor/region/revocation policy, absent-clock preservation and Capture policy fixtures; Capture owner. |
+| Capture artifact is visible before durable receipt or is lost across a crash | Critical | stage/digest/commit-marker protocol, receipt/outbox ordering and startup reconciliation fault matrix; Capture/Platform owner. |
+| Capture retry duplicates provider data or cost | High | durable request identity, receipt digest, source/credential quota accounting, bounded source policy and idempotent checkpoint; Capture owner. |
+| Outbox retry duplicates, stalls or drops downstream action | High | inbox idempotency, lease/ack, bounded ordering/batch/backlog policy, DLQ/redrive and crash fixtures; Platform Events and Processes owner. |
 | Direct table reads persist through a new facade | High | static DB owner guard and repository API review; guardrails child owner. |
-| Web extraction changes payload/error contracts | High | generated route/OpenAPI/SSE snapshots and compat routers; Interfaces owner. |
+| Web extraction changes payload/error contracts or slow SSE consumes unbounded memory | High | generated route/OpenAPI/SSE snapshots, ErrorEnvelope mapping, bounded shared fan-out and slow-client/resync fixtures; Interfaces owner. |
 | Process coordination becomes a hidden global manager | High | one process module per named flow, durable state schema and context commands only; Processes owner. |
 | Catalog becomes a second authority | Medium | catalog rebuild source is immutable Dataset release/version records; Datasets owner. |
-| C++ binding collision masks Python package | Medium | `_trade_native` namespace, port adapter and differential test; engine child owner. |
+| Release bridge advances two authorities or crashes between release and legacy pointer | High | generation-stamped Datasets authority, pointer materialization journal, startup reconciliation and dual-reader checks; Datasets owner. |
+| Unbounded immutable retention exhausts storage or GC breaks reproducibility | High | retention classes, legal holds, reachable-reference guard, tombstone/audit evidence and dry-run GC fixture; Platform/Datasets/Capture owners. |
+| Restore claim activates corrupt data | Critical | safe archive validation, manifest/SHA-256 staged restore and append-only restore receipt; Platform Backup owner. |
+| C++ binding collision or native mutation bypasses a Context boundary | Medium | `_trade_native` namespace, port capability catalog, no-persistence guard and differential test; engine child owner. |
 | Existing PIT baseline remains permissive | Critical | dedicated child P0 gate before formal Study migration; missing required clocks block formal result. |
 
 ## Rollback Plan
@@ -1032,12 +1157,16 @@ Rollback is layered and preserves auditability:
 4. Restore an additive schema consumer to the prior compatible reader; old table
    versions remain available until retirement criteria are met.
 5. Rebuild projections from the selected authoritative release/snapshot.
+6. Restore a backup only through manifest/SHA-256 verification into a staged
+   temporary root; activate the verified generation only after the staged
+   validation and append an audited restore receipt.
 
 Rollback triggers include contract snapshot divergence, lineage mismatch,
 non-idempotent replay, PIT golden failure, cross-owner write detection,
-unbounded process admission, failed migration comparison or operator inability
-to distinguish unavailable from empty. Data deletion, a blind database restore
-or a cross-context transaction is not a routine rollback mechanism.
+unbounded process admission, rights-policy violation, failed migration
+comparison, backup verification failure or operator inability to distinguish
+unavailable from empty. Data deletion, a blind database restore or a
+cross-context transaction is not a routine rollback mechanism.
 
 ## Child Change Governance
 
@@ -1045,10 +1174,17 @@ Every child proposal must include:
 
 - scoped current-state code evidence and affected contracts;
 - explicit owner tables/artifacts and transaction boundaries;
+- a capacity envelope with measured 1x/10x workloads, declared SLO/resource
+  budgets and overload behavior for every new provider, stream, query,
+  outbox/process or BFF/SSE surface;
 - a Design Quality Brief and all applicable impact evidence;
 - compatibility/default/fallback behavior;
 - temporary-root validation plus migration/replay/rollback evidence where
   durable facts are affected;
+- SourceManifest rights, retention/tombstone and temporal/finality controls
+  when a child handles external data or semantic derivation;
+- a `MigrationReconciliationManifest`, mixed-version/leader plan and staged
+  verified backup restore rehearsal when a child changes durable ownership;
 - a review worktree six-role consensus before implementation and before merge.
 
 The architecture change itself is complete only after its deterministic design

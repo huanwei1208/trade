@@ -44,19 +44,19 @@ migration = "Child changes establish CLI/OpenAPI/SSE/Web contract snapshots befo
 rollback = "A failed child disables its new adapter or process command, restores the previous compatible reader or release pointer, keeps immutable artifacts and audit history readable, and rebuilds projections without deleting records."
 
 [evidence.storage]
-authoritative_writer = "Capture owns raw receipts and checkpoints; Datasets owns versions, snapshots, quality, lineage and releases; Studies owns registered runs and results; Decision Support owns decision cases; Platform Events owns outbox delivery; Platform Execution owns generic execution receipts; Processes owns cross-context process state."
+authoritative_writer = "Capture owns raw receipts, SourceManifest rights and checkpoints; Datasets owns versions, snapshots, canonicalization/quality/derivation policy, lineage and releases; Studies owns registered runs and results; Decision Support owns decision cases; Platform Events owns ingress/outbox/inbox/delivery/DLQ mechanics; Platform Execution owns generic execution receipts; Processes owns cross-context process state."
 idempotency_key = "Capture uses source and request identity plus payload digest or revision identity; Dataset builds use declared immutable input-ref and build-policy digest; Studies use study-spec, snapshot-ref and deterministic-run key; processes use process type plus correlation scope and idempotency key; events use durable event and consumer identity."
-concurrency_control = "One owner repository transaction commits each aggregate transition together with its outbox record; source-level bounded concurrency and checkpoint ownership protect Capture, release pointer compare-and-swap protects Datasets, deterministic study keys protect Studies, and process claims protect long-running coordination."
-staging_validation = "Capture verifies receipt metadata and content digest before artifact commit; Datasets validates schema, units, temporal fields, duplicates, reconciliation and quality before candidate state; Studies validate pinned snapshot lineage and registered specification before execution; decisions validate referenced evidence and expiry policy."
-atomic_visibility = "A Context state transition, audit receipt and outbox record become visible in one local durable transaction. Artifact bytes become referenceable only after digest verification and manifest commit. Release pointers advance only after the referenced immutable version has passed its declared publication checks."
-crash_windows = "Crash recovery resumes from durable CaptureRun, DatasetBuild, StudyRun and Process records; unacknowledged outbox events redeliver to idempotent consumers; current-pointer changes retain prior generation evidence; a replay never substitutes a moving latest alias for the recorded immutable input."
+concurrency_control = "The Platform foundation provides local transaction/outbox, durable ingress idempotency, inbox claim, delivery lease/ack and bounded DLQ mechanics before Context extraction. Source/credential scoped admission and checkpoint ownership protect Capture, release generation compare-and-swap protects Datasets, deterministic study keys protect Studies, and process claims protect long-running coordination."
+staging_validation = "Capture verifies SourceManifest rights/temporal policy, receipt metadata and content digest through stage/digest/commit-marker/receipt reconciliation; Datasets validates schema, units, policy refs, temporal fields, duplicates, reconciliation, physical layout and quality before candidate state; Studies validate proven pinned snapshot lineage and registered specification before execution; decisions validate referenced evidence and expiry policy."
+atomic_visibility = "A Context state transition, audit receipt and outbox record become visible in one local durable transaction through the Platform foundation. Artifact bytes become referenceable only after digest verification and immutable commit marker. Release pointers are projection materializations of one generation-stamped Datasets authority and advance only after the referenced immutable version has passed its declared publication checks."
+crash_windows = "Crash recovery resumes from durable CaptureRun, DatasetBuild, StudyRun and Process records; prepared/orphaned/receipt-mismatched artifacts reconcile deterministically; unacknowledged outbox events redeliver through inbox/lease/ack idempotency; current-pointer changes retain prior generation evidence; a replay never substitutes a moving latest alias for the recorded immutable input."
 corrupt_predecessor = "A corrupt or hash-mismatched predecessor artifact, SQLite record or projection produces an explicit unavailable, quarantined or failed state and preserves diagnostic references; recovery rebuilds only replaceable projections or restores a verified prior generation."
 partial_results = "Multi-source captures and Dataset builds record every required input and may finish partial, unavailable or quarantined; partial results are not published as formal snapshots. Study insufficient-data and stale result states remain explicit and never become zero-valued successful evidence."
 reader_consistency = "Readers use context query handles and immutable artifact refs or rebuildable projections. Catalogs, current pointers and UI snapshots are projections rather than authorities, and query paths cannot repair, fetch, publish or move a lifecycle pointer."
-backup_hash_verification = "Platform Backup stores a manifest with SHA-256 per archive and verifies the selected immutable generation before restore; context migration rehearsals verify table rows, artifact digests and release references before and after a temporary-root rollback."
+backup_hash_verification = "Platform Backup stores a manifest with SHA-256 per archive/member, rejects unsafe archive members, verifies a staged temporary root before activation and writes an append-only restore receipt; context migration rehearsals verify table rows, artifact digests and release references before and after a temporary-root rollback."
 small_sample_verification = "Temporary fixtures exercise one-to-many and many-to-one lineage, stream segments, duplicate commands, outbox crash recovery, missing time clocks, source disagreement, supersession, pointer rollback, study rerun and projection rebuild before any cutover."
 rollback = "Rollback switches a context compatibility reader or release pointer to the verified prior generation, retains newer immutable records for audit, replays pending outbox safely and rebuilds projections; it does not erase durable facts or run a shared cross-context transaction."
-audit_trail = "Capture receipts, Dataset lineage and quality reports, Study validation and promotion receipts, Decision Support audit trails, process records, outbox delivery and execution receipts retain correlation, causation, idempotency, actor, policy and safe error evidence without raw credential leakage."
+audit_trail = "Capture receipts include SourceManifest rights/policy and temporal/finality evidence; Dataset lineage includes canonicalization/quality/derivation policy; Study validation and promotion receipts, Decision Support audit trails, process records, outbox delivery/DLQ and execution receipts retain correlation, causation, idempotency, actor, policy and safe error evidence without raw credential leakage."
 
 [evidence.migration]
 compatibility_modes = ["backward", "forward"]
@@ -141,13 +141,13 @@ unavailable_fallback = "explicit_unavailable"
 
 [evidence.concurrency]
 ownership = "Capture owns provider attempt and checkpoint admission; each business Context owns its aggregate transaction and outbox record; Platform owns generic execution, event delivery and schedule lease mechanics; Processes owns cross-context process state; Interfaces own only bounded adaptation and response composition."
-bound = "Source concurrency, provider rate limits, stream segment buffers, outbox delivery batches, process in-flight count, BFF pagination and parallel query fan-out have finite configuration validated in their owning child changes; no unbounded queue or payload-bearing event envelope is permitted."
-ordering = "A command is validated before its context transaction, aggregate state and outbox commit precede delivery, a consumer idempotency claim precedes side effect, immutable artifact receipt precedes Dataset build, Dataset release precedes Study rerun, and projection rebuild follows its authoritative event."
-atomicity = "Each aggregate transition and corresponding outbox record commits in one owner transaction. Cross-context progress is eventually coordinated by events and Process state, never by a shared transaction or synchronous callback chain."
+bound = "Every provider/credential, stream, Dataset query, outbox/process and BFF/SSE surface declares finite 1x/10x-tested request/byte/item/batch/in-flight/connections/deadline/resource budgets; no unbounded queue, poller-per-client or payload-bearing event envelope is permitted."
+ordering = "A command ingress idempotency claim and OperationReceipt precede its context transaction; aggregate state and outbox commit precede delivery lease; a consumer inbox claim precedes side effect and acknowledgement; immutable artifact receipt precedes Dataset build, Dataset release precedes Study rerun, and projection rebuild follows its authoritative event."
+atomicity = "The Platform foundation supplies each aggregate transaction plus corresponding outbox record and consumer inbox/ack mechanics. Cross-context progress is eventually coordinated by events and Process state, never by a shared transaction or synchronous callback chain."
 timeout_cancellation = "Platform execution assigns finite timeout and cancellation receipts; Capture retries are classified and bounded; process deadlines stop further retry; cancellation leaves committed artifacts and state auditable while downstream consumers observe explicit cancelled, blocked or unavailable results."
 backpressure = "Capture rejects or defers intake at source policy limits, delivery batches admit finite work, Process Managers coalesce duplicate idempotency keys, and BFFs enforce bounded query windows without converting saturation into success."
 partial_failure = "A capture group, Dataset build, outbox fan-out or Study rerun can complete partially; owners persist per-input/per-step outcome, do not advance a formal release/result incorrectly, and resume or compensate from durable state."
-capacity_validation = "Temporary-root tests block provider ports, outbox consumers, multi-source joins and process steps to assert finite admission, retry/deadline behavior, idempotent recovery, fair replay, no duplicate commit and clear operational status at configured bounds."
+capacity_validation = "Temporary-root 1x/10x tests block provider ports, stream buffers, SQLite/Parquet/DuckDB queries, outbox consumers, multi-source joins, process steps and shared BFF/SSE fan-out to assert measured SLO/resource budgets, finite admission, retry/deadline behavior, idempotent recovery, fair replay, no duplicate commit and clear overload status."
 
 [[obligations]]
 id = "architecture.boundaries"
@@ -198,7 +198,37 @@ spec_requirements = [
   "capture-contract:Capture SHALL support non-linear artifact consumption",
   "capture-contract:Capture replay and supersession SHALL preserve provenance",
 ]
-validation_tasks = ["2.2", "2.3", "3.1"]
+validation_tasks = ["3.1"]
+
+[[obligations]]
+id = "platform.foundation"
+owner = "platform foundation"
+paths = [
+  "src/trade/platform/persistence/",
+  "src/trade/platform/events/",
+  "src/trade/bootstrap/",
+  "tests/integration/platform/",
+]
+contracts = [
+  "local transaction plus outbox port",
+  "command ingress and OperationReceipt",
+  "inbox lease acknowledgement DLQ and redrive",
+  "DatabaseRuntime MigrationCoordinator and verified restore",
+]
+failure_states = [
+  "crash after context commit",
+  "duplicate ingress",
+  "delivery lease expiry",
+  "mixed-version writer",
+  "corrupt backup archive",
+]
+spec_requirements = [
+  "platform-foundation:Platform persistence and events SHALL precede Context extraction",
+  "platform-foundation:Artifact commit visibility SHALL be crash-recoverable",
+  "platform-foundation:Migration startup SHALL be coordinated and mixed-version safe",
+  "platform-foundation:Platform composition SHALL have one explicit Bootstrap owner",
+]
+validation_tasks = ["2.2", "3.1", "4.1", "5.1", "5.2"]
 
 [[obligations]]
 id = "datasets.products"
@@ -225,7 +255,7 @@ spec_requirements = [
   "dataset-product-lifecycle:Datasets SHALL own quality, lineage, revisions and point-in-time resolution",
   "dataset-product-lifecycle:Catalogs and releases SHALL be projections over immutable products",
 ]
-validation_tasks = ["2.2", "3.2", "3.3"]
+validation_tasks = ["2.3", "3.2", "3.3"]
 
 [[obligations]]
 id = "studies.reproducibility"
@@ -280,7 +310,7 @@ spec_requirements = [
   "process-orchestration:Contexts SHALL publish facts and Processes SHALL issue commands",
   "process-orchestration:Scheduling and event adapters SHALL remain technical boundaries",
 ]
-validation_tasks = ["4.1", "4.2", "4.3"]
+validation_tasks = ["4.1", "4.3"]
 
 [[obligations]]
 id = "interfaces.compatibility"
@@ -336,7 +366,7 @@ spec_requirements = [
   "dependency-guardrails:Database access SHALL have one logical context owner",
   "dependency-guardrails:Platform SHALL remain free of business semantics",
 ]
-validation_tasks = ["2.1", "4.2", "5.1"]
+validation_tasks = ["2.1", "5.1"]
 
 [[obligations]]
 id = "migration.governance"

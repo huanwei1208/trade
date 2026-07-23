@@ -54,7 +54,7 @@
   artifacts and repeat review when the digest changes. Completion evidence:
   strict exit code zero and zero unresolved P0. [validation:review]
 
-## 2. Baselines for Child Changes
+## 2. Foundational Prerequisites for Child Changes
 
 - [ ] 2.1 Prepare `architecture-guardrails-and-baselines` as an independent [validates:architecture.boundaries] [validates:dependency.guardrails] [validation:test]
   child OpenSpec change. Objective: define static import guard, contract type
@@ -68,79 +68,99 @@
   each rule to a current path and a test fixture. [validates:architecture.boundaries]
   [validates:dependency.guardrails] [validation:test]
 
-- [ ] 2.2 Prepare `capture-boundary` as an independent child OpenSpec change. [validates:capture.receipts] [validates:datasets.products] [validation:test]
-  Objective: choose one bounded pilot source and define SourceManifest,
-  CaptureRequest/Run/Artifact/Checkpoint, raw receipt, import, stream segment,
-  replay and supersession compatibility behavior. Inputs: current crypto run
-  store, data CLI and provider code audit. Outputs: Capture contract and
-  temporary-root fixture plan. Affected contracts: provider/source/import and
-  Dataset build inputs. Validation: capture replay, digest, empty response,
-  retry and multi-artifact lineage tests. Rollback: retain legacy capture
-  adapter and committed artifacts while disabling the pilot adapter. Completion
-  evidence: child proposal names its source, artifacts, idempotency key and
-  provider-free replay test. [validates:capture.receipts]
-  [validates:datasets.products] [validation:test]
+- [ ] 2.2 Prepare `platform-persistence-events-and-bootstrap-foundation` as [validates:platform.foundation] [validates:processes.recovery] [validates:migration.governance] [validation:test]
+  an independent prerequisite child OpenSpec change. Objective: supply the
+  transaction/outbox port, command ingress/OperationReceipt, inbox/lease/ack/
+  DLQ delivery, EventBus bridge, DatabaseRuntime/MigrationCoordinator,
+  verified backup restore and Bootstrap composition before any Context relies
+  on cross-context delivery. Inputs: EventBus, `TradeDB`, migrations, runtime
+  resources and backup audit. Outputs: generic public APIs, compatibility
+  bridge, crash/mixed-version/restore fixture plan and capacity envelope.
+  Affected contracts: event envelope, persistence transaction, operation
+  receipt, migration capability and runtime composition. Validation:
+  crash-after-commit, duplicate ingress, inbox dedup, lease recovery, DLQ,
+  mixed-binary fence, staged corrupted-backup rejection and 1x/10x backlog
+  tests. Rollback: select the legacy EventBus/TradeDB construction bridge
+  without deleting outbox, receipt or restore evidence. Completion evidence:
+  no Context child has to invent an atomic outbox, command handoff or runtime
+  container. [validates:platform.foundation] [validates:processes.recovery]
+  [validates:migration.governance] [validation:test]
 
-- [ ] 2.3 Prepare `kernel-and-public-contracts` and `study-boundary` as [validates:capture.receipts] [validates:studies.reproducibility] [validation:test]
-  ordered, independent child OpenSpec changes. Objective: establish only
-  justified Kernel types and move one registered Study to SnapshotRef-only
-  input with EvidenceGap declaration. Inputs: existing ArtifactRef,
-  SnapshotContext, research workflow and PIT audit. Outputs: versioned DTO
-  catalog, StudySpec/result contract and deterministic-rerun fixture plan.
-  Affected contracts: DatasetSnapshotRef, StudyResultRef and evidence-gap
-  event. Validation: contract serialization, forbidden-type guard,
-  raw-input rejection, insufficient-data and deterministic rerun tests.
-  Rollback: retain legacy research read adapter and mark a new result
-  unpublished or stale without deleting it. Completion evidence: child
-  proposals explicitly classify reusable versus fold-local feature ownership.
-  [validates:capture.receipts] [validates:studies.reproducibility]
-  [validation:test]
+- [ ] 2.3 Prepare `kernel-and-public-contracts` and [validates:architecture.boundaries] [validates:datasets.products] [validates:studies.reproducibility] [validation:test]
+  `formal-pit-and-revision-semantics` as ordered independent prerequisite
+  child changes. Objective: establish only justified Kernel/DTO types, then
+  make required clocks fail closed and implement real as-known/latest-restated
+  mapping before a formal SnapshotRef or Study migration. Inputs: existing
+  ArtifactRef, SnapshotContext, PIT resolver and research workflow audit.
+  Outputs: versioned DTO/policy catalog, PIT/revision contract and golden
+  fixture plan. Affected contracts: DatasetSnapshotRef, policy refs,
+  StudyResultRef and evidence-gap event. Validation: contract serialization,
+  forbidden-type guard, raw-input rejection, null-clock/revision goldens,
+  insufficient-data and deterministic rerun tests. Rollback: retain legacy
+  non-formal reader and block formal release/run rather than expose an
+  unproven snapshot. Completion evidence: child proposals explicitly classify
+  reusable versus fold-local feature ownership and prove no missing clock is
+  visible. [validates:architecture.boundaries] [validates:datasets.products]
+  [validates:studies.reproducibility] [validation:test]
 
-- [ ] 2.4 Prepare `cli-http-sdk-compatibility` as an independent child OpenSpec [validates:interfaces.compatibility] [validation:test]
+- [ ] 2.4 Prepare `cli-http-sdk-compatibility` as an independent child OpenSpec [validates:interfaces.compatibility] [validates:platform.foundation] [validation:test]
   change. Objective: freeze actual CLI help/parse/exit behavior, HTTP/OpenAPI/
   SSE route behavior, Web BFF payloads, Observatory capability semantics and
   notebook entry contracts before delegation. Inputs: root `trade`, CLI
   registries, FastAPI route inventory, React API consumers and current
   notebook. Outputs: compatibility matrix and snapshot fixture plan. Affected
-  contracts: all retained interfaces. Validation: CLI, OpenAPI/SSE, BFF and SDK
-  contract snapshot tests against temporary roots. Rollback: keep legacy
+  contracts: all retained interfaces. Validation: CLI, OpenAPI/SSE, BFF,
+  ProcessView/ErrorEnvelope and SDK contract snapshot tests against temporary
+  roots. Rollback: keep legacy
   interface adapter selected until snapshot parity returns. Completion evidence:
   each legacy entrance has a named adapter and retirement condition.
-  [validates:interfaces.compatibility] [validation:test]
+  [validates:interfaces.compatibility] [validates:platform.foundation]
+  [validation:test]
 
 ## 3. Durable Product and Research Migration Preparation
 
-- [ ] 3.1 Prepare `capture-boundary` implementation readiness for a pilot [validates:capture.receipts] [validation:test]
-  source after its child design is strictly approved. Objective: document
-  context-owned capture tables/artifacts, provider ports, checkpoint/retry
+- [ ] 3.1 Prepare `capture-boundary` implementation readiness for a pilot [validates:capture.receipts] [validates:platform.foundation] [validates:migration.governance] [validation:test]
+  source after the Platform foundation and its child design are strictly
+  approved. Objective: document context-owned capture tables/artifacts,
+  SourceManifest rights/temporal/finality policy, provider ports,
+  stage/digest/commit reconciliation, checkpoint/retry/quarantine/redrive
   policy and compatibility bridge without moving implementation in this parent
-  change. Inputs: child contract and source audit. Outputs: migration slice,
-  additive schema plan and capture fixture matrix. Affected contracts:
+  change. Inputs: child contract, source rights audit and crypto run-store
+  audit. Outputs: migration slice, additive schema plan, retention/tombstone
+  plan, capacity envelope and capture fixture matrix. Affected contracts:
   CaptureArtifactRef and existing source commands. Validation: temporary-root
-  replay, supersession, stream segment and no-provider replay tests defined in
+  replay, supersession, stream segment, no-provider replay, rights revocation,
+  absent publication time, commit crash and 1x/10x admission tests defined in
   the child. Rollback: previous capture adapter and immutable prior artifacts.
-  Completion evidence: child change has an owned migration/rollback design and
-  code worktree plan. [validates:capture.receipts] [validation:test]
+  Completion evidence: child change has an owned migration/rollback design,
+  policy digest and code worktree plan. [validates:capture.receipts]
+  [validates:platform.foundation] [validates:migration.governance]
+  [validation:test]
 
-- [ ] 3.2 Prepare `dataset-product-boundary` as an independent child OpenSpec [validates:datasets.products] [validation:test]
+- [ ] 3.2 Prepare `dataset-product-boundary` as an independent child OpenSpec [validates:datasets.products] [validates:migration.governance] [validation:test]
   change. Objective: define canonical build/version/snapshot/release, quality,
-  lineage, catalog rebuild and legacy pointer bridge for the same pilot source.
-  Inputs: Capture artifact contract, crypto run store and warehouse/catalog
-  audit. Outputs: Dataset repository/migration/projection plan. Affected
+  lineage, canonicalization/quality policy refs, QueryBudget, catalog rebuild
+  and generation-stamped legacy pointer bridge for the same pilot source.
+  Inputs: proven PIT/revision contract, Capture artifact contract, crypto run
+  store and warehouse/catalog audit. Outputs: Dataset repository/migration/
+  projection plan and MigrationReconciliationManifest schema. Affected
   contracts: DatasetVersionRef, DatasetSnapshotRef, quality/PIT query.
   Validation: lineage, source reconciliation, catalog rebuild, immutable build
-  input and pointer rollback fixtures. Rollback: restore verified prior release
-  pointer and retain the newer immutable version for audit. Completion evidence:
-  child proposal identifies the one Datasets transaction boundary per state
-  transition. [validates:datasets.products] [validation:test]
+  input, physical query-budget, pointer reconciliation and rollback fixtures.
+  Rollback: restore verified prior release pointer and retain the newer
+  immutable version for audit. Completion evidence: child proposal identifies
+  the one Datasets transaction boundary per state transition and cannot release
+  a SnapshotRef without formal PIT proof. [validates:datasets.products]
+  [validates:migration.governance] [validation:test]
 
 - [ ] 3.3 Prepare `study-boundary` implementation readiness after Dataset [validates:datasets.products] [validates:studies.reproducibility] [validation:test]
-  contracts exist. Objective: specify one Study's preregistration, pinned
-  snapshot input, feature classification, validation, promotion, stale result
-  and evidence-gap flow. Inputs: Dataset snapshot contract and current research
-  workflow audit. Outputs: Study lifecycle migration plan and golden fixture
-  matrix. Affected contracts: StudyResultRef and Decision Support read inputs.
-  Validation: PIT goldens, raw-input rejection, deterministic rerun, revision
+  contracts and the formal PIT/revision gate exist. Objective: specify one
+  Study's preregistration, proven pinned snapshot input, feature
+  classification, validation, promotion, stale result and evidence-gap flow.
+  Inputs: Dataset snapshot/policy contract and current research workflow audit.
+  Outputs: Study lifecycle migration plan and golden fixture matrix. Affected
+  contracts: StudyResultRef and Decision Support read inputs. Validation: PIT
+  proof rejection, raw-input rejection, deterministic rerun, revision
   staleness and insufficient-data tests. Rollback: preserve prior research
   query path and expose new outputs as unpublished/stale. Completion evidence:
   child proposal declares all metrics, horizon and unavailable semantics.
@@ -154,39 +174,31 @@
   and platform backup behavior. Outputs: migration test harness and rollback
   checklist design. Affected contracts: SQLite/parquet readers, release
   pointers and legacy imports. Validation: migration rollback, old/new reader,
-  artifact digest and projection rebuild tests. Rollback: restore previous
-  generation or verified backup snapshot without deleting immutable records.
-  Completion evidence: every durable child has a selected migration mode and
-  rollback source. [validates:migration.governance] [validation:test]
+  reconciliation manifest, artifact digest, staged verified backup restore,
+  protected-reference retention and projection rebuild tests. Rollback:
+  restore previous generation or verified backup snapshot without deleting
+  immutable records. Completion evidence: every durable child has a selected
+  migration mode, mixed-version fence and rollback source.
+  [validates:migration.governance] [validation:test]
 
 ## 4. Runtime and Interface Orchestration Preparation
 
-- [ ] 4.1 Prepare `process-manager-and-platform-boundary` as an independent [validates:studies.reproducibility] [validates:processes.recovery] [validation:test]
-  child OpenSpec change. Objective: define durable Process records, outbox
-  contracts and the normal refresh, evidence-gap, revision propagation,
-  registered study, publish, projection and daily workspace flows. Inputs:
+- [ ] 4.1 Prepare `process-manager-boundary` after the Platform foundation as [validates:studies.reproducibility] [validates:processes.recovery] [validates:platform.foundation] [validation:test]
+  an independent child OpenSpec change. Objective: define durable Process
+  records and the normal refresh, evidence-gap, revision propagation,
+  registered study, publication request, projection and daily workspace flows
+  over the existing command/outbox substrate. Inputs: Platform foundation,
   EventBus/runtime/job/agenda audit and Context contracts. Outputs: process
-  state schema, idempotency/deadline/compensation policy and temporary-root
-  recovery fixtures. Affected contracts: commands, events, process receipts
-  and schedule envelopes. Validation: duplicate delivery, crash-after-commit,
-  partial fan-out, deadline, cancellation and replay tests. Rollback: disable
-  new process command while retaining pending outbox/process facts for
-  compatible recovery. Completion evidence: each process maps every step to a
-  context command and has no cross-context transaction. [validates:studies.reproducibility]
-  [validates:processes.recovery] [validation:test]
-
-- [ ] 4.2 Prepare Platform boundary details within the process child change. [validates:processes.recovery] [validates:dependency.guardrails] [validation:test]
-  Objective: separate generic execution, events, scheduling, persistence,
-  settings and backup from business job vocabulary and direct context
-  invocation. Inputs: existing EventBus, jobs, runtime command runner,
-  `TradeDB`, scheduler and backup audit. Outputs: generic public APIs and
-  platform migration guard plan. Affected contracts: event envelope, execution
-  receipt, schedule lease and persistence primitives. Validation: architecture
-  dependency tests, business-term deny-list, bounded admission and outbox
-  idempotency tests. Rollback: retain existing bus/runtime adapter behind the
-  public platform contract. Completion evidence: Platform paths contain no
-  Dataset, Study, BTC, Kline, Recommendation or Portfolio aggregate behavior.
-  [validates:processes.recovery] [validates:dependency.guardrails]
+  state schema, ActorContext/OperationReceipt/ProcessView, idempotency/
+  deadline/compensation policy and temporary-root recovery fixtures. Affected
+  contracts: commands, events, process receipts and schedule envelopes.
+  Validation: duplicate delivery, crash-after-commit, inbox/lease recovery,
+  partial fan-out, deadline, cancellation, DLQ redrive and replay tests.
+  Rollback: disable new process command while retaining pending outbox/process
+  facts for compatible recovery. Completion evidence: each process maps every
+  step to a context command, `PublishDataset` remains a Datasets transaction,
+  and there is no cross-context transaction. [validates:studies.reproducibility]
+  [validates:processes.recovery] [validates:platform.foundation]
   [validation:test]
 
 - [ ] 4.3 Prepare interface composition migration slices. Objective: select [validates:processes.recovery] [validates:interfaces.compatibility] [validation:test]
@@ -196,15 +208,17 @@
   per-surface BFF/adapter sequence for Today, Observatory, Research, Data Ops
   and Operations before broader pages. Affected contracts: route payloads,
   SSE, page state and command receipts. Validation: BFF contract, GET
-  read-only guard, bounded query and compatibility snapshot tests. Rollback:
-  route to the legacy adapter without removing URL/payload aliases. Completion
-  evidence: no selected interface module directly queries an owner table,
-  provider or lifecycle pointer. [validates:processes.recovery]
+  read-only guard, bounded query, 1x/10x BFF/SSE shared-hub slow-client and
+  compatibility snapshot tests. Rollback: route to the legacy adapter without
+  removing URL/payload aliases. Completion evidence: no selected interface
+  module directly queries an owner table, provider or lifecycle pointer, and
+  unavailable/process errors map through the versioned compatible envelope.
+  [validates:processes.recovery]
   [validates:interfaces.compatibility] [validation:test]
 
 ## 5. Final Design Approval and Handoff
 
-- [ ] 5.1 Reconcile the approved architecture with all compatibility and [validates:interfaces.compatibility] [validates:dependency.guardrails] [validation:test]
+- [ ] 5.1 Reconcile the approved architecture with all compatibility and [validates:interfaces.compatibility] [validates:dependency.guardrails] [validates:platform.foundation] [validation:test]
   dependency baselines. Objective: ensure the child-change order has no hidden
   import, table-owner or interface dependency. Inputs: completed design review,
   contract inventories and task graph. Outputs: final child-change ordering and
@@ -212,11 +226,13 @@
   retained interfaces. Validation: architecture/import/contract snapshot
   review and `git diff --check`. Rollback: revise this architecture design and
   repeat review; no production changes are in scope. Completion evidence:
-  every child can be implemented and rolled back independently.
-  [validates:interfaces.compatibility] [validates:dependency.guardrails]
+  every child can be implemented and rolled back independently, the Platform
+  foundation precedes Context outbox use, and formal PIT semantics precede
+  formal SnapshotRef/Study migration. [validates:interfaces.compatibility]
+  [validates:dependency.guardrails] [validates:platform.foundation]
   [validation:test]
 
-- [ ] 5.2 Record digest-bound six-role design consensus and strict approval. [validates:migration.governance] [validation:review]
+- [ ] 5.2 Record digest-bound six-role design consensus and strict approval. [validates:migration.governance] [validates:platform.foundation] [validation:review]
   Objective: formally gate implementation until the current design is
   approved. Inputs: current artifact digest, non-strict report and six judges'
   file/line evidence. Outputs: `design-review.toml`, strict gate report and
@@ -225,5 +241,6 @@
   then `./trade dev design-check restructure-trade-architecture-v1 --strict`
   exits zero. Rollback: alter governed artifacts only, regenerate the digest
   and repeat review if evidence changes. Completion evidence: six approved
-  roles, zero P0 and a current strict approval record. [validates:migration.governance]
+  roles, zero P0 and a current strict approval record.
+  [validates:migration.governance] [validates:platform.foundation]
   [validation:review]

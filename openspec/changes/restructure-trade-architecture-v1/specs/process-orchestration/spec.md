@@ -22,6 +22,33 @@ Process Manager record SHALL include `process_id`, `process_type`,
 - **THEN** recovery replays the durable event, resumes from the idempotent
   current step and does not infer completion from in-memory work
 
+### Requirement: Commands and events SHALL have durable handoff receipts
+
+Every command ingress SHALL create or return an `OperationReceipt` containing
+an operation ID, `ActorContext`, correlation/causation IDs, idempotency key,
+accepted command digest, state, reason code and process linkage where relevant.
+Platform Events SHALL persist an outbox envelope, consumer inbox claim,
+delivery lease, acknowledgement, attempt history, ordering key, payload-size
+limit, deadline and redrive/dead-letter state. A `ProcessView` SHALL expose
+bounded list/detail/recovery query data without exposing business tables or raw
+payloads.
+
+#### Scenario: A caller repeats an accepted command after a timeout
+
+- **WHEN** a CLI, HTTP, scheduler or event adapter resubmits a command with the
+  same actor scope and idempotency key after it cannot observe the first result
+- **THEN** command ingress returns the existing OperationReceipt or ProcessView
+  linkage, creates no second owner transaction, and records the duplicate
+  attempt without leaking credentials or raw payload content
+
+#### Scenario: A slow consumer causes delivery backlog
+
+- **WHEN** a consumer cannot acknowledge deliveries within its configured
+  lease, batch, in-flight, backlog-age or backlog-byte budget
+- **THEN** Platform stops admitting unbounded work, makes backlog state visible
+  through ProcessView/Operations queries, redelivers only under the ordering
+  and retry policy, and routes exhausted work to an audited dead letter
+
 ### Requirement: Contexts SHALL publish facts and Processes SHALL issue commands
 
 Contexts SHALL publish past-tense `CaptureCommitted`, `DatasetReleased`,
@@ -38,6 +65,15 @@ the workflow.
 - **THEN** RefreshDataset requests Capture, waits for CaptureCommitted, issues
   BuildDataset, observes DatasetReleased and requests RebuildProjection using
   immutable references and durable process state
+
+#### Scenario: A candidate Dataset is published
+
+- **WHEN** a Dataset candidate has passed its owner-controlled quality and
+  release policy
+- **THEN** Datasets executes `PublishDataset` as its own local transaction that
+  records release generation, audit evidence and DatasetReleased outbox event;
+  a Process may request that command after a cross-context trigger but may not
+  own or directly mutate the release pointer
 
 #### Scenario: A process deadline expires
 

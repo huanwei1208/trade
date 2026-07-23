@@ -92,6 +92,10 @@ The design establishes:
   generation.
 - A technical-only `platform` that provides execution, events, scheduling,
   persistence, settings and backup capabilities without business vocabulary.
+- A prerequisite Platform persistence/events/Bootstrap foundation: local
+  transaction plus outbox, command ingress receipts, inbox/lease/ack/DLQ
+  delivery, migration-leader fencing, verified staged restore and explicit
+  composition must exist before a Context extraction relies on them.
 - `interfaces` as compatibility-preserving CLI, HTTP, SDK, event, schedule and
   import adapters. Pages are BFF/query compositions; they do not become
   bounded contexts or direct table owners.
@@ -104,7 +108,7 @@ The design establishes:
   validation, data safety, rollout and rollback for every implementation
   slice.
 
-Eight capabilities are introduced as architecture requirements:
+Nine capabilities are introduced as architecture requirements:
 
 1. `repository-architecture`
 2. `capture-contract`
@@ -114,6 +118,7 @@ Eight capabilities are introduced as architecture requirements:
 6. `interface-compatibility`
 7. `dependency-guardrails`
 8. `migration-governance`
+9. `platform-foundation`
 
 ## Design Scope
 
@@ -135,9 +140,11 @@ concurrency. The design therefore declares all seven design-policy impacts:
   validation, promotion and stale-result propagation gain explicit lifecycle
   contracts.
 - **External event data:** capture formalizes pull, push, stream, import,
-  replay, backfill, raw receipts, checkpoints and provider revision behavior.
+  replay, backfill, raw receipts, checkpoints, provider revision behavior and
+  enforceable SourceManifest rights/retention/processor policy.
 - **Runtime concurrency:** process managers, outbox dispatch, scheduling,
-  retries, idempotency and recovery create durable non-linear workflows.
+  retries, idempotency and recovery create durable non-linear workflows with
+  explicit capacity envelopes and 1x/10x overload validation.
 
 ## Non-Goals
 
@@ -148,6 +155,9 @@ concurrency. The design therefore declares all seven design-policy impacts:
   HTTP, SSE, SDK, notebook, scheduler or event contract is removed.
 - No real data, production database or generated parquet is read for mutation,
   changed or committed.
+- No claim is made that the current EventBus, `TradeDB`, PIT resolver, backup
+  script or native binding plan already meets the target contracts. They are
+  audited compatibility seeds that future child changes must harden and verify.
 - No recommendation or execution logic is expanded, replaced or validated as a
   trading model.
 - No new independent `evidence`, `quality`, `assurance`, `observatory`,

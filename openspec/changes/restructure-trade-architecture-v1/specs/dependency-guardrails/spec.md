@@ -65,3 +65,21 @@ Recommendation, Portfolio or other business aggregate vocabulary.
   controls
 - **THEN** the public capability uses generic command/envelope/receipt terms
   and the business mapping remains in a context adapter or Process Manager
+
+### Requirement: Native capabilities SHALL remain context-port adapters
+
+Every C++/native capability SHALL be catalogued with one owning Context port,
+typed input/output DTOs, ABI/version range, cancellation/error mapping and
+differential-test owner. `_trade_native` or any future binding SHALL NOT open
+SQLite, write artifacts, advance lifecycle pointers, compose application
+services or initialize a runtime container. Domain and use-case modules SHALL
+depend on their Context port rather than import a native extension.
+
+#### Scenario: A Dataset computation is accelerated by the C++ engine
+
+- **WHEN** a Datasets child change selects a C++ implementation for a declared
+  computation port
+- **THEN** Bootstrap injects the native adapter behind that port, the adapter
+  returns typed values only, and C++/Python differential tests cover normal,
+  cancellation and safe-failure cases without allowing native code to mutate
+  context persistence or releases
