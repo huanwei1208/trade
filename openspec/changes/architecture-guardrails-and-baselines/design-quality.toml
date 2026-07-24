@@ -1,0 +1,126 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The existing developer-facing trade dev check command gains a stable scoped architecture quality step, failure semantics, and remediation output without changing end-user runtime interfaces."
+
+[[impacts]]
+id = "persistent_write"
+applies = false
+reason = "The checker only parses repository source text and temporary test fixtures; it neither opens nor writes databases, artifacts, manifests, or durable runtime state."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "The baseline records source-defined table facts and candidate classifications but does not alter schema, execute migrations, or assign final runtime table ownership."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "No dataset, snapshot, clock, forecast, label, research result, or point-in-time resolver behavior is introduced or changed by this source-only guardrail."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "The child has no recommendation, ranking, model fitting, study result, calibration, or decision behavior; it only protects future module boundaries."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "The checker performs no provider interaction, capture, import, replay, news ingestion, payload processing, or external network access."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "The existing quality executor may run deterministic producer-prefilter and target batches alongside other light read-only checks, so this developer-tool path requires bounded concurrency, prerequisite ordering, cancellation, and overload evidence without changing application runtime behavior."
+
+[evidence.contract]
+contract = "The changed public developer contract is the read-only trade dev check plan/report: ScopeSelection additively preserves canonical unfiltered delta/filter metadata plus bounded ProducerDiscoverySelection; an excluded architecture-sensitive or producer-discovery delta emits architecture.partial_scope; and every producer-prefilter, baseline, and target step emits bounded trade.architecture.guard.v1 JSON with status, scope, partial_scope, ordered findings, counts, emitted_count, and omitted_count."
+consumers = "Repository developers and child OpenSpec implementers consume the quality plan/report before adding src/trade modules; existing CLI, HTTP, Web, SDK, notebook, scheduler, event, database, artifact, and native runtime consumers remain unchanged."
+compatibility = "Existing ScopeSelection execution fields remain filtered for ordinary providers, while ProducerDiscoverySelection and its failure/partial-scope signals are additive. Legacy trade_py imports and runtime behavior remain outside prospective enforcement until each migration child supplies a compatible target module; a noncandidate legacy-only changed scope receives no new architecture step."
+migration = "The first target files arrive only in kernel-and-public-contracts or later child changes, each with its own compatibility evidence. The baseline records candidate/deferred facts and bounded CLI/HTTP/OpenAPI/SSE source inventory rather than moving source, readers, or interface behavior."
+rollback = "Remove the isolated contributor, validator, baseline, architecture-specific scope metadata, planner issue, and focused tests to return to the prior developer quality plan; no runtime interface, durable state, schema, or data artifact requires restoration."
+
+[evidence.concurrency]
+ownership = "ScopeSelection and the planner own canonical delta/filter metadata, bounded ProducerDiscoverySelection, and partial-scope refusal; the architecture contributor constructs producer-prefilter batches, one prerequisite baseline step, and target batches; the existing quality executor owns scheduling and process lifecycle; the guard owns no mutable application state."
+bound = "The repository quality configuration caps light-step execution at four workers and argv at 65,536 bytes. Streamed initial producer discovery stops at 1,024 raw records/128 KiB raw path bytes, 512 included paths/64 KiB path bytes, 1 MiB per source, and 32 MiB aggregate source; descriptor reads refuse unsafe or unstable sources. Delta producer-prefilter batches use batched_paths within argv limits. Target batches remain capped at 128 files and 8 MiB aggregate source, with a 512-file/32-MiB complete target scope. Every envelope emits at most 64 findings, reserves 1 KiB for metadata/counts, bounds display fields before encoding, uses count-only truncation if needed, sets a 30 second timeout, and never exceeds a 32 KiB structured-output limit."
+ordering = "Producer-prefilter admission precedes one baseline step, which is a prerequisite for every sorted target batch. Planner partial-scope, producer-budget, producer-unsafe-source, or scope-budget failures are emitted before target acceptance. Paths, batch IDs, diagnostic records, and final report records sort deterministically; batches do not share mutable inputs or outputs."
+atomicity = "Each read-only subprocess parses an immutable selected source set and exits with one complete structured diagnostic envelope. The check produces no database, artifact, cache, or application-state transition."
+timeout_cancellation = "Each architecture CheckStep sets a 30 second timeout; the existing executor terminates a timed-out subprocess process group. No retry reuses partial diagnostics, and a developer reruns after correcting the source or baseline."
+backpressure = "Streamed producer admission stops before an unbounded path list; batched_paths enforces argv limits for producer-prefilter and target work; per-file, per-batch, total-scope, and producer path/source budgets stop oversized work before parsing; and the versioned finding/output envelope caps prevent unbounded process memory or report growth. Excess or unsafe scope is reported as an explicit quality failure, never silently dropped."
+partial_failure = "A failed baseline blocks every dependent target batch. A failed or timed-out target batch remains a deterministic quality failure while independent ordinary quality checks retain their own result; no partial architecture result is presented as acceptance."
+capacity_validation = "Focused scope/planner/contributor tests cover streamed producer enumeration and early raw/included path refusal, normal regular source reads, symlink/non-regular/path-escape/source-replacement refusal, producer direct/re-export/alias resolution, long argv path and over-cap delta transport, one prerequisite baseline step, multiple producer and target batches, many short paths with near-cap source files, four-worker scheduling eligibility, oversized source, per-batch and total-scope budget refusal, serialized worst-case finding truncation, invalid-envelope rejection, timeout/output configuration, and modified/rename/delete/untracked producer partial-scope refusal."
+
+[[obligations]]
+id = "architecture.static-guard"
+owner = "trade_py/devtools architecture quality"
+paths = [
+  "trade_py/devtools/architecture_guard.py",
+  "trade_py/devtools/quality/models.py",
+  "trade_py/devtools/quality/scope.py",
+  "trade_py/devtools/quality/planner.py",
+  "trade_py/devtools/quality/contributors/architecture.py",
+  "trade_py/devtools/quality/providers/registry.py",
+  "tests/test_architecture_guard.py",
+  "tests/test_architecture_contributor.py",
+  "tests/test_quality_scope.py",
+  "tests/test_quality_planner.py",
+]
+contracts = [
+  "scoped read-only trade dev check architecture step",
+  "canonical unfiltered scope metadata and architecture.partial_scope refusal",
+  "target dependency and Context Cell graph",
+  "trade.architecture.guard.v1 bounded diagnostic envelope",
+]
+failure_states = [
+  "forbidden context implementation import",
+  "contract implementation type leak",
+  "direct database, artifact, or SQL escape",
+  "direct dynamic execution or process creation",
+  "partial architecture scope or scope budget exceeded",
+  "producer discovery unresolved, undeclared, unsafe, or over budget",
+  "invalid or oversized structured diagnostic envelope",
+  "Platform business vocabulary",
+  "native import outside adapter boundary",
+]
+spec_requirements = [
+  "architecture-static-guardrails:Future target modules SHALL enforce the approved dependency graph",
+  "architecture-static-guardrails:Legacy, dynamic execution, and process-spawn paths SHALL be fail-closed",
+  "architecture-static-guardrails:Target Context Cells SHALL not leak implementation boundaries",
+  "architecture-static-guardrails:Future target persistence and artifact access SHALL preserve Context ownership",
+  "architecture-static-guardrails:Platform and native target boundaries SHALL remain technical",
+  "architecture-static-guardrails:Architecture results SHALL be bounded, deterministic, and complete for their declared scope",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.2", "2.3", "3.1", "3.2", "3.3"]
+
+[[obligations]]
+id = "architecture.baseline"
+owner = "architecture governance baseline"
+paths = [
+  "architecture-baseline.toml",
+  "trade_py/devtools/architecture_guard.py",
+  "tests/test_architecture_guard.py",
+]
+contracts = [
+  "source-verified legacy package and table inventory",
+  "candidate and deferred table classifications",
+  "producer-derived artifact and Capture-risk inventory",
+  "native, compatibility-pointer, and CLI/HTTP/OpenAPI/SSE source inventory",
+]
+failure_states = [
+  "malformed or unsafe baseline",
+  "missing source evidence",
+  "duplicate table declaration",
+  "unclassified target ownership",
+  "stale projection, pointer, Capture, native, or interface fact",
+  "producer discovery path, source, or declaration mismatch",
+  "attempted database, artifact, or non-evidence-path read",
+]
+spec_requirements = [
+  "architecture-baseline-inventory:The legacy architecture baseline SHALL be source-verified and non-authoritative",
+  "architecture-baseline-inventory:Source-only artifact, pointer, receipt, and Capture-risk facts SHALL be complete enough to govern later children",
+  "architecture-baseline-inventory:Compatibility and native baseline facts SHALL remain explicit",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "3.1", "3.2", "3.3"]
