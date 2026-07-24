@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sys
 
+from trade_py.devtools.design_quality.governance import resolve_governance_requirements
 from trade_py.devtools.quality.models import (
     CheckStep,
     FailureKind,
@@ -31,24 +32,15 @@ class DesignQualityContributor:
             return ()
 
         changes = sorted({match.group("change") for match in matched.values()})
+        resolution = resolve_governance_requirements(
+            context.repo_root,
+            changes,
+            new_change_names=selection.new_change_names,
+            deleted_files=selection.deleted_files,
+        )
         added = set(selection.added_files)
         deleted = set(selection.deleted_files)
         delta = set(selection.delta_files)
-        new_changes = set(selection.new_change_names)
-        live: list[str] = []
-        required: list[str] = []
-        missing_required: list[str] = []
-        for change in changes:
-            marker = f"openspec/changes/{change}/design-quality.toml"
-            created = change in new_changes
-            marker_deleted = marker in deleted
-            change_dir = context.repo_root / "openspec" / "changes" / change
-            if created or marker_deleted:
-                required.append(change)
-            if change_dir.is_dir():
-                live.append(change)
-            elif marker_deleted:
-                missing_required.append(change)
 
         argv = [
             sys.executable,
@@ -56,12 +48,12 @@ class DesignQualityContributor:
             "trade_py.devtools.design_quality.cli",
             "--strict",
         ]
-        for change in live:
+        for change in resolution.live_changes:
             argv.extend(("--change", change))
-        for change in required:
-            if change in live:
+        for change in resolution.required_changes:
+            if change in resolution.live_changes:
                 argv.extend(("--require-governance", change))
-        for change in missing_required:
+        for change in resolution.missing_required_changes:
             argv.extend(("--missing-required", change))
         for path in policy_paths:
             if path in delta and (path in deleted or path not in added):

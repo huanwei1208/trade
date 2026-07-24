@@ -6,7 +6,7 @@ import hashlib
 import os
 import re
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +25,12 @@ class _Candidate:
     relative: str
     size: int
     signature: tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class SnapshotBatch:
+    snapshots: tuple[ChangeSnapshot, ...]
+    errors: dict[str, DesignQualityError]
 
 
 def validate_change_name(name: str) -> str:
@@ -216,6 +222,41 @@ def artifact_payload_digest(
 def load_snapshots(
     repo_root: Path, names: tuple[str, ...], policy: Policy
 ) -> tuple[ChangeSnapshot, ...]:
+    batch = _load_snapshots_batch(
+        repo_root,
+        names,
+        policy,
+        isolate_errors=False,
+    )
+    if batch.errors:
+        raise batch.errors[sorted(batch.errors)[0]]
+    return batch.snapshots
+
+
+def load_snapshots_isolated(
+    repo_root: Path,
+    names: tuple[str, ...],
+    policy: Policy,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> SnapshotBatch:
+    return _load_snapshots_batch(
+        repo_root,
+        names,
+        policy,
+        checkpoint=checkpoint,
+        isolate_errors=True,
+    )
+
+
+def _load_snapshots_batch(
+    repo_root: Path,
+    names: tuple[str, ...],
+    policy: Policy,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+    isolate_errors: bool,
+) -> SnapshotBatch:
     unique = tuple(sorted(set(names)))
     if not unique:
         raise DesignQualityError("At least one OpenSpec change is required")
@@ -225,72 +266,120 @@ def load_snapshots(
         )
 
     pending: list[tuple[str, Path, tuple[_Candidate, ...]]] = []
+    errors: dict[str, DesignQualityError] = {}
     batch_bytes = 0
     for name in unique:
-        change_dir = _change_dir(repo_root, name)
-        candidates = _collect(change_dir, policy)
+        _checkpoint(checkpoint)
+        try:
+            change_dir = _change_dir(repo_root, name)
+            candidates = _collect(change_dir, policy)
+        except DesignQualityError as exc:
+            if not isolate_errors:
+                raise
+            errors[name] = exc
+            continue
         batch_bytes += sum(item.size for item in candidates)
+        if batch_bytes > policy.limits.max_total_bytes_per_batch:
+            raise DesignQualityError(
+                f"Batch artifacts use {batch_bytes} bytes; "
+                f"limit is {policy.limits.max_total_bytes_per_batch}"
+            )
         pending.append((name, change_dir, candidates))
-    if batch_bytes > policy.limits.max_total_bytes_per_batch:
-        raise DesignQualityError(
-            f"Batch artifacts use {batch_bytes} bytes; "
-            f"limit is {policy.limits.max_total_bytes_per_batch}"
-        )
+        _checkpoint(checkpoint)
 
     snapshots: list[ChangeSnapshot] = []
+    resolved_root = repo_root.resolve()
     for name, change_dir, candidates in pending:
-        artifacts: list[Artifact] = []
-        digest_payloads: list[tuple[str, bytes]] = []
-        total = 0
-        for candidate in candidates:
-            payload = _read_candidate(
-                repo_root.resolve(), name, candidate, policy.limits.max_file_bytes
+        _checkpoint(checkpoint)
+        try:
+            snapshot = _load_snapshot(
+                resolved_root,
+                name,
+                change_dir,
+                candidates,
+                policy,
+                checkpoint=checkpoint,
             )
-            try:
-                content = payload.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise DesignQualityError(
-                    f"Design artifact is not valid UTF-8: {candidate.relative}"
-                ) from exc
-            digest = hashlib.sha256(payload).hexdigest()
-            artifacts.append(
-                Artifact(
-                    path=candidate.relative,
-                    size_bytes=len(payload),
-                    digest=f"sha256:{digest}",
-                    content=content,
-                    stat_signature=candidate.signature,
-                )
-            )
-            total += len(payload)
-            digest_payloads.append((candidate.relative, payload))
-        snapshots.append(
-            ChangeSnapshot(
-                name=name,
-                repo_root=str(repo_root.resolve()),
-                root=str(change_dir),
-                artifacts=tuple(artifacts),
-                artifact_digest=artifact_payload_digest(
-                    tuple(digest_payloads), policy.digest_excludes
-                ),
-                total_bytes=total,
+        except DesignQualityError as exc:
+            if not isolate_errors:
+                raise
+            errors[name] = exc
+            continue
+        snapshots.append(snapshot)
+        _checkpoint(checkpoint)
+    return SnapshotBatch(snapshots=tuple(snapshots), errors=errors)
+
+
+def _load_snapshot(
+    repo_root: Path,
+    name: str,
+    change_dir: Path,
+    candidates: tuple[_Candidate, ...],
+    policy: Policy,
+    *,
+    checkpoint: Callable[[], None] | None,
+) -> ChangeSnapshot:
+    artifacts: list[Artifact] = []
+    digest_payloads: list[tuple[str, bytes]] = []
+    total = 0
+    for candidate in candidates:
+        _checkpoint(checkpoint)
+        payload = _read_candidate(repo_root, name, candidate, policy.limits.max_file_bytes)
+        _checkpoint(checkpoint)
+        try:
+            content = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise DesignQualityError(
+                f"Design artifact is not valid UTF-8: {candidate.relative}"
+            ) from exc
+        digest = hashlib.sha256(payload).hexdigest()
+        artifacts.append(
+            Artifact(
+                path=candidate.relative,
+                size_bytes=len(payload),
+                digest=f"sha256:{digest}",
+                content=content,
+                stat_signature=candidate.signature,
             )
         )
-    return tuple(snapshots)
+        total += len(payload)
+        digest_payloads.append((candidate.relative, payload))
+    return ChangeSnapshot(
+        name=name,
+        repo_root=str(repo_root),
+        root=str(change_dir),
+        artifacts=tuple(artifacts),
+        artifact_digest=artifact_payload_digest(tuple(digest_payloads), policy.digest_excludes),
+        total_bytes=total,
+    )
 
 
-def verify_snapshot(snapshot: ChangeSnapshot, policy: Policy) -> None:
+def _checkpoint(callback: Callable[[], None] | None) -> None:
+    if callback is not None:
+        callback()
+
+
+def verify_snapshot(
+    snapshot: ChangeSnapshot,
+    policy: Policy,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> None:
+    _checkpoint(checkpoint)
     root = Path(snapshot.root)
     current = _collect(root, policy)
+    _checkpoint(checkpoint)
     inventory = {item.relative: item for item in current}
     original = {item.path: item for item in snapshot.artifacts}
     if set(inventory) != set(original):
         raise DesignQualityError("Design artifact inventory changed during evaluation")
     for relative, artifact in original.items():
+        _checkpoint(checkpoint)
         candidate = inventory[relative]
         payload = _read_candidate(
             Path(snapshot.repo_root), snapshot.name, candidate, policy.limits.max_file_bytes
         )
+        _checkpoint(checkpoint)
         digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
         if candidate.signature != artifact.stat_signature or digest != artifact.digest:
             raise DesignQualityError(f"Artifact changed during evaluation: {relative}")

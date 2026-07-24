@@ -174,6 +174,28 @@ def test_historical_ungoverned_change_is_checked_without_forced_migration(tmp_pa
     assert "--require-governance" not in step.argv
 
 
+def test_existing_governed_change_remains_required(tmp_path: Path) -> None:
+    root = tmp_path / "openspec" / "changes" / "existing-change"
+    root.mkdir(parents=True)
+    (root / "design-quality.toml").write_text(
+        'schema_version = 1\npolicy_version = "v1"\n', encoding="utf-8"
+    )
+
+    plan = build_plan(
+        _selection(tmp_path, "openspec/changes/existing-change/design-quality.toml"),
+        mode=GateMode.CHECK,
+        config=QualityConfig(),
+    )
+
+    step = next(item for item in plan.steps if item.check_id == "design.strict")
+    assert step.argv[-4:] == (
+        "--change",
+        "existing-change",
+        "--require-governance",
+        "existing-change",
+    )
+
+
 def test_new_change_without_openspec_sentinel_requires_governance(tmp_path: Path) -> None:
     root = tmp_path / "openspec" / "changes" / "new-change"
     root.mkdir(parents=True)

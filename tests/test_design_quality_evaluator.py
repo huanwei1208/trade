@@ -10,12 +10,18 @@ from pathlib import Path
 
 import pytest
 
+import trade_py.devtools.design_quality.evaluate as evaluate_module
+import trade_py.devtools.design_quality.snapshot as snapshot_module
 from trade_py.devtools.design_quality.errors import DesignQualityError
 from trade_py.devtools.design_quality.evaluate import evaluate_change, evaluate_changes
 from trade_py.devtools.design_quality.models import DesignReport, EvidenceSchema
 from trade_py.devtools.design_quality.policy import load_policy
 from trade_py.devtools.design_quality.render import render_report_text
-from trade_py.devtools.design_quality.snapshot import load_snapshots, verify_snapshot
+from trade_py.devtools.design_quality.snapshot import (
+    load_snapshots,
+    load_snapshots_isolated,
+    verify_snapshot,
+)
 from trade_py.devtools.design_quality.v1_contract import exception_state
 from trade_py.devtools.quality.config import QualityConfig
 from trade_py.devtools.quality.executor import SubprocessExecutor
@@ -268,7 +274,13 @@ def test_valid_governed_change_passes_pre_review_diagnostics(tmp_path: Path) -> 
 
 
 def test_repository_bootstrap_change_passes_strict_self_check() -> None:
-    report = evaluate_change(REPO_ROOT, "add-design-quality-gates", strict=True)
+    report = evaluate_change(
+        REPO_ROOT,
+        "add-design-quality-gates",
+        strict=True,
+        effective_date=TODAY,
+        today=TODAY,
+    )
 
     assert report.status == "PASS"
     assert report.approval_eligible is True
@@ -736,6 +748,94 @@ resolution = "The issue was resolved with current evidence."
     assert "core.review.incomplete" in _rule_ids(malformed_report)
 
 
+@pytest.mark.parametrize(
+    ("parent_managed_process_group", "expected_start_new_session"),
+    ((False, True), (True, False)),
+)
+def test_reviewed_tree_git_session_mode_matches_parent_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    parent_managed_process_group: bool,
+    expected_start_new_session: bool,
+) -> None:
+    repo = _repo(tmp_path)
+    change = _write_change(repo, "process-group-review")
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "design@example.test")
+    _git(repo, "config", "user.name", "Design Test")
+    _git(repo, "add", "--", "design-policy", "openspec")
+    _git(repo, "commit", "-m", "reviewed design")
+    reviewed_commit = _git(repo, "rev-parse", "HEAD")
+    _write_review(repo, change, reviewed_commit=reviewed_commit)
+    observed: list[bool] = []
+    real_bounded_git_stdout = evaluate_module._bounded_git_stdout
+
+    def recording_bounded_git_stdout(
+        repo_root: Path,
+        args: list[str],
+        *,
+        limit: int,
+        timeout: float = 3,
+        start_new_session: bool = True,
+    ) -> tuple[int, bytes] | None:
+        observed.append(start_new_session)
+        return real_bounded_git_stdout(
+            repo_root,
+            args,
+            limit=limit,
+            timeout=timeout,
+            start_new_session=start_new_session,
+        )
+
+    monkeypatch.setattr(
+        evaluate_module,
+        "_bounded_git_stdout",
+        recording_bounded_git_stdout,
+    )
+
+    report = evaluate_change(
+        repo,
+        change.name,
+        strict=True,
+        today=TODAY,
+        parent_managed_process_group=parent_managed_process_group,
+    )
+
+    assert report.approval_eligible is True
+    assert observed == [expected_start_new_session]
+
+
+@pytest.mark.parametrize(
+    ("start_new_session", "expected_kill"),
+    ((True, "group"), (False, "direct")),
+)
+def test_git_timeout_kill_scope_matches_session_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    start_new_session: bool,
+    expected_kill: str,
+) -> None:
+    calls: list[str] = []
+
+    class FakeProcess:
+        pid = 31415
+
+        def kill(self) -> None:
+            calls.append("direct")
+
+    monkeypatch.setattr(
+        evaluate_module.os,
+        "killpg",
+        lambda _pid, _signal: calls.append("group"),
+    )
+
+    evaluate_module._kill_git_process(
+        FakeProcess(),  # type: ignore[arg-type]
+        start_new_session=start_new_session,
+    )
+
+    assert calls == [expected_kill]
+
+
 def test_strict_review_commit_tree_must_match_attested_artifacts(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     change = _write_change(repo, "commit-bound-review")
@@ -1049,6 +1149,80 @@ def test_batch_count_is_checked_before_change_paths(tmp_path: Path) -> None:
 
     with pytest.raises(DesignQualityError, match="Batch has 101 changes"):
         evaluate_changes(repo, names, policy=policy, today=TODAY)
+
+
+def test_snapshot_batch_preflights_exact_aggregate_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    names = tuple(f"bounded-change-{index}" for index in range(10))
+    per_change_bytes = 2 * 1024 * 1024
+    for name in names:
+        change = _write_change(repo, name)
+        design = change / "design.md"
+        current_bytes = sum(path.stat().st_size for path in change.rglob("*") if path.is_file())
+        design.write_text(
+            f"{design.read_text(encoding='utf-8')}{'x' * (per_change_bytes - current_bytes)}",
+            encoding="utf-8",
+        )
+    policy = load_policy(repo)
+    bounded = replace(
+        policy,
+        limits=replace(
+            policy.limits,
+            max_file_bytes=per_change_bytes,
+            max_total_bytes_per_change=per_change_bytes,
+            max_total_bytes_per_batch=16 * 1024 * 1024,
+        ),
+    )
+
+    exact = load_snapshots_isolated(repo, names[:8], bounded)
+
+    assert len(exact.snapshots) == 8
+    assert sum(item.total_bytes for item in exact.snapshots) == 16 * 1024 * 1024
+    assert exact.errors == {}
+
+    reads = 0
+    collections = 0
+    original_collect = snapshot_module._collect
+
+    def tracked_read(*_args: object, **_kwargs: object) -> bytes:
+        nonlocal reads
+        reads += 1
+        raise AssertionError("aggregate overflow must fail before artifact reads")
+
+    def tracked_collect(*args: object, **kwargs: object):
+        nonlocal collections
+        collections += 1
+        return original_collect(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(snapshot_module, "_read_candidate", tracked_read)
+    monkeypatch.setattr(snapshot_module, "_collect", tracked_collect)
+
+    with pytest.raises(DesignQualityError, match="Batch artifacts use"):
+        load_snapshots_isolated(repo, names, bounded)
+
+    assert collections == 9
+    assert reads == 0
+
+
+def test_snapshot_isolated_batch_preserves_valid_utf8_sibling(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    valid = _write_change(repo, "valid-sibling")
+    invalid = _write_change(repo, "invalid-sibling")
+    (invalid / "proposal.md").write_bytes(b"\xff")
+    policy = load_policy(repo)
+
+    batch = load_snapshots_isolated(
+        repo,
+        (valid.name, invalid.name),
+        policy,
+    )
+
+    assert tuple(snapshot.name for snapshot in batch.snapshots) == ("valid-sibling",)
+    assert set(batch.errors) == {"invalid-sibling"}
+    assert "not valid UTF-8" in str(batch.errors["invalid-sibling"])
 
 
 @pytest.mark.parametrize("change_count", (2, 10, 100))

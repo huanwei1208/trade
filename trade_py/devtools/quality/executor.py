@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -84,6 +85,12 @@ class _DesignInvocation:
     required_changes: tuple[str, ...]
     missing_changes: tuple[str, ...]
     policy_targets: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DesignBatchValidation:
+    envelope_error: str | None
+    report_errors: dict[str, str]
 
 
 def _design_invocation(argv: tuple[str, ...]) -> _DesignInvocation | None:
@@ -286,6 +293,149 @@ def _design_envelope_error(
     if nested_exit != expected_exit:
         return "Structured design envelope exit code does not match its reports"
     return None
+
+
+def validate_design_batch_payload(
+    payload: dict[str, object],
+    returncode: int,
+    *,
+    policy: Policy,
+    expected_changes: tuple[str, ...],
+    expected_governance: dict[str, str],
+    bindings: dict[str, ReportBinding],
+    evaluation_date: date,
+) -> DesignBatchValidation:
+    """Validate batch structure and return change-local report errors separately."""
+
+    reports = payload.get("reports")
+    summary = payload.get("summary")
+    errors = payload.get("errors", [])
+    nested_exit = payload.get("exit_code")
+    if (
+        payload.get("schema_version") != "trade.design.batch.v1"
+        or not isinstance(nested_exit, int)
+        or isinstance(nested_exit, bool)
+        or nested_exit != returncode
+        or not isinstance(reports, list)
+        or not all(isinstance(item, dict) for item in reports)
+        or not isinstance(summary, dict)
+        or not isinstance(errors, list)
+    ):
+        return DesignBatchValidation(
+            "Structured design envelope is inconsistent with the child process exit",
+            {},
+        )
+    if errors:
+        return DesignBatchValidation(
+            "Structured design batch contains infrastructure error records",
+            {},
+        )
+    report_changes = tuple(item.get("change") for item in reports)
+    if not all(isinstance(change, str) for change in report_changes):
+        return DesignBatchValidation(
+            "Structured design envelope does not match the planned changes",
+            {},
+        )
+    typed_changes = tuple(change for change in report_changes if isinstance(change, str))
+    expected = set(expected_changes)
+    if any(change not in expected for change in typed_changes):
+        return DesignBatchValidation(
+            "Structured design envelope does not match the planned changes",
+            {},
+        )
+    counts = Counter(typed_changes)
+    if (
+        all(count == 1 for count in counts.values())
+        and set(typed_changes) == expected
+        and typed_changes != expected_changes
+    ):
+        return DesignBatchValidation(
+            "Structured design envelope does not match the planned changes",
+            {},
+        )
+    if set(summary) != {"changes", "passed", "failed", "not_governed", "errors"} or any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in summary.values()
+    ):
+        return DesignBatchValidation(
+            "Structured design envelope contains malformed summary counts",
+            {},
+        )
+    if (
+        summary.get("changes") != len(reports)
+        or summary.get("errors") != 0
+        or sum(int(summary.get(name, 0)) for name in ("passed", "failed", "not_governed"))
+        != len(reports)
+        or returncode not in {0, 1}
+        or returncode != (1 if summary.get("failed", 0) else 0)
+    ):
+        return DesignBatchValidation(
+            "Structured design envelope summary does not match its report scope",
+            {},
+        )
+
+    report_exits = [report.get("exit_code") for report in reports]
+    report_statuses = [report.get("status") for report in reports]
+    report_governance = [report.get("governance_status") for report in reports]
+    classifications_are_valid = (
+        all(isinstance(value, int) and not isinstance(value, bool) for value in report_exits)
+        and all(
+            value in {"PASS", "FAIL", "NOT_GOVERNED", "DIAGNOSTIC"} for value in report_statuses
+        )
+        and all(
+            value
+            in {
+                "GOVERNED",
+                "NOT_GOVERNED",
+                "REQUIRED_MISSING",
+                "POLICY_IMMUTABILITY_VIOLATION",
+            }
+            for value in report_governance
+        )
+    )
+    if classifications_are_valid:
+        expected_summary = {
+            "changes": len(reports),
+            "passed": sum(value == "PASS" for value in report_statuses),
+            "failed": sum(value != 0 for value in report_exits),
+            "not_governed": sum(value == "NOT_GOVERNED" for value in report_governance),
+            "errors": 0,
+        }
+        expected_exit = max(report_exits, default=0)
+        if summary != expected_summary or returncode != expected_exit:
+            return DesignBatchValidation(
+                "Structured design envelope summary does not match its reports",
+                {},
+            )
+
+    report_errors = {
+        name: "Structured design batch contains duplicate reports for this change"
+        for name, count in counts.items()
+        if count > 1
+    }
+    report_errors.update(
+        {
+            name: "Structured design batch omitted this selected change"
+            for name in expected_changes
+            if name not in counts
+        }
+    )
+    for report in reports:
+        change = report["change"]
+        assert isinstance(change, str)
+        if change in report_errors:
+            continue
+        error = _design_report_error(
+            report,
+            policy=policy,
+            binding=bindings.get(change),
+            require_binding=True,
+            expected_governance=expected_governance.get(change),
+            current_date=evaluation_date,
+        )
+        if error:
+            report_errors[change] = error
+    return DesignBatchValidation(None, report_errors)
 
 
 def _design_report_error(

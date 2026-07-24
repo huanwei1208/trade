@@ -6,11 +6,13 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from trade_py.cli import dev
 from trade_py.devtools.design_quality import cli as design_cli
+from trade_py.devtools.design_quality.models import DesignReport
 from trade_py.devtools.quality.config import QualityConfig
 from trade_py.devtools.quality.executor import SubprocessExecutor
 from trade_py.devtools.quality.models import CheckStep, FailureKind
@@ -55,13 +57,13 @@ def test_direct_cli_is_lazy_no_db_and_machine_readable(
     monkeypatch.chdir(REPO_ROOT)
     sys.modules.pop("trade_py.db.trade_db", None)
 
-    code = dev.main(["design-check", "add-design-quality-gates", "--strict", "--format", "json"])
+    code = dev.main(["design-check", "add-design-quality-gates", "--format", "json"])
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert payload["schema_version"] == "trade.design.report.v1"
-    assert payload["approval_eligible"] is True
-    assert payload["status"] == "PASS"
+    assert payload["approval_eligible"] is False
+    assert payload["status"] == "DIAGNOSTIC"
     assert "trade_py.db.trade_db" not in sys.modules
 
 
@@ -117,6 +119,8 @@ def test_internal_batch_cli_returns_structured_reports(
             "--strict",
             "--require-governance",
             "add-design-quality-gates",
+            "--evaluation-date",
+            "2026-07-20",
         ]
     )
 
@@ -169,6 +173,80 @@ def test_internal_batch_reports_deleted_governance_with_complete_schema(
     assert report["policy_version"] == "v1"
     assert report["counts"]["blockers"] == 1
     assert report["metadata"]["missing_from_changed_scope"] is True
+
+
+def test_internal_batch_uses_one_captured_evaluation_date(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(REPO_ROOT)
+
+    code = design_cli.main(
+        [
+            "--change",
+            "add-design-quality-gates",
+            "--missing-required",
+            "deleted-change",
+            "--evaluation-date",
+            "2026-07-20",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert {report["effective_date"] for report in payload["reports"]} == {"2026-07-20"}
+
+
+def test_internal_batch_forwards_parent_managed_process_mode(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(REPO_ROOT)
+    captured: dict[str, Any] = {}
+    real_evaluate_changes = design_cli.evaluate_changes
+
+    def recording_evaluate_changes(
+        repo_root: Path,
+        changes: tuple[str, ...],
+        **kwargs: Any,
+    ) -> tuple[DesignReport, ...]:
+        captured.update(kwargs)
+        return real_evaluate_changes(repo_root, changes, **kwargs)
+
+    monkeypatch.setattr(design_cli, "evaluate_changes", recording_evaluate_changes)
+
+    code = design_cli.main(
+        [
+            "--change",
+            "add-design-quality-gates",
+            "--evaluation-date",
+            "2026-07-20",
+            "--parent-managed-process-group",
+        ]
+    )
+
+    json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert captured["effective_date"].isoformat() == "2026-07-20"
+    assert captured["today"].isoformat() == "2026-07-20"
+    assert captured["parent_managed_process_group"] is True
+
+
+def test_internal_batch_rejects_invalid_evaluation_date(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(REPO_ROOT)
+
+    code = design_cli.main(
+        [
+            "--missing-required",
+            "deleted-change",
+            "--evaluation-date",
+            "2026-13-40",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert "expected YYYY-MM-DD" in payload["errors"][0]["message"]
 
 
 def test_internal_batch_caps_deleted_and_mixed_targets_before_report_creation(

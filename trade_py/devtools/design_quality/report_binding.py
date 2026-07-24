@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from trade_py.devtools.design_quality.errors import DesignQualityError
 from trade_py.devtools.design_quality.models import ChangeSnapshot, Policy
-from trade_py.devtools.design_quality.snapshot import load_snapshots, verify_snapshot
+from trade_py.devtools.design_quality.snapshot import (
+    load_snapshots,
+    load_snapshots_isolated,
+    verify_snapshot,
+)
 from trade_py.devtools.design_quality.v1_contract import is_substantive_reason
 from trade_py.devtools.quality.toml_compat import tomllib
 
@@ -20,6 +25,12 @@ class ReportBinding:
     profiles: tuple[str, ...] | None
     artifacts: tuple[dict[str, object], ...]
     total_bytes: int
+
+
+@dataclass(frozen=True)
+class ReportBindingBatch:
+    bindings: dict[str, ReportBinding]
+    errors: dict[str, DesignQualityError]
 
 
 def signaled_impacts(
@@ -95,28 +106,79 @@ def load_report_bindings(
     if not names:
         return {}
     snapshots = load_snapshots(repo_root, names, policy)
-    bindings: dict[str, ReportBinding] = {}
-    for snapshot in snapshots:
-        marker_present = snapshot.text("design-quality.toml") is not None
-        profiles: tuple[str, ...] | None = ()
-        if marker_present:
-            try:
-                impacts = _valid_impacts(snapshot, policy)
-                profiles = selected_profile_names(snapshot, policy, impacts)
-            except DesignQualityError:
-                profiles = None
-        verify_snapshot(snapshot, policy)
-        bindings[snapshot.name] = ReportBinding(
-            governance_status=(
-                "GOVERNED"
-                if marker_present
-                else "REQUIRED_MISSING"
-                if snapshot.name in require_governance
-                else "NOT_GOVERNED"
-            ),
-            artifact_digest=snapshot.artifact_digest,
-            profiles=profiles,
-            artifacts=tuple(dict(item) for item in snapshot.inventory),
-            total_bytes=snapshot.total_bytes,
+    return {
+        snapshot.name: _binding(
+            snapshot,
+            policy,
+            require_governance=require_governance,
         )
-    return bindings
+        for snapshot in snapshots
+    }
+
+
+def load_report_bindings_isolated(
+    repo_root: Path,
+    names: tuple[str, ...],
+    policy: Policy,
+    *,
+    require_governance: frozenset[str] = frozenset(),
+    checkpoint: Callable[[], None] | None = None,
+) -> ReportBindingBatch:
+    if not names:
+        return ReportBindingBatch(bindings={}, errors={})
+    batch = load_snapshots_isolated(
+        repo_root,
+        names,
+        policy,
+        checkpoint=checkpoint,
+    )
+    bindings: dict[str, ReportBinding] = {}
+    errors = dict(batch.errors)
+    for snapshot in batch.snapshots:
+        if checkpoint is not None:
+            checkpoint()
+        try:
+            binding = _binding(
+                snapshot,
+                policy,
+                require_governance=require_governance,
+                checkpoint=checkpoint,
+            )
+        except DesignQualityError as exc:
+            errors[snapshot.name] = exc
+            continue
+        bindings[snapshot.name] = binding
+        if checkpoint is not None:
+            checkpoint()
+    return ReportBindingBatch(bindings=bindings, errors=errors)
+
+
+def _binding(
+    snapshot: ChangeSnapshot,
+    policy: Policy,
+    *,
+    require_governance: frozenset[str],
+    checkpoint: Callable[[], None] | None = None,
+) -> ReportBinding:
+    marker_present = snapshot.text("design-quality.toml") is not None
+    profiles: tuple[str, ...] | None = ()
+    if marker_present:
+        try:
+            impacts = _valid_impacts(snapshot, policy)
+            profiles = selected_profile_names(snapshot, policy, impacts)
+        except DesignQualityError:
+            profiles = None
+    verify_snapshot(snapshot, policy, checkpoint=checkpoint)
+    return ReportBinding(
+        governance_status=(
+            "GOVERNED"
+            if marker_present
+            else "REQUIRED_MISSING"
+            if snapshot.name in require_governance
+            else "NOT_GOVERNED"
+        ),
+        artifact_digest=snapshot.artifact_digest,
+        profiles=profiles,
+        artifacts=tuple(dict(item) for item in snapshot.inventory),
+        total_bytes=snapshot.total_bytes,
+    )
