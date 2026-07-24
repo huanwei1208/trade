@@ -1,0 +1,122 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "Adds public repository developer commands for ownership, fencing, controlled execution, global locking, and Git boundary checks."
+
+[[impacts]]
+id = "persistent_write"
+applies = true
+reason = "Writes durable owner, epoch, and audit JSON under the shared absolute Git common directory."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "Adds a new isolated coordination record format with no predecessor database, parquet, payload, or OpenSpec schema to migrate."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "Coordinates repository authoring and computes no market-time, forecast, label, ranking, or backtest evidence."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "Produces no model, recommendation, score, probability, calibration, or prediction."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "Ingests no news, social, macro, on-chain, exchange, or third-party event feed."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "Coordinates concurrent local processes with per-change and per-operation file locks, atomic records, and epoch fencing."
+
+[evidence.contract]
+contract = "The additive contracts are scripts/ops-coord claim|status|assert-owner|release|takeover|run|run-global and scripts/check-openspec-coordination.py staged or base/head checking."
+consumers = "Interactive coordinator windows, human operators, worker agents, local pre-commit hooks, and pull-request CI consume these commands and their nonzero failure semantics."
+compatibility = "OpenSpec source, executable, artifact schema, existing Git branches, trading runtime, APIs, databases, parquet, frontend, and C++ engine remain unchanged; unrecognized branch names receive only shared-path checks."
+migration = "No migration or inferred owner is performed; existing changes begin unowned and their first coordinator must explicitly claim."
+rollback = "Revert the tracked scripts, tests, hook, workflow, docs, and policy; retain ignored common-dir coordination state for manual audit rather than mutating authority during rollback."
+
+[evidence.storage]
+authoritative_writer = "scripts/ops-coord is the sole supported writer for owners, epochs, history, and lock coordination below the Git common directory; OpenSpec remains authoritative for its own artifacts."
+idempotency_key = "Each authority transition is identified by change_id, strictly allocated epoch, owner_id, and action; an allocated epoch is never reused even if a crash leaves a gap."
+concurrency_control = "Every ownership read or transition uses a shared or exclusive POSIX flock on that change lock; every named shared command holds a distinct exclusive operation lock for its child lifetime."
+staging_validation = "Identifiers, record shape, type bounds, existing authority, current worktree, and current branch are validated before a complete JSON payload is staged in the destination directory."
+atomic_visibility = "Owner and epoch payloads use same-directory temporary files, flush, fsync, atomic os.replace, and directory fsync; release records history before unlink and directory sync."
+crash_windows = "A crash before owner replace leaves the previous owner authoritative; a crash after epoch replace can create only a skipped epoch; a crash after takeover owner replace leaves the new owner authoritative even if later audit reporting fails."
+corrupt_predecessor = "Malformed, oversized, inconsistent, symlinked, or missing-field owner/epoch records are preserved and block transitions; no PID, age, TTL, or lock appearance triggers repair."
+partial_results = "Published authority is never rolled back to an older owner after an audit-write failure; the command reports failure and operators inspect status/history before any explicit next action."
+reader_consistency = "Status and assertions take the per-change lock and parse one bounded complete owner record, observing either predecessor or successor authority and never half JSON."
+backup_hash_verification = "Atomic-write tests read back every coordination JSON file, compare its canonical content digest and identity fields with the published payload, and verify rollback preserves the common-dir audit root; OpenSpec and trading data are outside the writer scope."
+small_sample_verification = "Focused tests create temporary Git repositories and linked worktrees, execute every transition, and inspect owner, epoch, history, branch, worktree, and lock behavior."
+rollback = "Tracked code rollback does not release ownership, decrement epochs, delete locks, or remove audit state; any later state removal is an explicit human-reviewed operation outside the tool."
+audit_trail = "Transition and wrapped-command event files record UTC timestamps, change or operation, owner, epoch, PID, worktree, branch, argv arrays, predecessor identity, reason, and result without shell reconstruction."
+
+[evidence.concurrency]
+ownership = "scripts/ops_coord.py owns transient flock acquisition, durable per-change authority, epoch fencing, atomic publication, and operation-scoped global locks."
+bound = "One short lock holder per change transition or assertion, one child per run wrapper, one holder per named global operation, IDs at most 128 bytes, reasons at most 1024 bytes, and finite optional lock wait."
+ordering = "An exclusive change lock orders epoch allocation before owner publication and authority publication before later transitions; command audit uses start then finish events; global child launch follows lock acquisition."
+atomicity = "Per-change lock plus atomic JSON replace makes claim/takeover/release linearizable at owner-record visibility; post-run assertion detects a takeover that occurs during an external child."
+timeout_cancellation = "Ownership never expires and has no cancellation timer; global locks fail immediately by default or use an explicit finite monotonic wait, while kernel flock release follows process exit."
+backpressure = "Contention rejects immediately unless a caller explicitly requests a bounded wait; there is no unbounded queue, retry loop, hidden sleep, heartbeat, or background worker."
+partial_failure = "Corrupt or ambiguous state stops mutation; epoch gaps are allowed but reuse is forbidden; audit failure is visible; child exit is preserved only when pre/post ownership assertions succeed."
+capacity_validation = "Subprocess tests race same-change and different-change claims, overlap named global operations, inject takeover during run, and verify winner counts, fencing, finite waits, and no automatic cleanup."
+
+[[obligations]]
+id = "coord.ownership"
+owner = "scripts/ops_coord.py"
+paths = ["scripts/ops_coord.py", "scripts/ops-coord", "tests/test_ops_coord.py"]
+contracts = ["single current owner per change", "monotonic epoch", "worktree and branch fencing", "explicit takeover and owner-only release"]
+failure_states = ["claim_conflict", "owner_mismatch", "epoch_mismatch", "worktree_mismatch", "branch_mismatch", "unowned_assertion", "corrupt_state", "invalid_identity", "noninteractive_takeover"]
+spec_requirements = [
+  "openspec-coordinator-fencing:One explicit owner is authoritative per change",
+  "openspec-coordinator-fencing:Monotonic epochs fence superseded coordinators",
+  "openspec-coordinator-fencing:Ownership transitions are atomic and fail closed",
+  "openspec-coordinator-fencing:Release and takeover require explicit authority",
+]
+validation_tasks = ["1.3", "2.4", "4.2"]
+
+[[obligations]]
+id = "coord.execution"
+owner = "scripts/ops_coord.py"
+paths = ["scripts/ops_coord.py", "scripts/ops-coord", "tests/test_ops_coord.py"]
+contracts = ["argv-preserving owned run", "pre and post ownership assertion", "named operation global lock", "command audit"]
+failure_states = ["pre_run_fenced", "post_run_fenced", "child_failure", "global_lock_busy", "finite_wait_expired", "audit_failure"]
+spec_requirements = ["openspec-coordinator-fencing:Controlled commands preserve arguments and revalidate fencing"]
+validation_tasks = ["2.4", "4.2"]
+
+[[obligations]]
+id = "coord.boundaries"
+owner = "scripts/check_openspec_coordination.py"
+paths = ["scripts/check_openspec_coordination.py", "scripts/check-openspec-coordination.py", "scripts/hooks/pre-commit-openspec-coordination", "scripts/install-openspec-coordination-hook", ".github/workflows/openspec-coordination.yml", "tests/test_openspec_coordination_boundary.py"]
+contracts = ["worker OpenSpec prohibition", "coordinator own-change boundary", "explicit shared-operation CI acknowledgement", "staged and base/head diff support"]
+failure_states = ["worker_openspec_diff", "cross_change_diff", "unacknowledged_shared_diff", "unsafe_rename", "git_diff_failure"]
+spec_requirements = ["openspec-coordinator-fencing:Git boundaries are enforced without live CI ownership"]
+validation_tasks = ["1.3", "3.4", "4.2"]
+
+[[obligations]]
+id = "coord.policy"
+owner = "repository agent and OpenSpec configuration"
+paths = ["AGENTS.md", "openspec/config.yaml", "docs/openspec-coordination.md", "tests/test_openspec_coordination_policy.py"]
+contracts = ["assert before OpenSpec writes", "worker read-only rule", "human-only takeover", "fenced-agent stop behavior", "no child change inference"]
+failure_states = ["worker_mutation", "direct_state_edit", "unauthorized_takeover", "fenced_agent_continues", "automatic_child_change"]
+spec_requirements = ["openspec-coordinator-fencing:Agent policy preserves coordinator and worker separation"]
+validation_tasks = ["3.4", "4.2"]
+
+[[obligations]]
+id = "coord.review"
+owner = "openspec governance"
+paths = ["openspec/changes/add-openspec-coordination/design-review.toml", "openspec/changes/add-openspec-coordination/design.md"]
+contracts = ["digest-bound six-role design review", "current-date strict approval", "pre-merge implementation review"]
+failure_states = ["missing_review", "stale_artifact_digest", "incomplete_panel", "unresolved_p0"]
+spec_requirements = [
+  "openspec-coordinator-fencing:Ownership transitions are atomic and fail closed",
+  "openspec-coordinator-fencing:Git boundaries are enforced without live CI ownership",
+]
+validation_tasks = ["1.4", "4.3"]
