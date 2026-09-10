@@ -5,6 +5,9 @@
 #     edgar-form4 ──────────────────┼──▶ sentinel-report
 #     ollama-start ──▶ us-news ─────┘
 #
+# 注意:dagu 对**省略** depends 的 step 是串行执行(默认依赖上一个 step),
+# 不是并行。要真正并行必须显式写 depends: []。
+#
 #     handlerOn.exit ──▶ ollama-stop   (无论成功/失败/取消都执行)
 #
 # 输入层彼此独立、并行跑;报告等它们全部落盘后渲染。
@@ -33,6 +36,10 @@ env:
 steps:
   # ── 输入层(并行)───────────────────────────────────────────
   - name: us-kline-sync
+    continueOn:
+      failure: true
+      markSuccess: false
+    depends: []
     executor:
       type: ssh2
       config:
@@ -40,6 +47,10 @@ steps:
     command: cd $PROJ && $NOBAR ./trade py data kline sync --mode incremental --provider yfinance --symbols-file config/us_universe.txt
 
   - name: edgar-8k
+    continueOn:
+      failure: true
+      markSuccess: false
+    depends: []
     executor:
       type: ssh2
       config:
@@ -47,6 +58,10 @@ steps:
     command: cd $PROJ && ./trade py data edgar sync --start $USDATE
 
   - name: edgar-form4
+    continueOn:
+      failure: true
+      markSuccess: false
+    depends: []
     executor:
       type: ssh2
       config:
@@ -57,6 +72,7 @@ steps:
   # 预热是必须的:冷启动要把 14B 模型载入显存,实测第一次调用耗时 163 秒,
   # 而 OllamaClient 的单次超时是 60 秒 —— 不预热的话前几篇文章必然超时重试。
   - name: ollama-start
+    depends: []
     executor:
       type: ssh2
       config:
@@ -65,6 +81,9 @@ steps:
         ollama run $OLLAMA_MODEL ""
 
   - name: us-news
+    continueOn:
+      failure: true
+      markSuccess: false
     executor:
       type: ssh2
       config:
@@ -94,5 +113,10 @@ handlerOn:
       type: ssh2
       config:
         host: server
-    command: ollama stop $OLLAMA_MODEL
+    # 多行 + 末尾 exit 0:dagu 会在脚本首行塞一个带点号的环境变量赋值
+    # (DAGU_CONTINUE_ON.us-kline-sync=false),zsh 把它当命令、报 127。
+    # 真正的卸载放在后面的行,exit 0 保证这个 handler 不把整个 DAG 标成失败。
+    command: |
+      /usr/local/bin/ollama stop $OLLAMA_MODEL || true
+      exit 0
 
