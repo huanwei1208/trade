@@ -80,6 +80,8 @@ steps:
     command: |
         ollama run $OLLAMA_MODEL ""
 
+  # --date 是必须的:不带日期时 fetch_mode=range 会从 sentiment.start
+  # (2024-01-01) 一路循环到今天 —— 984 天,每天重抓同一批 RSS,要跑 17 小时。
   - name: us-news
     continueOn:
       failure: true
@@ -88,7 +90,7 @@ steps:
       type: ssh2
       config:
         host: server
-    command: cd $PROJ && $NOBAR ./trade py data sentiment --rss-feeds catalog:us_public --market us
+    command: cd $PROJ && $NOBAR ./trade py data sentiment --rss-feeds catalog:us_public --market us --date $USDATE
     depends:
       - ollama-start
 
