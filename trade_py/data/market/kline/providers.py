@@ -38,6 +38,25 @@ def _socket_timeout(seconds: float):
         socket.setdefaulttimeout(prev)
 
 
+@contextmanager
+def _quiet_logger(name: str):
+    """Silence a third-party logger for the duration of one call.
+
+    yfinance logs an ERROR per symbol when a window holds no bars -- routine
+    for an incremental sync run before the session closes, and already
+    reported by this module with symbol context. Left on, it buries a nightly
+    500-symbol run under thousands of lines. Failures still surface: they
+    raise, and the provider chain logs them.
+    """
+    lg = logging.getLogger(name)
+    prev_disabled, prev_propagate = lg.disabled, lg.propagate
+    lg.disabled, lg.propagate = True, False
+    try:
+        yield
+    finally:
+        lg.disabled, lg.propagate = prev_disabled, prev_propagate
+
+
 def _infer_suffix(code: str) -> str:
     return infer_a_share_suffix(code)
 
@@ -366,7 +385,7 @@ class YfinanceKlineProvider:
             )
 
     @staticmethod
-    def _normalize(raw: pd.DataFrame) -> pd.DataFrame:
+    def _normalize(raw: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
         if raw is None or raw.empty:
             return pd.DataFrame()
         df = raw.copy()
@@ -376,14 +395,23 @@ class YfinanceKlineProvider:
         df = df.reset_index()
         df = df.rename(columns={c: str(c).lower() for c in df.columns})
         keep = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in df.columns]
-        return df[keep].dropna(subset=["close"])
+        df = df[keep].dropna(subset=["close"])
+        # Yahoo answers an empty window with the last bar before it, which can
+        # predate `start`. Clip to what was actually asked for.
+        day = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        return df[(day >= start) & (day <= end)]
 
     def fetch(self, symbol: str, start: str, end: str, adjust: str = "hfq") -> pd.DataFrame:
         import yfinance as yf
 
         ticker = str(symbol).strip().upper().replace(".", "-")
-        raw = self._fetch_raw(yf, ticker, start, end, adjust)
-        df = self._normalize(raw)
+        # Every other provider here treats `end` as inclusive; yfinance treats
+        # it as exclusive, so without this the last requested day is silently
+        # dropped from every range fetch.
+        end_exclusive = (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        with _quiet_logger("yfinance"):
+            raw = self._fetch_raw(yf, ticker, start, end_exclusive, adjust)
+        df = self._normalize(raw, start, end)
         if df.empty:
             return pd.DataFrame(columns=_COLUMN_ORDER)
         return _finalize_frame(symbol, df)

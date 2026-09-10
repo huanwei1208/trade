@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import date
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -60,6 +59,82 @@ class EventType(str, Enum):
     stablecoin_depeg      = "stablecoin_depeg"       # 稳定币脱锚
     institutional_adoption= "institutional_adoption" # 机构采用
     other                 = "other"                  # 其他
+    # US equity events. MUST stay appended after `other`: feature_builder uses
+    # list(EventType).index() as a model feature, so inserting anywhere above
+    # would shift every existing index and silently change A-share/crypto
+    # features. Appending leaves indices 0..29 untouched.
+    officer_change        = "officer_change"         # 高管/董事变动
+    buyback               = "buyback"                # 股票回购
+    dividend_change       = "dividend_change"        # 分红调整
+    guidance_raise        = "guidance_raise"         # 业绩指引上调
+    guidance_cut          = "guidance_cut"           # 业绩指引下调
+    layoffs               = "layoffs"                # 裁员/重组
+    product_launch        = "product_launch"         # 产品发布
+    drug_approval         = "drug_approval"          # 药品/器械获批 (FDA等)
+    drug_rejection        = "drug_rejection"         # 药品/器械被拒
+    analyst_upgrade       = "analyst_upgrade"        # 分析师上调评级
+    analyst_downgrade     = "analyst_downgrade"      # 分析师下调评级
+    stock_split           = "stock_split"            # 拆股/并股
+    insider_buying        = "insider_buying"         # 内部人买入
+    insider_selling       = "insider_selling"        # 内部人卖出
+    litigation            = "litigation"             # 诉讼/和解
+    bankruptcy            = "bankruptcy"             # 破产/重整
+    listing_deficiency    = "listing_deficiency"     # 上市资格缺陷
+    auditor_change        = "auditor_change"         # 更换审计师
+    restatement           = "restatement"            # 财报重述/不再可靠
+
+
+# Taxonomy subsets offered to the LLM, per market. Keeping these explicit is
+# what isolates the pipelines: the CN list is byte-identical to the taxonomy
+# before US types existed, so A-share prompts and outputs do not shift.
+_CN_EVENT_TYPES = [
+    EventType.semiconductor_policy, EventType.new_energy_policy,
+    EventType.real_estate_easing, EventType.real_estate_tightening,
+    EventType.rate_cut, EventType.rate_hike,
+    EventType.commodity_surge, EventType.commodity_slump,
+    EventType.defense_spending_up, EventType.macro_recovery,
+    EventType.macro_slowdown, EventType.geopolitical_risk,
+    EventType.earnings_beat, EventType.earnings_miss,
+    EventType.merger_acquisition, EventType.regulatory_tightening,
+    EventType.supply_disruption,
+]
+_CRYPTO_EVENT_TYPES = [
+    EventType.etf_approval, EventType.etf_rejection, EventType.hack_exploit,
+    EventType.exchange_bankruptcy, EventType.exchange_listing,
+    EventType.exchange_delisting, EventType.regulation_ban,
+    EventType.protocol_upgrade, EventType.halving, EventType.defi_exploit,
+    EventType.stablecoin_depeg, EventType.institutional_adoption,
+]
+_US_EVENT_TYPES = [
+    EventType.earnings_beat, EventType.earnings_miss,
+    EventType.guidance_raise, EventType.guidance_cut,
+    EventType.merger_acquisition, EventType.officer_change,
+    EventType.buyback, EventType.dividend_change, EventType.layoffs,
+    EventType.product_launch, EventType.drug_approval, EventType.drug_rejection,
+    EventType.analyst_upgrade, EventType.analyst_downgrade,
+    EventType.stock_split, EventType.insider_buying, EventType.insider_selling,
+    EventType.litigation, EventType.bankruptcy, EventType.listing_deficiency,
+    EventType.auditor_change, EventType.restatement,
+    EventType.regulatory_tightening, EventType.supply_disruption,
+    EventType.rate_cut, EventType.rate_hike,
+    EventType.macro_recovery, EventType.macro_slowdown,
+    EventType.geopolitical_risk,
+]
+
+# Market -> the labels its prompt offers. "all" reproduces the historical
+# full-taxonomy behaviour and stays the default for existing callers.
+EVENT_TYPES_BY_MARKET: dict[str, list[str]] = {
+    "cn": [e.value for e in _CN_EVENT_TYPES] + ["other"],
+    "crypto": [e.value for e in _CRYPTO_EVENT_TYPES] + ["other"],
+    "us": [e.value for e in _US_EVENT_TYPES] + ["other"],
+}
+
+
+def event_types_for_market(market: str | None) -> list[str]:
+    """Label vocabulary for a market; unknown/None means the full taxonomy."""
+    if market and market.lower() in EVENT_TYPES_BY_MARKET:
+        return list(EVENT_TYPES_BY_MARKET[market.lower()])
+    return [e.value for e in EventType]
 
 
 class ActorType(str, Enum):
@@ -129,7 +204,7 @@ class HistoricalEvent:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "HistoricalEvent":
+    def from_dict(cls, d: dict) -> HistoricalEvent:
         d = dict(d)
         d["event_date"]  = date.fromisoformat(str(d["event_date"]))
         d["event_type"]  = EventType(d["event_type"])
@@ -204,10 +279,10 @@ class EventDatabase:
 
     def filter(
         self,
-        event_type:  Optional[EventType] = None,
-        start_date:  Optional[date] = None,
-        end_date:    Optional[date] = None,
-        sector:      Optional[str] = None,
+        event_type:  EventType | None = None,
+        start_date:  date | None = None,
+        end_date:    date | None = None,
+        sector:      str | None = None,
         min_magnitude: float = 0.0,
     ) -> list[HistoricalEvent]:
         """Filter events by optional criteria."""
@@ -246,7 +321,7 @@ class EventDatabase:
 # ── LLM extraction helper ─────────────────────────────────────────────────────
 
 def extract_event_from_claude(result, article_date: date, source_url: str = "",
-                               news_volume: int = 1) -> Optional[HistoricalEvent]:
+                               news_volume: int = 1) -> HistoricalEvent | None:
     """Convert a ClaudeClient analysis result into a HistoricalEvent.
 
     Args:

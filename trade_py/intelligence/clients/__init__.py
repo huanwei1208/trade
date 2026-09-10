@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from trade_py.intelligence.clients.base import (
-    SentimentResult, content_hash, parse_result,
-    SYSTEM_PROMPT, USER_TEMPLATE,
-)
 from trade_py.intelligence.clients.anthropic import AnthropicClient
+from trade_py.intelligence.clients.base import (
+    SYSTEM_PROMPT,
+    USER_TEMPLATE,
+    SentimentResult,
+    content_hash,
+    parse_result,
+)
 from trade_py.intelligence.clients.ollama import OllamaClient
 
 __all__ = [

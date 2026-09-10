@@ -1,0 +1,122 @@
+# 美股每日哨兵 — dagu DAG
+# 依赖结构:
+#     us-kline-sync ────────────────┐
+#     edgar-8k ─────────────────────┤
+#     edgar-form4 ──────────────────┼──▶ sentinel-report
+#     ollama-start ──▶ us-news ─────┘
+#
+# 注意:dagu 对**省略** depends 的 step 是串行执行(默认依赖上一个 step),
+# 不是并行。要真正并行必须显式写 depends: []。
+#
+#     handlerOn.exit ──▶ ollama-stop   (无论成功/失败/取消都执行)
+#
+# 输入层彼此独立、并行跑;报告等它们全部落盘后渲染。
+# 安装:见 deployment/cron/README.md
+name: us-daily
+description: "美股哨兵:K线 + EDGAR(8-K/Form 4) + 英文新闻 → 晨报"
+
+# 美股 16:00 ET 收盘 = 日本时间次日 05:00/06:00(夏令时切换)。
+# 06:30 JST 起跑,收盘后半小时,数据已就绪,你起床就能看。
+# 周二到周六:对应美股的周一到周五。
+schedule: "30 6 * * 2-6"
+
+maxActiveRuns: 1
+
+env:
+  - PROJ: /home/peng/PROGRAM/GitHub/trade
+  # 美股交易日 = 昨天(日本时间已跨日)
+  - USDATE: "`date -d yesterday +%Y-%m-%d`"
+  # 与 DB 配置 sentiment.llm_model 保持一致
+  - OLLAMA_MODEL: qwen2.5:14b-instruct
+  - OLLAMA_URL: http://127.0.0.1:11434
+  # dagu 的 ssh2 executor 会分配 PTY,isatty() 因此为真,tqdm 会把每一帧
+  # 都写成一行日志。下面用命令内联的方式关掉进度条(不依赖 env 经 ssh 传递)。
+  - NOBAR: TRADE_NO_PROGRESS=1
+
+steps:
+  # ── 输入层(并行)───────────────────────────────────────────
+  - name: us-kline-sync
+    continueOn:
+      failure: true
+      markSuccess: false
+    depends: []
+    executor:
+      type: ssh2
+      config:
+        host: server
+    command: cd $PROJ && $NOBAR ./trade py data kline sync --mode incremental --provider yfinance --symbols-file config/us_universe.txt
+
+  - name: edgar-8k
+    continueOn:
+      failure: true
+      markSuccess: false
+    depends: []
+    executor:
+      type: ssh2
+      config:
+        host: server
+    command: cd $PROJ && ./trade py data edgar sync --start $USDATE
+
+  - name: edgar-form4
+    continueOn:
+      failure: true
+      markSuccess: false
+    depends: []
+    executor:
+      type: ssh2
+      config:
+        host: server
+    command: cd $PROJ && ./trade py data edgar form4 --start $USDATE --universe-file config/us_universe.txt
+
+  # ── LLM 生命周期:开机 → 就绪 → 预热 ────────────────────────
+  # 预热是必须的:冷启动要把 14B 模型载入显存,实测第一次调用耗时 163 秒,
+  # 而 OllamaClient 的单次超时是 60 秒 —— 不预热的话前几篇文章必然超时重试。
+  - name: ollama-start
+    depends: []
+    executor:
+      type: ssh2
+      config:
+        host: server
+    command: |
+        ollama run $OLLAMA_MODEL ""
+
+  - name: us-news
+    continueOn:
+      failure: true
+      markSuccess: false
+    executor:
+      type: ssh2
+      config:
+        host: server
+    command: cd $PROJ && $NOBAR ./trade py data sentiment --rss-feeds catalog:us_public --market us
+    depends:
+      - ollama-start
+
+  # ── 报告层(等四条输入腿全部完成)────────────────────────────
+  - name: sentinel-report
+    executor:
+      type: ssh2
+      config:
+        host: server
+    command: cd $PROJ && ./trade py show us-sentinel --date $USDATE
+    depends:
+      - us-kline-sync
+      - edgar-8k
+      - edgar-form4
+      - us-news
+
+# us-news 失败、DAG 被取消、或 ollama-start 自己失败时,都必须把服务关掉,
+# 否则 14B 模型会一直占着显存到下一次运行。exit handler 是唯一保证执行的钩子。
+handlerOn:
+  exit:
+    executor:
+      type: ssh2
+      config:
+        host: server
+    # 多行 + 末尾 exit 0:dagu 会在脚本首行塞一个带点号的环境变量赋值
+    # (DAGU_CONTINUE_ON.us-kline-sync=false),zsh 把它当命令、报 127。
+    # 真正的卸载放在后面的行,exit 0 保证这个 handler 不把整个 DAG 标成失败。
+    command: |
+      /usr/local/bin/ollama stop $OLLAMA_MODEL || true
+      exit 0
+

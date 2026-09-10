@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from trade_py.intelligence.clients.base import BaseLLMClient, SYSTEM_PROMPT
+from trade_py.intelligence.clients.base import BaseLLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +20,12 @@ class OllamaClient(BaseLLMClient):
 
     @classmethod
     def factory_fields(cls) -> set[str]:
-        return {"model", "base_url"}
+        return {"model", "base_url", "market"}
 
-    def __init__(self, model: Optional[str] = None,
-                 base_url: Optional[str] = None) -> None:
-        super().__init__()
+    def __init__(self, model: str | None = None,
+                 base_url: str | None = None,
+                 market: str | None = None) -> None:
+        super().__init__(market=market)
         self.model = model or os.environ.get("OLLAMA_MODEL", self.MODEL)
         self.base_url = (base_url or os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
         logger.info("OllamaClient model=%s base_url=%s", self.model, self.base_url)
@@ -58,7 +58,7 @@ class OllamaClient(BaseLLMClient):
     def _call_llm(self, prompt: str) -> tuple[str, int, int]:
         payload = {
             "model": self.model,
-            "prompt": f"{SYSTEM_PROMPT}\n\n{prompt}",
+            "prompt": f"{self.system_prompt}\n\n{prompt}",
             "stream": False,
             "format": "json",
         }

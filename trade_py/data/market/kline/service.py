@@ -14,6 +14,7 @@ from trade_py.data.market.kline.akshare import KlineFetcher
 from trade_py.data.market.kline.providers import build_provider_chain, ensure_symbol
 from trade_py.data.market.kline.tushare import TushareKlineProvider
 from trade_py.db.instruments_db import InstrumentsDB
+from trade_py.utils.progress import progress_disabled
 
 logger = logging.getLogger(__name__)
 
@@ -595,7 +596,8 @@ class KlineSyncService:
             _do_sync()
         else:
             with logging_redirect_tqdm():
-                with tqdm(total=len(symbols), unit="sym", dynamic_ncols=True, desc=_desc()) as bar:
+                with tqdm(total=len(symbols), unit="sym", dynamic_ncols=True,
+                          desc=_desc(), disable=progress_disabled()) as bar:
                     _do_sync(bar)
 
         return SyncSummary(

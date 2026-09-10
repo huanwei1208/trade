@@ -243,6 +243,17 @@ def _resolve_default_symbols(data_root: str, raw_symbols: str | None, *, top: in
     return [str(row.get("symbol") or "").strip().upper() for row in rows if str(row.get("symbol") or "").strip()]
 
 
+def _read_symbols_file(path: str | Path) -> list[str]:
+    """One symbol per line; blank lines and # comments ignored."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    return [
+        line.strip() for line in p.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
 def _read_records_file(path: str | Path) -> list[dict]:
     p = Path(path)
     if not p.exists():
@@ -385,6 +396,7 @@ def make_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--data-root", default=str(default_data_root()))
     p_sync.add_argument("--mode", choices=["incremental", "range", "full"], default=d("mode", "range"))
     p_sync.add_argument("--symbols", default=None, help="Comma-separated symbols. Empty means all instruments.")
+    p_sync.add_argument("--symbols-file", default=None, help="File with one symbol per line (ignored if --symbols given)")
     p_sync.add_argument("--start", default=None)
     p_sync.add_argument("--end", default=None)
     p_sync.add_argument("--adjust", choices=["hfq", "qfq", "none"], default=d("adjust", "none"))
@@ -1780,7 +1792,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.tickers:
                 tickers = args.tickers.split(",")
             else:
-                tickers = Path(args.universe_file).read_text().split()
+                tickers = _read_symbols_file(args.universe_file)
             result = sync_form4(args.data_root, start, end, tickers=tickers,
                                 overwrite=args.overwrite)
         print(json.dumps({"ok": True, **result.to_dict()}, ensure_ascii=False))
@@ -2446,6 +2458,8 @@ def main(argv: list[str] | None = None) -> int:
                 symbols = None
                 if args.symbols:
                     symbols = [s.strip() for s in str(args.symbols).split(",") if s.strip()]
+                elif args.symbols_file:
+                    symbols = _read_symbols_file(args.symbols_file)
                 defaults = _kline_defaults()
                 start = _resolve_kline_start(args.data_root, args.start, defaults.get("start"))
                 opts = KlineSyncOptions(

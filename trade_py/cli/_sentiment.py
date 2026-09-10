@@ -377,6 +377,8 @@ def _build_parser(argv: list[str]) -> tuple[argparse.Namespace, bool]:
     parser.add_argument("--llm-provider", default=d("llm_provider", "anthropic"),
                         choices=["anthropic", "ollama"])
     parser.add_argument("--llm-model", default=d("llm_model", None))
+    parser.add_argument("--market", choices=["cn", "us", "crypto"], default=d("market", None),
+                        help="按市场裁剪事件类型与提示语；默认沿用历史全量分类")
     parser.add_argument("--ollama-base-url", default=d("ollama_base_url", None))
     parser.add_argument("--no-rss-prefetch", action="store_true",
                         default=d("no_rss_prefetch", False))
@@ -628,6 +630,7 @@ def _run_pipeline_loop(args, dates: list[date],
                 provider=args.llm_provider,
                 api_key=args.api_key if args.llm_provider == "anthropic" else None,
                 model=args.llm_model or None,
+                market=getattr(args, "market", None),
                 **({"base_url": ollama_base_url} if args.llm_provider == "ollama" else {}),
             )
         except (ValueError, ImportError) as e:

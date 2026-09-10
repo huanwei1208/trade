@@ -70,6 +70,26 @@ ITEM_8K_LABELS = {
 }
 
 
+# 8-K item code -> EventType value, so a filing and a news article about the
+# same thing carry the same label. Items with no clean equivalent (7.01 Reg FD,
+# 8.01 "other", 9.01 exhibits) are deliberately absent: the SEC code already
+# says they are unclassified, and inventing a label would be worse than none.
+ITEM_8K_EVENT_TYPES = {
+    "1.01": "merger_acquisition",
+    "1.02": "merger_acquisition",
+    "1.03": "bankruptcy",
+    "2.01": "merger_acquisition",
+    "2.02": "earnings_beat",   # direction comes from the numbers, not the code
+    "2.05": "layoffs",
+    "2.06": "restatement",
+    "3.01": "listing_deficiency",
+    "4.01": "auditor_change",
+    "4.02": "restatement",
+    "5.01": "merger_acquisition",
+    "5.02": "officer_change",
+}
+
+
 @contextmanager
 def _socket_timeout(seconds: float):
     prev = socket.getdefaulttimeout()

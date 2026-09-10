@@ -93,6 +93,16 @@ def make_parser() -> argparse.ArgumentParser:
         p.add_argument("--data-root", default=_DATA_ROOT)
         p.add_argument("--json", dest="as_json", action="store_true", help="JSON 输出")
 
+    p_us = sub.add_parser(
+        "us-sentinel", description="美股哨兵晨报：昨夜 8-K / 内部人交易 / 价格异动",
+        epilog="trade show us-sentinel --date 2026-08-25 --watchlist AAPL,NVDA",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p_us.add_argument("--date", default=None, help="YYYY-MM-DD，默认最近一个有数据的日期")
+    p_us.add_argument("--watchlist", default=None,
+                      help="逗号分隔自选股；默认读 watchlist 表中的美股")
+    p_us.add_argument("--data-root", default=_DATA_ROOT)
+    p_us.add_argument("--json", dest="as_json", action="store_true", help="JSON 输出")
+
     p_q = sub.add_parser("quality", description="QualityReport 历史",
                          epilog="trade show quality -n 10",
                          formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -235,6 +245,46 @@ def _cmd_dev_dump(args: argparse.Namespace) -> int:
     return dev_cli.main(dev_argv)
 
 
+def _latest_bronze_day(data_root: str) -> "date | None":
+    """Most recent day with EDGAR Bronze data on disk."""
+    from trade_py.data.pipeline.paths import bronze_root
+
+    days = sorted(
+        p.stem for source in ("edgar", "edgar_form4")
+        for p in (bronze_root(data_root) / source).glob("*/*/*.parquet")
+    )
+    return date.fromisoformat(days[-1]) if days else None
+
+
+def _cmd_us_sentinel(args) -> int:
+    from trade_py.reports.us_sentinel import build_report, render_text
+    from trade_py.utils.market_symbols import detect_market
+
+    day = date.fromisoformat(args.date) if args.date else _latest_bronze_day(args.data_root)
+    if day is None:
+        print("没有找到任何 EDGAR Bronze 数据；先跑 trade data edgar sync", file=sys.stderr)
+        return 1
+
+    if args.watchlist is not None:
+        watch = args.watchlist.split(",")
+    else:
+        from trade_py.db.trade_db import TradeDB
+        db = TradeDB(args.data_root)
+        try:
+            rows = db.conn.execute(
+                "select symbol from watchlist where active = 1").fetchall()
+        finally:
+            db.close()
+        watch = [r[0] for r in rows if detect_market(r[0]) == "us"]
+
+    rep = build_report(args.data_root, day, watch)
+    if args.as_json:
+        print(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2, default=str))
+    else:
+        print(render_text(rep))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv or [])
 
@@ -248,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_backups(args)
     if args.command in ("belief", "attention", "evidence", "rec", "quality"):
         return _cmd_dev_dump(args)
+    if args.command == "us-sentinel":
+        return _cmd_us_sentinel(args)
 
     from trade_py.db.trade_db import TradeDB
     db = TradeDB(args.data_root)

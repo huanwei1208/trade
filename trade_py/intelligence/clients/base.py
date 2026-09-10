@@ -6,15 +6,23 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass
 
-from trade_py.db.event_db import EventType
+from trade_py.db.event_db import EventType, event_types_for_market
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """你是专业的A股市场金融情感分析助手。
 分析新闻文本，提取结构化的情感和事件信息，只返回JSON，不要其他内容。"""
+
+# US news is English, but the summary stays Chinese: the reader is the same
+# person. Only the framing sentence changes, because a prompt that says
+# "A-share news" over a Nasdaq headline is simply wrong.
+SYSTEM_PROMPT_US = """你是专业的美股市场金融情感分析助手。
+分析新闻文本，提取结构化的情感和事件信息，只返回JSON，不要其他内容。"""
+
+SYSTEM_PROMPT_BY_MARKET = {"us": SYSTEM_PROMPT_US}
+MARKET_LABELS = {"us": "美股市场", "cn": "A股市场", "crypto": "加密货币市场"}
 
 _EVENT_TYPE_OPTIONS = [e.value for e in EventType]
 
@@ -27,7 +35,7 @@ def _extract_json(raw: str) -> str:
         return raw[start:end + 1]
     return raw
 
-USER_TEMPLATE = """分析以下A股市场新闻：
+USER_TEMPLATE = """分析以下{market_label}新闻：
 
 标题：{title}
 内容：{text}
@@ -79,7 +87,7 @@ class SentimentResult:
 
 def content_hash(title: str, text: str) -> str:
     """SHA-256 dedup key for an article."""
-    return hashlib.sha256(f"{title}\n{text}".encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(f"{title}\n{text}".encode()).hexdigest()[:16]
 
 
 def parse_result(data: dict, model: str,
@@ -129,8 +137,15 @@ class BaseLLMClient:
     RATE_LIMIT_DELAY = 0.5
     MAX_RETRIES = 3
 
-    def __init__(self) -> None:
+    def __init__(self, market: str | None = None) -> None:
         self._last_call = 0.0
+        # market=None keeps the historical behaviour exactly: A-share framing
+        # and the full taxonomy. Only callers that opt in get a scoped prompt.
+        self.market = market
+        self.system_prompt = SYSTEM_PROMPT_BY_MARKET.get(market or "", SYSTEM_PROMPT)
+        self.market_label = MARKET_LABELS.get(market or "", "A股市场")
+        self.event_type_options = (event_types_for_market(market) if market
+                                   else _EVENT_TYPE_OPTIONS)
 
     @classmethod
     def factory_fields(cls) -> set[str]:
@@ -159,9 +174,10 @@ class BaseLLMClient:
     def analyze(self, title: str, text: str, max_text_chars: int = 800) -> SentimentResult:
         truncated = text[:max_text_chars] if len(text) > max_text_chars else text
         prompt = USER_TEMPLATE.format(
+            market_label=self.market_label,
             title=title,
             text=truncated,
-            event_types=json.dumps(_EVENT_TYPE_OPTIONS, ensure_ascii=False),
+            event_types=json.dumps(self.event_type_options, ensure_ascii=False),
         )
         elapsed = time.time() - self._last_call
         if elapsed < self.RATE_LIMIT_DELAY:
