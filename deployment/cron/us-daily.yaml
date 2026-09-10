@@ -26,6 +26,9 @@ env:
   # 与 DB 配置 sentiment.llm_model 保持一致
   - OLLAMA_MODEL: qwen2.5:14b-instruct
   - OLLAMA_URL: http://127.0.0.1:11434
+  # dagu 的 ssh2 executor 会分配 PTY,isatty() 因此为真,tqdm 会把每一帧
+  # 都写成一行日志。下面用命令内联的方式关掉进度条(不依赖 env 经 ssh 传递)。
+  - NOBAR: TRADE_NO_PROGRESS=1
 
 steps:
   # ── 输入层(并行)───────────────────────────────────────────
@@ -34,7 +37,7 @@ steps:
       type: ssh2
       config:
         host: server
-    command: cd $PROJ && ./trade py data kline sync --mode incremental --provider yfinance --symbols-file config/us_universe.txt
+    command: cd $PROJ && $NOBAR ./trade py data kline sync --mode incremental --provider yfinance --symbols-file config/us_universe.txt
 
   - name: edgar-8k
     executor:
@@ -59,23 +62,14 @@ steps:
       config:
         host: server
     command: |
-      sudo systemctl start ollama
-      for i in $(seq 1 30); do
-        curl -sf $OLLAMA_URL/api/tags >/dev/null && break
-        sleep 2
-      done
-      curl -sf $OLLAMA_URL/api/tags >/dev/null || { echo "ollama 未就绪"; exit 1; }
-      curl -sf $OLLAMA_URL/api/generate --max-time 300 \
-        -d "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"hi\",\"stream\":false}" >/dev/null \
-        || { echo "模型 $OLLAMA_MODEL 预热失败"; exit 1; }
-      echo "ollama 就绪,$OLLAMA_MODEL 已载入显存"
+        ollama run $OLLAMA_MODEL ""
 
   - name: us-news
     executor:
       type: ssh2
       config:
         host: server
-    command: cd $PROJ && ./trade py data sentiment --rss-feeds catalog:us_public --market us
+    command: cd $PROJ && $NOBAR ./trade py data sentiment --rss-feeds catalog:us_public --market us
     depends:
       - ollama-start
 
@@ -100,4 +94,5 @@ handlerOn:
       type: ssh2
       config:
         host: server
-    command: sudo systemctl stop ollama && echo "ollama 已停止"
+    command: ollama stop $OLLAMA_MODEL
+

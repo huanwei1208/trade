@@ -41,13 +41,13 @@ def _fake_yahoo_frame() -> pd.DataFrame:
 
 
 def test_normalize_flattens_yahoo_multiindex() -> None:
-    df = YfinanceKlineProvider._normalize(_fake_yahoo_frame())
+    df = YfinanceKlineProvider._normalize(_fake_yahoo_frame(), "2026-01-01", "2026-01-31")
     assert list(df.columns) == ["date", "open", "high", "low", "close", "volume"]
     assert len(df) == 2
 
 
 def test_finalize_us_volume_stays_in_shares() -> None:
-    df = YfinanceKlineProvider._normalize(_fake_yahoo_frame())
+    df = YfinanceKlineProvider._normalize(_fake_yahoo_frame(), "2026-01-01", "2026-01-31")
     out = _finalize_frame("AAPL", df)
     assert out["symbol"].iloc[0] == "AAPL"
     assert out["volume"].iloc[0] == 1_000_000
@@ -73,3 +73,64 @@ def test_finalize_cn_volume_still_means_lots() -> None:
 def test_chain_registration() -> None:
     chain = build_provider_chain("yfinance")
     assert [p.name for p in chain._providers] == ["yfinance"]
+
+
+def _yahoo_frame(dates: list[str]) -> pd.DataFrame:
+    idx = pd.MultiIndex.from_product(
+        [["Open", "High", "Low", "Close", "Volume"], ["AAPL"]],
+        names=["Price", "Ticker"],
+    )
+    return pd.DataFrame(
+        [[100.0, 105.0, 99.0, 104.0, 1_000_000]] * len(dates),
+        index=pd.DatetimeIndex(dates, name="Date"),
+        columns=idx,
+    )
+
+
+def test_end_is_passed_to_yahoo_as_exclusive(monkeypatch) -> None:
+    """Project convention is an inclusive end; yfinance's is exclusive."""
+    seen: dict[str, str] = {}
+
+    def fake_fetch(yf, ticker, start, end, adjust):
+        seen.update(ticker=ticker, start=start, end=end)
+        return _yahoo_frame(["2026-09-02", "2026-09-03", "2026-09-04"])
+
+    monkeypatch.setattr(YfinanceKlineProvider, "_fetch_raw", staticmethod(fake_fetch))
+    out = YfinanceKlineProvider().fetch("AAPL", "2026-09-02", "2026-09-04")
+    assert seen["end"] == "2026-09-05"          # one day past the request
+    assert list(out["date"]) == ["2026-09-02", "2026-09-03", "2026-09-04"]
+
+
+def test_rows_outside_the_window_are_clipped(monkeypatch) -> None:
+    """Yahoo answers an empty window with the last bar before it."""
+    monkeypatch.setattr(
+        YfinanceKlineProvider, "_fetch_raw",
+        staticmethod(lambda *a, **k: _yahoo_frame(["2026-09-09"])))
+    out = YfinanceKlineProvider().fetch("AAPL", "2026-09-10", "2026-09-10")
+    assert out.empty
+
+
+def test_dotted_ticker_is_translated_for_yahoo(monkeypatch) -> None:
+    seen: dict[str, str] = {}
+
+    def fake_fetch(yf, ticker, start, end, adjust):
+        seen["ticker"] = ticker
+        return _yahoo_frame(["2026-09-02"])
+
+    monkeypatch.setattr(YfinanceKlineProvider, "_fetch_raw", staticmethod(fake_fetch))
+    YfinanceKlineProvider().fetch("BRK.B", "2026-09-02", "2026-09-02")
+    assert seen["ticker"] == "BRK-B"
+
+
+def test_progress_disabled_respects_env(monkeypatch) -> None:
+    from trade_py.utils.progress import progress_disabled
+
+    # dagu's ssh2 executor allocates a PTY, so isatty() alone would say "show
+    # the bar" for a scheduled run whose output goes to a log file.
+    monkeypatch.setattr("sys.stderr", type("F", (), {"isatty": lambda self: True})())
+    monkeypatch.delenv("TRADE_NO_PROGRESS", raising=False)
+    assert progress_disabled() is False
+    monkeypatch.setenv("TRADE_NO_PROGRESS", "1")
+    assert progress_disabled() is True
+    monkeypatch.setenv("TRADE_NO_PROGRESS", "0")
+    assert progress_disabled() is False
