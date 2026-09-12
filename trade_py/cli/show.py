@@ -245,7 +245,7 @@ def _cmd_dev_dump(args: argparse.Namespace) -> int:
     return dev_cli.main(dev_argv)
 
 
-def _latest_bronze_day(data_root: str) -> "date | None":
+def _latest_bronze_day(data_root: str) -> date | None:
     """Most recent day with EDGAR Bronze data on disk."""
     from trade_py.data.pipeline.paths import bronze_root
 
@@ -271,11 +271,10 @@ def _cmd_us_sentinel(args) -> int:
         from trade_py.db.trade_db import TradeDB
         db = TradeDB(args.data_root)
         try:
-            rows = db.conn.execute(
-                "select symbol from watchlist where active = 1").fetchall()
+            symbols = db.watchlist_get()
         finally:
             db.close()
-        watch = [r[0] for r in rows if detect_market(r[0]) == "us"]
+        watch = [s for s in symbols if detect_market(s) == "us"]
 
     rep = build_report(args.data_root, day, watch)
     if args.as_json:
