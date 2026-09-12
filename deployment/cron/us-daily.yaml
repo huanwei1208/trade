@@ -4,6 +4,7 @@
 #     edgar-8k ─────────────────────┤
 #     edgar-form4 ──────────────────┼──▶ sentinel-report
 #     ollama-start ──▶ us-news ─────┘
+#                                        └──▶ sentinel-mail
 #
 # 注意:dagu 对**省略** depends 的 step 是串行执行(默认依赖上一个 step),
 # 不是并行。要真正并行必须显式写 depends: []。
@@ -100,12 +101,36 @@ steps:
       type: ssh2
       config:
         host: server
-    command: cd $PROJ && ./trade py show us-sentinel --date $USDATE
+    command: cd $PROJ && ./trade py show us-sentinel --date $USDATE --out data/reports/us-sentinel/
+    # stdout 就是报告正文，捕获成变量给下一步当邮件正文用。
+    # CLI 把“已存档到…”写在 stderr，所以这个变量里不会混进杂物。
+    output: SENTINEL_REPORT
     depends:
       - us-kline-sync
       - edgar-8k
       - edgar-form4
       - us-news
+
+  # ── 投递层 ────────────────────────────────────────────────────
+  # dagu 容器只挂了 ~/DATA/dagu，看不到 $PROJ 里的报告文件，所以不能用
+  # attachments，正文只能靠上一步的 output 变量传进来。
+  #
+  # 收件地址不写在这里：本仓库是公开的。两个地址从 dagu 的 base.yaml
+  # 注入（那个文件不在仓库里），配法见 deployment/cron/README.md。
+  # 没配时变量为空、这一步失败，但 continueOn 保证报告本身照常产出。
+  - name: sentinel-mail
+    executor:
+      type: mail
+      config:
+        from: ${SENTINEL_MAIL_FROM}
+        to: ${SENTINEL_MAIL_TO}
+        subject: "[美股哨兵] ${USDATE}"
+        message: ${SENTINEL_REPORT}
+    continueOn:
+      failure: true
+      markSuccess: false
+    depends:
+      - sentinel-report
 
 # us-news 失败、DAG 被取消、或 ollama-start 自己失败时,都必须把服务关掉,
 # 否则 14B 模型会一直占着显存到下一次运行。exit handler 是唯一保证执行的钩子。

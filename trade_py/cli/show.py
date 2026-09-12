@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 from trade_py.cli import epilog_from_subparsers, global_flag_parent
 from trade_py.infra.settings import default_data_root
@@ -102,6 +103,8 @@ def make_parser() -> argparse.ArgumentParser:
                       help="逗号分隔自选股；默认读 watchlist 表中的美股")
     p_us.add_argument("--data-root", default=_DATA_ROOT)
     p_us.add_argument("--json", dest="as_json", action="store_true", help="JSON 输出")
+    p_us.add_argument("--out", default=None, metavar="PATH",
+                      help="同时存档到 PATH；以 / 结尾或已存在的目录则写入 <日期>.txt")
 
     p_q = sub.add_parser("quality", description="QualityReport 历史",
                          epilog="trade show quality -n 10",
@@ -256,6 +259,15 @@ def _latest_bronze_day(data_root: str) -> date | None:
     return date.fromisoformat(days[-1]) if days else None
 
 
+def _resolve_out_path(out: str, day: date, as_json: bool) -> Path:
+    """A directory target gets ``<day>.txt`` inside it, so the name always
+    matches the day actually reported even when ``--date`` was omitted."""
+    path = Path(out)
+    if out.endswith("/") or path.is_dir():
+        return path / f"{day.isoformat()}.{'json' if as_json else 'txt'}"
+    return path
+
+
 def _cmd_us_sentinel(args) -> int:
     from trade_py.reports.us_sentinel import build_report, render_text
     from trade_py.utils.market_symbols import detect_market
@@ -277,10 +289,15 @@ def _cmd_us_sentinel(args) -> int:
         watch = [s for s in symbols if detect_market(s) == "us"]
 
     rep = build_report(args.data_root, day, watch)
-    if args.as_json:
-        print(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2, default=str))
-    else:
-        print(render_text(rep))
+    payload = (json.dumps(rep.to_dict(), ensure_ascii=False, indent=2, default=str)
+               if args.as_json else render_text(rep))
+    print(payload)
+    if args.out:
+        path = _resolve_out_path(args.out, day, args.as_json)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload + "\n", encoding="utf-8")
+        # stdout 要保持只有报告正文：dagu 把它捕获成变量直接当邮件正文。
+        print(f"报告已存档到 {path}", file=sys.stderr)
     return 0
 
 

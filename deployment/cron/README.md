@@ -16,7 +16,7 @@ make deploy        # 两个都部署
 make deploy-us     # 只部署美股
 ```
 
-## 美股 DAG 的两个前置条件
+## 美股 DAG 的三个前置条件
 
 **1. SEC 身份标识**(缺失则 EDGAR 步骤直接拒绝运行)
 
@@ -58,12 +58,57 @@ sudo systemctl disable ollama
 注意:这个 DAG 会无条件关闭 ollama。如果你有其它程序也在用它,
 `handlerOn.exit` 会把它们一起断掉。
 
+**3. 晨报的收件地址**(缺失则只有存档、没有邮件)
+
+报告会走两条出口:
+
+- **存档**:`data/reports/us-sentinel/<日期>.txt`,落在项目里,`data/` 已被
+  git 忽略,不会进仓库。
+- **邮件**:`sentinel-mail` 这步把报告正文发到你的邮箱。
+
+发信凭据用的是 dagu 自己的 `smtp:` 配置(和失败告警同一套,已经配好)。
+但**收发地址不能写在本仓库里——它是公开的**,所以由 dagu 的 `base.yaml`
+注入。在 `~/etc/docker/dagu/base.yaml` 里加:
+
+```yaml
+env:
+  - SENTINEL_MAIL_FROM: 你的发信地址
+  - SENTINEL_MAIL_TO: 你的收件地址
+```
+
+这两个变量没配时,`sentinel-mail` 会失败,但它带了
+`continueOn: failure`,报告存档和整个 DAG 的状态都不受影响。
+
+想在下一次定时运行之前先验证发信是否通,可以拿一个隔离的 dagu home 试发一封,
+不影响正式的 dags 目录:
+
+```bash
+docker exec dagu sh -c 'mkdir -p /tmp/mt && cat > /tmp/mt/t.yaml <<EOF
+steps:
+  - name: send
+    executor:
+      type: mail
+      config:
+        from: ${SENTINEL_MAIL_FROM}
+        to: ${SENTINEL_MAIL_TO}
+        subject: "[测试] 哨兵投递链路"
+        message: "如果你收到这封,链路就是通的。"
+EOF
+dagu start --dagu-home /tmp/mt --base /var/lib/dagu/base.yaml /tmp/mt/t.yaml; rm -rf /tmp/mt'
+```
+
 ## 手动跑一次
 
 ```bash
 ./trade py data edgar sync   --start 2026-08-25
 ./trade py data edgar form4  --start 2026-08-25 --universe-file config/us_universe.txt
 ./trade py show us-sentinel  --date  2026-08-25
+```
+
+加 `--out` 就同时存档;路径以 `/` 结尾时文件名自动用报告日期:
+
+```bash
+./trade py show us-sentinel --date 2026-08-25 --out data/reports/us-sentinel/
 ```
 
 ## 附:被 dagu 取代的旧 crontab
