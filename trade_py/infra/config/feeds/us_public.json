@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated_at": "2026-08-28",
-  "notes": "US equity news feeds (phase 1c of docs/美股路线计划.md). Every URL verified reachable and parseable from the deployment host on 2026-08-28. GlobeNewswire omitted: blocked from this host.",
+  "updated_at": "2026-09-10",
+  "notes": "US equity news feeds (phase 1c of docs/美股路线计划.md). Every URL verified reachable and parseable from the deployment host. Two exclusions, both because a `catalog:us_public` selector fetches every feed listed here regardless of status, so an unusable entry costs real time each run: GlobeNewswire is blocked from this host, and NasdaqMarkets refuses the project's trade-bot/1.0 User-Agent (instant refusal, then a 20s urlopen stall x3 retries = ~65s wasted per run) -- curl with a browser UA gets 200 in ~3s, so bringing it back needs per-feed User-Agent support rather than changing the shared UA for every catalog.",
   "feeds": [
     {
       "name": "MarketWatchTop",
@@ -116,25 +116,6 @@
       "lane": "realtime",
       "fetch_window_policy": "recent_only",
       "notes": "Company press releases (financial vertical) — primary source, unedited."
-    },
-    {
-      "name": "NasdaqMarkets",
-      "url": "https://www.nasdaq.com/feed/rssoutbound?category=Markets",
-      "category": "market",
-      "region": "US",
-      "language": "en",
-      "provider_kind": "exchange",
-      "officialness": 4.0,
-      "authority": 3.5,
-      "quality": 3.0,
-      "coverage": 3.5,
-      "value": 3.0,
-      "credibility_weight": 0.8,
-      "status": "active",
-      "enabled_default": true,
-      "lane": "realtime",
-      "fetch_window_policy": "recent_only",
-      "notes": "Nasdaq exchange market news."
     },
     {
       "name": "SeekingAlphaCurrents",

@@ -110,3 +110,65 @@ def test_symbols_file_skips_comments_and_blanks(tmp_path) -> None:
     f = tmp_path / "universe.txt"
     f.write_text("# header comment\n\nAAPL\n  MSFT  \n# trailing note\nBRK-B\n")
     assert _read_symbols_file(f) == ["AAPL", "MSFT", "BRK-B"]
+
+
+def test_cli_default_watchlist_reads_from_db(tmp_path, capsys) -> None:
+    """The no --watchlist path was never exercised; it crashed on db.conn."""
+    from trade_py.cli import show
+    from trade_py.db.trade_db import TradeDB
+
+    db = TradeDB(str(tmp_path))
+    db.watchlist_add("AMZN")
+    db.watchlist_add("600000.SH")      # A-share row must be ignored here
+    db.close()
+    _write(tmp_path, "edgar", [_filing("AMZN", ["2.02"])])
+
+    assert show.main(["us-sentinel", "--date", DAY.isoformat(),
+                      "--data-root", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "自选股 (1 只)" in out and "*AMZN" in out
+
+
+def test_cli_out_directory_names_the_file_after_the_report_day(tmp_path) -> None:
+    """The DAG passes a directory so the name always matches the day reported,
+    even on the --date-less path where the day is auto-detected."""
+    from trade_py.cli import show
+
+    _write(tmp_path, "edgar", [_filing("AMZN", ["2.02"])])
+    out_dir = tmp_path / "reports" / "us-sentinel"      # deliberately absent
+
+    assert show.main(["us-sentinel", "--data-root", str(tmp_path),
+                      "--watchlist", "AMZN",
+                      "--out", f"{out_dir}/"]) == 0
+
+    saved = out_dir / f"{DAY.isoformat()}.txt"
+    assert saved.read_text(encoding="utf-8").startswith("美股哨兵")
+
+
+def test_cli_out_keeps_stdout_free_of_the_archive_notice(tmp_path, capsys) -> None:
+    """dagu captures stdout verbatim as the mail body, so the notice about the
+    archive must go to stderr or it would land in the email."""
+    from trade_py.cli import show
+
+    _write(tmp_path, "edgar", [_filing("AMZN", ["2.02"])])
+    target = tmp_path / "one.txt"
+    show.main(["us-sentinel", "--data-root", str(tmp_path),
+               "--watchlist", "AMZN", "--out", str(target)])
+
+    captured = capsys.readouterr()
+    assert "已存档" in captured.err
+    assert "已存档" not in captured.out
+    # stdout and the archived file must carry the same report.
+    assert captured.out.strip() == target.read_text(encoding="utf-8").strip()
+
+
+def test_cli_out_json_switches_the_extension(tmp_path) -> None:
+    from trade_py.cli import show
+
+    _write(tmp_path, "edgar", [_filing("AMZN", ["2.02"])])
+    out_dir = tmp_path / "j"
+    show.main(["us-sentinel", "--data-root", str(tmp_path), "--json",
+               "--watchlist", "AMZN", "--out", f"{out_dir}/"])
+
+    saved = out_dir / f"{DAY.isoformat()}.json"
+    assert json.loads(saved.read_text(encoding="utf-8"))["day"] == DAY.isoformat()

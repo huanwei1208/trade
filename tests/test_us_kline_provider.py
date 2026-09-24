@@ -8,6 +8,7 @@ import pytest
 from trade_py.data.market.kline.providers import (
     YfinanceKlineProvider,
     _finalize_frame,
+    _validate_ohlc_frame,
     build_provider_chain,
 )
 from trade_py.utils.market_symbols import detect_market
@@ -134,3 +135,55 @@ def test_progress_disabled_respects_env(monkeypatch) -> None:
     assert progress_disabled() is True
     monkeypatch.setenv("TRADE_NO_PROGRESS", "0")
     assert progress_disabled() is False
+
+
+def _bar(open_, high, low, close, date="2026-09-10") -> pd.DataFrame:
+    return pd.DataFrame([{"date": date, "open": open_, "high": high,
+                          "low": low, "close": close, "volume": 1_000}])
+
+
+def test_repairs_high_that_predates_the_opening_print() -> None:
+    """Real WSM 2026-09-10 bar as Yahoo served it ~2h after the close."""
+    fixed = YfinanceKlineProvider._repair_stale_extremes(
+        _bar(227.11000061035156, 225.64999389648438,
+             221.14500427246094, 223.74000549316406), "WSM")
+    # Yahoo itself later settled this bar at High=227.11.
+    assert fixed["high"].iloc[0] == pytest.approx(227.11, abs=1e-6)
+    _validate_ohlc_frame("WSM", fixed)          # must now pass validation
+
+
+def test_repairs_low_above_the_body() -> None:
+    fixed = YfinanceKlineProvider._repair_stale_extremes(
+        _bar(100.0, 105.0, 99.5, 99.0), "X")    # low 99.5 > close 99.0
+    assert fixed["low"].iloc[0] == pytest.approx(99.0)
+    assert fixed["high"].iloc[0] == pytest.approx(105.0)   # untouched
+
+
+def test_sound_bars_are_left_alone() -> None:
+    good = _bar(100.0, 105.0, 99.0, 104.0)
+    assert YfinanceKlineProvider._repair_stale_extremes(good, "X").equals(good)
+
+
+def test_corruption_beyond_tolerance_is_not_repaired() -> None:
+    """A hair off is a stale feed; wildly off is corruption the validator owns."""
+    corrupt = _bar(300.0, 100.0, 90.0, 95.0)
+    out = YfinanceKlineProvider._repair_stale_extremes(corrupt, "X")
+    assert out["high"].iloc[0] == 100.0          # untouched
+    with pytest.raises(ValueError, match="failed validation"):
+        _validate_ohlc_frame("X", out)
+
+
+def test_repair_runs_inside_fetch(monkeypatch) -> None:
+    raw = pd.DataFrame(
+        [[227.11000061035156, 225.64999389648438, 221.14500427246094,
+          223.74000549316406, 1_000]],
+        index=pd.DatetimeIndex(["2026-09-10"], name="Date"),
+        columns=pd.MultiIndex.from_product(
+            [["Open", "High", "Low", "Close", "Volume"], ["WSM"]],
+            names=["Price", "Ticker"]),
+    )
+    monkeypatch.setattr(YfinanceKlineProvider, "_fetch_raw",
+                        staticmethod(lambda *a, **k: raw))
+    out = YfinanceKlineProvider().fetch("WSM", "2026-09-10", "2026-09-10")
+    assert len(out) == 1
+    assert out["high"].iloc[0] == pytest.approx(227.11, abs=1e-6)

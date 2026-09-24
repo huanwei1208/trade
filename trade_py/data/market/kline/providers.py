@@ -384,6 +384,49 @@ class YfinanceKlineProvider:
                 progress=False, threads=False,
             )
 
+    # A session High is by definition at least max(Open, Close), and a Low at
+    # most min(Open, Close) -- the open and close are themselves trades. Within
+    # ~2h of the US close Yahoo publishes bars whose High/Low have not taken in
+    # the opening auction print yet, so Open lands above High by a few basis
+    # points. Those bars settle correctly a few hours later.
+    #
+    # Repairing to the tightest provable bound is not invention: the real High
+    # cannot be below max(Open, Close). Verified against Yahoo's own later
+    # revisions -- WSM 2026-09-10 arrived O=227.11 H=225.65 and settled to
+    # H=227.11, exactly what this produces.
+    #
+    # Bounded on purpose: past REPAIR_TOLERANCE the frame is not a stale feed
+    # but corrupt data, and must still be rejected by _validate_ohlc_frame.
+    REPAIR_TOLERANCE = 0.02
+
+    @classmethod
+    def _repair_stale_extremes(cls, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        if df.empty:
+            return df
+        out = df.copy()
+        body_hi = out[["open", "close"]].max(axis=1)
+        body_lo = out[["open", "close"]].min(axis=1)
+        hi_short = out["high"] < body_hi
+        lo_short = out["low"] > body_lo
+        if not (hi_short.any() or lo_short.any()):
+            return out
+        # Only bars off by a hair are stale-feed artefacts worth repairing.
+        gap = pd.concat([
+            (body_hi - out["high"]).where(hi_short, 0.0) / body_hi.abs(),
+            (out["low"] - body_lo).where(lo_short, 0.0) / body_lo.abs(),
+        ], axis=1).max(axis=1)
+        fixable = (hi_short | lo_short) & (gap <= cls.REPAIR_TOLERANCE)
+        if fixable.any():
+            logger.info(
+                "%s: repaired %d bar(s) whose High/Low predated the opening "
+                "print (max gap %.3f%%); dates=%s",
+                symbol, int(fixable.sum()), float(gap[fixable].max()) * 100,
+                list(out.loc[fixable, "date"].astype(str))[:5],
+            )
+            out.loc[fixable, "high"] = out.loc[fixable, ["high", "open", "close"]].max(axis=1)
+            out.loc[fixable, "low"] = out.loc[fixable, ["low", "open", "close"]].min(axis=1)
+        return out
+
     @staticmethod
     def _normalize(raw: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
         if raw is None or raw.empty:
@@ -414,7 +457,7 @@ class YfinanceKlineProvider:
         df = self._normalize(raw, start, end)
         if df.empty:
             return pd.DataFrame(columns=_COLUMN_ORDER)
-        return _finalize_frame(symbol, df)
+        return _finalize_frame(symbol, self._repair_stale_extremes(df, symbol))
 
 
 @dataclass
