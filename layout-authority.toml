@@ -1,0 +1,8 @@
+schema_version = 1
+rules_version = "layout-authority-v1"
+included_roots = ["src/trade", "trade_py"]
+foundation_modules = ["trade"]
+
+# A concrete authority is admitted only by a strict-approved owner layout child.
+# This parent foundation intentionally declares no migrated business modules.
+authorities = []

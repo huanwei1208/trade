@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from trade_py.devtools.quality.contributors import DesignQualityContributor
+from trade_py.devtools.quality.contributors import (
+    DesignQualityContributor,
+    LayoutAuthorityContributor,
+)
 from trade_py.devtools.quality.contributors.base import ScopeContributor
 from trade_py.devtools.quality.providers.base import QualityProvider
 from trade_py.devtools.quality.providers.cpp import CppProvider
@@ -28,7 +31,9 @@ class ProviderRegistry:
             SharedProvider(),
         )
         self._contributors = (
-            contributors if contributors is not None else (DesignQualityContributor(),)
+            contributors
+            if contributors is not None
+            else (DesignQualityContributor(), LayoutAuthorityContributor())
         )
 
     @property

@@ -2,17 +2,18 @@
 
 ### Requirement: Context imports SHALL follow the declared acyclic graph
 
-The system SHALL enforce this graph: Capture MAY depend on Kernel and Platform
-public contracts/ports; Datasets MAY depend on Kernel, Platform public
-contracts/ports and Capture contracts; Studies MAY depend on Kernel, Platform
-public contracts/ports and Datasets contracts; Decision Support MAY depend on
-Kernel, Platform public contracts/ports, Datasets contracts and Studies
-contracts; Processes MAY depend on all business contracts and Platform public
-APIs; Interfaces MAY depend on contracts, approved use-case/query handles,
-Processes and Platform public APIs; Platform SHALL NOT depend on business
-Context implementations or contracts; Bootstrap alone MAY compose concrete
-adapters, repositories, use cases, process managers and platform
-implementations.
+The system SHALL enforce this graph: Capture MAY depend on Kernel; Datasets MAY
+depend on Kernel and Capture contracts; Studies MAY depend on Kernel and
+Datasets contracts; Decision Support MAY depend on Kernel, Datasets contracts
+and Studies contracts; Processes MAY depend on all business contracts and
+Platform public APIs; Interfaces MAY depend on contracts, approved
+use-case/query handles, Processes and Platform public status/query APIs;
+Platform SHALL NOT depend on business Context implementations or contracts;
+Bootstrap alone MAY compose concrete adapters, repositories, use cases,
+process managers and Platform implementations. A business Context that needs
+persistence, event publication, execution or native computation SHALL declare
+an owner-local port. Bootstrap SHALL inject a Platform- or external-library-
+backed adapter without creating a Context-to-Platform source dependency.
 
 #### Scenario: A Study needs capture information
 
@@ -24,16 +25,17 @@ implementations.
 
 - **WHEN** a context requires persistence, events, scheduling or native
   computation
-- **THEN** it depends on its own port or a Platform public capability and does
-  not import a concrete adapter from another context
+- **THEN** it depends on its own port, Bootstrap injects the selected technical
+  adapter, and the Context imports neither Platform nor a concrete adapter from
+  another context
 
-#### Scenario: A context uses a Platform transaction capability
+#### Scenario: A context commits through an owner-local transaction port
 
 - **WHEN** a Context use case requires an outbox, read-only session, execution
   or native-compute capability
-- **THEN** it imports only the Platform's framework-free public port/DTO and
-  its own port adapter, while Platform imports no Context contract or
-  implementation and Bootstrap supplies the concrete binding
+- **THEN** it imports its own framework-free port and contract DTOs, while
+  Platform imports no Context contract or implementation and Bootstrap
+  supplies the concrete binding
 
 ### Requirement: Contracts and domain code SHALL not leak implementation types
 
@@ -49,6 +51,30 @@ import concrete adapters.
 - **THEN** architecture tests serialize and deserialize it, verify that it
   contains no forbidden implementation type and confirm that it can be consumed
   without importing the producer's domain or adapters
+
+### Requirement: Each Context cell SHALL preserve its internal dependency direction
+
+Within each business Context, `contracts` and `domain` SHALL depend only on
+Kernel. `ports` MAY depend on that Context's domain and contracts.
+`use_cases` MAY depend on its own domain, ports and contracts plus declared
+upstream Context contracts. `adapters` MAY depend on its own ports and domain
+plus external libraries. Interfaces SHALL reach a Context only through its
+contracts or explicit use-case/query handles, and Bootstrap alone SHALL bind
+concrete adapters.
+
+Domain SHALL NOT import ports, adapters or use cases. Use cases SHALL NOT
+import concrete adapters. Contracts SHALL NOT expose internal aggregate
+implementations or framework types. A child SHALL use one behavior-specific
+use-case module rather than adding a catch-all `service.py`, `manager.py`,
+`facade.py`, `utils.py` or `helpers.py`.
+
+#### Scenario: A use case needs a SQLite repository
+
+- **WHEN** a Context use case needs to load or commit its aggregate through
+  SQLite
+- **THEN** the use case depends on its owner-local repository port, the SQLite
+  adapter implements that port, Bootstrap injects the adapter, and architecture
+  tests reject a direct adapter import or concrete connection in the use case
 
 ### Requirement: Database access SHALL have one logical context owner
 

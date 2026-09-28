@@ -24,6 +24,47 @@ directory listing, an unpinned DataFrame or a provider response.
   DatasetVersion or explicit failure/quarantine result, and never mutates an
   existing version in place
 
+### Requirement: Formal Dataset references SHALL reserve their evidence closure
+
+Datasets SHALL acquire durable, finite `EvidenceClosureReservationRef` values
+before it commits a formal `DatasetVersionRef`, `DatasetSnapshotRef` or
+`DatasetRelease`, covering
+every upstream immutable reference and its transitive evidence closure.
+Datasets-owned references SHALL be
+reserved and confirmed in the same owner-local transaction; Capture-owned
+closures SHALL be pre-reserved and then confirmed through the Datasets
+transaction's replayable outbox. A committed-but-unconfirmed reservation SHALL
+remain protected and reconcile idempotently. A confirmation-deadline breach
+SHALL become `reconciliation_required` without releasing protection.
+Capture MAY release an uncommitted reservation only after an idempotent
+`ReferenceAborted` receipt binds the Datasets transaction identity and proves
+that no Dataset reference committed. No part of this protocol SHALL require a
+cross-Context transaction.
+
+#### Scenario: A DatasetVersion commit crashes before Capture confirmation
+
+- **WHEN** Datasets commits a DatasetVersion, its Capture reservation refs and
+  confirmation outbox but crashes before Capture confirms the reservations
+- **THEN** replay confirms the exact refs idempotently, the Capture closure
+  remains protected from GC, and no duplicate DatasetVersion is created
+
+#### Scenario: A Snapshot references a DatasetVersion under a deletion fence
+
+- **WHEN** Datasets attempts to reserve a DatasetVersion closure whose target
+  set is already closed by a generation-fenced GC plan
+- **THEN** exactly one side wins the target-level fence; the Snapshot is either
+  durably protected before commit or rejected with a typed reservation refusal,
+  and the target is never both referenced and deleted
+
+#### Scenario: A build crashes before its DatasetVersion transaction
+
+- **WHEN** a build acquires upstream reservations but crashes before committing
+  the DatasetVersion
+- **THEN** no formal reference becomes visible; recovery emits a
+  transaction-bound ReferenceAborted receipt before an upstream owner releases
+  that reservation, and an unknown outcome remains reconciliation-required and
+  protected without affecting other retained references
+
 ### Requirement: Datasets SHALL own quality, lineage, revisions and point-in-time resolution
 
 Datasets SHALL canonicalize schema, identity, units, timezone, event time,
@@ -40,10 +81,18 @@ knowledge-mode/effective-cut, revision/retraction-mapping,
 clock-confidence/eligibility and snapshot-content identities. A required
 missing temporal clock SHALL fail closed for formal point-in-time resolution.
 
+The formal PIT child SHALL publish one canonical clock enum and a versioned
+knowledge-mode eligibility matrix covering event, publication, available,
+received, fetched, observed, first-seen and revision clocks. It SHALL declare
+whether every source field is a distinct clock or a documented alias and SHALL
+bind timezone, precision/confidence and fallback prohibition. A clock may not
+be substituted merely because another collector clock exists.
+
 #### Scenario: A row has no required availability clock
 
 - **WHEN** a formal market-available or installation-observed snapshot requires
-  a row's availability or fetched time and the relevant time is absent
+  a row's clock selected by the canonical knowledge-mode eligibility matrix and
+  that required clock is absent
 - **THEN** snapshot resolution reports an explicit unavailable or
   PIT-not-proven outcome and does not silently treat the row as visible
 
@@ -55,6 +104,52 @@ missing temporal clock SHALL fail closed for formal point-in-time resolution.
   lineage evidence, chooses a documented canonical outcome only when policy
   permits it, or quarantines the candidate without advancing a release pointer
 
+#### Scenario: Multi-source identities or finality conflict
+
+- **WHEN** two source-local identities collide after canonicalization, sources
+  disagree on finality, or simultaneous supersession chains target the same
+  logical observation
+- **THEN** Datasets preserves every candidate source/revision/finality identity
+  in lineage, applies the pinned reconciliation policy deterministically, and
+  quarantines or returns an explicit conflict when that policy cannot prove one
+  outcome; it never collapses the candidates by arrival order or moving latest
+
+### Requirement: Quality and source finality SHALL have a total publication disposition
+
+Datasets SHALL evaluate quality disposition `passed`, `warned` or `blocked`
+independently from source finality `provisional`, `final` or `retracted`.
+Quality policy SHALL define all nine combinations; an omitted pair SHALL fail
+closed. `passed+final` MAY be eligible for formal publication after all other
+PIT, rights and integrity gates pass. `warned+final` MAY be published only when
+the pinned policy explicitly authorizes the warning class and the release keeps
+that warning visible. `blocked+final` SHALL NOT publish.
+
+Both `passed+provisional` and `warned+provisional` SHALL retain provisional
+state and MAY produce only an explicitly non-formal candidate/provisional
+product; neither may be relabelled final because quality passed. A
+`blocked+provisional` product SHALL remain blocked. Any `retracted`
+combination SHALL prevent a new formal release and SHALL withdraw, supersede or
+restrict an affected release through a later immutable state according to
+policy, without deleting the prior version. Capture quarantine and artifact
+integrity failure remain separate fail-closed lifecycle states and cannot be
+converted to a quality/finality pair that publishes.
+
+#### Scenario: A quality-passed source record remains provisional
+
+- **WHEN** canonicalization and quality checks pass but one required source
+  input is still provisional
+- **THEN** Datasets preserves `passed+provisional`, exposes its provisional
+  reason and next-finality evidence, and does not issue a formal release or
+  formal Study-eligible DatasetSnapshotRef
+
+#### Scenario: A previously released source record is retracted
+
+- **WHEN** a later Capture receipt marks a referenced observation retracted,
+  regardless of its prior quality disposition
+- **THEN** Datasets records the corresponding retracted disposition, creates a
+  later withdrawal/supersession state, emits revision evidence for downstream
+  propagation and leaves the prior immutable version auditable
+
 ### Requirement: Formal PIT and revision semantics SHALL be proven before formal use
 
 Datasets SHALL resolve a formal DatasetSnapshot's declared knowledge policy
@@ -62,8 +157,9 @@ using a tested revision
 mapping. `as_known` SHALL select only facts visible at the effective knowledge
 cut; `latest_restated` SHALL create a distinct, explicitly non-PIT
 transformation using mapped revisions/retractions and SHALL NOT merely label an
-`as_known` selection. Missing required event, publication, available, received
-or revision clocks SHALL return explicit `PIT_NOT_PROVEN` or unavailable
+`as_known` selection. Missing required event, publication, available, received,
+fetched, observed, first-seen or revision clocks selected by the canonical
+eligibility matrix SHALL return explicit `PIT_NOT_PROVEN` or unavailable
 outcomes. The formal-PIT-and-revision-semantics child change SHALL complete its
 golden fixtures and release gate before any formal DatasetSnapshotRef or
 StudyRun migration.

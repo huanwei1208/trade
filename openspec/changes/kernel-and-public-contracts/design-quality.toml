@@ -1,0 +1,192 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The child introduces installed framework-free Kernel, Platform and Processes contract types, exact v1 wire schemas, status taxonomies and additive one-way legacy mappings while preserving every current CLI, HTTP, SSE, EventBus, job-run, artifact and console contract."
+
+[[impacts]]
+id = "persistent_write"
+applies = false
+reason = "Implementation adds immutable in-memory DTOs, package discovery and test fixtures only; it creates no database, parquet, manifest, pointer, outbox, cache, coordination record or runtime artifact writer."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "No database table, column, index, migration version, parquet layout, manifest layout or existing payload schema is altered; the new wire DTO schemas are additive public contracts covered by the contract profile."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "The child defines generic immutable-reference identity only and explicitly defers DatasetSnapshotRef, clock selection, revision policy, PIT resolution, labels, forecasts and backtests to their owning prerequisite children."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "No model, feature, recommendation, ranking, calibration, StudyResult or decision-support behavior is created, evaluated, promoted or served."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "The child performs no provider interaction, news or event-feed ingestion, capture, import, replay, payload correction, licensing decision or network access; a legacy EventBus mapper handles metadata only."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "The public control contracts define finite observation, cancellation and shutdown deadlines, truthful residual ownership and a prohibition on unbounded tail joins; implementation tests these contracts without rerouting the current runtime."
+
+[evidence.contract]
+contract = "The additive public contract is an installed `trade` package containing minimal Kernel primitives, Platform ActorContext/command/query/OperationReceipt/ErrorEnvelope/control DTOs, Processes ProcessView DTOs, immutable-reference identity policy, exact bounded v1 canonical JSON and pure one-way legacy mappers."
+consumers = "The immediate consumer is the next platform-persistence-events-and-bootstrap-foundation child. Later Processes, Capture, Datasets, Studies, Decision Support, CLI, HTTP, SDK, notebook, scheduler and event children consume only reviewed target contracts. Existing trade_py/trade_web callers remain on their current paths in this child."
+compatibility = "Distribution remains `trade-py`; root `./trade`, `trade-py` console entry, `trade_py` imports, CLI commands/arguments/output/exit codes, HTTP paths/methods/status/headers/payloads, SSE, EventBus topics/admission, job_runs rows, Observatory models/errors, DB schema, artifacts and native ABI remain unchanged. Target packages never import legacy implementation."
+migration = "First prove additive source/editable/wheel package discovery; then add unused target contracts and pure legacy-to-target mappers. No current caller is rerouted. Each later owner must provide a mutation ledger, old/new snapshots, feature gate, rollback and retirement evidence before adopting a mapper."
+rollback = "Stop new child consumers, retain all legacy imports and wire paths, and revert the additive package discovery, target modules, mappers and tests. There is no database, artifact, manifest, pointer or runtime state to restore."
+
+[evidence.concurrency]
+ownership = "This child owns immutable control DTO semantics and test doubles only; it starts no production worker. Future Platform Execution owns operation/control/shutdown receipts, Processes owns ProcessView, and an owning adapter retains its process/thread/lease/fence until structured terminal evidence exists."
+bound = "V1 bounds encoded envelopes at 64 KiB, nesting depth at 8, strings at 2 KiB, collections at 100, actor scopes at 32, delegation hops at 8, process history at 50, and safe error message/hint at 1 KiB. Every public observation, cancellation and shutdown API requires a finite deadline and one remaining-time budget."
+ordering = "Trusted actor establishment and typed canonical validation precede command digest and durable ingress; durable operation identity precedes OperationReceipt; cancellation intent precedes any terminal cancelled state; shutdown closes admission before graceful/forced cleanup, terminal audit and resource/fence release."
+atomicity = "DTO construction is all-or-nothing and returns no partial object. A duplicate operation resolves the same durable identity. Observation timeout mutates no owner state. Completed shutdown is visible only with zero residual owners and released non-reentrant resources."
+timeout_cancellation = "Owner, control and observation deadlines are distinct. Cancellation acceptance is not cancellation completion. Signal delivery is not terminal evidence. Every lock, persistence retry, queue drain, thread/future/executor/subprocess wait and process-tree action consumes the shared remaining deadline; no bounded method may call an unbounded tail join."
+backpressure = "This child has no production queue. Oversized contract input is rejected before object construction or digesting. Future interfaces return receipts and finite ProcessView observations rather than retaining one synchronous request for an entire workflow."
+partial_failure = "Unknown schema/status, unavailable owner, caller timeout, denied control, incomplete process-tree termination and residual threads/tasks remain explicit safe errors or not_observed/unavailable/incomplete states; none is counted as completed, cancelled, empty or healthy."
+capacity_validation = "Deterministic unit/contract tests exercise 1x and 10x residual-owner sets, exact wire limits, over-limit rejection, a non-returning observation, cancel accepted before terminalization, ignored graceful termination, concurrent shutdown callers and an executor whose final wait would block; elapsed assertions prove one shared deadline and residual receipt."
+
+[[obligations]]
+id = "contracts.kernel"
+owner = "src/trade/kernel"
+paths = [
+  "src/trade/kernel/",
+  "tests/unit/kernel/",
+  "tests/contract/public_contracts/",
+]
+contracts = [
+  "framework-free opaque identity, UTC time/deadline and content digest",
+  "explicit structural Result and contract errors",
+  "transport-neutral Envelope metadata and immutable reference identity",
+  "installed source/editable/wheel import isolation",
+]
+failure_states = [
+  "invalid or over-budget identifier",
+  "naive or non-UTC time",
+  "unsupported or malformed digest",
+  "both or neither Result branches",
+  "unregistered arbitrary envelope payload",
+  "forbidden framework or legacy import",
+]
+spec_requirements = [
+  "kernel-primitives:Kernel SHALL contain only admitted framework-free primitives",
+  "kernel-primitives:Kernel identifiers SHALL be opaque, bounded and namespace-qualified",
+  "kernel-primitives:Kernel time and deadline values SHALL preserve UTC and elapsed-time semantics",
+  "kernel-primitives:Content digests SHALL identify bytes with an explicit algorithm",
+  "kernel-primitives:Results and structural errors SHALL be explicit and immutable",
+  "kernel-primitives:Envelope metadata SHALL be transport-neutral and owner-payload typed",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.2", "5.1", "5.2", "5.3"]
+
+[[obligations]]
+id = "contracts.operation-control"
+owner = "src/trade/platform/contracts and src/trade/processes/contracts"
+paths = [
+  "src/trade/platform/contracts/",
+  "src/trade/processes/contracts/",
+  "tests/unit/platform/contracts/",
+  "tests/unit/processes/contracts/",
+  "tests/contract/public_contracts/",
+]
+contracts = [
+  "trusted ActorContext and typed command/query envelope",
+  "OperationReceipt and bounded ProcessView",
+  "safe versioned ErrorEnvelope and orthogonal closed states",
+  "truthful ControlReceipt and ShutdownReceipt",
+]
+failure_states = [
+  "payload actor spoofing",
+  "operation persistence unavailable",
+  "unknown or invalid state transition",
+  "not observed or unavailable process",
+  "cancel accepted but not terminal",
+  "control deadline exceeded",
+  "shutdown residual ownership",
+  "unbounded tail wait",
+]
+spec_requirements = [
+  "operation-control-contracts:Actor context SHALL be established from trusted adapter evidence",
+  "operation-control-contracts:Command and query envelopes SHALL use typed owner payloads",
+  "operation-control-contracts:Operation receipts SHALL report durable admission and terminal state truthfully",
+  "operation-control-contracts:Process views SHALL be bounded read-only recovery projections",
+  "operation-control-contracts:Status families SHALL remain orthogonal and closed",
+  "operation-control-contracts:Error envelopes SHALL be safe, versioned and transport-neutral",
+  "operation-control-contracts:Cancellation SHALL distinguish request acceptance from terminal cancellation",
+  "operation-control-contracts:Shutdown SHALL have one finite deadline and explicit residual ownership",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "3.1", "3.2", "3.3", "5.1", "5.2", "5.3"]
+
+[[obligations]]
+id = "contracts.immutable-refs"
+owner = "src/trade/kernel reference identity with future Context contract owners"
+paths = [
+  "src/trade/kernel/refs.py",
+  "tests/unit/kernel/test_refs.py",
+  "tests/contract/public_contracts/",
+]
+contracts = [
+  "owner, kind, object, version and digest reference identity",
+  "path-free and moving-alias-free formal reference policy",
+  "immutable PolicyRef identity",
+  "owner validation after wire decoding",
+]
+failure_states = [
+  "path or mutable alias in formal reference",
+  "missing referenced content",
+  "unsupported reference version",
+  "legacy artifact over-promoted to formal reference",
+  "wire decode mistaken for publication or PIT proof",
+]
+spec_requirements = [
+  "immutable-reference-policy:Immutable reference identity SHALL preserve owner, type, version and content",
+  "immutable-reference-policy:Formal references SHALL exclude mutable aliases and storage locations",
+  "immutable-reference-policy:Policy references SHALL identify immutable policy content",
+  "immutable-reference-policy:Reference construction and wire decoding SHALL fail closed",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.2", "4.1", "5.1", "5.2", "5.3"]
+
+[[obligations]]
+id = "contracts.compatibility"
+owner = "trade_py/compat public contract adapters and packaging"
+paths = [
+  "pyproject.toml",
+  "trade_py/compat/public_contracts.py",
+  "tests/contract/public_contracts/",
+  "tests/test_cli_event_trigger.py",
+  "tests/test_runtime_commands.py",
+  "tests/test_web_runtime_commands.py",
+  "tests/test_web_runtime_resources.py",
+  "tests/test_btc_observatory_api.py",
+]
+contracts = [
+  "exact bounded canonical v1 serialization",
+  "source/editable/wheel dual-package compatibility",
+  "one-way conservative legacy mapping",
+  "unchanged CLI/HTTP/EventBus/job-runs/Observatory/shutdown snapshots",
+  "finite receipt and ProcessView observation for future interfaces",
+]
+failure_states = [
+  "unknown schema field or version",
+  "wire size or depth exceeded",
+  "source-only import hidden by sys.path",
+  "legacy snapshot regression",
+  "unknown legacy status mapped to success",
+  "unsafe message, PID, path or exception promoted to canonical contract",
+  "legacy long wait adopted as a new API default",
+]
+spec_requirements = [
+  "public-contract-compatibility:Public contract serialization SHALL be deterministic, exact and bounded",
+  "public-contract-compatibility:Source, editable and wheel installations SHALL expose compatible packages",
+  "public-contract-compatibility:Legacy mappings SHALL be explicit, one-way and conservative",
+  "public-contract-compatibility:Current mutation and status surfaces SHALL retain snapshots until owning migration",
+  "public-contract-compatibility:Compatibility shall not invent formal owner facts",
+  "public-contract-compatibility:Public wait and control compatibility SHALL expose finite observation",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "4.1", "4.2", "5.1", "5.2", "5.3"]

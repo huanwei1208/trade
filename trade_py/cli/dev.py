@@ -5,6 +5,7 @@ Usage:
     trade dev fix                   # explicitly fix selected owned source
     trade dev design-check <change> # inspect design evidence before implementation
     trade dev openspec [change]     # aggregate active OpenSpec workflow status
+    trade dev layout-status         # inspect immutable deployment layout evidence
     trade dev belief <symbol>       # print latest BeliefState for symbol
     trade dev attention <symbol>    # print top AttentionScores for symbol
     trade dev evidence <symbol>     # print Evidence rows for symbol
@@ -18,6 +19,7 @@ import argparse
 import json
 import logging
 from datetime import date
+from pathlib import Path
 
 from trade_py.cli import global_flag_parent
 
@@ -64,6 +66,39 @@ def make_parser() -> argparse.ArgumentParser:
     sp_openspec.add_argument(
         "--format", choices=("text", "json"), default="text", help="Output format"
     )
+
+    sp_layout = sub.add_parser("layout-status", help="只读部署布局证据状态")
+    sp_layout.add_argument("--json", dest="as_json", action="store_true", help="JSON 输出")
+
+    sp_performance = sub.add_parser(
+        "layout-performance",
+        help="显式采集/校验 package-layout 性能证据",
+    )
+    performance_commands = sp_performance.add_subparsers(
+        dest="performance_command",
+        required=True,
+    )
+    capture_performance = performance_commands.add_parser(
+        "capture",
+        help="采集同 runner 的冻结 baseline",
+    )
+    capture_performance.add_argument(
+        "--output",
+        type=Path,
+        default=Path("tests/baselines/layout-performance.json"),
+    )
+    capture_performance.add_argument("--node-modules", type=Path, default=None)
+    verify_performance = performance_commands.add_parser(
+        "verify",
+        help="采集 candidate 并与 baseline 比较",
+    )
+    verify_performance.add_argument(
+        "--baseline",
+        type=Path,
+        default=Path("tests/baselines/layout-performance.json"),
+    )
+    verify_performance.add_argument("--output", type=Path, default=None)
+    verify_performance.add_argument("--node-modules", type=Path, default=None)
 
     for cmd in ["belief", "attention", "evidence", "rec"]:
         p = sub.add_parser(cmd, help=f"查看 {cmd}")
@@ -112,6 +147,18 @@ def _run_openspec(args: argparse.Namespace) -> int:
     return run_openspec_cli(args)
 
 
+def _run_layout_status(args: argparse.Namespace) -> int:
+    from trade_py.devtools.layout_status.cli import run_layout_status_cli
+
+    return run_layout_status_cli(args)
+
+
+def _run_layout_performance(args: argparse.Namespace) -> int:
+    from trade_py.devtools.layout_performance.cli import run_layout_performance_cli
+
+    return run_layout_performance_cli(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = make_parser()
     args = parser.parse_args(argv)
@@ -131,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "openspec":
         return _run_openspec(args)
+
+    if args.cmd == "layout-status":
+        return _run_layout_status(args)
+
+    if args.cmd == "layout-performance":
+        return _run_layout_performance(args)
 
     data_root = getattr(args, "data_root", None)
     if data_root is None:
