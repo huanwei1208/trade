@@ -1627,28 +1627,32 @@ def validate_architecture_baseline(
     """
 
     root = Path(repo_root)
+    from trade_py.devtools.target_architecture_guard import validate_target_architecture
+
+    target_findings = list(validate_target_architecture(root))
     findings: list[ArchitectureFinding] = []
     try:
         baseline = _load_baseline(root, baseline_name, limits)
     except _GuardError as exc:
-        return _report((exc.finding,), (), limits)
+        return _report((*target_findings, exc.finding), (), limits)
 
     evidence = _EvidenceReader(root, limits)
     evidence.prime_literal_matches(_baseline_evidence_queries(baseline))
     findings.extend(_validate_baseline_facts(root, baseline, evidence))
     if findings:
-        return _report(findings, (), limits)
+        return _report((*target_findings, *findings), (), limits)
 
     findings.extend(_declared_producer_source_missing(root, baseline, limits))
     if findings:
-        return _report(findings, (), limits)
+        return _report((*target_findings, *findings), (), limits)
 
     try:
         producers = discover_warehouse_producers(root, limits=limits)
     except _GuardError as exc:
-        return _report((exc.finding,), (), limits)
+        return _report((*target_findings, exc.finding), (), limits)
 
     findings.extend(_validate_producer_declarations(root, baseline, producers, limits))
+    findings = [*target_findings, *findings]
     return _report(findings, producers if not findings else (), limits)
 
 
