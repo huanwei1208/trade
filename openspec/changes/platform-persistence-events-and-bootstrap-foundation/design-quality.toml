@@ -1,0 +1,271 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The child introduces framework-free Platform and Bootstrap contracts for database capabilities, transactions, command admission, message delivery, backup/restore, lifecycle, status and capacity while preserving existing CLI, HTTP, SSE, EventBus, backup, SDK, notebook and scheduler surfaces through explicit compatibility selection."
+
+[[impacts]]
+id = "persistent_write"
+applies = true
+reason = "The design assigns authoritative writers and crash-safe state machines for schema capabilities, writer leases, operation claims/receipts, outbox/inbox/ordering/DLQ records, backup certification, restore transitions, activation journals and capacity evidence."
+
+[[impacts]]
+id = "schema_migration"
+applies = true
+reason = "The design adds a MigrationCoordinator, additive schema capability generations, a single legacy v2-v22 bootstrap bridge, checkpointed owner registrations, mixed-version fencing, dual-read readiness gates and previous-generation rollback."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "This technical foundation does not resolve Dataset event/available/revision clocks, snapshots, labels, forecasts or as-known knowledge; formal PIT and revision semantics remain in the next dedicated architecture child."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "No model, feature, label, hypothesis, study, recommendation, ranking, calibration or portfolio behavior is introduced or changed; business payloads remain opaque to Platform."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "Platform transports already admitted immutable envelopes but performs no provider interaction, news/on-chain ingestion, source licensing decision, capture, replay of provider bytes or external-data correction; those semantics remain owned by Capture."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "Database writer/migration leases, owner transactions, command admission, bounded dispatcher workers, inbox/outbox recovery, ordered streams, restore fencing and Bootstrap lifecycle introduce shared runtime ownership, deadlines, cancellation, backpressure and crash recovery."
+
+[evidence.contract]
+contract = "New contracts are DatabaseRuntimeRequest/Handle, LocalTransactionContext/Result, CodecRetentionMutation, RequiredOwnerCodecManifestV1 persistence/readiness, MessageContractHealthObservationV1 query, MigrationRegistration/Plan/View, GenerationActivationCapability, OutboxEnvelopeRecord, DeliveryLease/Receipt, InboxReceipt, OrderingContract/Ref, DeadLetterView/RedeliverMessage/ResolveOrderingGap, ShutdownLinkIntegrityObservationV1 persistence/one-attempt delivery, BackupManifest/Certification/TrustPolicyRef, RestoreOperation/View, CapacityEnvelope and BootstrapProfile/Capabilities. They consume the exact frozen Kernel V21 candidate IDs, envelopes, actors, receipts, errors, codec-retention and integrity products after its separate strict prerequisite gate rather than redefining them."
+consumers = "Owning Context repositories and use cases consume the local transaction and delivery protocols; Processes consume command/event and operation handles; CLI, HTTP, SDK, scheduler and operator BFF adapters consume bounded status/query and admission handles; only Bootstrap consumes concrete Platform adapters and the temporary legacy schema bridge."
+compatibility = "Current root trade commands, Python entrypoints, FastAPI routes/status/error/SSE payloads, React consumers, EventBus publish/replay behavior, backup functions/CLI, SQLite files/tables, Parquet artifacts, SDK/notebook imports, scheduler topics and C++ boundary remain unchanged until an individually approved shim passes snapshots. Missing legacy actor, payload-proof, ordering or certification facts remain legacy/unknown and are never fabricated."
+migration = "Implementation is additive and split into persistence-runtime, command-and-delivery, backup/restore, Bootstrap and interface-compatibility children. Each entrypoint or message family delegates to one selected profile only after contract snapshots, dual observation, owner fencing, capacity evidence and the shutdown-hardening prerequisite; old readers and routes remain selectable for at least 30 days."
+rollback = "Disable the named target capability/profile or message route, stop new admissions, select the preserved legacy constructor/EventBus/backup/interface path, reconcile immutable target receipts and outbox/DLQ, and CAS an active restore back to the verified prior generation. Rollback does not delete durable evidence or alter unrelated entrypoints."
+
+[evidence.storage]
+authoritative_writer = "Platform Persistence alone writes schema capability, migration checkpoint, writer-lease, global activation-lease/journal, exactly 16 codec-retention shards, immutable required-codec manifest generations and the sole current-snapshot pointer; Platform Execution Operation Control alone writes operation claim/receipt/refusal-audit and shutdown-link integrity observation/claim/terminal metadata; Platform Events alone writes generic outbox, delivery, inbox protocol, ordering, gap-resolution, dead-letter and redelivery metadata and invokes a claimed integrity signal only through the Operation Control capability; Platform Backup alone writes certification and restore-operation metadata and requests activation through Persistence. Every business table, SQL repository, invariant and migration remains with its owning Context. Processes stores no owner codec bytes/manifests and cannot mutate retention accounting."
+idempotency_key = "Command admission uses the exact approved scoped idempotency fingerprint, canonical command fingerprint and at most three claim transactions plus one optional refusal-audit transaction under one deadline; deadline-before-provisional and post-provisional audit-unavailable are distinct. Each codec-dependent identity deterministically selects one of 16 retention shards from its length-framed identity and becomes visible or permanently unresolvable atomically with its one-row retention mutation. Inbox uses stable owner-qualified consumer effect namespace plus message ID while contract version and immutable recorded compatibility-policy digest are stored facts but not uniqueness. One exact safe shutdown-link corruption identity admits one observation/outbox and one claim with attempt_count=1. Migrations use owner, migration ID and registration digest; backups use backup ID and trust-policy-certified manifest/archive digest; restore activation uses restore identity plus exact prior/target generation, readiness-evidence and rollback-candidate identities."
+concurrency_control = "Every compatible writer carries an owner instance, positive fence generation and finite lease; repository mutations compare the current fence in their transaction. SQLite busy wait, lock hold, statements/rows, connection count, retries and WAL/checkpoint interaction are bounded below the monotonic operation deadline. Each codec-retention mutation touches at most one deterministic shard row with at most three CAS attempts; freeze closes ingress and mutation admission, drains in-flight writes and holds the current owner fence plus exclusive snapshot lease over one stable 16-shard revision vector before atomically switching the complete current manifest pointer. Dispatcher claims use bounded keyset scans, lease tokens, class/key quotas, deterministic fairness, reserved control capacity and expiry; ordered producer/consumer heads, absent OrderingGapRecord or received-message DLQ evidence, explicit resolution and redelivery use CAS. Shutdown-integrity pending-to-claimed compares current owner/fence and permits one bounded external call; post-claim ambiguity terminalizes unknown rather than reclaims or retries. The sole Persistence activation capability prevalidates a bounded owner set, target readiness and prior rollback receipt, reserves rollback time, acquires one database activation lease and owner fences in canonical order, activates by journal CAS and releases in reverse only after exact readiness. Missing/torn/inconsistent authority keeps admission closed. A legacy-unaware writer blocks incompatible cutover unless an independently proven exclusive maintenance window exists."
+staging_validation = "Migrations use additive generations or checkpointed shadow-copy/replay and validate registration digest, dependencies, old/new reader and writer compatibility, probe-set/binary/config/owner-set digests and capability ranges into immutable GenerationReadinessEvidence before activation. Backup uses a consistent SQLite snapshot plus immutable artifact refs and detached trust-policy/key certification. Restore verifies certification before directory parsing, bounds encoded/declared/actual bytes, expansion, verifier RSS, deterministic spill scratch, archive passes/reread bytes and deadline, reserves staging/verification/WAL/rollback/safety disk, extracts only declared regular members into a no-follow temporary root, re-hashes all required bytes and validates exact readiness plus prior RollbackCandidateReceipt before writer fencing."
+atomic_visibility = "One owner-local physical transaction may commit only one owner's state/audit plus Platform inbox/ordered-consumer receipt, outbox and at most one codec-retention shard mutation; all participants become visible together or remain absent. One required-codec snapshot transaction writes a complete header and entries before atomically switching the sole current pointer. One shutdown-link corruption transaction creates the observation and outbox together; a separate fenced claim commits before the sole external call. Backup is restorable only after manifest/archive certification commits. Restore visibility changes only through one activation-journal compare-and-swap; directory presence and legacy restored status are non-authoritative."
+crash_windows = "Owner commit before dispatch leaves a recoverable outbox; dependent-identity rollback leaves no retention count and committed visibility cannot precede its shard increment; pre-manifest-pointer crash retains the prior current generation while post-switch readers require the complete matching generation/vector/digests. Dispatcher crash leaves an expiring lease and inbox prevents duplicate effective work. Shutdown-integrity crash before claim leaves pending eligible for its first claim, while any post-claim/pre-send or post-send/pre-terminal ambiguity becomes delivery_outcome_unknown with no automatic second call. Migration resumes only from matching registration/checkpoint and immutable readiness evidence; backup partials remain uncertified; restore restart reconciles prepared/staged/fenced/activated/rollback states only from an authenticated internally consistent journal. Missing/torn authority keeps admission closed. Terminal persistence retry stops at the shared deadline and retains residual ownership rather than looping during shutdown."
+corrupt_predecessor = "A claim fingerprint mismatch, missing refusal audit, inbox effect/version/digest/target/schema or recorded-policy mismatch, stale fence, zero/negative or identity-mismatched retention row, absent/non-current/non-committed/mixed/stale-fence/count/source-revision/entry-digest-mismatched required-codec snapshot, changed migration registration/readiness evidence, absent rollback candidate, corrupt shutdown-link identity/state, untrusted/revoked/expired/downgraded certification, unsafe/corrupt/archive-bomb input, incompatible schema capability or missing/torn/contradictory activation journal fails closed to conflict, quarantine, required-codec-unavailable, delivery-outcome-unknown, verification failure, unavailable or operator recovery. No dependent-row scan, moving latest alias, legacy row, broker acknowledgement or directory scan substitutes for missing immutable proof."
+partial_results = "Admission without required refusal audit creates no operation; failed owner transactions expose no inbox/outbox/retention mutation; incomplete/stale required-codec snapshots block ingress and are not healthy; delivery retry/gap/dead-letter and terminal-persistence-unavailable remain explicit; shutdown-link delivery_failed or delivery_outcome_unknown remains visible and never becomes delivered or retried; partial migration/backup/remote publication/restore and degraded optional Bootstrap capabilities never become completed, delivered, certified, active or ready."
+reader_consistency = "Read-only DatabaseRuntime opens only an existing supported generation and mutates nothing. Target readers bind one schema and activation generation through typed query handles; codec readiness binds the sole complete current snapshot to the exact frozen 16-shard revision vector and never scans dependent durable rows. Authorized message-contract and shutdown-integrity queries are bounded/redacted and side-effect-free. Old readers remain selected through compatibility adapters until dual-read comparison and readiness pass. Interfaces and Contexts cannot query Platform tables or private connections directly."
+backup_hash_verification = "Every certified backup records deterministic member paths, kinds, owners, sizes and SHA-256 plus archive digest/size and schema capability, then binds the canonical manifest/archive/generation to an independently configured trust-policy ref, signing key version, validity/revocation/algorithm/environment decision and detached signature. Restore verifies trust before directory parsing, enforces encoded/actual/ratio/RSS/spill/pass/reread/deadline/disk bounds, verifies staged member/archive identities afterward and requires a current digest-bound prior RollbackCandidateReceipt for activation rollback."
+small_sample_verification = "Temporary-root fixtures cover legacy v2-v22 initialization, read-only absent/existing databases, atomic state/inbox/outbox rollback, two-connection duplicate admission, lease crashes, ordered gaps, migration interruption, malicious/corrupt archives and crash at every restore state. A one-generation pilot and 1x/10x fixtures precede any selected entrypoint; no real data probe is required."
+rollback = "Capability/profile kill switches preserve legacy readers and the previous active generation. Delivery may be stopped and reconciled without deleting immutable records; additive tables remain inert. Restore activation does not begin without a current RollbackCandidateReceipt and reserved rollback deadline. Rollback compare-and-swaps only through authenticated activation authority to that exact prior generation, rebinds and verifies it before reopening writer admission; unavailable/inconsistent authority remains closed for audited recovery."
+audit_trail = "Durable bounded receipts retain operation/message/migration/backup/restore identity, owner, actor where authorized, correlation/causation, policy and digest references, retention shard/snapshot generation and integrity, shutdown-link observation/signal disposition, state transition, attempt, fence, timestamps and safe reason. Message-contract health exposes only bounded counts plus one exact closed cause/action; shutdown integrity exposes only the safe identity and disposition. Public/operator views exclude descriptors/registry keys where prohibited, dependent identities, payloads, raw idempotency keys, credentials, callbacks, exception text, archive bytes, SQL, service-account paths and raw tracebacks."
+
+[evidence.migration]
+compatibility_modes = ["backward", "forward"]
+dual_read_write = true
+
+[evidence.migration.versioning]
+strategy = "additive_version"
+old_version_preserved = true
+
+[evidence.migration.backfill]
+mode = "idempotent_replay"
+destructive = false
+checkpointed = true
+
+[evidence.migration.cutover]
+strategy = "dual_read_compare"
+readiness_gate = true
+
+[evidence.migration.rollback]
+supported = true
+restore_source = "previous_generation"
+
+[evidence.migration.legacy_retirement]
+after_compatibility_window = true
+minimum_window_days = 30
+
+[evidence.concurrency]
+ownership = "A DatabaseRuntime handle owns one database/owner/fence generation; one owner repository owns each business transition; Platform Execution Operation Control owns admission; Platform Events dispatchers own finite leased batches while owner adapters own effective consumption; Platform Backup owns restore coordination, while the sole Platform Persistence activation capability owns global writer fencing and journal CAS for restore and migration; Bootstrap owns concrete construction/lifecycle. Processes, Interfaces and business Contexts never own dispatcher or migration loops."
+bound = "V1 rejects envelopes above 65,536 encoded bytes, uses exactly 16 codec-retention shards, touches at most one retention row and makes at most three CAS attempts per dependent transaction, aggregates at most 4,096 manifest entries from at most 65,536 shard rows under a frozen window and performs at most 13 registry-key comparisons per entry without scanning dependent rows. It rejects dispatch/replay claims above 1,000, status histories above 50, DLQ pages above 100, per-key gap buffers above 1,000 messages or 64 MiB, policies above 100 attempts, leases outside 1 second to 15 minutes, restore manifests above 64 MiB encoded/100,000 members/2 TiB declared or actual bytes, archives above 2 TiB encoded or 100:1 expansion, paths above 4,096 UTF-8 bytes/128 segments and CapacityEnvelopes above 256 KiB. One shutdown-link corruption identity permits one observation/outbox, one claim with attempt_count=1 and at most one bounded external call. These are safety ceilings; measured deployment profiles set lower finite worker, queue, batch, retry, deadline and storage limits."
+ordering = "Owner state and outbox commit precede delivery; command admission receipt precedes asynchronous execution; a dispatcher lease precedes invocation and an inbox/owner transaction precedes ack. Ordered producers assign positive sequence with outbox append; consumers compare and advance expected sequence with inbox and owner state. N+1 cannot apply before required N; dead-lettering N retains the head, redelivery preserves its epoch/sequence, and only effective N or an owner-authorized policy-permitted CAS tombstone can advance it."
+atomicity = "One local transaction covers only one business owner plus its technical inbox/outbox/receipt participants and cannot span databases, providers, delivery waits or a second business Context. Each of at most three command claim attempts owns at most one transaction; one optional refusal-audit transaction starts only after a claim attempt ends. Inbox receipt, ordered head, owner transition and child outbox are atomic. Migration capability and restore activation advance through the sole Persistence fenced CAS authority, not a cross-Context shared transaction."
+timeout_cancellation = "Every admission, retention mutation/freeze, lease, retry, gap, shutdown-integrity observation/claim/call, migration, restore, remote call and Bootstrap lifecycle carries a finite policy/deadline. Synchronous terminal-state persistence stops when remaining monotonic time expires and returns incomplete/unavailable with retained residual owner. A shutdown-integrity signal that has reached claimed never returns to pending or starts another external call after timeout/ambiguity; it becomes delivery_outcome_unknown. Formal current-runtime shutdown adoption is blocked until the separate hardening child proves concurrent stop, executor tail, process-tree termination and signal-to-reap behavior."
+backpressure = "Ingress returns explicit contention/overload rather than attaching callers to long work. Dispatch uses bounded keyset scans, item/byte backlog, class/key inflight and worker/queue limits, deterministic weighted/round-robin fairness, poison-key cooldown, reserved control capacity and a measured maximum starvation interval. Absent positions create OrderingGapRecord while only received exhausted messages enter DLQ. Restore preflights and continuously enforces member/encoded/declared/actual/ratio/RSS/spill/pass/reread/deadline bounds plus staging/verification/WAL/prior-rollback/safety disk reserve. Bounded status queries perform no replay/repair. Capacity profiles can defer or reject load and cannot silently derive limits from host CPU count."
+partial_failure = "Duplicate admission returns the first receipt, provisional refusal without a committed audit becomes audit-unavailable and creates no operation, owner rollback creates no inbox/outbox/retention mutation, retention CAS exhaustion fails the dependent identity closed, stale/incomplete required-codec snapshots block ingress, dispatcher crash is lease-reclaimable, ack outage leaves explicit residual state, shutdown-integrity post-claim ambiguity becomes delivery_outcome_unknown without retry, ordered DLQ retains its head until redelivery/effect or authorized tombstone, migration remains paused/failed/checkpointed, backup remains uncertified, restore rolls back or remains operator-visible, and partial Bootstrap startup reverse-unwinds only acquired resources."
+capacity_validation = "Each deterministic temporary-root 1x/10x fixture binds before execution an immutable workload profile and threshold policy covering exact mix/rates/payloads/key/class skew, warm-up/duration/failure injection, runner normalization and scaled axes. It measures three-attempt admission and held-lock deadlines, codec-retention one-row/three-CAS contention plus frozen 16-shard snapshot aggregation/no-scan bounds, immutable-policy duplicate effects, owner/outbox latency, shutdown-integrity duplicate-read/one-call/unknown-outcome behavior, SQLite lock wait/hold/transaction/checkpoint time, bulk/control and ordered hot-key fairness/starvation, absent-gap versus received DLQ, lease recovery, migration/restore readiness and activation authority, backup trust and verifier RSS/spill/pass/reread/ratio/disk reserve, CPU/peak-retained RSS/DB/WAL/scratch growth and recovery. CapacityEnvelope returns pass, defer or overload only against the predeclared policy; changed profiles are non-comparable and missing/stale telemetry cannot be replaced by zero."
+
+[[obligations]]
+id = "platform.persistence-runtime"
+owner = "Platform Persistence and target Bootstrap migration profile"
+paths = [
+  "src/trade/platform/contracts/",
+  "src/trade/platform/api/",
+  "src/trade/platform/persistence/",
+  "src/trade/bootstrap/",
+  "tests/unit/platform/persistence/",
+  "tests/integration/platform/persistence/",
+  "tests/contract/platform/persistence/",
+  "tests/architecture/",
+]
+contracts = [
+  "DatabaseRuntimeRequest and DatabaseRuntimeHandle",
+  "LocalTransactionContext and LocalTransactionResult",
+  "CodecRetentionMutation and exactly 16 retention shards",
+  "RequiredOwnerCodecManifestV1 persistence port and current pointer",
+  "MigrationRegistration Plan and View",
+  "GenerationReadinessEvidence and RollbackCandidateReceipt",
+  "LegacySchemaBootstrapAdapter compatibility receipt",
+  "GenerationActivationCapability and activation journal",
+]
+failure_states = [
+  "read-only path creates or mutates state",
+  "stale expired or mismatched writer fence",
+  "retention shard CAS exhaustion or early codec retirement",
+  "missing non-current incomplete mixed stale-fence or digest-mismatched required-codec snapshot",
+  "startup scans dependent projection replay receipt or audit rows",
+  "Processes writes codec bytes manifests or retention accounting",
+  "cross-Context or cross-database transaction",
+  "migration leader race or changed registration digest",
+  "readiness evidence drift or missing rollback candidate",
+  "legacy unfenced writer during incompatible cutover",
+  "restore or migration activation race and lock-order violation",
+  "missing torn or inconsistent activation authority",
+  "query or Context imports legacy schema bridge",
+]
+spec_requirements = [
+  "platform-persistence-runtime:DatabaseRuntime SHALL separate observation, writing and migration authority",
+  "platform-persistence-runtime:Owner transactions SHALL be local and atomically durable",
+  "platform-persistence-runtime:Codec retention accounting and required manifests SHALL be bounded and authoritative",
+  "platform-persistence-runtime:MigrationCoordinator SHALL run owner registrations under durable capability fencing",
+  "platform-persistence-runtime:Legacy schema bootstrap SHALL be isolated and temporary",
+  "platform-persistence-runtime:Platform persistence metadata SHALL have one logical owner",
+  "platform-persistence-runtime:Generation activation SHALL use one global fenced authority",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "3.2", "4.1", "4.2", "4.3"]
+
+[[obligations]]
+id = "platform.message-delivery"
+owner = "Platform command ingress and Platform Events"
+paths = [
+  "src/trade/platform/execution/",
+  "src/trade/platform/events/",
+  "tests/unit/platform/events/",
+  "tests/integration/platform/events/",
+  "tests/contract/platform/events/",
+  "tests/golden/platform/events/",
+]
+contracts = [
+  "CommandEnvelope admission and OperationReceipt or ErrorEnvelope",
+  "OutboxEnvelopeRecord DeliveryCapacityProfile and DeliveryLease Receipt",
+  "InboxReceipt and owner transaction protocol",
+  "OrderingContract Ref",
+  "OrderingGapRecord OrderingGapResolutionReceipt DeadLetterView RedeliverMessage and ResolveOrderingGap",
+  "ShutdownLinkIntegrityObservationV1 observation outbox claim and one-attempt disposition",
+]
+failure_states = [
+  "duplicate conflict corrupt claim or refusal audit unavailable",
+  "dispatcher crash and expired or stale lease",
+  "duplicate payload mismatch or owner transaction rollback",
+  "consumer contract upgrade repeats an effective transition",
+  "recorded compatibility policy unavailable or reinterpreted",
+  "absent sequence fabricated as a dead letter",
+  "sequence gap stale epoch class starvation or hot-key starvation",
+  "ordered dead letter implicitly advances the consumer head",
+  "broker acknowledgement mislabeled delivered",
+  "retry exhaustion or terminal persistence unavailable",
+  "duplicate shutdown-link observation or external signal",
+  "shutdown-link clock or audit unavailable before admission",
+  "post-claim shutdown-link ambiguity retried or mislabeled delivered",
+  "legacy EventBus evidence lacks formal metadata",
+]
+spec_requirements = [
+  "platform-message-delivery:Command ingress SHALL durably admit one operation identity",
+  "platform-message-delivery:Outbox dispatch SHALL use durable leases and bounded outcomes",
+  "platform-message-delivery:Inbox consumption SHALL make duplicate delivery ineffective",
+  "platform-message-delivery:Ordering SHALL be explicit, durable and bounded",
+  "platform-message-delivery:Dead-letter and redelivery SHALL be explicit operator controls",
+  "platform-message-delivery:Shutdown-link integrity signals SHALL have exactly one fenced delivery attempt",
+  "platform-message-delivery:Compatibility EventBus SHALL remain a bounded bridge",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.2", "3.1", "3.2", "4.1", "4.2", "4.3"]
+
+[[obligations]]
+id = "platform.backup-restore"
+owner = "Platform Backup with Platform Persistence activation fencing"
+paths = [
+  "src/trade/platform/backup/",
+  "src/trade/platform/persistence/",
+  "tests/unit/platform/backup/",
+  "tests/integration/platform/backup/",
+  "tests/golden/platform/backup/",
+]
+contracts = [
+  "BackupManifest and BackupCertification",
+  "RestoreOperation and RestoreView",
+  "activation journal generation compare-and-swap",
+  "bounded backup and restore operator views",
+]
+failure_states = [
+  "live inconsistent backup or partial remote publication",
+  "unsafe duplicate oversized corrupt or incompatible archive",
+  "untrusted revoked or replaced backup certification",
+  "compression expansion or disk-reserve exhaustion",
+  "verifier memory scratch pass reread or deadline exhaustion",
+  "crash before or after activation journal commit",
+  "target or prior readiness evidence drift",
+  "target rebind or health failure",
+  "stale writer after generation switch",
+  "legacy extraction mislabeled as certified restore",
+]
+spec_requirements = [
+  "platform-backup-restore:Backup creation SHALL certify a bounded immutable generation",
+  "platform-backup-restore:RestoreOperation SHALL verify before extraction or activation",
+  "platform-backup-restore:Activation SHALL be one fenced generation compare-and-swap",
+  "platform-backup-restore:Backup and restore evidence SHALL be immutable and operator-visible",
+  "platform-backup-restore:Legacy backup commands SHALL remain compatibility surfaces",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.3", "3.2", "4.1", "4.2", "4.3"]
+
+[[obligations]]
+id = "platform.bootstrap-capacity"
+owner = "target trade.bootstrap and Platform technical capability owners"
+paths = [
+  "src/trade/bootstrap/",
+  "src/trade/platform/contracts/",
+  "src/trade/platform/api/",
+  "tests/unit/bootstrap/",
+  "tests/contract/bootstrap/",
+  "tests/architecture/",
+  "tests/integration/platform/capacity/",
+]
+contracts = [
+  "BootstrapProfile and BootstrapCapabilities",
+  "explicit fenced lifecycle and compatibility selection",
+  "CapacityWorkloadProfile CapacityThresholdPolicy CapacityEnvelope and CapacityProfile",
+  "telemetry freshness and alert policy",
+  "bounded technical status queries",
+  "RequiredOwnerCodecManifestV1 readiness and MessageContractHealthObservationV1",
+  "ShutdownLinkIntegrityObservationV1 authorized operator status",
+]
+failure_states = [
+  "second composition root or service locator",
+  "partial startup cleanup or false stopped receipt",
+  "simultaneous legacy and target owner",
+  "unbounded queue worker query or status history",
+  "non-comparable capacity workload or post-hoc threshold",
+  "credential detail leaked through capacity evidence",
+  "stale telemetry reported healthy",
+  "stale corrupt or non-current required-codec manifest accepted",
+  "message-contract health leaks identity or mutates registry state",
+  "shutdown-integrity failure or unknown hidden retried or reported healthy",
+  "business vocabulary in Platform",
+  "missing Kernel or shutdown-hardening prerequisite",
+]
+spec_requirements = [
+  "platform-bootstrap-capacity:Target Bootstrap SHALL be the sole production composition root",
+  "platform-bootstrap-capacity:Bootstrap lifecycle SHALL be explicit, fenced and truthful",
+  "platform-bootstrap-capacity:Compatibility shims SHALL delegate one selected profile",
+  "platform-bootstrap-capacity:CapacityEnvelope SHALL make every 1x and 10x gate comparable",
+  "platform-bootstrap-capacity:Platform capabilities SHALL remain technical and bounded",
+  "platform-bootstrap-capacity:Foundation activation SHALL require explicit prerequisites",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.4", "3.1", "3.2", "4.1", "4.2", "4.3"]
