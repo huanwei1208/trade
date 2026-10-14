@@ -1,0 +1,252 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The child introduces installed framework-free Kernel, Platform and Processes contract types, exact v1 wire schemas, status taxonomies and additive one-way legacy mappings while preserving every current CLI, HTTP, SSE, EventBus, job-run, artifact and console contract."
+
+[[impacts]]
+id = "persistent_write"
+applies = true
+reason = "This child implements no durable writer, but its public admission, idempotency fingerprint, operation receipt, fence generation, crash-takeover and terminal-audit contracts normatively govern later persistent writers. Storage evidence therefore applies as a prospective hard prerequisite rather than as authorization to write in this child."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "No database table, column, index, migration version, parquet layout, manifest layout or existing payload schema is altered; the new wire DTO schemas are additive public contracts covered by the contract profile."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "The child defines only normative owner-reference policy and explicitly defers every reference DTO, DatasetSnapshotRef, clock selection, revision policy, PIT resolution, label, forecast and backtest to its owning prerequisite child; Kernel has no reference module."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "No model, feature, recommendation, ranking, calibration, StudyResult or decision-support behavior is created, evaluated, promoted or served."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "The child performs no provider interaction, news or event-feed ingestion, capture, import, replay, payload correction, licensing decision or network access. Static owner-codec policy rejects inline external/raw bodies and requires future Capture artifact refs; a legacy EventBus mapper handles metadata only."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "The public control contracts define finite observation, cancellation and shutdown deadlines, truthful residual ownership and a prohibition on unbounded tail joins; implementation tests these contracts without rerouting the current runtime."
+
+[evidence.contract]
+contract = "The additive public contract is an installed `trade` package containing the parent-approved six Kernel modules, Platform ActorContext/command/query/OperationReceipt/ErrorEnvelope/control DTOs, Processes ProcessView DTOs, owner-local immutable-reference policy, exact bounded v1 canonical JSON with frozen Unicode/escape bytes, versioned domain-separated fingerprints and pure owner-specific one-way legacy mappers."
+consumers = "The immediate consumer is the next platform-persistence-events-and-bootstrap-foundation child. Later Processes, Capture, Datasets, Studies, Decision Support, CLI, HTTP, SDK, notebook, scheduler and event children consume only reviewed target contracts. Existing trade_py/trade_web callers remain on their current paths in this child."
+compatibility = "Distribution remains `trade-py`; root `./trade`, `trade-py` console entry, `trade_py` imports, CLI commands/arguments/output/exit codes, HTTP paths/methods/status/headers/payloads, SSE, EventBus topics/admission, job_runs rows, Observatory models/errors, DB schema, artifacts and native ABI remain unchanged. Target packages never import legacy implementation."
+migration = "First prove explicit additive source/editable/offline-no-deps wheel package discovery using one wheel, an exact source-derived Python member/byte inventory and exactly five reviewed dist-info members; then add unused target contracts and pure owner-specific legacy-to-target mappers. No current caller is rerouted; the four compatibility modules are test-only leaf adapters with no production inbound imports; and runtime adoption is blocked on runtime-owner-shutdown-and-recovery-hardening-v1. Each later owner must provide a mutation ledger, old/new snapshots, feature gate, rollback and retirement evidence before adopting a mapper."
+rollback = "Stop new child consumers, retain all legacy imports and wire paths, and revert the additive package discovery, target modules, mappers and tests. There is no database, artifact, manifest, pointer or runtime state to restore."
+
+[evidence.storage]
+authoritative_writer = "This child has no runtime durable writer and does not authorize one: existing TradeDB/EventBus/Web runtime owners remain unchanged. The later Platform persistence owner must be the sole writer for operation identity, command-admission idempotency claim, replay-audit facts, every OperationReceipt lifecycle transition, owner lease/fence generation, terminal audit and outbox facts. Processes must be the sole writer for ProcessStartKeyV1/inbox claims, Process Manager workflow state and ProcessView. Original interface keys, Platform HMACs and secret material never enter Processes, the owners share no transaction, and the parent ownership-table row must be governedly split to match this normative ownership before either repository is implemented."
+idempotency_key = "This child defines only the contract: FingerprintV1 uses purpose-separated HMAC-SHA-256 with a >=256-bit CSPRNG secret behind a secret-store port. IdempotencySubjectV1 has exact owner-namespace, tenant, principal-kind, principal-ID and ordered delegated-subject fields framed by unsigned 4-byte big-endian lengths; mutable origin, scopes, provenance and timestamps are excluded. A future Platform owner transaction queries one active and at most three retained key-version candidates: zero matches creates after generation revalidation; one match returns only after command name/kind/fingerprint equivalence; conflict, any multi-match or exhausted key-set contention first forms a provisional refusal and returns its specific closed ErrorEnvelope only after the separate refusal audit commits within the same remaining deadline. No audit start budget or audit failure returns IDEMPOTENCY_AUDIT_UNAVAILABLE instead, always with no receipt/operation. Conflict-to-audit-unavailable retains the one command HMAC already derived to detect conflict; corruption/contention-to-audit-unavailable derives none. Processes separately deduplicates the exact non-secret ProcessStartKeyV1 process-type/operation-ID/workflow-digest tuple atomically with inbox/initial view and exposes no process fingerprint or workflow key. No key or claim is persisted by this child."
+concurrency_control = "Current runtime concurrency is untouched. The future repository must serialize cross-retained-version lookup plus claim creation and key rotation under one owner CAS/lock with monotonic key_set_generation; one admission uses one monotonic deadline and at most three claim attempts, a changed generation ends that attempt and permits re-derivation only in the next, any multi-match is corruption, owner fence generation rejects every stale writer, and crash takeover requires durable lease expiry or revocation evidence."
+staging_validation = "A bounded lexical/structural scanner rejects malformed UTF-8/JSON, depth, string/integer-token, container and aggregate amplification before JSON materialization; bounded parse hooks and iterative post-check then validate exact schema, actor provenance, owner codec, canonical bytes, fingerprint key version, state transition and fence generation. Tests use only in-memory values and temporary roots; no production row, DB or artifact is opened."
+atomic_visibility = "This child publishes no runtime state. A future operation admission must make idempotency claim, operation identity, initial receipt and outbox fact visible in one owner-local transaction. Successful direct replay must commit one request-causal replay audit in its single owner-local lookup transaction before returning the unchanged historical receipt; audit unavailability returns no receipt or operation/process link. Every returned ControlReceipt is atomically persisted with its exact operation/control-kind/target claim; accepted additionally persists intent/outbox, while all other dispositions persist neither. A completed shutdown becomes visible only with terminal audit, zero residual owners, released resources and matching-generation fence release."
+crash_windows = "A crash in this child leaves no durable state. The future owner must recover pre-claim as absent, post-claim/pre-dispatch as an accepted recoverable operation, pre-replay-audit commit as no resolved replay audit/receipt response, post-replay-audit-commit/pre-response as the same audit and unchanged historical receipt without a duplicate row, pre-control-receipt commit as no control claim/receipt/intent/outbox, post-control-receipt commit as the same durable disposition with intent/outbox exactly for accepted, post-execution/pre-terminal-audit as unresolved residual ownership, and post-takeover by rejecting the old generation; it must never infer completion from process disappearance."
+corrupt_predecessor = "Contract decoders and mappers fail closed on malformed versions, fingerprints, transitions, generations, history windows and legacy paths and perform no repair. A future owner must mark corrupt or unverifiable predecessor state unavailable/failed, preserve safe diagnostic identity and require audited operator or generation recovery."
+partial_results = "DTO construction is all-or-nothing. A future writer must not expose a partial admission receipt, partial history window, completed shutdown with residual owners or formal reference with unresolved proof; unavailable, blocked, not_observed and incomplete remain explicit."
+reader_consistency = "All current CLI, HTTP, EventBus, Data Operations, job-run and Observatory readers remain unchanged. Future readers consume one owner receipt/view generation and never join private tables across owners; Data Operations has no canonical mapper in this child; naive mixed-origin job-run times remain bounded unproven tokens unless row-bound timezone/generation evidence exists; inconsistent live/persisted/replay EventBus time is omitted from canonical observations; mapper tests are read-only and cannot repair, retry, signal, publish or move pointers."
+backup_hash_verification = "This child creates no runtime backup obligation because it writes no state. Before adoption, the runtime hardening/Platform persistence child must rehearse temporary-root backup and restore of operation/idempotency/fence/audit rows, verify row identities and canonical receipt fingerprints, and preserve the prior generation."
+small_sample_verification = "Focused temporary fixtures cover one duplicate idempotency claim, one accepted operation, one same-binding replay retry, one conflicting replay binding, replay-audit pre/post-commit crashes, every allowed/forbidden transition, one stale writer, one crash takeover, one terminal-audit failure, exactly 1 and 10 owners in each residual category, and compatibility snapshots. No real data root is used."
+rollback = "Before runtime adoption, revert additive package/config/contracts/mappers/tests. After a future owner adopts them, its separate child must first stop new admission, retain old compatible readers and prior fence generation, disable the new adapter and restore the verified prior owner generation without deleting audit facts."
+audit_trail = "This OpenSpec, digest-bound review, exact wire goldens, mapper lossiness inventory and git history are this child's audit evidence. Future durable receipts must retain original admitted request-message/correlation/direct-causation identity, operation/control identity, trusted initiator, actor provenance, structured fingerprint algorithm/domain/key version, state/reason, owner instance/fence generation, stage, residual ownership and safe errors without raw secrets. Root, child, retry, redelivery, duplicate and replay causal propagation is closed. ReplayContextV1 preserves immutable historical actor/message attribution separately from the exact current replay request/correlation/optional-causation tuple, current initiator and policy evidence. ReplayAdmissionV1 binds the historical envelope digest/identity and required operation to current authority before existence disclosure. Direct replay is resolve-only, leaves the historical receipt unchanged, and uses `(owner_namespace, replay_request_message_id)` to commit one at-most-2,048-byte current-initiator audit before returning that receipt. First-audit `occurred_at: UtcInstant` is sampled only after operation resolution and immediately before fact construction; a clock failure returns REPLAY_AUDIT_UNAVAILABLE with no audit/receipt, retry preserves the first value without a second sample, and the value is only Platform replay-audit observation time, never event, source, publication, received, available, PIT, deadline, transaction-completion or response time. A domain-separated internal binding digest excludes only the attempt deadline, is never public and rejects same-request binding conflict before operation lookup; missing operations are not created. Audit clock/start/commit failure returns REPLAY_AUDIT_UNAVAILABLE with no receipt/link/retry/background continuation. Every pre-operation refusal/error/audit/event safely links the current request message, correlation and optional direct cause within its bounded allowlist. A terminal idempotency conflict/corruption/contention reason is exposed only after one immutable refusal fact with a closed 2,048-byte allowlist commits; when that audit cannot start or commit under the shared deadline, the externally truthful result is IDEMPOTENCY_AUDIT_UNAVAILABLE. Corruption also makes one bounded integrity-alert attempt."
+
+[evidence.concurrency]
+ownership = "This child owns immutable control DTO semantics and bounded test doubles only; it starts no production worker. Future Platform Execution exclusively owns command-admission claims, operation/control/shutdown receipts and every OperationReceipt lifecycle transition. Processes exclusively owns ProcessStartKeyV1/inbox claims, Process Manager workflow state and ProcessView. These owners do not share transactions or secret/idempotency material, and an owning adapter retains its process/thread/audit/lease/fence generation until structured terminal evidence exists. Current runtime adoption is a hard-gated separate child enforced by both a legacy-to-target import allowlist and a production-inbound prohibition on all four compatibility leaf adapters."
+bound = "V1 checks raw input and canonical output at 65,536 bytes, nested containers at depth 8, strings/keys at 2,048 UTF-8 bytes, canonical integer tokens at 19 digits, each container at 100 members, aggregate members at 1,024, value nodes at 2,048, actor scopes at 32, delegation hops at 8, process history at 50, recovery descriptors at 16, safe error text at 1,024 bytes, legacy EventBus canonical mapping at 1,024 source handler results, and all fields at their exact domains. UtcInstant has one exact six-fractional-digit Z form and rejects alternate offset/precision/leap-second spellings. The lexical/structural limits are enforced before JSON materialization. One direct ReplayAdmission has one finite monotonic deadline, at most 1 owner-local transaction/1 audit-key lookup/1 operation-or-claim lookup/1 bounded health signal and zero persistence retries or background continuations. A pre-admission command envelope has no keyed command fingerprint. Each ordinary command admission has at most 3 claim attempts/12 idempotency-candidate HMAC derivations plus at most 1 command-fingerprint HMAC only after a stable zero- or one-match result/13 HMAC total/3 candidate queries/3 claim transaction-CAS acquisitions plus 1 refusal-audit transaction, 1 terminal-result counter, 1 request-linked event and at most 1 alert attempt under one monotonic remaining deadline, with no retry/background continuation. Creation, replay and provisional conflict derive exactly one command HMAC; conflict-to-audit-unavailable retains that one derivation. Multi-match, contention, corruption-to-audit-unavailable, contention-to-audit-unavailable and pre-admission rejection derive zero command HMACs. Every public observation, cancellation and shutdown API also requires a finite deadline and one remaining-time budget."
+ordering = "Trusted actor establishment, static owner-codec admission and typed canonical validation precede domain-separated fingerprinting and durable ingress; replay authorization and historical digest/identity verification precede its audit-key transaction and operation existence disclosure, and a resolved replay audit commit precedes returning the unchanged historical receipt; durable operation identity precedes OperationReceipt; a refusal audit commit precedes returning a specific idempotency conflict/corruption/contention reason, otherwise audit-unavailable wins; atomic accepted-control receipt/intent/outbox precedes control application and any terminal cancelled state; shutdown closes admission before graceful/forced cleanup, terminal audit, resource release and matching-generation fence release."
+atomicity = "DTO construction is all-or-nothing and returns no partial object. A command-equivalent duplicate across active/retained HMAC versions resolves one identity; a command conflict or any multi-match returns no old receipt/new operation. Rotation and zero-match creation share key_set_generation CAS. Direct replay can only resolve a required existing operation and cannot create one; its single owner-local transaction atomically resolves the audit key, required operation and one audit row before returning the unchanged receipt. Same-key/same-binding retry returns the existing audit/receipt; conflict or audit failure returns no receipt or operation/process link. Every returned ControlReceipt and claim are atomic; accepted adds intent/outbox in that transaction, all other dispositions add neither, and persistence failure returns only CONTROL_RECEIPT_UNAVAILABLE. Observation timeout mutates no owner state. Completed shutdown is visible only with trusted initiator/control linkage, zero residual owners, durable audit, released non-reentrant resources and release of its own fence generation; stale generations cannot write."
+timeout_cancellation = "Owner, control and observation deadlines are distinct. Control admission reserves finite receipt-finalization budget. Cancellation acceptance is not cancellation completion; once accepted/intent commits, later delivery or application timeout is observed separately and cannot become a retryable control-admission result. Signal delivery is not terminal evidence. Owner deadline_exceeded requires worker exit or a durable write fence plus recorded residual ownership; caller observation timeout never terminalizes the owner. Every lock, persistence retry, queue drain, thread/future/executor/subprocess wait and process-tree action consumes the shared remaining deadline; no bounded method may call an unbounded tail join."
+backpressure = "This child has no production queue. Oversized contract input is rejected before object construction or digesting. Future interfaces return receipts and finite ProcessView observations rather than retaining one synchronous request for an entire workflow."
+partial_failure = "Unknown schema/status, unavailable owner, caller timeout, denied control, replay operation missing, replay binding conflict, replay-audit unavailable, idempotency command conflict, claim corruption, key-set contention, refusal-audit unavailable, stale writer, incomplete process-tree termination and closed-category residual owners remain exact safe errors or not_observed/unavailable/incomplete states; none is counted as completed, cancelled, empty or healthy."
+capacity_validation = "Deterministic tests exercise zero/one/multi-match idempotency, same-key command conflict, duplicate claims for one operation, both paused-admission/key-rotation interleavings and a fake-clock rotation storm that proves changed generation ends its attempt. Exact counters prove creation/replay/conflict each derive one command HMAC only after the stable result, conflict-to-audit-unavailable retains that one HMAC, multi-match/contention/corruption-to-audit-unavailable/contention-to-audit-unavailable/pre-admission rejection derive zero, and the maxima remain 3 claim attempts/12 candidate HMACs/1 command HMAC/13 total HMACs/3 queries/3 claim transactions/1 audit transaction. Subject goldens distinguish principals with equal scopes, reauthentication, scope changes, ordered delegation and anonymous callers. ReplayAdmission goldens cover root/child current causal tuples, existing-operation commit-before-receipt resolution, same-binding retry, missing operation/no resolved audit, denied current actor before transaction/disclosure, revoked historical actor, digest/identity mismatch, same-key binding conflict before operation lookup, fresh deadline exclusion, first-audit occurred_at sampling after operation resolution and immediately before fact construction, clock failure/no audit/no receipt, retry preserving the first occurred_at without another wall-clock sample, audit no-start/transaction failure, pre/post-commit crash recovery and current-authority derived command. Replay audit time goldens prove it is Platform observation time and never historical event, source, publication, received, available, PIT, deadline, transaction-completion or response time. Exact counters freeze at 1 replay transaction/1 audit-key lookup/at most 1 operation-or-claim lookup/0 persistence retries/0 background continuations/at most 1 bounded health signal. Process goldens freeze the internal ProcessStartKeyV1 tuple and prove ProcessView exposes neither owner's claim material. Tests cover the 2,048-byte current-request/correlation/direct-causation audit allowlist, all seven replay/idempotency exact error products, terminal-only metric labels, attempt-count retry evidence, one-shot redaction/alert behavior, no background continuation and no telemetry adoption before the named Platform foundation health query exists. Golden tables cover the root/child/retry/redelivery/duplicate/replay causal matrix, original receipt identity preservation and the complete ControlReceipt disposition/reason/error/link product. Control crash fixtures cover pre/post receipt commit, accepted-only intent/outbox, receipt persistence failure and post-accept application timeout through finite observation; root shutdown omits causation and child shutdown preserves it. Three golden contention fixtures prove that audit commit returns IDEMPOTENCY_KEYSET_CONTENTION while no remaining audit-start budget and an in-budget audit transaction failure both return IDEMPOTENCY_AUDIT_UNAVAILABLE. No-sleep fake-clock tests cover exactly 1 and 10 owners in every residual category, exact pre-materialization wire/depth/string/integer/aggregate limits, exact UtcInstant year/second/microsecond boundaries and alternate-spelling rejection, and canonical Unicode/escape bytes on Python 3.10 and highest supported version, full QueryStatus/shutdown products, non-returning observation, cancellation, takeover/stale writer, concurrent callers and blocking executor tail. EventBus mapper tests accept 1,024 source results, refuse 1,025 plus 10x without proportional target allocation, and omit inconsistent live/persisted/replay event times. Legacy artifact fixtures require post-hash stable identity before sampling verified_at. Architecture fixtures fail closed on unresolved computed import_module, variable __import__, module __getattr__ and dynamic re-export targets outside an exact reviewed finite allowlist. One child-process fixture has a 2-second shared deadline, 250-ms tolerance and 5-second whole-fixture ceiling."
+
+[[obligations]]
+id = "contracts.kernel"
+owner = "src/trade/kernel"
+paths = [
+  "src/trade/kernel/",
+  "trade_py/devtools/architecture_guard.py",
+  "tests/unit/kernel/",
+  "tests/test_architecture_guard.py",
+  "tests/contract/public_contracts/",
+]
+contracts = [
+  "framework-free opaque identity, UTC time/deadline and content digest",
+  "explicit structural Result and contract errors",
+  "transport-neutral Envelope metadata composed with Platform-owned typed codecs",
+  "exact six-module Kernel allowlist with no reference module",
+  "installed source/editable/wheel import isolation",
+]
+failure_states = [
+  "invalid or over-budget identifier",
+  "naive, non-zero-offset or non-canonical time spelling",
+  "unsupported or malformed digest",
+  "both or neither Result branches",
+  "unregistered arbitrary envelope payload",
+  "duplicate owner codec or inline external raw content",
+  "forbidden framework or legacy import",
+]
+spec_requirements = [
+  "kernel-primitives:Kernel SHALL contain only admitted framework-free primitives",
+  "kernel-primitives:Kernel identifiers SHALL be opaque, bounded and namespace-qualified",
+  "kernel-primitives:Kernel time and deadline values SHALL preserve UTC and elapsed-time semantics",
+  "kernel-primitives:Content digests SHALL identify bytes with an explicit algorithm",
+  "kernel-primitives:Results and structural errors SHALL be explicit and immutable",
+  "kernel-primitives:Envelope metadata SHALL be transport-neutral and owner-payload typed",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "5.1", "5.2", "5.3"]
+
+[[obligations]]
+id = "contracts.operation-control"
+owner = "src/trade/platform/contracts and src/trade/processes/contracts"
+paths = [
+  "src/trade/platform/contracts/",
+  "src/trade/processes/contracts/",
+  "tests/unit/platform/contracts/",
+  "tests/unit/processes/contracts/",
+  "tests/contract/public_contracts/",
+]
+contracts = [
+  "trusted ActorContext and typed command/query envelope",
+  "stable IdempotencySubjectV1 and separated ReplayContextV1 attribution/authority",
+  "versioned domain-separated keyed command/idempotency fingerprints",
+  "OperationReceipt and bounded ProcessView",
+  "Platform command-admission identity separated from Processes ProcessStartKeyV1",
+  "safe versioned ErrorEnvelope and orthogonal closed states",
+  "truthful request-linked fenced ControlReceipt and ShutdownReceipt",
+  "Platform OpaqueId process links with no Platform-to-Processes import",
+]
+failure_states = [
+  "payload actor spoofing",
+  "historical replay attribution reused as current authority",
+  "direct replay creates a missing operation or discloses it before current authorization",
+  "direct replay returns a historical receipt before durable current-request audit",
+  "replay request identity reused for a different binding",
+  "replay audit unavailable or duplicated after crash/retry",
+  "principal collision after reauthentication, scope rotation or delegation",
+  "operation persistence unavailable",
+  "idempotency key reused for a different command",
+  "multiple retained-version claims, key-set rotation race or contention exhaustion",
+  "missing or unsafe idempotency refusal audit/telemetry",
+  "unknown or invalid state transition",
+  "not observed or unavailable process",
+  "cancel accepted but not terminal",
+  "control intent committed without a recoverable accepted receipt or outbox",
+  "control deadline exceeded",
+  "shutdown residual ownership",
+  "stale writer or unsafe crash takeover",
+  "unbounded tail wait",
+  "Platform importing Processes-owned ProcessId",
+  "Processes creating or rewriting a Platform-owned OperationReceipt",
+  "Platform and Processes sharing an idempotency claim, secret or transaction",
+  "parent ownership table used to authorize a repository before governed clarification",
+]
+spec_requirements = [
+  "operation-control-contracts:Actor context SHALL be established from trusted adapter evidence",
+  "operation-control-contracts:Command and query envelopes SHALL use typed owner payloads",
+  "operation-control-contracts:Operation receipts SHALL report durable admission and terminal state truthfully",
+  "operation-control-contracts:Process views SHALL be bounded read-only recovery projections",
+  "operation-control-contracts:Status families SHALL remain orthogonal and closed",
+  "operation-control-contracts:Error envelopes SHALL be safe, versioned and transport-neutral",
+  "operation-control-contracts:Cancellation SHALL distinguish request acceptance from terminal cancellation",
+  "operation-control-contracts:Shutdown SHALL have one finite deadline and explicit residual ownership",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.3", "3.1", "3.2", "3.3", "3.4", "5.1", "5.2", "5.3"]
+
+[[obligations]]
+id = "contracts.immutable-refs"
+owner = "future Context contract owners; this child owns normative policy and negative fixtures only"
+paths = [
+  "openspec/changes/kernel-and-public-contracts/specs/immutable-reference-policy/spec.md",
+  "tests/contract/owner_references/",
+  "trade_py/compat/observatory_contracts.py",
+]
+contracts = [
+  "owner-local kind, object, version and digest reference rule",
+  "path-free and moving-alias-free formal reference policy",
+  "owner-defined PolicyRef identity",
+  "owner validation after wire decoding",
+  "legacy-only LegacyArtifactObservation",
+  "owner-verifier provenance and no-follow TOCTOU evidence",
+]
+failure_states = [
+  "path or mutable alias in formal reference",
+  "missing referenced content",
+  "unsupported reference version",
+  "legacy artifact over-promoted to formal reference",
+  "wire decode mistaken for publication or PIT proof",
+  "digest tamper or unsafe legacy path",
+  "matched content claimed without stable owner verification",
+]
+spec_requirements = [
+  "immutable-reference-policy:Immutable reference identity SHALL preserve owner, type, version and content",
+  "immutable-reference-policy:Formal references SHALL exclude mutable aliases and storage locations",
+  "immutable-reference-policy:Policy references SHALL identify immutable policy content",
+  "immutable-reference-policy:Reference construction and wire decoding SHALL fail closed",
+  "immutable-reference-policy:Legacy artifacts SHALL remain explicitly observational",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.2", "4.1", "4.2", "5.1", "5.2", "5.3"]
+
+[[obligations]]
+id = "contracts.compatibility"
+owner = "trade_py/compat public contract adapters and packaging"
+paths = [
+  "pyproject.toml",
+  "trade_py/compat/bus_contracts.py",
+  "trade_py/compat/job_run_contracts.py",
+  "trade_py/compat/observatory_contracts.py",
+  "trade_py/compat/runtime_contracts.py",
+  "tests/contract/public_contracts/",
+  "tests/test_cli_event_trigger.py",
+  "tests/test_runtime_commands.py",
+  "tests/test_web_runtime_commands.py",
+  "tests/test_web_runtime_resources.py",
+  "tests/test_btc_observatory_api.py",
+]
+contracts = [
+  "exact bounded canonical v1 serialization",
+  "one-wheel source/editable/offline-no-deps dual-package compatibility",
+  "owner-specific one-way conservative legacy mapping without aggregate facade",
+  "unchanged CLI/HTTP/EventBus/job-runs/Observatory/shutdown snapshots",
+  "finite receipt and ProcessView observation for future interfaces",
+  "hard gate on runtime-owner-shutdown-and-recovery-hardening-v1 before adoption",
+]
+failure_states = [
+  "unknown schema field or version",
+  "wire size or depth exceeded",
+  "pre-materialization duplicate key, invalid UTF-8/surrogate, depth, integer-token or aggregate parser budget exceeded",
+  "canonical Unicode, escape, solidus or decoded-key ordering ambiguity",
+  "canonical instant precision, offset or leap-second ambiguity",
+  "source-only import hidden by sys.path",
+  "unexpected wheel member or undeclared package-data growth",
+  "legacy snapshot regression",
+  "unknown legacy status mapped to success",
+  "mixed-origin naive job-run time promoted to UtcInstant or current ownership",
+  "Data Operations open status/evidence promoted without an owner contract",
+  "EventBus mapping allocates above the 1,024-source-result bound",
+  "EventBus live, persisted or replay time promoted to canonical temporal evidence",
+  "unsafe message, PID, path or exception promoted to canonical contract",
+  "legacy long wait adopted as a new API default",
+  "runtime contract adopted before hardening gate",
+  "legacy runtime imports target control contracts outside the exact compatibility allowlist",
+  "legacy runtime bypasses the target import fence through a compatibility leaf adapter",
+  "mixed EventBus handler outcomes flattened or /api/run run_id promoted to a formal receipt",
+]
+spec_requirements = [
+  "public-contract-compatibility:Public contract serialization SHALL be deterministic, exact and bounded",
+  "public-contract-compatibility:Source, editable and wheel installations SHALL expose compatible packages",
+  "public-contract-compatibility:Legacy mappings SHALL be explicit, one-way and conservative",
+  "public-contract-compatibility:Current mutation and status surfaces SHALL retain snapshots until owning migration",
+  "public-contract-compatibility:Compatibility shall not invent formal owner facts",
+  "public-contract-compatibility:Public wait and control compatibility SHALL expose finite observation",
+  "public-contract-compatibility:Runtime contract adoption SHALL be separately hardened",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.3", "4.1", "4.2", "5.1", "5.2", "5.3", "5.4"]
