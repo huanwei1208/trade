@@ -2,29 +2,29 @@ schema_version = 1
 policy_version = "v1"
 policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
 artifact_digest_algorithm = "sha256-path-content-v1"
-artifact_digest = "sha256:bb77f920409c1ee7d3bbf80fb564719920dfa69adb84fa310672577a6cab4460"
-reviewed_commit = "5ef594e4b477ca161a4a5e3aaf3f557bc9c7c24b"
-reviewed_at = "2026-07-23"
+artifact_digest = "sha256:f3b92f11b56de64674e3f0edb83ff028c78e548d1a7cd29193974e03dcc855ec"
+reviewed_commit = "f3be376ac0d197bd615f8cef998211edbc975bc1"
+reviewed_at = "2026-07-26"
 status = "approved"
 bootstrap = false
 
 [[judges]]
 role = "reliability"
 status = "approved"
-score_before = 8.0
-score_after = 9.0
+score_before = 9.0
+score_after = 9.5
 
 [[judges]]
 role = "performance"
 status = "approved"
-score_before = 9.0
-score_after = 10.0
+score_before = 8.0
+score_after = 9.5
 
 [[judges]]
 role = "architecture"
 status = "approved"
-score_before = 5.0
-score_after = 9.0
+score_before = 9.3
+score_after = 9.6
 
 [[judges]]
 role = "data_quality"
@@ -35,14 +35,14 @@ score_after = 10.0
 [[judges]]
 role = "observability"
 status = "approved"
-score_before = 7.0
-score_after = 9.0
+score_before = 9.3
+score_after = 9.5
 
 [[judges]]
 role = "news_future"
 status = "approved"
-score_before = 8.8
-score_after = 9.0
+score_before = 9.0
+score_after = 9.5
 
 [[findings]]
 id = "TRADE-ARCH-001"
@@ -145,10 +145,101 @@ id = "TRADE-FUTURE-001"
 priority = "P2"
 severity = "MED"
 consensus_count = 1
-status = "accepted"
-resolution = "The capture-boundary child must distinguish Capture transport, integrity, source-contract, and rights quarantine from Datasets semantic usefulness, canonical interpretation, model fitness, and release eligibility; no target Context ownership is changed by accepting this refinement."
+status = "resolved"
+resolution = "Capture transport, integrity, source-contract, rights and access quarantine remain distinct from Dataset semantic quality and publication, with explicit revalidation and delivery-DLQ boundaries."
 evidence = [
   "specs/capture-contract/spec.md:Capture quarantine SHALL remain distinct from delivery DLQ",
+  "specs/capture-contract/spec.md:Capture quarantine SHALL control access and revalidation",
   "design.md:Bounded Context definitions",
+  "tasks.md:3.1",
+]
+
+[[findings]]
+id = "TRADE-R2-PERF-001"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "The BTC workspace cannot select its batched BFF on functional or bounded-fan-out evidence alone; it must pass a BTC-specific CapacityEnvelope and the cumulative CombinedCapacityEnvelope with four-panel, cache, failure, scan, resource, coexistence and fair-recovery evidence."
+evidence = [
+  "design.md:BTC observation and analysis UI v1",
+  "specs/interface-compatibility/spec.md:BTC observation and analysis SHALL use one evidence identity",
+  "tasks.md:4.4",
+]
+
+[[findings]]
+id = "TRADE-R2-REL-001"
+priority = "P2"
+severity = "MED"
+consensus_count = 2
+status = "resolved"
+resolution = "Command ingress binds a scoped idempotency key to trusted authority, command kind and canonical digest; a different digest returns a stable conflict and creates no second owner transaction, Process generation or context command."
+evidence = [
+  "specs/platform-foundation/spec.md:Platform persistence and events SHALL precede Context extraction",
+  "specs/process-orchestration/spec.md:Commands and events SHALL have durable handoff receipts",
+  "tasks.md:2.3",
+]
+
+[[findings]]
+id = "TRADE-R2-DATA-001"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "resolved"
+resolution = "Formal PIT owns one canonical clock enum and knowledge-mode eligibility matrix that distinguishes or explicitly aliases event, publication, available, received, fetched, observed, first-seen and revision clocks without collector-clock substitution."
+evidence = [
+  "design.md:Point-in-time and predictive evidence",
+  "specs/dataset-product-lifecycle/spec.md:Datasets SHALL own quality, lineage, revisions and point-in-time resolution",
+  "tasks.md:3.2",
+]
+
+[[findings]]
+id = "TRADE-R2-DATA-002"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "resolved"
+resolution = "Multi-source reconciliation goldens cover source-local identity collision, conflicting finality and simultaneous supersession chains while retaining every candidate source, revision and finality identity in lineage."
+evidence = [
+  "specs/dataset-product-lifecycle/spec.md:Datasets SHALL own quality, lineage, revisions and point-in-time resolution",
+  "tasks.md:3.2",
+]
+
+[[findings]]
+id = "TRADE-R2-ARCH-001"
+priority = "P2"
+severity = "LOW"
+consensus_count = 1
+status = "resolved"
+resolution = "Parent prerequisite state now identifies guardrails as implemented at baseline 4fa6113 and kernel-and-public-contracts as designed but still awaiting its own six-role review, strict approval and implementation."
+evidence = [
+  "design.md:Migration Phases and Child OpenSpec Changes",
+  "tasks.md:2.1",
+  "tasks.md:2.2",
+]
+
+[[findings]]
+id = "TRADE-R2-FUTURE-001"
+priority = "P2"
+severity = "MED"
+consensus_count = 2
+status = "resolved"
+resolution = "An L2 source profile must bind depth, update rate, snapshot-plus-delta burst, segment rotation, buffered and uncommitted data, checkpoint lag and recovery in isolated and cumulative capacity evidence."
+evidence = [
+  "specs/capture-contract/spec.md:Capture admission SHALL be durable across source and credential scope",
+  "design.md:Current-state audit",
+  "tasks.md:3.1",
+]
+
+[[findings]]
+id = "TRADE-R2-FUTURE-002"
+priority = "P2"
+severity = "MED"
+consensus_count = 1
+status = "resolved"
+resolution = "Third-party or otherwise untrusted source plugins require an execution trust class and reviewed process, network, filesystem, quota, credential, process-tree and crash-containment policy before loading or provider interaction."
+evidence = [
+  "specs/capture-contract/spec.md:Source adapter conformance evidence SHALL be identity-bound",
+  "design.md:Migration Phases and Child OpenSpec Changes",
   "tasks.md:3.1",
 ]

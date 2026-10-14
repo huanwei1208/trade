@@ -35,6 +35,23 @@ started workers cannot exceed the same source/credential limit. A retry SHALL
 persist its retry-after/deadline evidence and a stream SHALL advance a
 checkpoint only after its segment receipt is durable.
 
+The same owner SHALL persist a circuit state for each declared provider,
+credential and shared failure-domain scope. Its versioned policy SHALL define
+classified failure inputs, rolling window, open threshold, cool-down,
+half-open probe lease/count, success threshold and operator override authority.
+Admission SHALL atomically evaluate quota, cost, concurrency and circuit
+generation; independently started workers SHALL NOT each create a private
+circuit or consume parallel half-open probes. Circuit state, Retry-After and
+availability are transport evidence, not Dataset quality or source truth.
+
+Before an L2 source profile is eligible for activation, its admission and
+capacity evidence SHALL bind book depth, updates per second,
+snapshot-plus-delta burst shape, segment rotation bytes/time, buffered and
+uncommitted bytes/segments, checkpoint lag, reconnect/resnapshot behavior and
+finite overload recovery. These dimensions SHALL be present in both the
+profile's isolated `CapacityEnvelope` and the cumulative
+`CombinedCapacityEnvelope`; a generic stream label is insufficient.
+
 #### Scenario: Two workers share one provider credential
 
 - **WHEN** two Capture workers submit requests using the same SourceManifest
@@ -42,6 +59,66 @@ checkpoint only after its segment receipt is durable.
 - **THEN** durable admission accepts only reservations within the shared limit,
   records explicit deferred/rejected outcomes for the remainder, and retains
   Retry-After/deadline/checkpoint evidence across worker restart
+
+#### Scenario: Multiple workers encounter one failing provider
+
+- **WHEN** classified failures open a provider or credential circuit while
+  independently started workers still have pending requests
+- **THEN** subsequent admission observes the same durable open generation,
+  admits only the bounded half-open probe owner after cool-down, records
+  deferred or circuit-open outcomes for other workers and does not turn the
+  provider failure into successful empty Capture
+
+#### Scenario: An L2 burst exceeds the admitted stream profile
+
+- **WHEN** a snapshot-plus-delta burst exceeds the declared depth,
+  updates-per-second, buffered-byte or checkpoint-lag budget
+- **THEN** Capture applies the declared finite defer, disconnect, resnapshot or
+  backpressure outcome, preserves committed segment/checkpoint identity, records
+  overload evidence and does not silently drop deltas or advance the checkpoint
+
+### Requirement: Source adapter conformance evidence SHALL be identity-bound
+
+Every SourceManifest profile used for formal Capture SHALL reference a
+`SourceAdapterConformanceReceiptRef` issued by an approved runner. The receipt
+SHALL bind adapter executable and dependency-lock digests, source-profile and
+contract versions, conformance-suite digest, runtime/environment identity,
+trusted issuer/attestation, each declared pull/push/stream/import/replay/
+backfill/revision/clock/finality capability result, terminal result, issue time,
+expiry and revocation state. Self-issued, expired, revoked or partially passing
+evidence SHALL NOT authorize a declared formal capability.
+
+The exact passing receipt digest SHALL be included in SourceManifest admission,
+CapturePlan, CaptureRun, Capture receipt and `CaptureArtifactRef` lineage so
+Datasets can verify which tested adapter behavior produced the evidence. A
+runtime, dependency, suite, profile or adapter change requires a new receipt;
+matching only a logical adapter name or interface version is insufficient.
+
+Every adapter profile SHALL declare an execution trust class. Before a
+third-party or otherwise untrusted plugin is admitted, its SourceManifest and
+conformance receipt SHALL bind the reviewed process-isolation mode,
+network-egress and filesystem allowlists, resource quotas, credential boundary,
+process-tree termination policy and crash-containment result. In-process
+execution MAY be approved only for an explicitly trusted first-party profile;
+plugin or entry-point naming alone SHALL NOT grant that trust.
+
+#### Scenario: An adapter profile changes after conformance passed
+
+- **WHEN** a Capture request resolves an adapter whose executable, dependency,
+  runtime, source profile or suite identity differs from its passing
+  conformance receipt
+- **THEN** formal admission fails with an explicit conformance-not-proven
+  outcome, performs no provider interaction and cannot reuse another profile's
+  or an expired receipt's terminal result
+
+#### Scenario: An untrusted plugin has no containment evidence
+
+- **WHEN** a third-party or untrusted adapter satisfies its data-shape suite but
+  lacks matching process, egress, filesystem, quota or crash-containment
+  evidence for the requested profile
+- **THEN** Capture rejects admission before loading or invoking the plugin,
+  records conformance-not-proven with the missing containment class and performs
+  no provider interaction
 
 ### Requirement: SourceManifest SHALL enforce source rights and downstream use
 

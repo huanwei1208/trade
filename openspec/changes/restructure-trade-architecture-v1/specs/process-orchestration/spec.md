@@ -8,6 +8,14 @@ Process Manager record SHALL include `process_id`, `process_type`,
 `correlation_id`, `causation_id`, `idempotency_key`, `state`, `current_step`,
 `retry_count`, `deadline`, `last_error` and `compensation_state`.
 
+The initial process catalog SHALL contain `refresh_dataset`,
+`close_evidence_gap`, `propagate_revision`, `run_registered_study`,
+`publish_dataset`, `rebuild_projection` and `generate_daily_workspace`.
+Rights-aware sources SHALL add `propagate_rights_restriction` before such a
+source can publish downstream products. Each process type SHALL have its own
+state/step policy and handler module; the catalog SHALL NOT become a catch-all
+workflow service.
+
 #### Scenario: A duplicate command is delivered
 
 - **WHEN** a scheduler, event replay or interface delivers a command with an
@@ -22,11 +30,27 @@ Process Manager record SHALL include `process_id`, `process_type`,
 - **THEN** recovery replays the durable event, resumes from the idempotent
   current step and does not infer completion from in-memory work
 
+#### Scenario: A daily workspace joins partially available inputs
+
+- **WHEN** `generate_daily_workspace` reaches its deadline with valid Dataset
+  and Study refs but an optional Decision Support or Platform status input is
+  unavailable
+- **THEN** its declared step policy either waits or emits an explicit
+  partial/degraded workspace projection with the exact missing input state,
+  and does not substitute current tables, moving latest values or a successful
+  empty result
+
 ### Requirement: Commands and events SHALL have durable handoff receipts
 
 Every command ingress SHALL create or return an `OperationReceipt` containing
 an operation ID, `ActorContext`, correlation/causation IDs, idempotency key,
 accepted command digest, state, reason code and process linkage where relevant.
+The idempotency claim SHALL be scoped by trusted actor/tenant authority and
+command kind and SHALL bind the canonical command digest. Reuse of the same
+scoped key MAY return the existing receipt only when that digest matches. A
+different digest SHALL return a stable `IDEMPOTENCY_CONFLICT` or equivalent
+versioned reason, SHALL NOT reveal either raw payload, and SHALL start no second
+owner transaction or Process generation.
 Platform Events SHALL persist an outbox envelope, consumer inbox claim,
 delivery lease, acknowledgement, attempt history, ordering key, payload-size
 limit, deadline and redrive/dead-letter state. A `ProcessView` SHALL expose
@@ -51,6 +75,16 @@ successful, empty or healthy state.
 - **THEN** command ingress returns the existing OperationReceipt or ProcessView
   linkage, creates no second owner transaction, and records the duplicate
   attempt without leaking credentials or raw payload content
+
+#### Scenario: An idempotency key is reused for a different command
+
+- **WHEN** two concurrent or retried ingress requests use the same trusted actor
+  scope, command kind and idempotency key but have different canonical command
+  digests
+- **THEN** at most the first matching claim may be accepted, the other request
+  returns the stable idempotency-conflict reason linked to the original
+  operation, and no second owner transaction, Process generation or context
+  command is created
 
 #### Scenario: A slow consumer causes delivery backlog
 
@@ -105,6 +139,15 @@ the workflow.
   records release generation, audit evidence and DatasetReleased outbox event;
   a Process may request that command after a cross-context trigger but may not
   own or directly mutate the release pointer
+
+#### Scenario: A projection rebuild joins facts from multiple owners
+
+- **WHEN** `rebuild_projection` is triggered by Dataset, Study or Decision
+  events
+- **THEN** the Process pins the triggering immutable refs and target projection
+  generation, invokes bounded owner queries or projection commands and records
+  per-owner outcomes without reading an owner table or making the projection a
+  second fact authority
 
 #### Scenario: A process deadline expires
 

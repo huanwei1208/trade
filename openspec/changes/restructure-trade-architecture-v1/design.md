@@ -28,6 +28,22 @@ SQLite files, parquet files, provider endpoints or generated artifacts. The
 historical architecture documents in `docs/` informed vocabulary only; all
 current-state claims below derive from code and repository configuration.
 
+Four source-audited attachments are normative inputs to this design:
+
+- `current-state-inventory.md` records the repository, runtime, interface,
+  state and test/CI inventory at the audited commit;
+- `file-ownership-map.md` classifies mixed modules file by file and records
+  the proof required before movement;
+- `table-and-artifact-ownership.md` assigns the 56 discovered logical tables
+  and eight artifact families to candidate or migration-blocked owners; and
+- `interface-compatibility-matrix.md` accounts for all 13 canonical CLI
+  domains, eight shims, the 68/77 business HTTP routes, both SSE streams,
+  product BFFs, SDK/notebook/import and scheduler/event entries.
+
+The attachments do not override a later child audit. A discovered mismatch
+blocks movement until the attachment and child design are reconciled; it is
+never silently treated as unused code.
+
 | Audited area | Current code fact | Consequence for target design |
 |---|---|---|
 | CLI | Root `trade` is the stable Bash facade; `trade_py/cli/main.py` registers canonical `run`, `status`, `data`, `show`, `research`, `kg`, `observatory`, `config`, `event`, `backup`, `start`, `web`, `dev` plus legacy shims. | Keep external command names and aliases. Internal Context names do not become an immediate CLI rename. |
@@ -40,8 +56,9 @@ current-state claims below derive from code and repository configuration.
 | PIT | `trade_py/observatory/pit/resolver.py` filters by `available_at` or `fetched_at`, but currently keeps rows whose chosen timestamp is absent; `latest_restated` only flags and does not transform revisions. | A child change must make formal PIT resolution fail closed for absent required clocks and define real restatement semantics with golden tests. |
 | Source rights and temporal ingestion | `trade_py/data/news/rss/catalog.py` has no license, attribution, retention, redistribution, LLM-use or region policy fields. `data/news/rss/base.py` can substitute collector-now when publication time is absent. | Versioned SourceManifest policy must enforce rights and preserve absent source time; a semantic/ML consumer must retain derivation provenance. |
 | Event runtime | `trade_py/bus` has durable event records, channel admission and replay. `trade_py/jobs/__init__.py` is a large job registry/execution concentration coupled to the bus. | Treat current bus mechanics as a Platform seed; extract business job behavior to context use cases and process managers. |
+| Runtime shutdown | `trade_web/backend/runtime/resources.py` has a 10-second owner deadline, close-admission ordering and retryable `stopping`, but still wraps blocking `wait=True` shutdowns in daemon threads. `trade_py/cli/web.py` adds a 3-second Uvicorn grace period, 5-second SIGINT watchdog and 2-second post-return forced-exit fallback. `trade_py/bus` has bounded executor cancellation. | Preserve these `converge-runtime-boundaries` compatibility seeds, then give Bootstrap one monotonic deadline and one retryable lifecycle across Web, CLI, workers and schedulers. Nested waits and unowned child process trees remain design debt, which explains observed shutdown hangs. |
 | Restore path | `scripts/backup.py` extracts/restores the selected archive without first proving every member against a manifest and SHA-256 digest. | Platform Backup must verify safe archive members and staged contents before activating a restore, then retain an append-only restore receipt. |
-| Web | `trade_web/backend/app.py` is about 3,781 lines and mixes routes, BFF reads, direct DB/parquet access and operational writes. `runtime/` already has a resource container and router; `observatory/router.py` is a read-only focused router. | Preserve current routes with `interfaces/http/compat`; use the existing focused-router pattern as a migration path. |
+| Web | `trade_web/backend/app.py` is about 3,781 lines and mixes routes, BFF reads, direct DB/parquet access and operational writes. `create_app()` registers 72 routes when Observatory is default-off or its data-router registration failed, and 81 when the full Observatory data surface is enabled; both modes include two SSE routes. OpenAPI generation fails on the locally declared `PredictRequest` forward reference. `GET /api/causal/{symbol}` and its validation route can persist state. | Preserve current routes with `interfaces/http/compat`; freeze both capability-gated registry modes and golden payloads before fixing/adding OpenAPI snapshots, and never omit `/predict` because schema generation failed. Convert write-capable GET behavior through compatibility commands before enforcing read-only BFFs. |
 | Frontend | `trade_web/frontend/src/lib/api.ts` currently exposes `today`, `candidates`, `symbol`, `ops`, `research`, `data`, `observatory`; product widgets also expose Actions and Trust endpoints. | Existing pages remain product surfaces. Future BFFs compose query handles rather than directly own tables or lifecycle actions. |
 | Notebook | `research/notebooks/btc_h1_observatory.py` changes `sys.path` to find repository modules. | Create an SDK/Notebook contract before moving notebook locations; prohibit repository scanning and adapter imports after cutover. |
 | C++ | `engine/` is independently built. `engine/cmake/python_bindings.cmake` plans a `trade_py` binding that is not an established working boundary; `trade_py/__init__.py` self-imports as a native probe. | C++ remains an adapter implementation. A future binding is `_trade_native`, accessed only behind a Context port. |
@@ -51,7 +68,11 @@ current-state claims below derive from code and repository configuration.
 The following is an ownership classification inventory, not a claim that every
 listed table exists with exactly the intended future schema. Existing names
 remain readable through compatibility repositories until the owning child change
-has completed its exit criteria.
+has completed its exit criteria. The machine-readable
+`architecture-baseline.toml`, produced from current code by the approved
+guardrails/baselines work, is the detailed source for discovered table,
+artifact, writer, interface and migration evidence; this parent map groups
+those records by future authority rather than duplicating a second inventory.
 
 | Current facts/artifacts | Current code owner | Target classification | Evidence |
 |---|---|---|---|
@@ -66,6 +87,37 @@ has completed its exit criteria.
 | `instruments`, `sector_members`, trading calendar, planned events | `TradeDB` | Dataset reference products, with scheduling projection reads through contracts | `trade_py/db/trade_db.py` |
 | KG nodes/relations/candidates, market events and propagation | `TradeDB`, KG CLI | File-by-file classification during Studies/Datasets child changes; no bulk directory move is authorized by this design | `trade_py/db/trade_db.py`, `trade_py/cli/kg.py` |
 | `ui_snapshots`, local UI state | `TradeDB`, Web | Rebuildable Interfaces/Platform projections; never business authority | `trade_py/db/trade_db.py`, `trade_web/frontend/src/*` |
+
+### Current mixed-directory file ownership ledger
+
+This ledger is the parent classification baseline. "Split" means the current
+file crosses target owners and must remain behind compatibility adapters until
+a child extracts behavior into owner-local use cases; it never authorizes a
+whole-file move that preserves the coupling.
+
+| Current file or file family | Observed responsibility and coupling | Candidate target owner | Required proof before movement |
+|---|---|---|---|
+| `analysis/crypto_validation.py` | walk-forward folds, placebo, bootstrap evidence and BTC validation over DataFrames/files | Studies | StudySpec, pinned DatasetSnapshotRef, deterministic environment and result golden |
+| `analysis/factor_evaluation.py`, `factor_quantile.py`, `sentiment_ic.py`, `model_trainer.py`, `propagation_training.py` | factor/model evaluation and training, currently reading paths or `TradeDB` | Studies | snapshot-only input, preregistered metrics/labels, no moving files or global DB |
+| `analysis/feature_builder.py`, `intraday_runtime.py`, `propagation_runtime.py` | reusable feature construction mixed with provider fetch, DB access, materialization and inference bridges | Split: Capture interaction, Datasets reusable product, Studies run-local transform | separate raw receipt, independently versioned feature schema/lineage test and run-local classification |
+| `analysis/devil_advocate.py`, `multi_persona.py`, `patience_tracker.py` | rationale/challenge/debate and decision-follow-up artifacts | Decision Support candidate | immutable Study/Dataset evidence, audit/expiry state and no autonomous execution |
+| `analysis/knowledge_graph.py`, `intelligence/graph/*` | reference graph plus learned propagation/model candidates | Split: Datasets reference product, Studies learned validation; Decision Support only for reviewed use | immutable graph schema/lineage, Study validation and row-level KG table audit |
+| `evaluation/sources.py`, source/quality portions of `gate.py` and `trust.py` | source health, quality gate and reliability projections | Datasets | DatasetVersion lineage, quality policy identity and owner-local writes |
+| `evaluation/events.py`, `models.py`, model portions of `gate.py`, `utils.py` | event/model evaluation, labels, calibration and mutable cache fingerprints | Studies | pinned snapshot, deterministic validation and no direct SQLite/parquet discovery |
+| recommendation calibration portions of `evaluation/trust.py` | Brier/drift/trust updates over recommendation history | Decision Support candidate, with Study validation inputs | distinguish model validation from reviewed decision trust; append-only audit and explicit unavailable state |
+| `evaluation/service.py` | catch-all orchestration across source, event, model, gate and trust evaluation | Split; later replaced by owner use cases plus a Process | no direct move; one command/event step and transaction owner per extracted behavior |
+| `evidence/ingest.py` | evidence ingestion entry | Capture candidate | provider/import identity, raw artifact digest, SourceManifest and replay proof |
+| `evidence/enrich.py`, `aggregate.py`, `quality.py` | semantic enrichment, aggregation, smoothing and quality output | Datasets derived products unless proven Study-local | reusable schema/lineage/release versus run-local feature decision |
+| `factors/definitions.py`, `technical.py`, `groups/*`, `encoder.py`, `materializer.py` | reusable feature definitions/materialization with direct file/DB dependencies | Datasets when independently versioned and published; otherwise Studies-local | feature ownership rule, immutable input refs, schema/lineage and release contract |
+| `factors/inference_bridge.py`, `trust_update.py`, `registry.py` | signal persistence, utility validation and mutable trust/registry state | Split: Studies validation, Datasets published feature metadata, Decision Support signal view | eliminate direct `TradeDB`; identify the one fact and writer for every record |
+| `intelligence/raw_record.py`, `clients/*` | raw record identity and external LLM/provider calls | Capture adapters for interaction/receipt; no provider client in Datasets/Studies | SourceManifest processor/licensing policy, request/response receipt, quota/circuit and replay |
+| `intelligence/base_factors.py`, `crypto_base_factors.py`, `enricher.py`, `feed_scorer.py` | reusable semantic derivation and source-value outputs | Datasets derived products | model/prompt/parser/environment lineage, immutable input and versioned output schema |
+| `intelligence/nlp_train.py`, learned portions of `graph/*` | model fitting and held-out evaluation | Studies | registered StudySpec, OOS evidence, promotion receipt and artifact ref |
+| `intelligence/meta_store.py` | mixed raw/source scoring metadata in a separate SQLite store | Split by fact owner; no new global metadata facade | table-by-table owner assignment and migration reconciliation |
+| `observatory/catalog/*`, `pit/*`, `service/artifacts.py`, `service/identity.py`, `service/resolver.py`, `service/purpose_fitness.py` | rebuildable catalog, artifact verification, snapshot/PIT and fitness logic | Datasets | formal PIT/revision proof, immutable refs, bounded read and projection rebuild |
+| `observatory/research/*` | research run/import/promote workflow and receipts | Studies; file import first enters Capture | DatasetSnapshotRef-only run, import receipt, promotion and deterministic rerun |
+| `observatory/query/*`, Web Observatory router and serializers | product query facade, SDK handles and response shaping | Interfaces over Datasets/Studies contracts | no direct artifact/repository path, DTO snapshot and bounded BFF query |
+| `observatory/domain/*` | mixed acquisition, quality, research, availability and presentation vocabulary | Split into owner contracts; retain compatibility DTOs during window | type-by-type semantic owner and serialization compatibility matrix |
 
 ### Facts, design assumptions and deferred classification
 
@@ -85,6 +137,17 @@ change:
   deferred.
 - Stream/L2 and remote worker providers use the same Capture contracts but need
   a separate capacity and storage sizing proposal before production activation.
+  An L2 proposal must bind depth, updates per second, snapshot-plus-delta burst,
+  segment rotation, buffered/uncommitted bytes and checkpoint-lag workloads.
+  A third-party or otherwise untrusted provider/plugin must additionally bind an
+  execution trust class and reviewed process, network-egress, filesystem,
+  resource-quota and crash-containment policy before admission.
+- The registered FastAPI table, not generated OpenAPI alone, is current route
+  evidence until the `PredictRequest` schema defect is repaired. The child must
+  reconcile both sources and representative payload goldens before extraction.
+- Existing Web shutdown improvements are real compatibility behavior, but they
+  do not prove that CLI, workers, schedulers, third-party executors or child
+  process groups share one lifecycle owner. Platform/Bootstrap owns that proof.
 
 ## Problems and Root Causes
 
@@ -113,6 +176,11 @@ change:
    `evaluation`, `evidence`, `observatory`, `factors` and `intelligence`
    contain mixed responsibilities. A directory move would reproduce the
    coupling under prettier names.
+8. **Shutdown ownership is layered and incomplete.** Uvicorn, Web resources,
+   EventBus, command executors and forced-exit safeguards each have local
+   behavior. A blocking `wait=True`, non-cooperative child or leftover thread
+   can outlive another layer's budget, so the caller sees a hung stop or an
+   abrupt exit without one complete resource receipt.
 
 ## Design Quality Brief
 
@@ -126,9 +194,9 @@ entry points while enabling an incremental route from `trade_py` and
 
 Acceptance of this design requires:
 
-1. The eight capability specifications define Capture, Dataset, Study, Decision
-   Support, Process, compatibility, dependency and migration behavior with
-   executable scenarios.
+1. The ten capability specifications define repository, Capture, Dataset,
+   Study, Decision Support, Process, interface, dependency, migration and
+   Platform behavior with executable scenarios.
 2. Every target cross-context input is a reference or DTO from an upstream
    `contracts` package. Formal Study execution accepts `DatasetSnapshotRef`
    only.
@@ -147,6 +215,13 @@ Acceptance of this design requires:
    infrastructure then exists before any Context emits a new outbox transition.
    Formal PIT/revision semantics are independently proven before a formal
    SnapshotRef or Study migration.
+8. Decision Support has an independent lifecycle/child change after Studies and
+   before process/interface cutover; it cannot be collapsed into a page,
+   research module or execution context.
+9. The HTTP baseline retains the 72-route default/error and 81-route enabled
+   Observatory registration modes plus both SSE contracts even while OpenAPI
+   generation is broken, and Bootstrap shutdown has one bounded, retryable
+   owner contract across every runtime entrypoint.
 
 Users are researchers, operators, Web users, CLI/SDK consumers and future
 automation adapters. Non-goals are changing trading semantics, validating a
@@ -268,21 +343,36 @@ benchmark, validation window and feature/label definitions; a result records
 coverage, sample count, uncertainty, calibration state and explicit unavailable
 or insufficient-data outcome rather than inventing a numeric fallback.
 
+The formal PIT child owns one canonical clock enum and a per-knowledge-mode
+eligibility matrix for event, publication, available, received, fetched,
+observed, first-seen and revision time. It explicitly declares which clocks are
+distinct and which source-specific fields are aliases; no child may silently
+substitute one clock for another. Multi-source reconciliation preserves every
+candidate source/revision identity in lineage and has golden cases for
+source-local identity collisions, conflicting finality and concurrent
+supersession chains.
+
 ### External-event data safety
 
 Capture validates every external interaction against a versioned SourceManifest
 that identifies verified source/provenance, license/attribution, retention,
 redistribution/export, allowed processors/regions, credential scope, durable
 source/credential admission, request/byte/cost budget, concurrency, retry
-classification, circuit breaker and availability state. Pull, push, stream,
-import, replay, correction and tombstone behavior writes immutable receipts,
-durable deduplication keys and quarantine/dead-letter evidence. Provider
-event/publication time remains absent when the provider did not supply it;
-collector-now is never substituted as a source clock. Rights revocation
-propagates an explicit restriction through retained downstream lineage.
-Provider unavailability, invalid content, rights restriction and rate limits
-remain explicit states; replay uses committed artifacts and never silently
-repeats a provider request.
+classification, circuit breaker and availability state. Quota, cost,
+concurrency, Retry-After and circuit generation are durable and shared by every
+worker in the same provider/credential/failure-domain scope; half-open probes
+use one fenced lease rather than one probe per process. Every formal source
+profile binds an approved `SourceAdapterConformanceReceiptRef` covering the
+exact executable, dependency lock, runtime, suite and declared capability
+matrix, and the passing receipt digest follows the CapturePlan, run, receipt and
+artifact lineage. Pull, push, stream, import, replay, correction and tombstone
+behavior writes immutable receipts, durable deduplication keys and
+quarantine/dead-letter evidence. Provider event/publication time remains absent
+when the provider did not supply it; collector-now is never substituted as a
+source clock. Rights revocation propagates an explicit restriction through
+retained downstream lineage. Provider unavailability, invalid content, rights
+restriction and rate limits remain explicit states; replay uses committed
+artifacts and never silently repeats a provider request.
 
 ### Failure and recovery
 
@@ -296,18 +386,59 @@ silent formal release.
 
 Every process has a durable idempotency key and resumes from its latest
 committed step after crash. Duplicate command delivery returns the existing
-receipt/process result. Outbox records are committed atomically with the
-context state transition; delivery can repeat, so event consumers are
-idempotent. Delivery has an inbox receipt, lease, acknowledgement, bounded
-attempt policy, backlog age/count/byte visibility and audited DLQ/redrive.
+receipt/process result only when actor scope, command kind and canonical command
+digest match. Reuse of the same scoped key with a different command digest
+returns a stable conflict without starting a second owner transaction. Outbox
+records are committed atomically with the context state transition; delivery
+can repeat, so event consumers are idempotent. Delivery has an inbox receipt,
+lease, acknowledgement, bounded attempt policy, backlog age/count/byte
+visibility and audited DLQ/redrive.
 Capture reconciliation classifies prepared/orphaned/corrupt artifacts after
 crash. Ordered deliveries retain scope/sequence/consumer expected-sequence
 evidence and do not silently apply `N+1` before `N`. Backup restore first
-validates safe archive members, manifest and SHA-256 digests in a staged root,
-then fences writers, journals a generation activation, rebinds runtimes and
-passes a health window; failure leaves or restores the prior active generation.
-A compensation only changes a pointer or creates a later record; it does not
-rewrite a previously immutable artifact.
+binds one SQLite/WAL, artifact-generation and delivery/process consistency cut
+with declared, rehearsed RPO/RTO, then validates safe archive members, manifest
+and SHA-256 digests in a staged root, fences writers, journals a generation
+activation, restores owners before projections/interfaces, rebinds runtimes and
+passes a health window. A cut mismatch, objective miss or activation failure
+leaves or restores the prior active generation. A compensation only changes a
+pointer or creates a later record; it does not rewrite a previously immutable
+artifact.
+
+Formal Snapshot, StudyResult, DecisionCase, process and backup references
+reserve their transitive evidence closure before commit. A consumer pre-acquires
+owner-issued `EvidenceClosureReservationRef` values with a finite confirmation
+deadline, commits its local
+aggregate, reservation refs and confirmation outbox atomically, and confirms
+upstream protection through idempotent delivery. A missed deadline becomes
+`reconciliation_required` and continues blocking GC; it never implies abort.
+Release requires a `ReferenceAborted` or audited retirement receipt bound to
+the consumer transaction, while committed or unknown references remain
+protected. This is not a cross-Context transaction. Retention/GC closes new
+reservations that intersect an immutable target set, repeats its final
+reachability census under the same target-level fence and persists
+planned/prepared/deleted target state plus an atomic deletion receipt. This
+prevents a new differently identified proof closure from racing between census
+and unlink, and makes an absent or changed target without matching prepared
+evidence an integrity refusal rather than a successful delete.
+
+Bootstrap owns one shutdown attempt and one monotonic deadline across CLI, Web,
+workers and schedulers. The order is: reject new ingress and schedules; settle
+or cancel Process/event claims; terminate owned child process groups with
+bounded TERM/KILL escalation; drain executors, queues, SSE heartbeats and
+leases; persist owner-local receipts/outbox; close repositories and SQLite
+last. Every component receives only the remaining owner budget. A timeout
+records the still-live resource and leaves retryable `stopping`; it never
+starts another full-duration wait, closes a database under live work, or
+reports `stopped` while owned processes/threads remain. Repeated signal,
+lifespan and caller stops join the same attempt.
+
+The same ownership starts during construction, not only after `running`.
+Bootstrap registers each acquired resource before admission; a later startup
+failure closes admission and cleans only acquired resources in reverse
+dependency order under one startup-cleanup deadline. A stuck startup worker,
+executor or lease therefore remains visible as retryable `stopping` and cannot
+be hidden behind a daemon cleanup thread or an unbounded legacy `wait=True`.
 
 ### Performance and capacity
 
@@ -333,6 +464,18 @@ schema-fixture examples only, not production defaults; each SourceManifest and
 child reserves documented provider-supported and measured limits before
 activation.
 
+Isolated child results are necessary but not sufficient. Every cumulative
+cutover also emits one `CombinedCapacityEnvelope` for the exact deployment
+topology that will coexist after selection. It concurrently exercises the new
+surface with all already selected provider/stream, Dataset/Study, outbox/replay,
+Process, maintenance and BFF/SSE workloads and allocates the whole runner's
+CPU, memory, disk throughput/space, SQLite writer time, file descriptors,
+connections, workers and child processes. Per-subsystem reservations must sum
+within the whole-system envelope, and overload must demonstrate finite
+admission shedding, backlog and fair recovery. A set of isolated passes cannot
+approve a combined topology that starves scrub, replay, shutdown or interface
+traffic.
+
 Dataset policy declares physical layout (partition, sort, row-group/file and
 compression constraints) and each read handle carries a `QueryBudget` for
 SQLite indexes/locks, Parquet partition/files/bytes scans and constrained
@@ -357,6 +500,12 @@ references and safe failure code. Context audit records retain actor, command,
 time, input references, output references and policy versions. Platform events
 retain delivery state and process execution retains timing, retry and
 cancellation evidence.
+
+Runtime status also exposes lifecycle generation, shutdown attempt/deadline,
+admission state, component outcome, live child/thread/lease counts, TERM/KILL
+outcome and last timeout reason. This is the operator-visible answer to a
+stuck stop: it distinguishes work still draining, a non-cooperative child, an
+executor/heartbeat leak, a database-use dependency and a completed shutdown.
 
 Status responses distinguish `empty`, `partial`, `degraded`, `unavailable`,
 `quarantined`, `stale`, `blocked`, `failed`, `unknown` and `not_observed`; none
@@ -385,6 +534,10 @@ coverage includes import-dependency guardrails, contract snapshots, immutable
 reference replay, PIT golden fixtures, capture replay, lineage, deterministic
 Study rerun, process recovery/idempotency, database owner checks, read-only
 query checks, C++/Python differential tests and migration rollback tests.
+Bootstrap lifecycle fixtures inject a non-cooperative child, a stuck executor,
+an SSE heartbeat, repeated stop callers and an in-use SQLite connection, then
+assert one deadline, process-tree termination, dependency ordering, retryable
+`stopping` and zero live owned resources on success.
 
 Each child change runs `./trade dev check --show-plan`, `./trade dev check`,
 focused tests, language-specific build/type checks and `git diff --check`.
@@ -421,10 +574,10 @@ recovery. Selected.
 ### Rollout and rollback
 
 Rollout begins with static dependency guardrails and public contract baselines,
-then adds Kernel/contracts, then Capture, Datasets, Studies, Processes/Platform
-and interfaces, before any package layout move or legacy retirement. Every
-child change is independently reviewable, worktree-isolated and feature-gated
-by compatible adapters.
+then adds Kernel/contracts and the Platform/Bootstrap foundation, then Capture,
+Datasets, Studies, Decision Support, Processes and interfaces, before any
+package layout move or legacy retirement. Every child change is independently
+reviewable, worktree-isolated and feature-gated by compatible adapters.
 
 Schema evolution is additive-versioned and retains old versions until both
 forward and backward readers have passed comparison fixtures. New records are
@@ -505,7 +658,10 @@ Every business context uses:
 `contracts` exports immutable refs, command/event/query DTOs and capability
 interfaces. `domain` only depends on Kernel. `ports` describes required
 external capability. `use_cases` depends on own domain/ports/contracts and
-upstream contracts. `adapters` implements own ports using external libraries.
+upstream contracts. `adapters` implements own ports using external libraries
+or generic Platform capabilities selected by Bootstrap. Business Context source
+does not import Platform; this preserves the declared Context dependency graph
+while still reusing technical implementations at runtime.
 
 One use case file owns one behavior, for example `request_capture.py`,
 `commit_capture.py`, `build_dataset.py`, `publish_dataset.py`,
@@ -627,16 +783,20 @@ reference `DatasetSnapshotRef` and `StudyResultRef`; it cannot own a provider
 request or release pointer.
 
 ```text
-DecisionCase: opened -> evidence_ready -> under_review -> accepted |
-              declined | expired | superseded
+DecisionCase: draft -> ready_for_review -> under_review -> accepted |
+              rejected | expired | superseded | withdrawn
 Review:       requested -> in_progress -> submitted -> superseded
 Override:     proposed -> approved | rejected | expired
 Intent:       drafted -> accepted | cancelled | expired
 ```
 
-`AuditTrail` is append-only. Expiry is time/policy-based and produces an
-explicit unavailable/expired decision view rather than copying a past
-recommendation forward.
+`AuditTrail`, submitted Review, Rationale and Override records are append-only.
+Every transition records actor, reason, evidence refs, policy, correlation and
+causation in one Decision Support transaction. Expiry or an upstream
+Dataset/Study revision produces an explicit expired/stale/under-review view
+rather than copying a past recommendation forward. `PortfolioIntent` remains a
+non-executable human-assist artifact; this design creates no broker, exchange,
+order, settlement or capital-risk capability.
 
 ## Immutable Reference Model
 
@@ -677,17 +837,13 @@ graph TD
   B[bootstrap]
 
   C --> K
-  C --> PL
   D --> K
   D --> Cc
-  D --> PL
   S --> K
   S --> Dc
-  S --> PL
   DS --> K
   DS --> Dc
   DS --> Sc
-  DS --> PL
   P --> K
   P --> Cc
   P --> Dc
@@ -714,6 +870,7 @@ The graph is enforced by static import tests and a deny-list:
 ```text
 business context -> processes                       forbidden
 business context -> another context implementation  forbidden
+business context -> platform                         forbidden; use own port
 platform -> business Context contracts/implementation forbidden
 domain -> ports/adapters/use_cases                   forbidden
 use_cases -> concrete adapters                       forbidden
@@ -866,11 +1023,19 @@ dispatch and consumer delivery mechanics.
 The state machine is:
 
 ```text
-requested -> running -> waiting -> completed
-                    -> retry_scheduled -> running
-                    -> compensation_pending -> compensated | failed
-                    -> blocked | cancelled | deadline_exceeded
+requested -> running
+running -> waiting | retry_scheduled | compensation_pending
+running -> completed | blocked | cancelled | deadline_exceeded | failed
+waiting -> running | compensation_pending | blocked | cancelled | deadline_exceeded
+retry_scheduled -> running | cancelled | deadline_exceeded
+compensation_pending -> compensated | failed
 ```
+
+Every transition is persisted with expected prior state and process generation.
+`completed`, `compensated`, `failed`, `blocked`, `cancelled` and
+`deadline_exceeded` are terminal for one attempt; a retry or operator recovery
+creates or resumes the explicitly permitted generation rather than rewriting a
+terminal receipt.
 
 | Process | Trigger and commands | Completion/compensation |
 |---|---|---|
@@ -887,6 +1052,16 @@ process manager and record an outcome. They do not embed the entire workflow.
 Schedulers emit command envelopes only. A CLI or HTTP handler creates a command
 and returns a receipt/process ID; it does not synchronously own every step.
 
+Replacing a legacy workflow handler is itself a durable Process-owned semantic
+transition over a generic Platform selector. Forward selection is
+`legacy_selected -> denying_legacy -> quiescing_legacy ->
+process_switch_prepared -> process_selected`; rollback is symmetric. Selection
+requires durable admission denial, zero losing-handler owned operations and
+child processes, and settled or transferred Platform Events leases before one
+generation-fenced selector compare-and-swap. Crash recovery and every rollback
+step retain exactly one selected handler; a blocked non-cooperative legacy
+handler cannot coexist with a newly selected Process handler.
+
 ## Database and Artifact Ownership
 
 ### Target logical table ownership
@@ -894,6 +1069,10 @@ and returns a receipt/process ID; it does not synchronously own every step.
 One table has one context owner. The physical SQLite file may remain shared
 temporarily, but only the owner repository writes and migrates its tables.
 Readers from another context use contracts, events or an owned projection.
+The row-complete current-to-target ledger is
+`table-and-artifact-ownership.md`; entries marked `MIGRATION BLOCKED` remain
+under their current compatibility owner until a child supplies row-level
+classification, writer proof, additive migration and rollback evidence.
 
 | Table or artifact family | Current owner | Target context/repository | Readers | Writers | Transaction boundary | Migration owner |
 |---|---|---|---|---|---|---|
@@ -974,8 +1153,19 @@ query contracts exist.
 
 ### HTTP and SSE
 
-The authoritative route inventory is generated from current FastAPI registration
-before each extraction. Compatibility requires preserving:
+The authoritative route inventory is generated from current FastAPI
+registration before each extraction. Audit reproduces 72 routes when
+Observatory is default-off or its data-router registration fails, and 81 routes
+when its full data surface is enabled. The capability probe remains present in
+all three states; the nine data routes are capability-gated. Both inventories
+include:
+
+- `GET /api/events/stream(after_id=0, limit=50, poll_seconds=2.0)`, where
+  `limit` is 1 through 500 and polling is 0.25 through 60 seconds;
+- `GET /api/runtime/stream(scope="report", poll_seconds=2.0)`, with the same
+  polling range.
+
+Compatibility requires preserving:
 
 - path and HTTP method;
 - path/query/body fields, defaults and validation;
@@ -983,11 +1173,39 @@ before each extraction. Compatibility requires preserving:
 - SSE event names, reconnect behavior and bounded cursor semantics;
 - response payload fields used by the React client, scripts and SDK.
 
+`interface-compatibility-matrix.md` is the complete current registry ledger. It
+accounts for the 68 default/error and 77 enabled business routes by mutually
+exclusive families, records inputs/defaults/status/header/error behavior for
+every route, and binds each family to a target owner, fixture and deletion
+condition. Child changes regenerate rather than hand-maintain the executable
+registry snapshot, but any difference from this audited ledger is a review
+finding that must be explained before delegation.
+
+Current route families are runtime/status/calendar/agenda/backup; DAG,
+trigger/run, events/workflows and execution runs; automation/report/KG;
+warehouse/readiness/replay/compute; prediction/model reload; Today, belief,
+signals, state, explanation, causal validation, Actions and Trust; symbol
+evidence/sector/data operations/Kline; data inventory/gaps/news/coverage; and
+the capability-gated BTC Observatory context/series/date/trust/runs/diff/
+hypothesis/research routes. `POST /predict` remains in the inventory.
+
+The current `app.openapi()` call fails because the function-local
+`PredictRequest` remains an unresolved Pydantic forward reference. Until a
+compatibility child repairs that defect, route registry signatures and golden
+requests/responses are the primary baseline. OpenAPI failure is a failed check,
+not permission to emit an empty file or omit `/predict`. After repair, registry
+and OpenAPI snapshots must reconcile.
+
 `interfaces/http/compat/` accepts old transport forms and maps them to stable
 use-case/query DTOs. It is the only place allowed to understand legacy payload
 aliases. New BFF routers use query handles and commands; they do not import a
 context repository or scan parquet. Existing `/api/*` routes are not renamed
-because a Python module moved.
+because a Python module moved. The current
+`GET /api/causal/{symbol}?persist=true` and
+`GET /api/causal/{symbol}/validation` defaulting `persist=true` are explicit
+query/command debt: compatibility must preserve old responses while delegating
+writes to a receipt-producing command path, then deprecate write-on-GET only
+through a separately approved public-contract transition.
 
 ### Web page BFF matrix
 
@@ -1025,6 +1243,77 @@ and hypothesis/result reads delegate to Studies; routers, serializers and page
 composition delegate to Interfaces. No Observatory-managed durable artifact,
 catalog or research receipt remains authoritative after its named child bridge
 passes dual-read, digest and rebuild/deletion-or-retention evidence.
+
+### BTC observation and analysis UI v1
+
+The UI redesign is an Interfaces composition over existing and future query
+contracts; it is not a new backend context and does not authorize frontend code
+changes in this parent design. It reuses the current capability fail-closed
+navigation, `obsLens` URL/localStorage restoration, snapshot identity
+validation, decimal-string price contract, K-line renderer, date evidence,
+Trust, run diff and H1 research components.
+
+The first screen remains the actual BTC workspace, not a landing page. Its
+stable top truth bar identifies asset/instrument, selected semantic channel,
+SnapshotRef or compatibility snapshot ID, knowledge cut, revision policy,
+market/formal watermarks, freshness, quality, lifecycle and unavailable reason.
+Below it, four compact work views replace unrelated card piles:
+
+| View | Primary question | BFF composition | Main controls and evidence |
+|---|---|---|---|
+| Market | What did BTC do in the selected evidence state? | Datasets snapshot/context + OHLCV/derived market datasets | channel segmented control, knowledge cut, 1D/1W/1M/1Y, market/compare mode, stable K-line and volume, date inspector, return/drawdown/volatility metrics with authoritative versus display-estimate labels |
+| Quality | Can this BTC view be trusted and used for the selected purpose? | Datasets quality, PIT, lineage and release queries | acquisition/quality/freshness/PIT gates, source reconciliation, missing/quarantined/revised dates, evidence links and reason codes; no scalar trust without component evidence |
+| Research | What has been tested, with which immutable BTC snapshot, and what remains unknown? | Studies hypothesis/result/validation queries over DatasetSnapshotRef | hypothesis/spec/version, sample and OOS window, benchmark/placebo/walk-forward metrics, uncertainty, promotion/stale/insufficient state and EvidenceGap; future outcomes stay visually and semantically separate |
+| Lineage | What changed between captures, datasets, releases and study runs? | Datasets + Studies lineage/projection queries | run timeline, immutable ref/digest, source capture set, build/release state, revision diff, affected StudyResult and projection generation |
+
+Desktop uses a stable constrained workspace: truth bar, full-width chart/primary
+evidence band, then a two-column inspector where the secondary column cannot
+resize the chart. Mobile stacks truth bar, controls, chart and inspector; fixed
+chart aspect ratio and bounded control rows prevent overlap. Tabs are used for
+the four views, segmented controls for channel/chart mode, icon buttons with
+tooltips for zoom/reset/inspect, swatches for formal/candidate/observed, and
+tables/timelines for lineage. Cards remain only for repeated findings or
+bounded tools; page sections are unframed. No decorative hero, gradients,
+orbs or explanatory feature copy is introduced.
+
+The target read endpoint is a versioned
+`GET /api/v1/observatory/assets/crypto.BTC/workspace` compatibility BFF, or an
+equivalent batched query contract selected by the child. It accepts the
+existing URL selectors and returns a `BtcWorkspaceView` envelope containing
+one resolved snapshot identity, independent panel states, cache/ETag metadata
+and bounded links to detail queries. The BFF resolves identity once, launches
+bounded owner queries in parallel and rejects any panel whose identity differs;
+it never reads tables/parquet, computes formal metrics, fetches providers,
+publishes data or runs a Study. Existing granular endpoints remain supported
+and are used as rollback until the workspace golden contract proves parity.
+
+The BTC child cannot select this BFF on bounded-fan-out unit evidence alone. It
+must emit a BTC-specific `CapacityEnvelope` and the cumulative
+`CombinedCapacityEnvelope` for the exact selected topology. The fixtures cover
+all four panels under cold and warm cache, partial failure, a slow owner,
+concurrent clients, scan files/bytes, parallel-query and deadline-cancellation
+counts, cache/coalescing hits, peak runner resources and fair recovery while
+Capture, replay and existing SSE load coexist. A failed isolated or cumulative
+budget blocks BFF selection and keeps the granular endpoints authoritative.
+
+The UI explicitly distinguishes `loading`, `empty`, `partial`, `stale`,
+`unavailable`, `quarantined`, `blocked`, `failed`, `unknown` and
+`not_observed`. A previously rendered snapshot may remain visible only with a
+stale badge and its immutable identity; stale capability authorization is
+never cached. Panel failure does not erase confirmed independent panels, but a
+snapshot-identity mismatch blocks the mismatched panel instead of combining
+generations. Recovery links navigate to Data Ops or Operations and do not
+perform repair from a GET.
+
+The `btc-observation-analysis-ui-v1` child follows the
+`cli-http-sdk-compatibility`, Dataset/Study boundary and interface composition
+prerequisites. Its validation includes desktop/mobile Playwright screenshots,
+no-overlap assertions, keyboard/ARIA interaction, chart canvas nonblank pixel
+checks, URL restore, capability disabled/error/ready modes, decimal precision,
+snapshot mismatch, partial-panel and stale-data goldens, bounded BFF fan-out
+and existing Observatory route/payload regression. Rollback selects the current
+four-lens page and granular endpoints without deleting URL state or immutable
+evidence.
 
 ### SDK, notebooks and imports
 
@@ -1132,40 +1421,64 @@ tooling. The cross-cutting test inventory is:
     and safe error categories across implementations.
 14. Migration rollback test: additive schema, shadow replay, cutover and
     rollback retain old readers and immutable artifacts.
-15. Capacity-envelope fixture: measured 1x and 10x provider, stream,
-    SQLite/Parquet/DuckDB, outbox and BFF/SSE workloads stay within the
-    declared resource/SLO budget or fail explicitly.
-16. Backup-restore fixture: safe archive-member, manifest/digest verification,
-    staged activation and corruption rejection leave an active fixture root
-    unchanged.
+15. Capacity-envelope fixture: measured isolated and combined 1x/10x provider,
+    stream, SQLite/Parquet/DuckDB, outbox/replay, maintenance, Process and
+    BFF/SSE workloads fit a whole-runner allocation or fail explicitly with
+    bounded fair recovery.
+16. Backup-restore fixture: one SQLite/WAL, artifact and delivery/process
+    consistency cut, manifest/digest verification, measured RPO/RTO, ordered
+    staged activation and corruption/cut-mismatch rejection leave an active
+    fixture root unchanged.
 17. Rights/retention fixture: SourceManifest processor/region/license
-    rejection, revocation tombstone, legal hold and reachable-lineage GC guard.
+    rejection, revocation tombstone, legal hold, durable reference reservation,
+    overdue-confirmation reconciliation, transaction-bound abort receipt,
+    intersecting-closure target fence, crash-safe deletion receipt and
+    reachable-lineage GC guard.
+18. Capture conformance fixture: trusted passing adapter receipt identity,
+    expiry/revocation, runtime/profile drift and shared circuit half-open
+    arbitration fail closed before provider interaction.
+19. Dataset disposition fixture: every quality `passed/warned/blocked` by
+    finality `provisional/final/retracted` pair has one explicit publication,
+    withdrawal or fail-closed outcome.
 
 ## Migration Phases and Child OpenSpec Changes
 
 | Order | Child change | Objective and exit criteria | Rollback |
 |---|---|---|---|
-| 1 | `architecture-guardrails-and-baselines` | Add import/DB-owner/read-only guards and CLI/HTTP/OpenAPI/SSE baselines without moving behavior. Its inventory records package/import, native, table and pointer compatibility facts. | Revert test/tooling changes; no data format change. |
-| 2 | `kernel-and-public-contracts` | Introduce only justified Kernel and versioned refs/DTOs, including trusted ActorContext, OperationReceipt, ProcessView, ErrorEnvelope and policy references, with compatibility imports/serialization/status-taxonomy tests. | Stop new consumers; keep existing types/paths. |
-| 3 | `platform-persistence-events-and-bootstrap-foundation` | Establish transaction/outbox port, command ingress, inbox/lease/ack/DLQ, OrderingContract, EventBus/LegacySchemaBootstrapAdapter, DatabaseRuntime/MigrationCoordinator, CapacityEnvelope, verified staged restore and Bootstrap composition without requiring unextracted Context repositories. | Disable the new Platform adapter, retain EventBus/TradeDB compatibility bridge and all delivery records. |
-| 4 | `formal-pit-and-revision-semantics` | Correct fail-closed clock selection and actual as-known/latest-restated mapping using current PIT code and goldens. This is mandatory before formal SnapshotRef/Study migration. | Retain existing reader for non-formal compatibility views; block formal release rather than publish an unproven snapshot. |
-| 5 | `capture-boundary` | Extract a pilot SourceManifest rights/temporal/admission policy, request/run/artifact/checkpoint, stage/commit reconciliation, replay/import/revision/quarantine/revalidation and rights-restriction propagation behavior. | Route compatibility adapter to existing source service; retain committed artifacts/tombstones. |
-| 6 | `dataset-product-boundary` | Extract pilot Dataset build/version/snapshot/release/quality/lineage/derivation policy and Datasets catalog/PIT projection, with QueryBudget, manifest-verified readers and generation-stamped legacy pointer bridge. | Restore verified prior pointer/reader after reconciliation; keep new immutable versions. |
-| 7 | `study-boundary` | Move one registered Study to proven-SnapshotRef-only input, EvidenceGap declaration and deterministic validation/result receipts. | Preserve legacy research query compatibility; expose new result as unpublished/stale if necessary. |
-| 8 | `process-manager-boundary` | Introduce selected refresh/evidence-gap/revision/rights-restriction flows using the already-proven Platform foundation and Context contracts; Process state never writes Context aggregates. | Disable selected command routing and replay pending events through the compatible handler. |
-| 9 | `cli-http-sdk-compatibility` | Delegate selected CLI/HTTP/SSE/SDK/notebook routes through a complete mutation receipt/recovery ledger, bounded BFF/SSE hub, ProcessView and RetentionView while preserving snapshots. | Re-enable legacy adapter path; retain payload/error aliases. |
+| 1 | `architecture-guardrails-and-baselines` | Existing approved prerequisite: import/DB-owner/read-only guards and machine-readable package, native, table, artifact, pointer and interface inventory in `architecture-baseline.toml`. Freeze CLI help/parse/exit, both 72/81 route modes, golden payload/SSE signatures, notebook/import consumers and the OpenAPI defect before extraction; this baseline step performs no interface delegation. | Revert only guard/test/baseline additions; no data format or interface implementation change. |
+| 2 | `kernel-and-public-contracts` | Existing governed prerequisite: introduce only justified Kernel and versioned refs/DTOs, including trusted ActorContext, OperationReceipt, ProcessView, ErrorEnvelope and policy references, with compatibility imports/serialization/status-taxonomy tests. | Stop new consumers; keep existing types/paths. |
+| 3 | `platform-persistence-events-and-bootstrap-foundation` | Establish transaction/outbox implementation, command ingress with scoped idempotency-key/command-digest conflict refusal, inbox/lease/ack/DLQ, OrderingContract, generic handler selector, EventBus/LegacySchemaBootstrapAdapter, DatabaseRuntime/MigrationCoordinator, CapacityEnvelope/CombinedCapacityEnvelope, reference-reservation/GC fence primitives, consistency-cut RPO/RTO restore and the one Bootstrap lifecycle owner, including bounded startup cleanup and child/executor/SSE/database shutdown. | Disable the new Platform adapter, retain EventBus/TradeDB/Web-resource compatibility bridges and all delivery/shutdown/restore records. |
+| 4 | `formal-pit-and-revision-semantics` | Existing governed prerequisite under separate approval: correct fail-closed clock selection and actual as-known/latest-restated mapping using current PIT code and goldens. Formal adoption remains blocked until that child reaches strict approval and implementation evidence. | Retain existing reader for non-formal compatibility views; block formal release rather than publish an unproven snapshot. |
+| 5 | `capture-boundary` | Extract a pilot SourceManifest rights/temporal/admission policy, trusted adapter conformance receipt, shared quota/circuit state, request/run/artifact/checkpoint, stage/commit reconciliation, replay/import/revision/quarantine/revalidation and rights-restriction propagation behavior. A future L2 or untrusted-plugin profile must first add its explicit workload and isolation policy. | Route compatibility adapter to existing source service; retain committed artifacts/tombstones. |
+| 6 | `dataset-product-boundary` | Extract pilot Dataset build/version/snapshot/release/quality/lineage/derivation policy, total quality-by-finality disposition and Datasets catalog/PIT projection, with canonical clock eligibility, multi-source conflict goldens, QueryBudget, evidence-closure reservation/confirmation, manifest-verified readers and generation-stamped legacy pointer bridge. | Restore verified prior pointer/reader after reconciliation; keep new immutable versions. |
+| 7 | `study-boundary` | Move one registered Study to proven-SnapshotRef-only input, retention reservation/confirmation, EvidenceGap declaration and deterministic validation/result receipts. | Preserve legacy research query compatibility; expose new result as unpublished/stale if necessary. |
+| 8 | `decision-support-boundary` | Classify and migrate one recommendation/causal/action slice into DecisionCase, Review, Rationale, Override, Expiry and non-executable PortfolioIntent with immutable Dataset/Study evidence, evidence-closure reservation/confirmation and append-only audit. | Stop new case admission and select legacy read adapter; retain all audit facts and confirmed evidence protection. |
+| 9 | `process-manager-boundary` | Introduce selected refresh/evidence-gap/revision/rights-restriction and decision-staleness flows using the proven Platform foundation and Context contracts; Process state never writes Context aggregates. Prove symmetric generation-fenced legacy/Process handler selection with zero losing-owner work before the selector CAS. | Reverse the same selector state machine to the legacy handler and replay pending events only after lease settlement; retain both handler audit trails. |
 | 10 | `operational-sli-slo-alert-runbook-matrix` | Create the versioned signal/SLI/SLO/threshold/owner/escalation/runbook matrix with synthetic-alert and authorized-recovery evidence before any production cutover. | Disable only the new alert/routing adapter; retain status and receipts. |
-| 11 | `python-package-and-web-layout` | Make a prior package-transition decision, then introduce staged `src/trade`/`web` layout with dual discovery, import/console/native compatibility smoke tests. | Retain old distribution/import/entrypoint shims for the compatibility window. |
-| 12 | `tests-and-legacy-cleanup` | Retire only bridges, docs/output paths and aliases that meet usage, snapshot, retention and migration exit criteria. | Restore compatibility adapter; never delete immutable artifacts as rollback. |
+| 11 | `cli-http-sdk-compatibility` | Consume the already frozen interface baseline and operational evidence, repair the `/predict` OpenAPI blocker, then delegate selected CLI/HTTP/SSE/SDK/notebook routes through a complete mutation receipt/recovery ledger, bounded BFF/SSE hub, ProcessView and RetentionView. It does not re-own baseline discovery or delegate before required Process/Context handles and cutover runbooks exist. | Re-enable legacy adapter path; retain payload/error aliases and the guardrails-owned registry baseline. |
+| 12 | `btc-observation-analysis-ui-v1` | Compose one evidence-bound BTC Market/Quality/Research/Lineage workspace from Datasets/Studies queries, preserve granular routes/deep links/capability gates and prove responsive/accessibility/canvas goldens plus BTC-specific isolated and cumulative combined capacity envelopes. | Select the current four-lens page and granular endpoints. |
+| 13 | `python-package-and-web-layout` | Make a prior package-transition decision, then introduce staged `src/trade`/`web` layout with dual discovery, import/console/native compatibility smoke tests. | Retain old distribution/import/entrypoint shims for the compatibility window. |
+| 14 | `tests-and-legacy-cleanup` | Retire only bridges, docs/output paths and aliases that meet usage, snapshot, retention and migration exit criteria. | Restore compatibility adapter; never delete immutable artifacts as rollback. |
 
 Each child is one reviewable PR, one dedicated worktree and one independently
 validated change. A child cannot depend on unimplemented future directory moves,
 a global rewrite, an unbuilt Kernel/public-contract substrate, an unbuilt
 Platform handoff substrate or an unproven formal PIT transformation. The
+Decision Support child follows Study contracts and precedes Processes/Interfaces
+that expose its state. The BTC UI child follows compatibility, Dataset and Study
+query contracts but does not depend on the package-layout child. The existing
+`converge-runtime-boundaries` behavior is a shutdown compatibility seed consumed
+by the Platform child, not a parallel lifecycle owner. The
 package-layout child requires a decision record for
 canonical distribution/import names, `trade_py` forwarding, dual package
 discovery, console/root-facade routing, `_trade_native` installation location,
 and source-tree/editable/wheel smoke coverage before it is designed.
+
+The interface contract baseline is frozen once in
+`architecture-guardrails-and-baselines`; `cli-http-sdk-compatibility` consumes
+that immutable generation later and owns delegation. If current registration
+changes before delegation, the guardrail baseline is explicitly regenerated
+and reviewed rather than silently rediscovered inside the cutover child.
 
 Before remote extension work, the `remote-execution-and-interface-adr` records
 that MCP, GraphQL and TUI remain Interfaces adapters over these versioned DTOs;
@@ -1174,6 +1487,14 @@ Execution port with capability/version negotiation, submit/status/cancel/
 heartbeat, worker identity, resource/egress policy, output refs and execution
 receipts. It may be added as a prerequisite only when the first remote worker
 is proposed; it is not a current implementation dependency.
+
+The same conditional ADR rule applies before the first third-party or untrusted
+source plugin. Its execution trust class, process isolation, network-egress and
+filesystem allowlists, resource limits, credential boundary, process-tree
+termination and crash containment become part of the SourceManifest profile,
+adapter conformance receipt and isolated/combined capacity evidence. Trusted
+first-party pilot adapters may remain in-process only through an explicit
+reviewed profile; plugin naming alone never grants in-process trust.
 
 ## Risk Register
 
@@ -1185,14 +1506,16 @@ is proposed; it is not a current implementation dependency.
 | Capture rights or absent source time causes impermissible or temporally false use | Critical | Versioned SourceManifest rights/processor/region/revocation policy, absent-clock preservation and Capture policy fixtures; Capture owner. |
 | Capture artifact is visible before durable receipt or is lost across a crash | Critical | stage/digest/commit-marker protocol, receipt/outbox ordering and startup reconciliation fault matrix; Capture/Platform owner. |
 | Capture retry duplicates provider data or cost | High | durable request identity, receipt digest, source/credential quota accounting, bounded source policy and idempotent checkpoint; Capture owner. |
+| Private worker circuits or stale adapter conformance allow unsafe external interaction | High | shared durable circuit/half-open lease and trusted identity-bound conformance receipts propagated through artifact lineage; Capture owner. |
 | Outbox retry duplicates, reorders, stalls or drops downstream action | High | inbox idempotency, OrderingContract sequence/gap state, lease/ack, bounded batch/backlog policy, DLQ/redrive and crash fixtures; Platform Events and Processes owner. |
+| Legacy and Process handlers both claim work during cutover | Critical | symmetric admission denial/quiescence/delivery settlement and generation-fenced selector CAS; Processes semantic owner and Platform selector owner. |
 | Direct table reads persist through a new facade | High | static DB owner guard and repository API review; guardrails child owner. |
 | Web extraction changes payload/error contracts or slow SSE consumes unbounded memory | High | generated route/OpenAPI/SSE snapshots, ErrorEnvelope mapping, bounded shared fan-out and slow-client/resync fixtures; Interfaces owner. |
 | Process coordination becomes a hidden global manager | High | one process module per named flow, durable state schema and context commands only; Processes owner. |
 | Observatory retains a second authority or direct artifact-read path | High | Datasets owns catalog/release/PIT projection and manifest-verified reads, Studies owns research facts, Interfaces owns only BFF serialization/cache views; Observatory file matrix and query-port tests; Datasets/Studies/Interfaces owners. |
 | Release bridge advances two authorities or crashes between release and legacy pointer | High | generation-stamped Datasets authority, pointer materialization journal, startup reconciliation and dual-reader checks; Datasets owner. |
-| Unbounded immutable retention exhausts storage or GC breaks reproducibility | High | retention classes, legal holds, reachable-reference guard, tombstone/audit evidence and dry-run GC fixture; Platform/Datasets/Capture owners. |
-| Restore claim activates corrupt data or split-brain generations | Critical | safe archive validation, manifest/SHA-256 staged restore, writer fence, generation-CAS activation journal, health window/rebind and append-only restore receipt; Platform Backup owner. |
+| Unbounded immutable retention exhausts storage or GC races a new reference | Critical | retention classes, legal holds, fail-closed evidence-closure reservation, confirmation-deadline reconciliation, transaction-bound abort/retirement receipts, target-level intersecting fence/final census, crash-atomic deletion receipt and dry-run fixture; Platform/Datasets/Capture owners. |
+| Restore claim activates corrupt, inconsistent or operationally obsolete data | Critical | consistency-cut SQLite/WAL/artifact/delivery watermarks, measured RPO/RTO, safe archive validation, manifest/SHA-256 staged restore, ordered owner-first restore, writer fence, generation-CAS activation journal, health window/rebind and append-only receipt; Platform Backup owner. |
 | C++ binding collision or native mutation bypasses a Context boundary | Medium | `_trade_native` namespace, port capability catalog, no-persistence guard and differential test; engine child owner. |
 | Existing PIT baseline remains permissive | Critical | dedicated child P0 gate before formal Study migration; missing required clocks block formal result. |
 
@@ -1228,6 +1551,8 @@ Every child proposal must include:
 - a capacity envelope with measured 1x/10x workloads, declared SLO/resource
   budgets and overload behavior for every new provider, stream, query,
   outbox/process or BFF/SSE surface;
+- a cumulative `CombinedCapacityEnvelope` for the exact post-cutover topology,
+  whole-runner allocation, subsystem reservations and overload/fairness proof;
 - a Design Quality Brief and all applicable impact evidence;
 - compatibility/default/fallback behavior;
 - temporary-root validation plus migration/replay/rollback evidence where
@@ -1238,8 +1563,11 @@ Every child proposal must include:
   authorized recovery evidence before any production cutover;
 - SourceManifest rights, retention/tombstone and temporal/finality controls
   when a child handles external data or semantic derivation;
-- a `MigrationReconciliationManifest`, mixed-version/leader plan and staged
-  verified backup restore rehearsal when a child changes durable ownership;
+- a `MigrationReconciliationManifest`, mixed-version/leader plan, evidence
+  reservation/GC fence and consistency-cut staged backup restore rehearsal with
+  measured RPO/RTO when a child changes durable ownership; reservation timeout
+  must remain fail-closed until a consumer-transaction-bound abort or retirement
+  receipt proves release is safe;
 - a review worktree six-role consensus before implementation and before merge.
 
 The architecture change itself is complete only after its deterministic design

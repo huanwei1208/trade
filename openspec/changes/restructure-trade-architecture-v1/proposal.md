@@ -108,17 +108,77 @@ The design establishes:
   validation, data safety, rollout and rollback for every implementation
   slice.
 
-Nine capabilities are introduced as architecture requirements:
+Ten capabilities are introduced as architecture requirements:
 
 1. `repository-architecture`
 2. `capture-contract`
 3. `dataset-product-lifecycle`
 4. `study-lifecycle`
-5. `process-orchestration`
-6. `interface-compatibility`
-7. `dependency-guardrails`
-8. `migration-governance`
-9. `platform-foundation`
+5. `decision-support-lifecycle`
+6. `process-orchestration`
+7. `interface-compatibility`
+8. `dependency-guardrails`
+9. `migration-governance`
+10. `platform-foundation`
+
+### Architecture decisions and future fit
+
+The proposal makes the following decisions explicit:
+
+1. **Why adjust the current structure:** audited code concentrates unrelated
+   state, orchestration and compatibility behavior in `TradeDB`, broad CLI
+   modules, the FastAPI application, DataGateway and job/event registries.
+   Those facts make writer ownership, read side effects, recovery and immutable
+   evidence difficult to prove.
+2. **Facts versus assumptions:** current paths, callers, tables, route
+   registrations, shutdown behavior and artifact mechanics are code facts.
+   The exact new physical table names, final owner of deferred KG/causal/factor
+   rows, first stream/L2 capacity, and package transition mechanics are design
+   assumptions that their named child changes must prove before cutover.
+3. **Why Contexts plus Process Managers:** Contexts give each state machine,
+   repository, transaction and immutable product one semantic owner. Process
+   Managers permit branch, join, retry, feedback, revision propagation and
+   asynchronous completion through commands/events without cyclic imports or
+   shared cross-context transactions.
+4. **Why no big-bang rewrite:** package movement, schema ownership, public
+   interfaces and runtime selection have different failure and rollback
+   boundaries. Combining them would make compatibility regressions and data
+   ownership defects inseparable. Each child therefore retains a legacy
+   adapter or prior generation as an independent rollback path.
+5. **This change versus later work:** this change owns current-state audit,
+   target architecture, normative contracts, dependency/runtime graphs,
+   compatibility design, migration slices and approval evidence. Production
+   source moves, imports, schemas, data, algorithms and behavior belong only
+   to later strict-approved child changes.
+6. **Public contracts to preserve:** the root CLI and aliases, HTTP methods and
+   paths, input/default/status/error/payload behavior, SSE framing/cursors,
+   React page/deep-link state, SDK/notebook calls, import receipts, scheduler
+   envelopes, event identities and current data readers remain compatibility
+   obligations until their per-surface exit criteria pass.
+7. **Non-linear Capture:** immutable request/run/artifact/group/checkpoint
+   identities support one-to-many, many-to-one and many-to-many Dataset builds,
+   stream segments, supersession and provider-free replay. Processes coordinate
+   joins and feedback while Capture remains unaware of Dataset and Study
+   implementations.
+8. **Future stream and L2 data:** they use the same Capture segment,
+   checkpoint, source/credential admission, ordering, backpressure and
+   immutable-reference contracts. Activation requires a separate child with
+   measured event-rate, byte, lag, retention, replay, storage and combined
+   runner capacity; this proposal does not infer those limits.
+9. **Future interfaces:** Web, CLI, SDK, MCP, GraphQL and TUI are Interfaces
+   adapters over the same versioned command/query DTOs. They cannot acquire a
+   business table or provider. A new transport therefore does not create a
+   business Context.
+10. **Future remote workers:** remote acquisition remains Capture; remote
+    computation implements a Platform Execution port with capability/version
+    negotiation, submit/status/cancel/heartbeat, worker identity, resource and
+    egress policy, immutable output refs and execution receipts. Its ADR and
+    child change precede first activation.
+11. **Phased rollout and rollback:** guardrails/contracts/foundation precede
+    Context extraction; immutable Dataset/PIT evidence precedes Studies;
+    Decision Support precedes its Process/interface exposure; compatibility
+    precedes layout cleanup. A failed child selects the prior handler, reader
+    or release generation and retains new immutable evidence for audit.
 
 ## Design Scope
 

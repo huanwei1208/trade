@@ -29,7 +29,24 @@ query/path/body fields, defaults, status codes, response payloads, error
 shapes, capability gates and SSE semantics while translating legacy transport
 forms to Context query/use-case contracts. BFF routes SHALL compose read-only
 query handles and SHALL NOT access business tables, providers or lifecycle
-pointers directly.
+pointers directly. The compatibility child SHALL derive its first baseline
+from the actual FastAPI route registry plus representative golden requests and
+responses. The audited application currently registers 72 routes with the
+default-off or error Observatory capability surface, and 81 routes when the
+complete Observatory data surface is enabled. The nine-route difference is an
+intentional capability gate and SHALL have disabled, enabled and registration-
+error snapshots. Two routes are SSE streams in every mode:
+`GET /api/events/stream` with `after_id=0`, `limit=50` (maximum 500) and
+`poll_seconds=2.0` (range 0.25 through 60), and
+`GET /api/runtime/stream` with `scope="report"` and the same poll range.
+
+The current OpenAPI generator is not an authoritative complete baseline because
+schema generation fails while resolving the local `PredictRequest` forward
+reference. The compatibility child SHALL retain `/predict` in the registry and
+golden baseline, repair the schema-generation defect without changing route
+behavior, then add an OpenAPI snapshot. A generator failure SHALL fail the
+OpenAPI check explicitly; it SHALL NOT produce an empty snapshot, remove the
+route or trigger a reduced route inventory.
 
 #### Scenario: A route is extracted from the current FastAPI application
 
@@ -37,6 +54,15 @@ pointers directly.
 - **THEN** an OpenAPI/contract snapshot verifies the path, method, request
   fields, status codes, response/error fields and SSE behavior before the
   legacy implementation is retired
+
+#### Scenario: OpenAPI generation fails before the compatibility baseline
+
+- **WHEN** schema generation cannot resolve a request model such as the current
+  local `PredictRequest` forward reference
+- **THEN** the child records the generator failure, freezes the complete
+  registered route/method/signature inventory and golden payloads, keeps
+  `/predict` covered, and blocks route retirement until repaired OpenAPI
+  generation produces a matching snapshot
 
 #### Scenario: A page queries unavailable data
 
@@ -124,3 +150,67 @@ import SHALL become `RequestCapture(mode="import")`.
   internal artifact directly
 - **THEN** the child change introduces an SDK-compatible adapter and contract
   fixture before removing the internal access path
+
+### Requirement: BTC observation and analysis SHALL use one evidence identity
+
+The BTC Observatory product surface SHALL remain an Interfaces BFF over
+Datasets, Studies, Decision Support where applicable, and Platform status
+queries; it SHALL NOT become a bounded context. The target workspace SHALL
+compose Market, Quality, Research and Lineage views from one resolved immutable
+snapshot identity and SHALL reject any panel whose DatasetSnapshotRef,
+knowledge cut, revision policy or projection generation does not match that
+selection. It SHALL preserve the current capability fail-closed gate, URL and
+local-state restoration, decimal-string market values, granular route
+compatibility and explicit unavailable states.
+
+The BFF MAY perform permission checks, bounded parallel queries, DTO mapping,
+response shaping and cache metadata. It SHALL NOT read owner tables or parquet,
+call a provider, compute a formal metric, repair or publish data, run a Study,
+create a DecisionCase or move a lifecycle pointer. Previously confirmed data
+MAY remain visible while revalidating only when its immutable identity and
+stale state remain visible.
+
+Before the batched BTC BFF is selected, the child SHALL emit a BTC-specific
+`CapacityEnvelope` and the cumulative `CombinedCapacityEnvelope` for the exact
+deployment topology. Evidence SHALL cover four-panel cold and warm requests,
+partial failure, a slow owner, concurrent clients, parallel-query/deadline
+cancellation, scan files/bytes, result bytes, cache/coalescing behavior and peak
+CPU/memory/file-descriptor/connection/worker usage. The combined run SHALL
+include applicable Capture, replay, Dataset/Study query, Process/outbox and
+existing SSE workloads and prove finite admission shedding and fair recovery.
+An isolated or cumulative budget failure SHALL prevent BFF selection even when
+functional and bounded-fan-out tests pass.
+
+#### Scenario: Market and research panels resolve different snapshots
+
+- **WHEN** a workspace response would combine a market panel and StudyResult
+  whose pinned DatasetSnapshotRef or knowledge/revision identity differs from
+  the selected workspace identity
+- **THEN** the BFF or client contract rejects the mismatched panel with an
+  explicit identity-conflict state and does not render the values as one
+  coherent analysis
+
+#### Scenario: One bounded panel is unavailable
+
+- **WHEN** the selected snapshot is valid but a Quality, Research or Lineage
+  query returns partial, stale, unavailable, quarantined or failed
+- **THEN** the workspace preserves confirmed independent panels, renders the
+  affected panel's typed state and evidence/recovery link, and performs no
+  repair or mutation during the read
+
+#### Scenario: The BTC BFF passes functional tests but exceeds combined capacity
+
+- **WHEN** the workspace returns contract-valid panels in isolation but its
+  cumulative topology exceeds a declared query, scan, runner-resource or
+  recovery-fairness budget while Capture, replay or SSE load coexists
+- **THEN** selection remains on the granular endpoints, the failed
+  `CapacityEnvelope` or `CombinedCapacityEnvelope` is retained with the observed
+  limit, and the UI child cannot treat functional parity as production readiness
+
+#### Scenario: The BTC UI child is rolled back
+
+- **WHEN** the batched workspace BFF or redesigned page violates a route,
+  payload, identity, accessibility, responsive-layout or capacity golden
+- **THEN** Interfaces selects the existing four-lens Observatory page and
+  granular endpoints, preserving URL state and immutable evidence while the
+  new adapter remains disabled
