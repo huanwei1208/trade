@@ -1,0 +1,259 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The design adds versioned BTC workspace HTTP/SDK DTOs, an additive obsLens=analysis value, and a new four-task Web composition while preserving existing Observatory URL, API, capability, ETag, error, Data-page and notebook consumers."
+
+[[impacts]]
+id = "persistent_write"
+applies = true
+reason = "A future child creates a Datasets-owned immutable BTC descriptive-analysis DatasetVersion/Snapshot with lineage and release state; this design itself performs no write and requires that durable child to receive separate strict approval."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "The selected rollout adds a new versioned product and additive query DTOs instead of altering or backfilling an existing DB table, parquet layout, Catalog generation or legacy Observatory payload; any implementation discovery requiring an existing-schema transition must update this impact and regain approval."
+
+[[impacts]]
+id = "point_in_time"
+applies = true
+reason = "Market, analysis and Study evidence must remain bound to immutable refs, event/available/knowledge/revision clocks and fail closed when temporal proof or selected-snapshot relationships are absent."
+
+[[impacts]]
+id = "predictive_model"
+applies = true
+reason = "The Research view and BFF design expose Studies-owned H1/future StudyResultRef validation evidence and must keep predictive or inferential results separate from descriptive Analyze metrics, with sample, uncertainty, lifecycle and explicit unavailable states."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "The V2 scope consumes only existing BTC daily Dataset and Study contracts; it adds no news, social, macro, on-chain or third-party event ingestion, and future event overlays require their own source/provenance/temporal design."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "The transport-neutral query application, peer HTTP adapters, Platform runtime and React workspace coordinate Context-first view-local reads, process admission, owner cancellation, conditional caching, deadlines, response/render budgets and up to four active requests per subject/workspace whose ordering must not mix immutable identities."
+
+[evidence.contract]
+contract = "The additive public contract consists of versioned WorkspaceContext, Observe, Analyze, Assurance, Lineage, Research and Evidence query DTOs plus obsLens=analysis. Existing /api/v1/observatory routes, capability, status/error/ETag behavior, page key and obsLens/obsChannel/obsChart/obsTimeframe/knowledgeAsOf/obsDate/obsRun/obsCompare selectors remain compatibility surfaces."
+consumers = "Human BTC researchers, the React Observatory workspace, the generic Data page BTC adapter, old browser bookmarks and local viewport state, current/future SDK and notebook callers, OpenAPI clients, and existing Observatory unit/E2E/a11y tests consume these contracts."
+compatibility = "Existing overview/trust/runs/research lens values map to Observe/Assurance/Lineage/Research. A per-route matrix freezes method, path/query/body selectors and defaults, status, headers/ETag, complete payload fields/types/nullable/optional semantics, capability, errors and SSE-or-none. New routes are additive and versioned. Missing owner/digest/clock/method data maps to unproven or unavailable rather than an invented V2 fact."
+migration = "Strictly approve and implement Web runtime shutdown hardening first; then roll out immutable analysis product without consumers, Studies query contracts, dark transport-neutral query application with peer HTTP V2/compat/SDK adapters, feature-gated Web V2, and monitored compatibility cutover. Legacy routes/page remain selected until shutdown/URL/OpenAPI/full DTO/PIT/read-only/visual/a11y/capacity parity passes; no legacy removal occurs in the cutover PR."
+rollback = "Disable V2 capability/feature, route to the legacy Observatory adapter/page, disable additive route registration, restore the prior frontend bundle and if needed atomically select the previous verified analysis DatasetRelease. Existing source/analysis immutable facts and legacy URLs remain."
+
+[evidence.storage]
+authoritative_writer = "Only Datasets use cases in the future btc-descriptive-analysis-product-v1 child build and publish immutable analysis DatasetVersions/Snapshots. Interfaces, Web, SDK, notebooks, Studies and Processes cannot write the product; this design change writes no business state."
+idempotency_key = "Digest of ordered immutable DatasetVersionRef/DatasetSnapshotRef inputs plus semantic schema, method-policy, transform-environment, knowledge-cut and revision-policy identities; a matching fully verified output is a no-op."
+concurrency_control = "A per-analysis-product build lease protects materialization and a generation/CAS release transition prevents last-writer-wins publication; no cross-context transaction is permitted."
+staging_validation = "The child stages data and manifest under a same-filesystem temporary generation, closes and fsyncs data, then validates content digest, schema, lineage, units, UTC clocks, PIT/revision policy, metric method, samples, quality and references before visibility."
+atomic_visibility = "Immutable generation artifacts install without overwrite, then the owning Datasets release pointer/row moves atomically as the final visibility step."
+crash_windows = "A crash before release visibility leaves the previous release authoritative and a diagnosable candidate/orphan; after the atomic switch readers see the complete verified generation. Recovery never mutates a committed generation."
+corrupt_predecessor = "A missing, hash-mismatched, temporally unproven or otherwise invalid source/predecessor reference blocks build/publication and emits a failure receipt; it is never skipped or replaced by moving latest/current data."
+partial_results = "Partial MetricObservations are durable only where the versioned method permits policy-sufficient coverage and retain actual/expected sample, exclusions and reasons; unavailable/failed values omit numerics and never become zero or neutral."
+reader_consistency = "Readers freeze one Datasets release generation and verify manifest, content digest, lineage and all participating immutable refs before returning; BFF queries cannot combine pointer and artifact generations or read owner tables directly."
+backup_hash_verification = "The product child defines temporary-root backup/restore fixtures that verify release metadata, manifests, immutable generation hashes, lineage and referenced input identity before activation; no unverified archive or generation becomes visible."
+small_sample_verification = "A deterministic small BTC fixture independently recomputes exact returns, volatility, range, drawdown, percentile, coverage and revision cases before rollout. Acceptance never mutates or depends on a real production data root."
+rollback = "Atomically select the previous verified DatasetRelease and disable analysis capability when verification or compatibility fails; retain all immutable generations/receipts and never rewrite source market data."
+audit_trail = "Build, validation, publication, idempotent no-op, CAS conflict, failure, rollback and recovery each retain correlation/idempotency identity, input/output refs, policy/schema/method versions, content digests, state and reason codes."
+
+[evidence.concurrency]
+ownership = "The React task container owns active view and browser request identities; the transport-neutral BTC workspace query application owns slice composition; HTTP V2/compat and SDK are peer adapters; Datasets and Studies own their query work; Platform runtime owns process admission, QueryExecutionContext cancellation/deadline and ShutdownReceipt. A permit is released only after the owner exits or an owned process is reaped."
+bound = "At most four active requests per authenticated subject/workspace, one in-flight request per complete slice identity, and 32 active plus 32 queued requests per process with one-second maximum admission wait. Slice ceilings are 15 seconds, 2 MiB JSON, 2,000 Observe positions or analysis points per response, 100 metrics, 50 lineage rows per page and 100 evidence refs. The 7,300-position product history is range/cursor-addressable rather than one response."
+ordering = "WorkspaceContext resolves before selected-snapshot Observe, Analyze or Assurance. Complete request identity includes API/schema, asset, channel, context/ref, knowledge/revision selectors, view, range/target and refresh generation. Superseded responses cannot become confirmed."
+atomicity = "Each slice commits one complete typed confirmed/partial/unavailable/error payload for one immutable identity. The BFF verifies analysis-to-market and Study-to-input relationships before response mapping; no cross-owner transaction or partial fact synthesis is used."
+timeout_cancellation = "Every owner query consumes one QueryExecutionContext with monotonic deadline, cancellation token, request/correlation and owner identities, semantic request identity and child budget. Browser AbortSignal/disconnect requests cancellation but does not prove exit; permits remain held until cooperative exit or owned-process reap. Structured siblings join only within the shared remainder. Process shutdown uses one 12-second deadline; CI requires signal-to-reap <=15 seconds, and the supervisor atomically records forced exit 124 when the child cannot finish its own terminal receipt."
+backpressure = "Hidden views do not fetch, summary responses omit unselected series detail, one explicit evidence target is active, lineage paginates, oversize selectors are rejected, process admission is fixed at 32 active/32 queued, chart/render work is bounded/coalesced, and caches are finite and identity-aware. Dual-read deterministically samples <=1% by versioned identity hash, allows two active/no queue, uses <=2 seconds, stops by seven days/1,000 identities or earlier at 1.01x reads, 5% p95 regression, or 32 MiB RSS. No polling or automatic retry loop exists."
+partial_failure = "Context failure blocks dependent slices. Observe, Analyze, Assurance, Lineage and Research otherwise fail independently with transport-neutral ErrorEnvelope identity; HTTP status/headers are adapter mappings and absent from SDK DTOs. Successful empty maps to HTTP 200 condition=empty, distinct from unavailable/failed. Prior evidence is cleared or visibly labelled previous with original refs. Tool/transport errors are not product-unavailable or successful results."
+capacity_validation = "Temporary-fixture 1x and 320-attempt tests enforce bounded process admission/queue wait, p50/p95/p99 owner+BFF latency, canonical response bytes, browser/process memory, long-task/event-loop lag, cancellation exit, cache result, mismatch/stale discard and typed failures. Legal responses stay <=2 MiB; queue <=32; server event-loop <=100/250 ms p95/p99; peak RSS delta <=256 MiB; 60-second retained RSS delta <=32 MiB with no monotonic growth across three runs; overload does not OOM; shutdown leaves zero residual owned process groups."
+
+[evidence.forecast]
+decision_time = { source = "decision_clock", fallback = "not_applicable", timezone = "UTC", confidence = "exact" }
+event_time = { source = "source_event_time", fallback = "explicit_unavailable", timezone = "UTC", confidence = "exact" }
+publication_time = { source = "source_publication_time", fallback = "explicit_unavailable", timezone = "UTC", confidence = "unknown" }
+first_seen_time = { source = "collector_first_seen_time", fallback = "explicit_unavailable", timezone = "UTC", confidence = "unknown" }
+available_time = { source = "policy_available_time", fallback = "explicit_unavailable", timezone = "UTC", confidence = "unknown" }
+revision_time = { source = "source_revision_time", fallback = "explicit_unavailable", timezone = "UTC", confidence = "unknown" }
+timezone = "UTC is the BTC daily product, analysis window, Study evidence and display timezone; every non-applicable or missing source clock remains explicit."
+knowledge_mode = "Each series explicitly declares as_known_at_point or restated_at_snapshot_cut. Formal PIT uses as_known_at_point: every constituent row's required availability/revision clocks are no later than that point boundary and result available_at is the maximum admitted input clock. Restated series is labelled non-PIT and cannot satisfy a PIT Study."
+revision_policy = "As-known is the default for selected historical market/analysis evidence. Restated data requires a separately proven revision transform/ref and cannot claim point-in-time identity."
+universe_policy = "Only crypto.BTC daily canonical market and its derived descriptive-analysis Dataset. News, sentiment, macro, on-chain and other assets are excluded; Research queries only registered Studies with explicit input refs."
+coverage_state = "partial"
+label_maturity = "unavailable"
+leakage_tests = "Golden fixtures freeze DatasetSnapshotRef, point-level event/available/knowledge/revision clocks and reject missing, late, quarantined, future or moving inputs. Field/method dependency manifests stale affected outputs when high/low/volume/unit/clock/quality changes even if close does not. Study tests prove StudyRun accepts only verified DatasetSnapshotRef and forward labels/results do not enter descriptive Analyze DTOs."
+evidence_identity = "WorkspaceContext binds selected market DatasetSnapshotRef and temporal/revision policy. The formal analysis product uses standard DatasetVersionRef/DatasetSnapshotRef; a query-only AnalysisSnapshotDescriptor relates it to source market, schema/method/environment and content digest but cannot enter DatasetBuild or StudyRun. StudyResultRef binds hypothesis/method/DatasetSnapshotRef inputs and validation lifecycle. Query adapters return explicit relationships."
+oos_population = "Research uses the Studies-owned registered eligible and excluded population bound to immutable Study input refs; Analyze has no OOS claim, and an absent registered population produces the explicit Research unavailable state."
+oos_window = "Research displays the immutable finite OOS or walk-forward window supplied by Studies and its input clocks; Analyze has no forward window, and an absent Study window produces the explicit Research unavailable state."
+horizon = "Analyze has no forward horizon. Research displays only the registered Study horizon and never infers one from the UI selection."
+method = "Analyze uses versioned historical descriptive methods for returns, realized volatility, range, drawdown, distribution and coverage. Any hypothesis/effect/model/OOS method is owned and returned by Studies."
+metrics = "Analyze metrics include exact value-or-absence, unit, window, clocks, samples, coverage, quality, method and refs. Research metrics are Study-provided with validation/uncertainty; neither becomes a recommendation, rank or numeric fallback."
+sample_count = 1
+uncertainty = "Descriptive metrics expose sample/coverage and do not claim predictive uncertainty. Study uncertainty/confidence intervals are displayed only when supplied by Studies; otherwise explicit unavailable."
+regime_slices = "Research retains every preregistered Study regime slice with immutable method and input evidence; Analyze labels historical distribution buckets as descriptive observations and cannot promote a post-hoc bucket into a predictive regime."
+baseline = "Formal is the published BTC market baseline; selected observed/candidate remain separate. Study baselines/benchmarks come only from registered Study results."
+calibration_lifecycle = "unavailable"
+promotion_criteria = "Datasets publish analysis only after schema/lineage/PIT/quality/method validation. Studies own validation/promotion/rejection. Web/BFF cannot promote, and no predictive result authorizes a decision in this change."
+unavailable_state = "explicit_unknown"
+no_numeric_fallback = true
+
+[[obligations]]
+id = "btc-ui.task-flow"
+owner = "future web/src/pages/btc-workspace and transitional trade_web/frontend/src/pages/observatory"
+paths = [
+  "trade_web/frontend/src/pages/observatory/",
+  "trade_web/frontend/src/components/observatory/",
+  "trade_web/frontend/src/lib/observatory.ts",
+  "trade_web/frontend/src/styles/observatory.css",
+  "trade_web/frontend/src/styles/pages.css",
+  "trade_web/frontend/src/test/",
+  "trade_web/frontend/tests/e2e/",
+]
+contracts = [
+  "Observe, Analyze, Assurance and Research task information architecture",
+  "snapshot-bound evidence rail and explicit UI state model",
+  "responsive, accessible, no-overlap Web behavior",
+]
+failure_states = [
+  "context loading or unavailable",
+  "analysis partial, unavailable, stale or failed",
+  "snapshot relationship unproven",
+  "Study stale or evidence gap",
+  "mobile overflow or inaccessible interaction",
+]
+spec_requirements = [
+  "btc-workspace-information-architecture:BTC workspace follows observation-to-evidence tasks",
+  "btc-workspace-information-architecture:Analyze presents descriptive BTC behavior without advice",
+  "btc-workspace-information-architecture:Layout is dense, responsive, and accessible",
+]
+validation_tasks = ["1.2", "2.2", "5.1", "6.1"]
+
+[[obligations]]
+id = "btc-analysis.product-boundary"
+owner = "future src/trade/datasets with inferential results owned by src/trade/studies"
+paths = [
+  "trade_py/data/market/crypto/",
+  "trade_py/observatory/domain/",
+  "trade_py/observatory/research/",
+  "trade_py/observatory/query/",
+  "openspec/changes/restructure-trade-architecture-v1/",
+]
+contracts = [
+  "Datasets-owned standard DatasetVersionRef/DatasetSnapshotRef plus query-only AnalysisSnapshotDescriptor and MetricObservation",
+  "versioned descriptive method registry and bounded series",
+  "Studies-owned StudyResultRef for inferential and forward-looking results",
+]
+failure_states = [
+  "moving or unpinned input",
+  "PIT or available-time unproven",
+  "invalid or tampered immutable ref",
+  "insufficient sample or partial coverage",
+  "volume unit unproven",
+  "source revision and stale product",
+  "predictive field leakage into descriptive schema",
+]
+spec_requirements = [
+  "btc-snapshot-analysis-contract:Reusable BTC descriptive analysis is a Datasets product",
+  "btc-snapshot-analysis-contract:Metric values include method and availability semantics",
+  "btc-snapshot-analysis-contract:Studies own inferential and forward-looking results",
+]
+validation_tasks = ["1.2", "3.1", "3.2", "6.1"]
+
+[[obligations]]
+id = "btc-ui.bff-boundary"
+owner = "future src/trade/interfaces/btc_workspace query application with peer HTTP/SDK adapters and transitional trade_web/backend/observatory"
+paths = [
+  "trade_web/backend/observatory/",
+  "trade_py/observatory/query/",
+  "trade_web/frontend/src/pages/observatory/observatoryResource.ts",
+  "trade_web/frontend/src/lib/api.ts",
+  "tests/observatory/",
+  "trade_web/frontend/src/test/",
+]
+contracts = [
+  "Context-first versioned workspace query slices",
+  "read-only composition over Datasets, Studies and Platform query APIs",
+  "complete request identity, ETag, ErrorEnvelope and finite QueryBudget",
+  "Web, SDK and notebook DTO parity",
+]
+failure_states = [
+  "workspace context mismatch",
+  "analysis product unavailable or mismatched",
+  "owner timeout or transport failure",
+  "query or response budget exceeded",
+  "ETag cache identity mismatch",
+  "read-path provider/write/workflow attempt",
+  "superseded response",
+]
+spec_requirements = [
+  "btc-workspace-bff-contract:Workspace context is resolved before dependent slices",
+  "btc-workspace-bff-contract:BFF composes owner query contracts without owning business facts",
+  "btc-workspace-bff-contract:Request, response, and rendering budgets are enforceable",
+]
+validation_tasks = ["1.2", "4.1", "4.2", "4.3", "5.1", "6.1"]
+
+[[obligations]]
+id = "btc-ui.compatibility"
+owner = "future src/trade/interfaces/http/compat/observatory and current App/observatory adapters"
+paths = [
+  "trade_web/frontend/src/App.tsx",
+  "trade_web/frontend/src/components/AppShell.tsx",
+  "trade_web/frontend/src/lib/observatory.ts",
+  "trade_web/frontend/src/lib/api.ts",
+  "trade_web/backend/observatory/",
+  "trade_web/frontend/src/pages/DataPage.tsx",
+  "trade_web/frontend/src/test/",
+  "trade_web/frontend/tests/e2e/",
+]
+contracts = [
+  "existing Observatory page key, capability gate, URL selectors and local viewport",
+  "existing /api/v1/observatory methods, selectors/defaults, status codes, headers/ETags, complete payload semantics, capability, errors and SSE-or-none",
+  "Data-page BTC selected-series behavior",
+  "additive obsLens=analysis and versioned workspace query routes",
+]
+failure_states = [
+  "capability not freshly authorized",
+  "old bookmark or client cannot restore",
+  "unknown analysis lens on rollback",
+  "legacy response cannot prove V2 identity",
+  "V2 partial deployment",
+  "OpenAPI or payload drift",
+]
+spec_requirements = [
+  "btc-workspace-information-architecture:URL and navigation compatibility is additive",
+  "btc-workspace-bff-contract:Legacy Observatory contracts remain compatible",
+  "btc-workspace-bff-contract:Web, SDK, and notebook share query DTO semantics",
+]
+validation_tasks = ["1.1", "1.3", "2.1", "4.2", "5.1", "5.2", "6.2"]
+
+[[obligations]]
+id = "btc-ui.temporal-coherence"
+owner = "src/trade/datasets and src/trade/studies contracts consumed by the BTC Workspace BFF"
+paths = [
+  "trade_py/observatory/pit/",
+  "trade_py/observatory/domain/",
+  "trade_py/observatory/query/",
+  "trade_web/backend/observatory/",
+  "trade_web/frontend/src/pages/observatory/",
+  "openspec/changes/restructure-trade-architecture-v1/specs/dataset-product-lifecycle/spec.md",
+  "openspec/changes/restructure-trade-architecture-v1/specs/study-lifecycle/spec.md",
+]
+contracts = [
+  "WorkspaceContext selected market DatasetSnapshotRef plus knowledge/revision policy",
+  "standard analysis DatasetSnapshotRef source-lineage relationship through a query-only descriptor",
+  "StudyResultRef input relationship and stale-after-revision semantics",
+]
+failure_states = [
+  "event, available, knowledge or revision clock absent",
+  "PIT_NOT_PROVEN",
+  "analysis snapshot mismatch or pending",
+  "Study uses different input snapshot",
+  "Study result stale after revision",
+  "moving latest/current fallback",
+]
+spec_requirements = [
+  "btc-snapshot-analysis-contract:Analysis references bind market, product, and method identity",
+  "btc-snapshot-analysis-contract:Revisions follow method dependency manifests",
+  "btc-workspace-bff-contract:Complete request identity prevents stale truth",
+]
+validation_tasks = ["1.2", "1.3", "3.1", "3.2", "4.2", "4.3", "5.2", "6.1"]

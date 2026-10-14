@@ -1,0 +1,136 @@
+schema_version = 1
+policy_version = "v1"
+policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
+artifact_digest_algorithm = "sha256-path-content-v1"
+artifact_digest = "sha256:8f5fbe95a900952d3591b2e19df10e55b799ae85d72c03ab55e5e671dc411c45"
+reviewed_commit = "1cf56779d349a2df230c6a59bb31cc2b2d99a9bb"
+reviewed_at = "2026-07-25"
+status = "approved"
+bootstrap = false
+
+[[judges]]
+role = "reliability"
+status = "approved"
+score_before = 9
+score_after = 9.8
+
+[[judges]]
+role = "performance"
+status = "approved"
+score_before = 8
+score_after = 9.8
+
+[[judges]]
+role = "architecture"
+status = "approved"
+score_before = 9.2
+score_after = 9.8
+
+[[judges]]
+role = "data_quality"
+status = "approved"
+score_before = 9.1
+score_after = 9.8
+
+[[judges]]
+role = "observability"
+status = "approved"
+score_before = 9.1
+score_after = 9.8
+
+[[judges]]
+role = "news_future"
+status = "approved"
+score_before = 9.2
+score_after = 9.8
+
+[[findings]]
+id = "BTC-UI-REV-001"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 3
+status = "resolved"
+resolution = "Formal analysis now uses standard immutable DatasetVersionRef and DatasetSnapshotRef contracts, preserves per-point knowledge eligibility, and propagates revisions through field, clock, unit, quality, finality, and method dependency manifests."
+evidence = [
+  "design.md:Data and state invariants",
+  "specs/btc-snapshot-analysis-contract/spec.md:Rolling points preserve point-in-time eligibility",
+  "specs/btc-snapshot-analysis-contract/spec.md:Revisions follow method dependency manifests",
+]
+
+[[findings]]
+id = "BTC-UI-REV-002"
+priority = "P0"
+severity = "HIGH"
+consensus_count = 3
+status = "resolved"
+resolution = "V2 activation is blocked on the separately governed runtime-owner-shutdown-and-recovery-hardening-v1 child. It covers EventBus terminal persistence, concurrent Web stop, startup cleanup, command-executor tail, FastAPI serving/lifespan and owned process trees, and must prove one 12-second monotonic shutdown budget, supervisor-owned terminal receipts, exit 124 at forced deadline, process-tree reaping, and signal-to-reap within 15 seconds."
+evidence = [
+  "design.md:Failure and recovery",
+  "specs/btc-workspace-bff-contract/spec.md:Serving process misses the shutdown deadline",
+  "tasks.md:4.1",
+]
+
+[[findings]]
+id = "BTC-UI-REV-003"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 2
+status = "resolved"
+resolution = "The transport-neutral interfaces/btc_workspace application is the sole cross-owner slice composer; HTTP, compatibility, SDK, and notebook surfaces are peer adapters and do not own business facts."
+evidence = [
+  "design.md:Ownership and boundaries",
+  "specs/btc-workspace-bff-contract/spec.md:BFF composes owner query contracts without owning business facts",
+  "tasks.md:4.2",
+]
+
+[[findings]]
+id = "BTC-UI-REV-004"
+priority = "P1"
+severity = "HIGH"
+consensus_count = 3
+status = "resolved"
+resolution = "Owner query admission, deadlines, payload and point limits, deterministic shadow sampling, read amplification, latency, event-loop, RSS, queue, and residual-process thresholds are quantified and are cutover gates rather than advisory targets."
+evidence = [
+  "design.md:Performance and capacity",
+  "specs/btc-workspace-bff-contract/spec.md:Request, response, and rendering budgets are enforceable",
+  "specs/btc-workspace-bff-contract/spec.md:Compatibility dual-read is deterministic and strictly bounded",
+]
+
+[[findings]]
+id = "BTC-UI-REV-005"
+priority = "P1"
+severity = "MED"
+consensus_count = 3
+status = "resolved"
+resolution = "The frozen legacy route inventory and additive compatibility adapters preserve existing HTTP, URL, Web, SDK, notebook, capability, ETag, status, and error behavior while the UI distinguishes transport, observation, and product-availability states."
+evidence = [
+  "design.md:Contracts and compatibility",
+  "specs/btc-workspace-bff-contract/spec.md:Legacy Observatory contracts remain compatible",
+  "specs/btc-workspace-information-architecture/spec.md:Workspace states remain explicit and independently recoverable",
+]
+
+[[findings]]
+id = "BTC-UI-REV-006"
+priority = "P1"
+severity = "MED"
+consensus_count = 2
+status = "resolved"
+resolution = "External news, stream, L2, social, macro, and on-chain overlays remain out of scope; any future integration requires its own external_event_data design, Capture temporal provenance, immutable Dataset or Study ownership, and strict approval."
+evidence = [
+  "design.md:Child OpenSpec changes",
+  "specs/btc-workspace-bff-contract/spec.md:External evidence and streaming require a separate governed capability",
+  "tasks.md:5.1",
+]
+
+[[findings]]
+id = "BTC-UI-REV-007"
+priority = "P2"
+severity = "LOW"
+consensus_count = 2
+status = "accepted"
+resolution = "Implementation evidence remains intentionally deferred to the named child changes; V2 routes and default navigation remain disabled until runtime, contract, data, Study, UI, capacity, compatibility, and rollback gates pass."
+evidence = [
+  "design.md:Migration phases",
+  "design.md:Child OpenSpec changes",
+  "tasks.md:6.1",
+]
