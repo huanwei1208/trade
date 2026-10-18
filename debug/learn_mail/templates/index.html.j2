@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>股市学习笔记</title></head>
+<body style="margin:0;background:#f7f8fa;font-family:'PingFang SC','Hiragino Sans','Noto Sans SC','Microsoft YaHei',sans-serif;color:#1d1f23">
+<div style="max-width:680px;margin:0 auto;padding:24px 16px 48px">
+<h1 style="margin:0 0 6px;font-size:25px">股市学习笔记</h1>
+<p style="margin:0 0 20px;font-size:14px;color:#4d5158">每一课讲一件真实的事。只陈述已经发生的事实,不是投资建议。</p>
+{%- for l in lessons %}
+<a href="lessons/{{ l.slug }}/" style="display:block;text-decoration:none;color:inherit;background:#fcfcfb;border:1px solid #d9dce2;border-radius:6px;padding:12px 14px;margin:0 0 10px">
+<div style="font-size:13px;color:#898781">{{ l.date }}</div>
+<div style="font-size:17px;font-weight:700;color:#0b0b0b">{{ l.title }}</div></a>
+{%- else %}
+<p>还没有课程。</p>
+{%- endfor %}
+</div>
+</body>
+</html>

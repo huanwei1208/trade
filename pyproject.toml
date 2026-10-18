@@ -31,6 +31,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Learning-mail prototype (debug/learn_mail): one Vega-Lite chart spec rendered
+# interactively on the web page and as a static PNG for the email.
+learn = [
+    "altair>=6,<7",
+    "vl-convert-python>=1.9,<2",
+]
 dev = [
     "basedpyright>=1.29,<2",
     "pytest>=8,<9",
